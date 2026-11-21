@@ -282,7 +282,6 @@ fn words(
         }
     }
     model.spend(cells * (1 + words.len().max(1).ilog2() as usize))?;
-    model.allocate(cells)?;
     words.sort_unstable();
     Ok(words)
 }

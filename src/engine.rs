@@ -299,7 +299,7 @@ impl Engine {
             StatementForm::PExtDimension(p, s, t) => {
                 let prime = Prime::new(&mut self.model, p)?;
                 let ty = self.model.odd_ext_type(prime, s, t)?;
-                let rank = self.model.odd_ext(ty)?.rank();
+                let rank = self.model.odd_ext_rank(ty)?;
                 format!("pextdim[{p}, {s}, {t}] = {rank}")
             }
             StatementForm::PExtAnDimension(p, n, s, t) => {
@@ -307,7 +307,7 @@ impl Engine {
                 let ty = self
                     .model
                     .profile_odd_ext_type(prime, Profile::An(n), s, t)?;
-                let rank = self.model.odd_ext(ty)?.rank();
+                let rank = self.model.odd_ext_rank(ty)?;
                 format!("pextandim[{p}, {n}, {s}, {t}] = {rank}")
             }
             StatementForm::PMayDimension(p, r, s, t, f) => {

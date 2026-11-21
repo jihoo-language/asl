@@ -1,11 +1,12 @@
 use std::cell::OnceCell;
 use std::cmp::Ordering;
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{hash_map::Entry, HashMap};
+use std::mem::{size_of, size_of_val};
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, TypeId, Value};
-use crate::odd_cobar::{self, word_cells, Prime, Term, Word};
+use crate::odd_cobar::{self, word_cells, Differential, Factor, Prime, Term, Word};
 use crate::odd_profile;
 use crate::prime_linear::{add_scaled, Basis, Coordinate, QuotientBasis};
 use crate::profile::Profile;
@@ -39,16 +40,11 @@ impl OddExt {
         let quotient = if words.is_empty() {
             QuotientBasis::default()
         } else {
-            let mut boundaries = Basis::default();
-            boundary_columns(model, prime, profile, s, t, &words, |model, _, column| {
-                boundaries.insert(model, prime, column)
-            })?;
-
+            let boundaries = boundaries(model, prime, profile, s, t, &words)?;
             let mut rows = WordRows::default();
+            let mut differential = Differential::new(prime, profile);
             QuotientBasis::build(model, prime, boundaries, words.len(), |model, index| {
-                let image =
-                    odd_cobar::differential_profile_word(model, prime, profile, &words[index])?;
-                rows.encode(model, image)
+                rows.differential(model, &mut differential, &words[index], true)
             })?
         };
         Ok(Self {
@@ -114,7 +110,7 @@ impl OddExt {
                     Ok(())
                 },
             )?;
-            model.allocate(images.cells())?;
+            model.allocate(images.cells() + words.iter().map(word_cells).sum::<usize>())?;
             self.preimages
                 .get_or_init(|| BoundaryPreimages { words, images })
         };
@@ -124,6 +120,25 @@ impl OddExt {
         debug_assert!(remainder.is_empty());
         Ok(Some(decode(&preimages.words, support)))
     }
+}
+
+pub(crate) fn rank(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    s: usize,
+    t: usize,
+) -> Result<usize> {
+    let words = odd_cobar::temporary_basis(model, prime, profile, s, t, MAX_BASIS_WORDS)?;
+    if words.is_empty() {
+        return Ok(0);
+    }
+    let boundaries = boundaries(model, prime, profile, s, t, &words)?;
+    let mut rows = WordRows::default();
+    let mut differential = Differential::new(prime, profile);
+    QuotientBasis::rank_only(model, prime, &boundaries, words.len(), |model, index| {
+        rows.differential(model, &mut differential, &words[index], true)
+    })
 }
 
 pub(crate) fn canonical_primitive(
@@ -143,13 +158,13 @@ pub(crate) fn canonical_primitive(
     let Some(previous) = s.checked_sub(1) else {
         return Ok(None);
     };
-    let source = odd_cobar::basis_profile(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
+    let source = odd_cobar::temporary_basis(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
     let mut rows = WordRows::default();
     let target = rows.encode(model, terms.to_vec())?;
     let mut images = Basis::default();
+    let mut differential = Differential::new(prime, profile);
     for (index, word) in source.iter().enumerate() {
-        let image = odd_cobar::differential_profile_word(model, prime, profile, word)?;
-        let column = rows.encode(model, image)?;
+        let column = rows.differential(model, &mut differential, word, true)?;
         images.insert_with_witness(model, prime, column, vec![(index, 1)])?;
     }
     // Independent source columns are selected in the same order as in
@@ -157,6 +172,21 @@ pub(crate) fn canonical_primitive(
     // though the target rows here are interned instead of enumerated.
     let (remainder, support) = images.reduce_with_witness(model, prime, target)?;
     Ok(remainder.is_empty().then(|| decode(&source, support)))
+}
+
+fn boundaries(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    s: usize,
+    t: usize,
+    target: &[Word],
+) -> Result<Basis> {
+    let mut basis = Basis::default();
+    boundary_columns(model, prime, profile, s, t, target, |model, _, column| {
+        basis.insert(model, prime, column)
+    })?;
+    Ok(basis)
 }
 
 fn boundary_columns(
@@ -171,10 +201,19 @@ fn boundary_columns(
     let Some(previous) = s.checked_sub(1) else {
         return Ok(Vec::new());
     };
-    let source = odd_cobar::basis_profile(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
+    let source = odd_cobar::temporary_basis(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
+    if source.is_empty() {
+        return Ok(source);
+    }
+    let mut rows = WordRows::default();
+    for (index, word) in target.iter().enumerate() {
+        let factors = rows.factor_indices(model, word)?;
+        let actual = rows.row(model, &factors, true)?;
+        debug_assert_eq!(actual, index);
+    }
+    let mut differential = Differential::new(prime, profile);
     for (index, word) in source.iter().enumerate() {
-        let terms = odd_cobar::differential_profile_word(model, prime, profile, word)?;
-        let column = word_indices(model, target, &terms)?;
+        let column = rows.differential(model, &mut differential, word, false)?;
         process(model, index, column)?;
     }
     Ok(source)
@@ -205,14 +244,112 @@ pub(crate) fn decode(words: &[Word], coordinates: Vec<Coordinate>) -> Vec<Term> 
         .collect()
 }
 
-// Only outgoing rows that occur in a differential need to be indexed.
+// Intern each monomial once. Outgoing reductions only index words that
+// occur in a differential.
 #[derive(Default)]
 pub(crate) struct WordRows {
-    indices: BTreeMap<Word, usize>,
+    factors: HashMap<Factor, u32>,
+    short: HashMap<u64, usize>,
+    long: HashMap<Box<[u32]>, usize>,
     cells: usize,
 }
 
 impl WordRows {
+    fn store(cells: &mut usize, size: usize) -> Result<()> {
+        if size > MAX_PIVOT_CELLS - *cells {
+            return Err(Error::plain(
+                "odd-prime cobar reduction exceeds the row storage limit",
+            ));
+        }
+        *cells += size;
+        Ok(())
+    }
+
+    fn factor_index(&mut self, model: &mut Model, factor: &Factor) -> Result<u32> {
+        model.spend(1 + factor.cells())?;
+        let next = (1 + self.factors.len()) as u32; // Bounded by the local storage cap.
+        match self.factors.entry(factor.clone()) {
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => {
+                Self::store(&mut self.cells, 3 + factor.cells())?;
+                Ok(*entry.insert(next))
+            }
+        }
+    }
+
+    fn factor_indices(&mut self, model: &mut Model, word: &Word) -> Result<Vec<u32>> {
+        word.iter()
+            .map(|factor| self.factor_index(model, factor))
+            .collect()
+    }
+
+    fn row(&mut self, model: &mut Model, indices: &[u32], insert: bool) -> Result<usize> {
+        model.spend(1 + indices.len())?;
+        let next = self.short.len() + self.long.len();
+        let outside = || Error::plain("odd-prime word is outside its cobar bidegree");
+        if indices.len() <= size_of::<u64>() && indices.iter().all(|&index| index <= u8::MAX as u32)
+        {
+            // Factor indices start at one, so padding with zero is unambiguous.
+            let mut bytes = [0; size_of::<u64>()];
+            for (byte, &index) in bytes.iter_mut().zip(indices) {
+                *byte = index as u8;
+            }
+            let key = u64::from_le_bytes(bytes);
+            return match self.short.entry(key) {
+                Entry::Occupied(entry) => Ok(*entry.get()),
+                Entry::Vacant(_) if !insert => Err(outside()),
+                Entry::Vacant(entry) => {
+                    Self::store(
+                        &mut self.cells,
+                        2 + size_of::<u64>().div_ceil(size_of::<usize>()),
+                    )?;
+                    Ok(*entry.insert(next))
+                }
+            };
+        }
+        if let Some(&index) = self.long.get(indices) {
+            return Ok(index);
+        }
+        if !insert {
+            return Err(outside());
+        }
+        let payload = size_of_val(indices).div_ceil(size_of::<usize>());
+        Self::store(&mut self.cells, 4 + payload)?;
+        self.long.insert(indices.into(), next);
+        Ok(next)
+    }
+
+    fn differential(
+        &mut self,
+        model: &mut Model,
+        differential: &mut Differential,
+        word: &Word,
+        insert: bool,
+    ) -> Result<Vec<Coordinate>> {
+        let factors = self.factor_indices(model, word)?;
+        let mut split = Vec::with_capacity(word.len() + 1);
+        let mut column = Vec::new();
+        differential.for_each_split(model, word, |model, position, left, right, value| {
+            if column.len() >= MAX_PIVOT_CELLS / 2 {
+                return Err(Error::plain(
+                    "odd-prime linear reduction exceeds the storage limit",
+                ));
+            }
+            split.clear();
+            split.extend_from_slice(&factors[..position]);
+            split.push(self.factor_index(model, left)?);
+            split.push(self.factor_index(model, right)?);
+            split.extend_from_slice(&factors[position + 1..]);
+            column.push((self.row(model, &split, insert)?, value));
+            Ok(())
+        })?;
+        // Different split positions cannot give the same word: the first
+        // changed factor always has strictly lower degree.
+        Self::sort_column(model, &mut column)?;
+        debug_assert!(column.windows(2).all(|pair| pair[0].0 != pair[1].0));
+        Ok(column)
+    }
+
     pub(crate) fn encode(
         &mut self,
         model: &mut Model,
@@ -220,26 +357,17 @@ impl WordRows {
     ) -> Result<Vec<Coordinate>> {
         let mut column = Vec::with_capacity(terms.len());
         for (word, coefficient) in terms {
-            let size = 1 + word_cells(&word);
-            let next = self.indices.len();
-            model.spend(size * (1 + next.max(1).ilog2() as usize))?;
-            let index = match self.indices.entry(word) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    self.cells += size;
-                    if self.cells > MAX_PIVOT_CELLS {
-                        return Err(Error::plain(
-                            "odd-prime cobar reduction exceeds the row storage limit",
-                        ));
-                    }
-                    *entry.insert(next)
-                }
-            };
-            column.push((index, coefficient));
+            let factors = self.factor_indices(model, &word)?;
+            column.push((self.row(model, &factors, true)?, coefficient));
         }
+        Self::sort_column(model, &mut column)?;
+        Ok(column)
+    }
+
+    fn sort_column(model: &mut Model, column: &mut [Coordinate]) -> Result<()> {
         model.spend(column.len() * (1 + column.len().max(1).ilog2() as usize))?;
         column.sort_unstable();
-        Ok(column)
+        Ok(())
     }
 }
 

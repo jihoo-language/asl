@@ -76,6 +76,7 @@ pub(crate) type Term = (Word, u32);
 pub(crate) type Support = Rc<[Term]>;
 pub(crate) type FactorLiteral = (Vec<usize>, Vec<usize>, Span);
 type Tensor = (Factor, Factor);
+type Coproduct = Rc<[(Tensor, u32)]>;
 
 impl Monomial {
     pub(crate) fn cells(&self) -> usize {
@@ -382,32 +383,92 @@ pub(crate) fn differential_profile_support(
     profile: Profile,
     input: &[Term],
 ) -> Result<Vec<Term>> {
-    let mut result = Accumulator::new(prime);
-    for (word, coefficient) in input {
-        let cells = word_cells(word);
-        model.spend(cells)?;
-        let mut prefix_odd = false;
-        for (position, current) in word.iter().enumerate() {
-            for ((left, right), coproduct_coefficient) in
-                reduced_coproduct(model, prime, profile, current)?
-            {
-                let size = 1 + cells + left.cells() + right.cells() - current.cells();
+    Differential::new(prime, profile).support(model, input)
+}
+
+// A reduction visits many words in one profile. The signed split of a
+// factor depends only on its Milnor monomial, prime, and profile.
+pub(crate) struct Differential {
+    prime: Prime,
+    profile: Profile,
+    splits: HashMap<Factor, Coproduct>,
+    cells: usize,
+}
+
+impl Differential {
+    pub(crate) fn new(prime: Prime, profile: Profile) -> Self {
+        Self {
+            prime,
+            profile,
+            splits: HashMap::new(),
+            cells: 0,
+        }
+    }
+
+    fn coproduct(&mut self, model: &mut Model, factor: &Factor) -> Result<Coproduct> {
+        model.spend(1 + factor.cells())?;
+        if let Some(cached) = self.splits.get(factor) {
+            return Ok(cached.clone());
+        }
+        let mut splits = reduced_coproduct(model, self.prime, self.profile, factor)?;
+        let mut cells = 3 + factor.cells();
+        model.spend(splits.len())?;
+        for ((left, right), coefficient) in &mut splits {
+            *coefficient = self.prime.signed(*coefficient, left.odd());
+            cells += 3 + left.cells() + right.cells();
+        }
+        let splits: Coproduct = splits.into();
+        // An uncached split keeps the same transient storage bound as the
+        // original coproduct.
+        if self.cells + cells <= MAX_WORD_CELLS {
+            self.cells += cells;
+            self.splits.insert(factor.clone(), splits.clone());
+        }
+        Ok(splits)
+    }
+
+    fn support(&mut self, model: &mut Model, input: &[Term]) -> Result<Vec<Term>> {
+        let prime = self.prime;
+        let mut result = Accumulator::new(prime);
+        for (word, coefficient) in input {
+            let cells = word_cells(word);
+            model.spend(cells)?;
+            self.for_each_split(model, word, |model, position, left, right, signed| {
+                let size = 1 + cells + left.cells() + right.cells() - word[position].cells();
                 check_storage(size)?;
-                let coefficient = prime.signed(
-                    prime.mul(*coefficient, coproduct_coefficient),
-                    prefix_odd ^ left.odd(),
-                );
                 let mut output = Vec::with_capacity(word.len() + 1);
                 output.extend_from_slice(&word[..position]);
-                output.extend([left, right]);
+                output.extend([left.clone(), right.clone()]);
                 output.extend_from_slice(&word[position + 1..]);
-                result.insert(model, output.into(), coefficient, size)?;
+                result.insert(model, output.into(), prime.mul(*coefficient, signed), size)
+            })?;
+        }
+        Ok(result.into_terms())
+    }
+
+    pub(crate) fn for_each_split(
+        &mut self,
+        model: &mut Model,
+        word: &Word,
+        mut process: impl FnMut(&mut Model, usize, &Factor, &Factor, u32) -> Result<()>,
+    ) -> Result<()> {
+        let mut prefix_odd = false;
+        for (position, current) in word.iter().enumerate() {
+            let splits = self.coproduct(model, current)?;
+            for ((left, right), coefficient) in splits.iter() {
+                process(
+                    model,
+                    position,
+                    left,
+                    right,
+                    self.prime.signed(*coefficient, prefix_odd),
+                )?;
             }
             // Each desuspended even-degree factor has odd stem.
             prefix_odd ^= !current.odd();
         }
+        Ok(())
     }
-    Ok(result.into_terms())
 }
 
 fn reduced_coproduct(
@@ -590,6 +651,21 @@ pub(crate) fn basis_profile(
     t: usize,
     limit: usize,
 ) -> Result<Vec<Word>> {
+    let words = temporary_basis(model, prime, profile, s, t, limit)?;
+    model.allocate(words.iter().map(word_cells).sum())?;
+    Ok(words)
+}
+
+// Temporary enumerations have the same local storage and work bounds as
+// a retained basis, but are released once the reduction has finished.
+pub(crate) fn temporary_basis(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    s: usize,
+    t: usize,
+    limit: usize,
+) -> Result<Vec<Word>> {
     if let Profile::An(n) = profile {
         if s != 0 && t >= s && odd_profile::changes_basis(prime, n, t - s + 1) {
             return odd_profile::basis(model, prime, n, s, t, limit);
@@ -598,20 +674,13 @@ pub(crate) fn basis_profile(
     basis(model, prime, s, t, limit)
 }
 
-pub(crate) fn basis(
-    model: &mut Model,
-    prime: Prime,
-    s: usize,
-    t: usize,
-    limit: usize,
-) -> Result<Vec<Word>> {
+fn basis(model: &mut Model, prime: Prime, s: usize, t: usize, limit: usize) -> Result<Vec<Word>> {
     model.spend(1)?;
     if s == 0 {
         return if t == 0 {
             if limit == 0 {
                 return Err(basis_limit(limit));
             }
-            model.allocate(1)?;
             Ok(vec![[].into()])
         } else {
             Ok(Vec::new())
@@ -678,7 +747,6 @@ pub(crate) fn basis(
         }
     }
     model.spend(cells * (1 + words.len().max(1).ilog2() as usize))?;
-    model.allocate(cells)?;
     words.sort_unstable();
     Ok(words)
 }

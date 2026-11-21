@@ -189,6 +189,7 @@ struct TypeInfo {
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
     odd_ext: Option<Rc<OddExt>>,
+    odd_ext_rank: Option<usize>,
     odd_page: Option<Rc<OddPage>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
@@ -404,6 +405,7 @@ impl Model {
             cohomology: None,
             adams: None,
             odd_ext: None,
+            odd_ext_rank: None,
             odd_page: None,
             xext: None,
             map_ext: None,
@@ -957,6 +959,20 @@ impl Model {
         let decomposition = Rc::new(v_bars::Decomposition::build(self, family)?);
         self.v_bars.insert(family, decomposition.clone());
         Ok(decomposition)
+    }
+
+    pub(crate) fn odd_ext_rank(&mut self, ty: TypeId) -> Result<usize> {
+        if let Some(group) = &self.types[ty.0].odd_ext {
+            return Ok(group.rank());
+        }
+        if let Some(rank) = self.types[ty.0].odd_ext_rank {
+            return Ok(rank);
+        }
+        let (prime, profile, s, t) = self.kind(ty).pext_grade().unwrap();
+        let rank = odd_ext::rank(self, prime, profile, s, t)?;
+        self.allocate(1)?;
+        self.types[ty.0].odd_ext_rank = Some(rank);
+        Ok(rank)
     }
 
     pub(crate) fn odd_ext(&mut self, ty: TypeId) -> Result<Rc<OddExt>> {
@@ -1729,7 +1745,7 @@ impl Model {
                     odd_cobar::elements(self, p, profile, s, t, MAX_ELEMENTS)?
                 }
                 Kind::PExt(p, ..) | Kind::PExtAn(p, ..) => {
-                    let rank = self.odd_ext(ty)?.rank();
+                    let rank = self.odd_ext_rank(ty)?;
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }
                 Kind::PMay(p, ..) | Kind::PMayAn(p, ..) | Kind::PCeAn(p, ..) => {

@@ -104,3 +104,61 @@ fn odd_ext_checks_fields_closure_boundaries_and_enumeration_limits() {
         "pextdim[4294967291, 1, 1] = 1\n"
     );
 }
+
+#[test]
+fn finite_odd_ext_reaches_high_bidegrees_with_closed_generators() {
+    let program = r"
+        pextandim[3, 2, 4, 36];
+        pextandim[3, 2, 4, 37];
+        pextandim[3, 2, 4, 38];
+        pextandim[3, 2, 4, 39];
+        pextandim[3, 2, 4, 40];
+        pextandim[3, 2, 4, 41];
+        pextandim[3, 2, 4, 42];
+        let g = pextangen[3, 2, 4, 38, 0];
+        let h = pextangen[3, 2, 4, 40, 0];
+        let z = extRep(g);
+        let w = extRep(h);
+        assert cobarD(z) == zero[PCobarAn(3, 2, 5, 38)];
+        assert cobarD(w) == zero[PCobarAn(3, 2, 5, 40)];
+        assert extClass(z) == g;
+        assert extClass(w) == h;
+        show g;
+        show h;
+    ";
+    assert_eq!(
+        stdout(interpret(program)),
+        concat!(
+            "pextandim[3, 2, 4, 36] = 0\n",
+            "pextandim[3, 2, 4, 37] = 0\n",
+            "pextandim[3, 2, 4, 38] = 1\n",
+            "pextandim[3, 2, 4, 39] = 0\n",
+            "pextandim[3, 2, 4, 40] = 1\n",
+            "pextandim[3, 2, 4, 41] = 0\n",
+            "pextandim[3, 2, 4, 42] = 0\n",
+            "PExtAn(3, 2, 4, 38){g0}\n",
+            "PExtAn(3, 2, 4, 40){g0}\n",
+        )
+    );
+}
+
+#[test]
+fn full_and_finite_ranks_share_the_same_field_reduction() {
+    let program = r"
+        pextdim[3, 4, 38];
+        pextdim[3, 4, 40];
+        pextdim[5, 2, 40];
+        pextdim[5, 5, 45];
+        pextandim[5, 1, 5, 45];
+    ";
+    assert_eq!(
+        stdout(interpret(program)),
+        concat!(
+            "pextdim[3, 4, 38] = 1\n",
+            "pextdim[3, 4, 40] = 1\n",
+            "pextdim[5, 2, 40] = 1\n",
+            "pextdim[5, 5, 45] = 0\n",
+            "pextandim[5, 1, 5, 45] = 1\n",
+        )
+    );
+}

@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::mem::size_of;
+use std::ops::Range;
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
@@ -13,12 +15,111 @@ pub(crate) type Coordinate = (usize, u32);
 #[derive(Default)]
 pub(crate) struct Basis {
     rows: BTreeMap<usize, Row>,
+    entries: Entries,
     cells: usize,
 }
 
 struct Row {
-    image: Box<[Coordinate]>,
-    witness: Box<[Coordinate]>,
+    start: u32,
+    middle: u32,
+    end: u32,
+}
+
+impl Row {
+    fn image(&self) -> Range<usize> {
+        self.start as usize..self.middle as usize
+    }
+
+    fn witness(&self) -> Range<usize> {
+        self.middle as usize..self.end as usize
+    }
+}
+
+// Store small-field coordinates in one u32. Large primes retain all 32
+// coefficient bits in a pair. The arena stores row ranges instead of
+// allocating two slice headers for every pivot.
+#[derive(Default)]
+struct Entries {
+    narrow: Vec<u32>,
+    wide: Vec<(u32, u32)>,
+}
+
+impl Entries {
+    const INDEX_BITS: u32 = MAX_PIVOT_CELLS.ilog2() + 1;
+
+    fn narrow(prime: Prime) -> bool {
+        prime.get() <= 1 << (u32::BITS - Self::INDEX_BITS)
+    }
+
+    fn len(&self) -> usize {
+        self.narrow.len() + self.wide.len()
+    }
+
+    fn cells(len: usize, prime: Prime) -> usize {
+        let width = if Self::narrow(prime) {
+            size_of::<u32>()
+        } else {
+            size_of::<(u32, u32)>()
+        };
+        (len * width).div_ceil(size_of::<usize>())
+    }
+
+    fn append(
+        &mut self,
+        prime: Prime,
+        image: Vec<Coordinate>,
+        witness: Vec<Coordinate>,
+    ) -> Result<Row> {
+        let narrow = Self::narrow(prime);
+        let limit = if narrow {
+            (1 << Self::INDEX_BITS) - 1
+        } else {
+            u32::MAX
+        } as usize;
+        if [image.last(), witness.last()]
+            .into_iter()
+            .flatten()
+            .any(|&(index, _)| index > limit)
+        {
+            return Err(Error::plain(
+                "odd-prime reduction coordinate exceeds its limit",
+            ));
+        }
+        let start = self.len();
+        let middle = start + image.len();
+        let end = middle + witness.len();
+        let entries = image.into_iter().chain(witness);
+        if narrow {
+            self.narrow
+                .extend(entries.map(|(index, value)| index as u32 | value << Self::INDEX_BITS));
+        } else {
+            self.wide
+                .extend(entries.map(|(index, value)| (index as u32, value)));
+        }
+        Ok(Row {
+            start: start as u32,
+            middle: middle as u32,
+            end: end as u32,
+        })
+    }
+
+    fn read(
+        &self,
+        prime: Prime,
+        range: Range<usize>,
+    ) -> impl ExactSizeIterator<Item = Coordinate> + '_ {
+        let narrow = Self::narrow(prime);
+        range.map(move |i| {
+            if narrow {
+                let packed = self.narrow[i];
+                let mask = (1 << Self::INDEX_BITS) - 1;
+                ((packed & mask) as usize, packed >> Self::INDEX_BITS)
+            } else {
+                let (index, value) = self.wide[i];
+                (index as usize, value)
+            }
+        })
+    }
 }
 
 impl Basis {
@@ -49,10 +150,30 @@ impl Basis {
         while let Some(&(leading, coefficient)) = image.last() {
             if let Some(row) = self.rows.get(&leading) {
                 let factor = prime.negate(coefficient);
-                image = add_scaled(model, prime, &image, &row.image, factor)?;
-                witness = add_scaled(model, prime, &witness, &row.witness, factor)?;
+                image = merge(
+                    model,
+                    prime,
+                    &image,
+                    self.entries.read(prime, row.image()),
+                    factor,
+                )?;
+                witness = merge(
+                    model,
+                    prime,
+                    &witness,
+                    self.entries.read(prime, row.witness()),
+                    factor,
+                )?;
             } else {
-                let cells = self.cells + 1 + 2 * (image.len() + witness.len());
+                // Count the pivot key, row ranges, and retained arena entries.
+                let entries = image.len() + witness.len();
+                let start = self.entries.len();
+                let end = start + entries;
+                let cells = self.cells
+                    + 1
+                    + size_of::<Row>().div_ceil(size_of::<usize>())
+                    + Entries::cells(end, prime)
+                    - Entries::cells(start, prime);
                 check_storage(cells)?;
                 if coefficient != 1 {
                     let inverse = invert(model, prime, coefficient)?;
@@ -61,14 +182,10 @@ impl Basis {
                         *value = prime.mul(*value, inverse);
                     }
                 }
+                model.spend(entries)?;
+                let row = self.entries.append(prime, image, witness)?;
                 self.cells = cells;
-                self.rows.insert(
-                    leading,
-                    Row {
-                        image: image.into_boxed_slice(),
-                        witness: witness.into_boxed_slice(),
-                    },
-                );
+                self.rows.insert(leading, row);
                 return Ok(None);
             }
         }
@@ -106,11 +223,23 @@ impl Basis {
         while let Some((leading, coefficient)) = image.pop() {
             if let Some(row) = self.rows.get(&leading) {
                 image.push((leading, coefficient));
-                image = add_scaled(model, prime, &image, &row.image, prime.negate(coefficient))?;
+                image = merge(
+                    model,
+                    prime,
+                    &image,
+                    self.entries.read(prime, row.image()),
+                    prime.negate(coefficient),
+                )?;
                 if let Some(witness) = witness.as_mut() {
                     // The original vector equals the remainder plus the
                     // images of these positively accumulated coefficients.
-                    **witness = add_scaled(model, prime, witness, &row.witness, coefficient)?;
+                    **witness = merge(
+                        model,
+                        prime,
+                        witness,
+                        self.entries.read(prime, row.witness()),
+                        coefficient,
+                    )?;
                 }
             } else {
                 model.spend(1)?;
@@ -130,6 +259,32 @@ pub(crate) struct QuotientBasis {
 }
 
 impl QuotientBasis {
+    pub(crate) fn rank_only(
+        model: &mut Model,
+        prime: Prime,
+        boundaries: &Basis,
+        size: usize,
+        mut differential: impl FnMut(&mut Model, usize) -> Result<Vec<Coordinate>>,
+    ) -> Result<usize> {
+        let mut images = Basis::default();
+        let mut rank = 0;
+        for coordinate in 0..size {
+            if boundaries.rows.contains_key(&coordinate) {
+                continue;
+            }
+            // A dependence among the nonpivot coordinates adds one
+            // independent class; its witness is unnecessary for the rank.
+            let image = differential(model, coordinate)?;
+            if images
+                .insert_with_witness(model, prime, image, Vec::new())?
+                .is_some()
+            {
+                rank += 1;
+            }
+        }
+        Ok(rank)
+    }
+
     pub(crate) fn build(
         model: &mut Model,
         prime: Prime,
@@ -189,7 +344,13 @@ impl QuotientBasis {
         for &(index, coefficient) in class {
             let pivot = self.generators[index];
             let row = &self.cycles.rows[&pivot];
-            support = add_scaled(model, prime, &support, &row.image, coefficient)?;
+            support = merge(
+                model,
+                prime,
+                &support,
+                self.cycles.entries.read(prime, row.image()),
+                coefficient,
+            )?;
         }
         model.spend(support.len())?;
         Ok(support)
@@ -212,6 +373,16 @@ pub(crate) fn add_scaled(
     right: &[Coordinate],
     factor: u32,
 ) -> Result<Vec<Coordinate>> {
+    merge(model, prime, left, right.iter().copied(), factor)
+}
+
+fn merge(
+    model: &mut Model,
+    prime: Prime,
+    left: &[Coordinate],
+    right: impl ExactSizeIterator<Item = Coordinate>,
+    factor: u32,
+) -> Result<Vec<Coordinate>> {
     if factor == 0 {
         model.spend(left.len())?;
         return Ok(left.to_vec());
@@ -219,8 +390,9 @@ pub(crate) fn add_scaled(
     let size = left.len() + right.len();
     model.spend(size)?;
     let mut output = Vec::with_capacity(size.min(MAX_PIVOT_CELLS / 2));
-    let (mut i, mut j) = (0, 0);
-    while let (Some(&(a, x)), Some(&(b, y))) = (left.get(i), right.get(j)) {
+    let mut i = 0;
+    let mut right = right.peekable();
+    while let (Some(&(a, x)), Some(&(b, y))) = (left.get(i), right.peek()) {
         match a.cmp(&b) {
             Ordering::Less => {
                 output.push((a, x));
@@ -232,20 +404,16 @@ pub(crate) fn add_scaled(
                     output.push((a, coefficient));
                 }
                 i += 1;
-                j += 1;
+                right.next();
             }
             Ordering::Greater => {
                 output.push((b, prime.mul(factor, y)));
-                j += 1;
+                right.next();
             }
         }
     }
     output.extend_from_slice(&left[i..]);
-    output.extend(
-        right[j..]
-            .iter()
-            .map(|&(index, value)| (index, prime.mul(value, factor))),
-    );
+    output.extend(right.map(|(index, value)| (index, prime.mul(value, factor))));
     check_storage(2 * output.len())?;
     Ok(output)
 }
