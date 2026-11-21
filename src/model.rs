@@ -12,6 +12,7 @@ use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
+use crate::odd_cobar::{self, Prime};
 use crate::page_transition::Transition;
 use crate::profile::Profile;
 use crate::steenrod::{self, Word};
@@ -37,6 +38,7 @@ pub(crate) enum Kind {
     Cohomology(TypeId, usize),
     Operations(usize),
     Cobar(usize, usize),
+    PCobar(Prime, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -86,6 +88,7 @@ pub(crate) enum Value {
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
+    PCobar(odd_cobar::Support),
     MapCobar(map_cochain::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
@@ -220,6 +223,9 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
+            Kind::PCobar(_, s, t) if s > t || (s == 0 && t != 0) => 1,
+            Kind::PCobar(prime, s, t) if s == t => prime.get() as usize,
+            Kind::PCobar(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -308,6 +314,7 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
+                | Kind::PCobar(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -429,6 +436,10 @@ impl Model {
 
     pub(crate) fn cobar_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
         self.profile_cobar_type(Profile::Full, s, t)
+    }
+
+    pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::PCobar(p, s, t), 0)
     }
 
     pub(crate) fn profile_cobar_type(
@@ -696,6 +707,7 @@ impl Model {
             Kind::Cohomology(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
+            | Kind::PCobar(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -818,6 +830,7 @@ impl Model {
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
+            &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
             &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
             &Kind::ExtAn(n, s, t) => out.push(&format!("ExtAn({n}, {s}, {t})")),
@@ -911,6 +924,8 @@ impl Model {
             (Value::Cobar(left), Value::Cobar(right)) => Ok(
                 Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
             ),
+            (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
+                || odd_cobar::compare(self, left, right)? == Ordering::Equal),
             (Value::MapCobar(left), Value::MapCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || map_cochain::compare(self, left, right)? == Ordering::Equal),
             (Value::Suspension(left), Value::Suspension(right)) => {
@@ -976,6 +991,12 @@ impl Model {
                 } else {
                     cobar::compare(self, left, right)
                 }
+            }
+            (Value::PCobar(left), Value::PCobar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                odd_cobar::compare(self, left, right)
             }
             (Value::MapCobar(left), Value::MapCobar(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1109,6 +1130,7 @@ impl Model {
                         Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
                     })?
                 }
+                Kind::PCobar(p, s, t) => odd_cobar::elements(self, p, s, t, MAX_ELEMENTS)?,
                 Kind::MapCobar(source, target, s, t) => {
                     let basis =
                         map_ext::basis(self, source, target, s, t, MAX_ELEMENTS.ilog2() as usize)?;
@@ -1356,6 +1378,26 @@ impl Model {
                 }
                 out.push("}")
             }
+            Value::PCobar(terms) => {
+                let Kind::PCobar(p, ..) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, (word, coefficient)) in terms.iter().rev().enumerate() {
+                    if index > 0 {
+                        out.push(" + ")?;
+                    }
+                    if *coefficient != 1 {
+                        out.push(&format!("{coefficient} "))?;
+                    }
+                    write_odd_word(out, p, word)?;
+                }
+                out.push("}")
+            }
             Value::MapCobar(terms) => {
                 let Kind::MapCobar(source, target, ..) = *self.kind(ty) else {
                     unreachable!()
@@ -1492,6 +1534,32 @@ fn write_cobar_word(out: &mut Text, word: &cobar::Word) -> Result<()> {
         out.push("]")?;
     }
     out.push("}")
+}
+
+fn write_odd_word(out: &mut Text, p: Prime, word: &odd_cobar::Word) -> Result<()> {
+    out.push(&format!("pword[{}]{{", p.get()))?;
+    for (index, factor) in word.iter().enumerate() {
+        if index > 0 {
+            out.push(", ")?;
+        }
+        out.push("(")?;
+        write_number_list(out, &factor.exponents)?;
+        out.push(", ")?;
+        write_number_list(out, &factor.taus)?;
+        out.push(")")?;
+    }
+    out.push("}")
+}
+
+fn write_number_list(out: &mut Text, numbers: &[usize]) -> Result<()> {
+    out.push("[")?;
+    for (index, number) in numbers.iter().enumerate() {
+        if index > 0 {
+            out.push(", ")?;
+        }
+        out.push(&number.to_string())?;
+    }
+    out.push("]")
 }
 
 fn support_space_size(rank: usize) -> usize {

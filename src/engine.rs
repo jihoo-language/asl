@@ -18,6 +18,7 @@ use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
+use crate::odd_cobar::{self, Prime};
 use crate::page_transition::{self, Direction as PageDirection};
 use crate::profile::Profile;
 use crate::restriction_transfer;
@@ -101,6 +102,7 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
+    PScale(Prime, usize, Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
     Transfer(Profile, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(Profile, Profile, Vec<TypedExpr>),
@@ -331,11 +333,23 @@ impl Engine {
                     (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::PCobar(a), Value::PCobar(b)) => {
+                        let Kind::PCobar(p, ..) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        odd_cobar::add(&mut self.model, p, &a, &b)
+                    }
                     (BinaryOp::Add, Value::MapCobar(a), Value::MapCobar(b)) => {
                         Ok(Value::MapCobar(map_cochain::add(&mut self.model, &a, &b)?))
                     }
                     (BinaryOp::Concat, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::concat(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Concat, Value::PCobar(a), Value::PCobar(b)) => {
+                        let Kind::PCobar(p, ..) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        odd_cobar::concat(&mut self.model, p, &a, &b)
                     }
                     (BinaryOp::Yoneda, Value::Class(a), Value::Class(b)) => {
                         adams::yoneda(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
@@ -409,6 +423,12 @@ impl Engine {
                 (CobarOp::Differential, Value::Cobar(words)) => {
                     let (profile, _, _) = self.model.kind(input.ty).cobar_grade().unwrap();
                     cobar::differential(&mut self.model, profile, &words)
+                }
+                (CobarOp::Differential, Value::PCobar(terms)) => {
+                    let Kind::PCobar(p, ..) = *self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    odd_cobar::differential(&mut self.model, p, &terms)
                 }
                 (CobarOp::Class, Value::Cobar(words)) => {
                     adams::class(&mut self.model, expr.ty, &words)
@@ -546,6 +566,12 @@ impl Engine {
                 cohomology::suspend(&mut self.model, value.ty, &class, expr.ty)
             }
             TypedForm::Shift(value) => self.eval(value),
+            TypedForm::PScale(prime, scalar, value) => {
+                let Value::PCobar(terms) = self.eval(value)? else {
+                    unreachable!()
+                };
+                odd_cobar::scale(&mut self.model, *prime, *scalar, &terms)
+            }
             TypedForm::Bracket(inputs) => {
                 let Kind::Arrow(target, _) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -792,6 +818,10 @@ impl Checker<'_> {
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
+            TypeForm::PCobar(p, s, t) => {
+                let prime = Prime::new(self.model, p)?;
+                self.model.pcobar_type(prime, s, t)
+            }
             TypeForm::CobarAn(n, s, t) => self.model.profile_cobar_type(Profile::An(n), s, t),
             TypeForm::Ext(s, t) => self.model.ext_type(s, t),
             TypeForm::ExtAn(n, s, t) => self.model.profile_ext_type(Profile::An(n), s, t),
@@ -892,6 +922,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
+                    Kind::PCobar(..) => odd_cobar::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) => {
                         cohomology::zero()
@@ -932,6 +963,19 @@ impl Checker<'_> {
                 let ((s, t), value) = cobar::literal(self.model, factors)?;
                 let ty = self.model.cobar_type(s, t)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::PCobarWord(p, factors) => {
+                let prime = Prime::new(self.model, p)?;
+                let ((s, t), value) = odd_cobar::literal(self.model, prime, factors)?;
+                let ty = self.model.pcobar_type(prime, s, t)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::PScale(scalar, expression) => {
+                let value = self.expr(*expression)?;
+                let Kind::PCobar(p, ..) = *self.model.kind(value.ty) else {
+                    return Err(self.invalid_operand(&value, "pscale", "a PCobar cochain"));
+                };
+                Ok((value.ty, TypedForm::PScale(p, scalar, Box::new(value))))
             }
             ExprForm::ExtGenerator(s, t, index, at) => {
                 let ty = self.model.ext_type(s, t)?;
@@ -1599,6 +1643,12 @@ impl Checker<'_> {
         name: &str,
         span: Span,
     ) -> Result<TypeId> {
+        if matches!(op, CobarOp::Differential) {
+            if let Kind::PCobar(p, s, t) = *self.model.kind(argument.ty) {
+                let s = checked_degree(s, 1, name, span)?;
+                return self.model.pcobar_type(p, s, t);
+            }
+        }
         match op {
             CobarOp::MayTransition(direction) => {
                 return direction
@@ -1735,6 +1785,7 @@ impl Checker<'_> {
                         | Kind::Stable(..)
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
+                        | Kind::PCobar(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::Ext(..)
@@ -1779,6 +1830,20 @@ impl Checker<'_> {
                 Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
+                if let Kind::PCobar(p, s, t) = *self.model.kind(left.ty) {
+                    let Kind::PCobar(q, u, v) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "concat", "a PCobar cochain"));
+                    };
+                    if p != q {
+                        return Err(Error::new(right.span, "concat requires the same odd prime"));
+                    }
+                    let s = checked_degree(s, u, "concat", span)?;
+                    let t = checked_degree(t, v, "concat", span)?;
+                    return self.model.pcobar_type(p, s, t);
+                }
+                if matches!(self.model.kind(right.ty), Kind::PCobar(..)) {
+                    return Err(self.invalid_operand(left, "concat", "a PCobar cochain"));
+                }
                 let (profile, s, t) = self.profile_cobar_bidegree(left, "concat")?;
                 let (other, u, v) = self.profile_cobar_bidegree(right, "concat")?;
                 require_profile(profile, other, "concat", right.span)?;

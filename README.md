@@ -48,6 +48,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `H(X, k)` | The discrete space of degree-`k` cohomology classes of the order complex of `X`, with coefficients in 𝔽₂. |
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
+| `PCobar(p, s, t)` | The corresponding discrete space of normalized cobar cochains over an odd prime field $\mathbb F_p$. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
@@ -156,6 +157,16 @@ assert cobarD(d(xi2)) == zero[Cobar(3, 3)];
 ```
 
 Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates all cochains of that bidegree and is subject to the finite enumeration limit. Run `nix run path:. -- examples/cobar.asl` for coproduct, unit, and derivation checks. [Cobar example](examples/cobar.asl)
+
+## The odd-prime cobar algebra
+
+`PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.
+
+The coproducts are $\Delta(\xi_n)=\sum_{i=0}^n\xi_{n-i}^{p^i}\otimes\xi_i$ and $\Delta(\tau_n)=\tau_n\otimes1+\sum_{i=0}^n\xi_{n-i}^{p^i}\otimes\tau_i$, where $\xi_0=1$. Multiplying tensor factors uses the sign $(-1)^{|b||c|}$ in $(a\otimes b)(c\otimes d)$. Exterior factors use increasing order.
+
+For the reduced coproduct $\overline\Delta u=\sum u'\otimes u''$, the cobar differential is $d[u]=\sum(-1)^{|u'|}[u'\mid u'']$. Its graded Leibniz rule uses the stem $t-s$. For example, at $p=3$, $d[\xi_1^2]=2[\xi_1\mid\xi_1]$ and $d[\tau_1]=[\xi_1\mid\tau_0]$.
+
+`add`, `concat`, `cobarD`, and `zero` operate on these cochains. Use `pscale[k](c)` to multiply by the residue of the nonnegative integer `k` in the cochain's field. Sparse operations work directly on their supports. A lambda over `PCobar(p, s, t)` tabulates all $p^r$ cochains for word basis size $r$ subject to the finite enumeration limit. [Odd-prime cobar example](examples/odd-cobar.asl)
 
 ## The Adams E₂ page
 

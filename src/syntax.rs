@@ -2,6 +2,7 @@ use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
+use crate::odd_cobar::FactorLiteral;
 use crate::transfer::Operation as TransferOp;
 
 const MAX_NESTING: usize = 64;
@@ -25,6 +26,7 @@ pub(crate) enum TypeForm {
     Cohomology(Box<ParsedType>, usize),
     Operations(usize),
     Cobar(usize, usize),
+    PCobar(usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -136,6 +138,8 @@ pub(crate) enum ExprForm {
     Milnor(Vec<usize>),
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
+    PCobarWord(usize, Vec<FactorLiteral>),
+    PScale(usize, Box<ParsedExpr>),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
@@ -713,6 +717,13 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
+        if name.text == "PCobar" && self.eat(Token::LParen)? {
+            let (p, _) = self.number()?;
+            self.expect(Token::Comma)?;
+            let (s, t) = self.bidegree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::PCobar(p, s, t), 0);
+        }
         if matches!(name.text.as_str(), "CobarAn" | "ExtAn") && self.eat(Token::LParen)? {
             let (n, s, t) = self.profile_bidegree()?;
             self.expect(Token::RParen)?;
@@ -1040,6 +1051,33 @@ impl<'src> Parser<'src> {
                     }
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::CobarWord(factors), 0);
+                }
+                if name.text == "pword" && self.eat(Token::LBracket)? {
+                    let (p, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut factors = Vec::new();
+                    while self.token() != Token::RBrace {
+                        let at = self.span();
+                        self.expect(Token::LParen)?;
+                        let exponents = self.exponents()?;
+                        self.expect(Token::Comma)?;
+                        let taus = self.exponents()?;
+                        self.expect(Token::RParen)?;
+                        factors.push((exponents, taus, at));
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::PCobarWord(p, factors), 0);
+                }
+                if name.text == "pscale" && self.eat(Token::LBracket)? {
+                    let (scalar, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::PScale(scalar, Box::new(value)), depth);
                 }
                 if name.text == "extgen" && self.eat(Token::LBracket)? {
                     let (s, t) = self.bidegree()?;
