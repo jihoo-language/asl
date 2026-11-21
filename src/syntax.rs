@@ -63,6 +63,7 @@ pub(crate) enum TypeForm {
     RVPoly(Vec<usize>, usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
+    BPRel(BpRelSpec),
     BpPage(BpPageMode, BpPageSpec),
     BPExt(BpSpec, usize),
     May(usize, usize, usize, usize),
@@ -84,6 +85,21 @@ pub(crate) enum RvIdealOp {
 }
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
+
+pub(crate) struct BpRelSpec(
+    pub(crate) usize,
+    pub(crate) usize,
+    pub(crate) usize,
+    pub(crate) usize,
+);
+
+#[derive(Clone, Copy)]
+pub(crate) enum BpRelOp {
+    Quotient(usize),
+    Lift,
+    Differential,
+    Null(usize),
+}
 
 pub(crate) type BpPageSpec = (usize, usize, usize, usize, usize, usize);
 
@@ -391,6 +407,7 @@ pub(crate) enum ExprForm {
     BpInteger(BpSpec, i128),
     BpVariable(BpSpec, Option<usize>, usize),
     BpOperation(BpOperation, Box<ParsedExpr>),
+    BpRelOperation(BpRelOp, Box<ParsedExpr>),
     BpExtOperation(BpExtOp, Box<ParsedExpr>),
     BpExtGenerator(BpSpec, usize, usize, Span),
     BpMassey(Vec<ParsedExpr>),
@@ -459,6 +476,7 @@ pub(crate) enum StatementForm {
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
     BpExt(BpSpec, usize),
+    BpRelExt(BpRelSpec, usize),
     BpOrder(usize, ParsedExpr),
     ExtDimension(usize, usize),
     PExtDimension(usize, usize, usize),
@@ -778,6 +796,13 @@ impl<'src> Parser<'src> {
         Ok(value)
     }
 
+    fn bp_relative_shape(&mut self) -> Result<BpRelSpec> {
+        let (p, n, m) = self.prime_bidegree()?;
+        self.expect(Token::Comma)?;
+        let (a, _) = self.number()?;
+        Ok(BpRelSpec(p, n, m, a))
+    }
+
     fn bp_ext_grade(&mut self) -> Result<(BpSpec, usize)> {
         let (prime, height, arrows) = self.prime_bidegree()?;
         self.expect(Token::Comma)?;
@@ -949,6 +974,15 @@ impl<'src> Parser<'src> {
             Token::Word("betti") => {
                 self.advance()?;
                 StatementForm::Betti(self.ty(0)?)
+            }
+            Token::Word("bprelext") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let shape = self.bp_relative_shape()?;
+                self.expect(Token::Comma)?;
+                let (t, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpRelExt(shape, t)
             }
             Token::Word("bpext") => {
                 self.advance()?;
@@ -1772,6 +1806,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BpPage(mode, spec), 0);
         }
+        if name.text == "BPRel" && self.eat(Token::LParen)? {
+            let shape = self.bp_relative_shape()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BPRel(shape), 0);
+        }
         if name.text == "BPExt" && self.eat(Token::LParen)? {
             let (spec, t) = self.bp_ext_grade()?;
             self.expect(Token::RParen)?;
@@ -2273,6 +2312,26 @@ impl<'src> Parser<'src> {
                     }
                     let depth = arguments.iter().map(|arg| arg.depth + 1).max().unwrap();
                     return expr(span, ExprForm::BpMassey(arguments), depth);
+                }
+                if name.text == "bpRel" && self.eat(Token::LBracket)? {
+                    let (height, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpRelOperation(BpRelOp::Quotient(height), Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "bpRelLift" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpRelOperation(BpRelOp::Lift, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "bpextgen" && self.eat(Token::LBracket)? {
                     let (spec, t) = self.bp_ext_grade()?;

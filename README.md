@@ -344,6 +344,14 @@ At $p=2$ the arity-one group in degree eight is cyclic of order eight at height 
 
 The example checks that $[t_1]^2$ is nonzero of order two, enumerates all four classes in `BPExt(2, 2, 2, 8)`, and identifies the signed Massey representative at $p=3$ with $-\beta$ in integral Ext. [BP Ext ring example](examples/bp-ext-ring.asl)
 
+### The relative BP cobar complex
+
+For heights `n < m`, `BPRel(p, n, m, a)` is degree `a` of the normalized height-`m` integral cobar modulo the embedded height-`n` cobar. The operation `bpRel[n](f)` takes a normalized integral upper cochain to the quotient. It retains the monomials containing a coordinate of index above `n`. The operation `bpRelLift(q)` reads that representative in the upper complex. The relative `bpD` differentiates the lift and projects the result. Addition, zero, and integer scaling act on the quotient.
+
+`bprelext[p, n, m, a, t];` reports the free rank and torsion factors in internal degree `t`. Over $\mathbb Z[1/p]$ insertion of the origin preserves both heights and contracts the positive-degree quotient. Its degree-zero quotient vanishes. The same exact modular Smith reduction computes the integral relative groups. The operations `bporder[t]` and `bpNull[t]` give orders and minimal-multiple witnesses for closed relative cochains.
+
+For $p=2$ and $n=1$, $m=2$, the relative class of $t_{1,2}$ has order two in degree six. The relative differential of $v_2$ is twice that cochain. [Relative BP cobar example](examples/bp-relative.asl)
+
 ### Bockstein and algebraic Novikov pages
 
 `bpBockdim[p, n, r, a, t, f];` and `bpNovdim[p, n, r, a, t, f];` give dimensions over $\mathbb F_p$ on page `r`, in normalized cobar degree `a`, internal degree `t`, and filtration `f`. The Bockstein calculation filters the integral normalized cobar by powers of $p$. The Novikov calculation uses powers of the invariant ideal $(p,v_1,\ldots,v_n)$. For a monomial of Novikov weight $w$, the sum of the source $v_i$ exponents, membership in $F^f$ means its coefficient is divisible by $p^{\max(0,f-w)}$. The Bockstein calculation uses $w=0$ for every monomial.

@@ -1,5 +1,6 @@
 use crate::bp::{self, Shape};
 use crate::bp_polynomial::{Monomial, Polynomial};
+use crate::bp_rel;
 use crate::bp_smith::{self, Matrix};
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
@@ -12,34 +13,116 @@ pub(crate) struct Group {
     pub(crate) torsion: Vec<i128>,
 }
 
-pub(crate) fn group(model: &mut Model, shape: Shape, t: usize) -> Result<Group> {
-    if t == 0 || shape.arrows == 0 || !has_monomials(shape, shape.arrows, t) {
-        return Ok(Group {
-            free: usize::from(t == 0 && shape.arrows == 0),
-            torsion: Vec::new(),
-        });
+#[derive(Clone, Copy)]
+pub(crate) struct Domain {
+    pub(crate) shape: Shape,
+    lower: Option<usize>,
+}
+
+impl Domain {
+    pub(crate) fn absolute(shape: Shape) -> Self {
+        Self { shape, lower: None }
     }
 
-    // Over Z[1/p] a source and target determine the arrow: the right
-    // Hazewinkel log is monic triangular in the arrow coordinates. This
-    // is the pair groupoid, contracted by inserting the zero point. The
-    // contraction preserves internal degree, so positive degrees are
-    // exact over Z[1/p] and integral torsion is entirely p-primary.
-    let previous = previous_shape(shape)?;
-    let (source, rank) = incoming_basis(model, previous, t)?;
-    if rank == 0 {
-        return Ok(Group {
-            free: 0,
-            torsion: Vec::new(),
-        });
+    pub(crate) fn relative(shape: Shape, lower: usize) -> Self {
+        Self {
+            shape,
+            lower: Some(lower),
+        }
     }
-    let target = basis(model, shape, t)?;
-    let incoming = matrix(model, previous, &source, &target)?;
-    let torsion = bp_smith::primary_factors(model, &incoming, shape.prime, rank)?
-        .into_iter()
-        .filter(|&factor| factor > 1)
-        .collect();
-    Ok(Group { free: 0, torsion })
+
+    fn at_arrows(self, arrows: usize) -> Self {
+        Self {
+            shape: Shape {
+                arrows,
+                ..self.shape
+            },
+            ..self
+        }
+    }
+
+    fn previous(self) -> Result<Self> {
+        Ok(Self {
+            shape: previous_shape(self.shape)?,
+            ..self
+        })
+    }
+
+    fn retains(self, monomial: &Monomial) -> bool {
+        self.lower
+            .is_none_or(|lower| bp_rel::retains(monomial, lower, self.shape.height))
+    }
+
+    pub(crate) fn project(self, model: &mut Model, input: &Polynomial) -> Result<Polynomial> {
+        if self.lower.is_none() {
+            model.spend(input.cells())?;
+            return Ok(input.clone());
+        }
+        model.spend(input.cells())?;
+        Polynomial::from_terms(
+            model,
+            input.terms().filter(|(monomial, _)| self.retains(monomial)),
+        )
+    }
+
+    pub(crate) fn differential(self, model: &mut Model, input: &Polynomial) -> Result<Polynomial> {
+        let image = bp::differential(model, self.shape, input)?;
+        if self.lower.is_some() {
+            self.project(model, &image)
+        } else {
+            Ok(image)
+        }
+    }
+
+    pub(crate) fn group(self, model: &mut Model, t: usize) -> Result<Group> {
+        let shape = self.shape;
+        if t == 0 || shape.arrows == 0 || !self.has_monomials(t) {
+            return Ok(Group {
+                free: usize::from(self.lower.is_none() && t == 0 && shape.arrows == 0),
+                torsion: Vec::new(),
+            });
+        }
+
+        // Over Z[1/p] the right Hazewinkel log is monic triangular in
+        // the arrow coordinates. Inserting the origin contracts the pair
+        // groupoid in positive degree and preserves every lower height.
+        // In degree zero the height inclusions are identities. Therefore
+        // absolute and relative torsion are both p-primary.
+        let previous = self.previous()?;
+        let (source, rank) = previous.incoming_basis(model, t)?;
+        if rank == 0 {
+            return Ok(Group {
+                free: 0,
+                torsion: Vec::new(),
+            });
+        }
+        let target = self.basis(model, t)?;
+        let incoming = previous.matrix(model, &source, &target)?;
+        let torsion = bp_smith::primary_factors(model, &incoming, shape.prime, rank)?
+            .into_iter()
+            .filter(|&factor| factor > 1)
+            .collect();
+        Ok(Group { free: 0, torsion })
+    }
+
+    pub(crate) fn incoming_basis(
+        self,
+        model: &mut Model,
+        t: usize,
+    ) -> Result<(Vec<Monomial>, usize)> {
+        let mut rank = 0usize;
+        for arrows in 0..self.shape.arrows {
+            let dimension = self.at_arrows(arrows).basis(model, t)?.len();
+            rank = exact_rank(dimension, rank)?;
+        }
+        let source = self.basis(model, t)?;
+        rank = exact_rank(source.len(), rank)?;
+        Ok((source, rank))
+    }
+}
+
+pub(crate) fn group(model: &mut Model, shape: Shape, t: usize) -> Result<Group> {
+    Domain::absolute(shape).group(model, t)
 }
 
 pub(crate) fn incoming_basis(
@@ -47,14 +130,7 @@ pub(crate) fn incoming_basis(
     shape: Shape,
     t: usize,
 ) -> Result<(Vec<Monomial>, usize)> {
-    let mut rank = 0usize;
-    for arrows in 0..shape.arrows {
-        let dimension = basis(model, Shape { arrows, ..shape }, t)?.len();
-        rank = exact_rank(dimension, rank)?;
-    }
-    let source = basis(model, shape, t)?;
-    rank = exact_rank(source.len(), rank)?;
-    Ok((source, rank))
+    Domain::absolute(shape).incoming_basis(model, t)
 }
 
 fn exact_rank(dimension: usize, incoming: usize) -> Result<usize> {
@@ -78,20 +154,7 @@ pub(crate) fn order(
     cycle: &Polynomial,
 ) -> Result<Option<i128>> {
     shape.require_integral("bporder")?;
-    if cycle.is_zero() {
-        return Ok(Some(1));
-    }
-    validate_cycle(model, shape, t, cycle)?;
-    if shape.arrows == 0 {
-        return Ok(None);
-    }
-    let ClosedSystem {
-        incoming,
-        target,
-        rank,
-        ..
-    } = closed_system(model, shape, t, cycle)?;
-    finite_order(model, &incoming, &target, shape.prime, rank).map(Some)
+    Domain::absolute(shape).order(model, t, cycle)
 }
 
 pub(crate) fn null(
@@ -100,87 +163,127 @@ pub(crate) fn null(
     t: usize,
     cycle: &Polynomial,
 ) -> Result<Polynomial> {
-    let previous = previous_shape(shape)?;
-    if cycle.is_zero() {
-        return Ok(Polynomial::default());
-    }
-    validate_cycle(model, shape, t, cycle)?;
-    let ClosedSystem {
-        basis,
-        incoming,
-        target,
-        rank,
-    } = closed_system(model, shape, t, cycle)?;
-    let order = finite_order(model, &incoming, &target, shape.prime, rank)?;
-    drop(incoming);
-    let mut multiple = cycle.clone();
-    multiple.scale(model, order)?;
-    let (numerator, power) = bp::contracting_numerator(model, shape, &multiple)?;
-    let witness = if power == 0 {
-        numerator
-    } else {
-        integral_lift(model, previous, t, &basis, &numerator, power)?
-    };
-    let image = bp::differential(model, previous, &witness)?;
-    if image.compare(model, &multiple)? != std::cmp::Ordering::Equal {
-        return Err(Error::plain(
-            "BP integral witness does not have the required differential",
-        ));
-    }
-    Ok(witness)
+    Domain::absolute(shape).null(model, t, cycle)
 }
 
-fn integral_lift(
-    model: &mut Model,
-    shape: Shape,
-    t: usize,
-    basis: &[Monomial],
-    numerator: &Polynomial,
-    power: u32,
-) -> Result<Polynomial> {
-    // For the rational lift U/M choose a closed Z congruent to U mod M.
-    // The exponent E of the previous cohomology kills every class, so
-    // Z can be found as d(y)/E by solving d(y) = E U modulo E M.
-    let preceding = previous_shape(shape)?;
-    let (source, rank) = incoming_basis(model, preceding, t)?;
-    let matrix = matrix(model, preceding, &source, basis)?;
-    let exponent = bp_smith::primary_factors(model, &matrix, shape.prime, rank)?
-        .last()
-        .copied()
-        .unwrap_or(1) as u64;
-    let denominator = u64::from(shape.prime)
-        .checked_pow(power)
-        .ok_or_else(precision_overflow)?;
-    let modulus = denominator
-        .checked_mul(exponent)
-        .ok_or_else(precision_overflow)?;
-    let mut target = coordinates(model, numerator, basis)?;
-    let correction = bp_smith::modular_preimage(
-        model,
-        &matrix,
-        shape.prime,
-        modulus,
-        &target,
-        exponent,
-        rank,
-    )?;
-    let image = matrix.apply(model, &correction)?;
-    let exponent = i128::from(exponent);
-    let denominator = i128::from(denominator);
-    model.spend(target.len())?;
-    for (coefficient, image) in target.iter_mut().zip(image) {
-        if image % exponent != 0 {
-            return Err(lift_divisibility());
+impl Domain {
+    pub(crate) fn order(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+    ) -> Result<Option<i128>> {
+        if cycle.is_zero() {
+            return Ok(Some(1));
         }
-        let reduced = coefficient
-            .checked_sub(image / exponent)
-            .ok_or_else(bp_smith::witness_overflow)?;
-        if reduced % denominator != 0 {
-            return Err(lift_divisibility());
+        self.validate_cycle(model, t, cycle)?;
+        if self.shape.arrows == 0 {
+            return Ok(None);
         }
-        *coefficient = reduced / denominator;
+        let ClosedSystem {
+            incoming,
+            target,
+            rank,
+            ..
+        } = self.closed_system(model, t, cycle)?;
+        finite_order(model, &incoming, &target, self.shape.prime, rank).map(Some)
     }
-    Polynomial::from_terms(model, basis.iter().zip(target))
+
+    pub(crate) fn null(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+    ) -> Result<Polynomial> {
+        let previous = self.previous()?;
+        if cycle.is_zero() {
+            return Ok(Polynomial::default());
+        }
+        self.validate_cycle(model, t, cycle)?;
+        let ClosedSystem {
+            basis,
+            incoming,
+            target,
+            rank,
+        } = self.closed_system(model, t, cycle)?;
+        let order = finite_order(model, &incoming, &target, self.shape.prime, rank)?;
+        drop(incoming);
+        let mut multiple = cycle.clone();
+        multiple.scale(model, order)?;
+        let (mut numerator, mut power) = bp::contracting_numerator(model, self.shape, &multiple)?;
+        if self.lower.is_some() {
+            numerator = self.project(model, &numerator)?;
+            let prime = u128::from(self.shape.prime);
+            while power > 0 && numerator.divide_if_exact(model, prime)? {
+                power -= 1;
+            }
+        }
+        let witness = if power == 0 {
+            numerator
+        } else {
+            previous.integral_lift(model, t, &basis, &numerator, power)?
+        };
+        let image = previous.differential(model, &witness)?;
+        if image.compare(model, &multiple)? != std::cmp::Ordering::Equal {
+            return Err(Error::plain(
+                "BP integral witness does not have the required differential",
+            ));
+        }
+        Ok(witness)
+    }
+
+    fn integral_lift(
+        self,
+        model: &mut Model,
+        t: usize,
+        basis: &[Monomial],
+        numerator: &Polynomial,
+        power: u32,
+    ) -> Result<Polynomial> {
+        // For the rational lift U/M choose a closed Z congruent to U mod M.
+        // The exponent E of the previous cohomology kills every class, so
+        // Z can be found as d(y)/E by solving d(y) = E U modulo E M.
+        let preceding = self.previous()?;
+        let (source, rank) = preceding.incoming_basis(model, t)?;
+        let matrix = preceding.matrix(model, &source, basis)?;
+        let exponent = bp_smith::primary_factors(model, &matrix, self.shape.prime, rank)?
+            .last()
+            .copied()
+            .unwrap_or(1) as u64;
+        let denominator = u64::from(self.shape.prime)
+            .checked_pow(power)
+            .ok_or_else(precision_overflow)?;
+        let modulus = denominator
+            .checked_mul(exponent)
+            .ok_or_else(precision_overflow)?;
+        let mut target = coordinates(model, numerator, basis)?;
+        let correction = bp_smith::modular_preimage(
+            model,
+            &matrix,
+            self.shape.prime,
+            modulus,
+            &target,
+            exponent,
+            rank,
+        )?;
+        let image = matrix.apply(model, &correction)?;
+        let exponent = i128::from(exponent);
+        let denominator = i128::from(denominator);
+        model.spend(target.len())?;
+        for (coefficient, image) in target.iter_mut().zip(image) {
+            if image % exponent != 0 {
+                return Err(lift_divisibility());
+            }
+            let reduced = coefficient
+                .checked_sub(image / exponent)
+                .ok_or_else(bp_smith::witness_overflow)?;
+            if reduced % denominator != 0 {
+                return Err(lift_divisibility());
+            }
+            *coefficient = reduced / denominator;
+        }
+        Polynomial::from_terms(model, basis.iter().zip(target))
+    }
 }
 
 fn precision_overflow() -> Error {
@@ -198,23 +301,25 @@ struct ClosedSystem {
     rank: usize,
 }
 
-fn closed_system(
-    model: &mut Model,
-    shape: Shape,
-    t: usize,
-    cycle: &Polynomial,
-) -> Result<ClosedSystem> {
-    let current = basis(model, shape, t)?;
-    let previous = previous_shape(shape)?;
-    let (preceding, rank) = incoming_basis(model, previous, t)?;
-    let target = coordinates(model, cycle, &current)?;
-    let incoming = matrix(model, previous, &preceding, &current)?;
-    Ok(ClosedSystem {
-        basis: preceding,
-        incoming,
-        target,
-        rank,
-    })
+impl Domain {
+    fn closed_system(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+    ) -> Result<ClosedSystem> {
+        let current = self.basis(model, t)?;
+        let previous = self.previous()?;
+        let (preceding, rank) = previous.incoming_basis(model, t)?;
+        let target = coordinates(model, cycle, &current)?;
+        let incoming = previous.matrix(model, &preceding, &current)?;
+        Ok(ClosedSystem {
+            basis: preceding,
+            incoming,
+            target,
+            rank,
+        })
+    }
 }
 
 fn finite_order(
@@ -255,48 +360,98 @@ pub(crate) fn validate_cycle(
     t: usize,
     cycle: &Polynomial,
 ) -> Result<()> {
-    let weight = unit_weight(shape.prime, t).ok_or_else(wrong_weight)?;
-    let weights = weights(shape, weight);
-    for (monomial, _) in cycle.terms() {
+    Domain::absolute(shape).validate_cycle(model, t, cycle)
+}
+
+pub(crate) fn check_normalized(
+    model: &mut Model,
+    shape: Shape,
+    polynomial: &Polynomial,
+) -> Result<()> {
+    for (monomial, _) in polynomial.terms() {
         model.spend(1 + monomial.len())?;
-        let mut remaining = weight;
-        let mut slots = 0u32;
-        for &(variable, exponent) in monomial {
-            let slot = variable / shape.height;
-            slots |= 1 << slot;
-            let degree = weights
-                .get(variable % shape.height)
-                .and_then(|degree| degree.checked_mul(exponent))
-                .ok_or_else(wrong_weight)?;
-            remaining = remaining.checked_sub(degree).ok_or_else(wrong_weight)?;
-        }
-        let arrows = (1u32 << (shape.arrows + 1)) - 2;
-        if slots & arrows != arrows {
-            return Err(Error::plain(
-                "BP Ext requires a normalized cochain using every arrow slot",
-            ));
-        }
-        if remaining != 0 {
-            return Err(wrong_weight());
-        }
-    }
-    if has_monomials(shape, shape.arrows + 1, t)
-        && !bp::differential(model, shape, cycle)?.is_zero()
-    {
-        return Err(Error::plain("BP Ext requires a closed cochain"));
+        normalized_monomial(shape, monomial)?;
     }
     Ok(())
 }
 
-fn wrong_weight() -> Error {
-    Error::plain("BP Ext cochain does not have the requested homogeneous internal degree")
+fn normalized_monomial(shape: Shape, monomial: &Monomial) -> Result<()> {
+    let mut slots = 0u32;
+    for &(variable, _) in monomial {
+        slots |= 1 << (variable / shape.height);
+    }
+    require_arrow_slots(shape, slots)
 }
 
-fn has_monomials(shape: Shape, arrows: usize, t: usize) -> bool {
-    if t == 0 {
-        return arrows == 0;
+fn require_arrow_slots(shape: Shape, slots: u32) -> Result<()> {
+    let arrows = (1u32 << (shape.arrows + 1)) - 2;
+    if slots & arrows != arrows {
+        return Err(Error::plain(
+            "BP Ext requires a normalized cochain using every arrow slot",
+        ));
     }
-    shape.height > 0 && unit_weight(shape.prime, t).is_some_and(|weight| weight >= arrows)
+    Ok(())
+}
+
+impl Domain {
+    pub(crate) fn validate_cycle(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+    ) -> Result<()> {
+        let shape = self.shape;
+        let weight = unit_weight(shape.prime, t).ok_or_else(wrong_weight)?;
+        let weights = weights(shape, weight);
+        for (monomial, _) in cycle.terms() {
+            model.spend(1 + monomial.len())?;
+            let mut remaining = weight;
+            let mut slots = 0u32;
+            for &(variable, exponent) in monomial {
+                slots |= 1 << (variable / shape.height);
+                let degree = weights
+                    .get(variable % shape.height)
+                    .and_then(|degree| degree.checked_mul(exponent))
+                    .ok_or_else(wrong_weight)?;
+                remaining = remaining.checked_sub(degree).ok_or_else(wrong_weight)?;
+            }
+            require_arrow_slots(shape, slots)?;
+            if remaining != 0 {
+                return Err(wrong_weight());
+            }
+        }
+        if self.at_arrows(shape.arrows + 1).has_monomials(t)
+            && !self.differential(model, cycle)?.is_zero()
+        {
+            return Err(Error::plain("BP Ext requires a closed cochain"));
+        }
+        Ok(())
+    }
+
+    fn has_monomials(self, t: usize) -> bool {
+        if t == 0 {
+            return self.lower.is_none() && self.shape.arrows == 0;
+        }
+        if self.shape.height == 0 {
+            return false;
+        }
+        let Some(weight) = unit_weight(self.shape.prime, t) else {
+            return false;
+        };
+        let minimum = if let Some(lower) = self.lower {
+            let Some(&high) = weights(self.shape, weight).get(lower) else {
+                return false;
+            };
+            high.saturating_add(self.shape.arrows.saturating_sub(1))
+        } else {
+            self.shape.arrows
+        };
+        weight >= minimum
+    }
+}
+
+fn wrong_weight() -> Error {
+    Error::plain("BP Ext cochain does not have the requested homogeneous internal degree")
 }
 
 fn unit_weight(prime: u32, t: usize) -> Option<usize> {
@@ -320,29 +475,40 @@ fn weights(shape: Shape, weight: usize) -> Vec<usize> {
 }
 
 pub(crate) fn basis(model: &mut Model, shape: Shape, t: usize) -> Result<Vec<Monomial>> {
-    if !has_monomials(shape, shape.arrows, t) {
-        return Ok(Vec::new());
+    Domain::absolute(shape).basis(model, t)
+}
+
+impl Domain {
+    pub(crate) fn basis(self, model: &mut Model, t: usize) -> Result<Vec<Monomial>> {
+        let shape = self.shape;
+        if !self.has_monomials(t) {
+            return Ok(Vec::new());
+        }
+        if t == 0 {
+            return Ok(vec![Box::new([])]);
+        }
+        let weight = unit_weight(shape.prime, t).unwrap();
+        let mut search = Monomials {
+            shape,
+            weights: weights(shape, weight),
+            lower: self.lower,
+            high_terms: 0,
+            current: Vec::new(),
+            collected: Vec::new(),
+            cells: 0,
+        };
+        search.enumerate(model, 0, search.weights.len() - 1, weight, false)?;
+        model.spend(search.cells * (1 + search.collected.len().max(1).ilog2() as usize))?;
+        search.collected.sort_unstable();
+        Ok(search.collected)
     }
-    if t == 0 {
-        return Ok(vec![Box::new([])]);
-    }
-    let weight = unit_weight(shape.prime, t).unwrap();
-    let mut search = Monomials {
-        shape,
-        weights: weights(shape, weight),
-        current: Vec::new(),
-        collected: Vec::new(),
-        cells: 0,
-    };
-    search.enumerate(model, 0, search.weights.len() - 1, weight, false)?;
-    model.spend(search.cells * (1 + search.collected.len().max(1).ilog2() as usize))?;
-    search.collected.sort_unstable();
-    Ok(search.collected)
 }
 
 struct Monomials {
     shape: Shape,
     weights: Vec<usize>,
+    lower: Option<usize>,
+    high_terms: usize,
     current: Vec<(usize, usize)>,
     collected: Vec<Monomial>,
     cells: usize,
@@ -358,6 +524,14 @@ impl Monomials {
         used: bool,
     ) -> Result<()> {
         model.spend(1)?;
+        if let Some(lower) = self.lower {
+            if self.high_terms == 0
+                && (remaining < self.weights[lower]
+                    || (slot == self.shape.arrows && variable < lower))
+            {
+                return Ok(());
+            }
+        }
         let reserved = self.shape.arrows - slot;
         let Some(available) = remaining.checked_sub(reserved) else {
             return Ok(());
@@ -371,7 +545,7 @@ impl Monomials {
             if maximum >= minimum {
                 self.with_power(slot, variable, maximum);
                 self.collect(model)?;
-                self.without_power(maximum);
+                self.without_power(variable, maximum);
             }
             return Ok(());
         }
@@ -383,7 +557,7 @@ impl Monomials {
             } else {
                 self.enumerate(model, slot + 1, self.weights.len() - 1, remaining, false)?;
             }
-            self.without_power(exponent);
+            self.without_power(variable, exponent);
         }
         Ok(())
     }
@@ -392,16 +566,21 @@ impl Monomials {
         if exponent != 0 {
             self.current
                 .push((slot * self.shape.height + variable, exponent));
+            self.high_terms += usize::from(self.lower.is_some_and(|lower| variable >= lower));
         }
     }
 
-    fn without_power(&mut self, exponent: usize) {
+    fn without_power(&mut self, variable: usize, exponent: usize) {
         if exponent != 0 {
+            self.high_terms -= usize::from(self.lower.is_some_and(|lower| variable >= lower));
             self.current.pop();
         }
     }
 
     fn collect(&mut self, model: &mut Model) -> Result<()> {
+        if self.lower.is_some() && self.high_terms == 0 {
+            return Ok(());
+        }
         self.cells += 1 + 2 * self.current.len();
         if self.collected.len() == MAX_BASIS || self.cells > MAX_PIVOT_CELLS {
             return Err(Error::plain(
@@ -422,20 +601,37 @@ pub(crate) fn matrix(
     source: &[Monomial],
     target: &[Monomial],
 ) -> Result<Matrix> {
-    let mut matrix = Matrix::new(target.len(), source.len())?;
-    if target.is_empty() {
-        return Ok(matrix);
-    }
-    model.spend(target.len() * source.len())?;
-    for (column, monomial) in source.iter().enumerate() {
-        let cochain = Polynomial::from_terms(model, [(monomial, 1)])?;
-        let image = bp::differential(model, shape, &cochain)?;
-        for (monomial, coefficient) in image.terms() {
-            let row = index_of(model, target, monomial)?;
-            matrix.set(row, column, coefficient);
+    Domain::absolute(shape).matrix(model, source, target)
+}
+
+impl Domain {
+    pub(crate) fn matrix(
+        self,
+        model: &mut Model,
+        source: &[Monomial],
+        target: &[Monomial],
+    ) -> Result<Matrix> {
+        let mut matrix = Matrix::new(target.len(), source.len())?;
+        if target.is_empty() {
+            return Ok(matrix);
         }
+        model.spend(target.len() * source.len())?;
+        for (column, monomial) in source.iter().enumerate() {
+            let cochain = Polynomial::from_terms(model, [(monomial, 1)])?;
+            let image = bp::differential(model, self.shape, &cochain)?;
+            if self.lower.is_some() {
+                model.spend(image.cells())?;
+            }
+            for (monomial, coefficient) in image.terms() {
+                if !self.retains(monomial) {
+                    continue;
+                }
+                let row = index_of(model, target, monomial)?;
+                matrix.set(row, column, coefficient);
+            }
+        }
+        Ok(matrix)
     }
-    Ok(matrix)
 }
 
 pub(crate) fn coordinates(

@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::adams::Adams;
 use crate::bp_classes;
 use crate::bp_page;
+use crate::bp_rel;
 use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
@@ -86,6 +87,7 @@ pub(crate) enum Kind {
     RVTor(RvGrade),
     RVPoly(q_koszul::Indices, usize),
     BP(bp::Shape),
+    BPRel(bp_rel::Shape),
     BPPage(bp_page::Grade),
     BPExt(bp_classes::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
@@ -174,6 +176,7 @@ pub(crate) enum Value {
     JetClass(jet_page::Coordinates),
     RVPoly(Polynomial),
     BP(Rc<bp_polynomial::Polynomial>),
+    BPRel(Rc<bp_polynomial::Polynomial>),
     BPExt(bp_classes::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
@@ -446,7 +449,7 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
-            Kind::RVPoly(..) | Kind::BP(..) | Kind::BPExt(..) => usize::MAX,
+            Kind::RVPoly(..) | Kind::BP(..) | Kind::BPRel(..) | Kind::BPExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -534,6 +537,7 @@ impl Model {
                 | Kind::RVTor(..)
                 | Kind::RVPoly(..)
                 | Kind::BP(..)
+                | Kind::BPRel(..)
                 | Kind::BPExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
@@ -953,6 +957,10 @@ impl Model {
         let group = Rc::new(bp_classes::Cohomology::build(self, grade)?);
         self.types[ty.0].bp_ext = Some(group.clone());
         Ok(group)
+    }
+
+    pub(crate) fn bp_rel_type(&mut self, shape: bp_rel::Shape) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPRel(shape), 0)
     }
 
     pub(crate) fn bp_type(&mut self, shape: bp::Shape) -> Result<TypeId> {
@@ -1486,6 +1494,7 @@ impl Model {
             | Kind::RVTor(..)
             | Kind::RVPoly(..)
             | Kind::BP(..)
+            | Kind::BPRel(..)
             | Kind::BPExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
@@ -1659,6 +1668,10 @@ impl Model {
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
+            Kind::BPRel(shape) => out.push(&format!(
+                "BPRel({}, {}, {}, {})",
+                shape.upper.prime, shape.lower, shape.upper.height, shape.upper.arrows,
+            )),
             Kind::BPPage(grade) => out.push(&grade.to_string()),
             Kind::BPExt(grade) => out.push(&format!(
                 "BPExt({}, {}, {}, {})",
@@ -1801,7 +1814,7 @@ impl Model {
                 self.spend(left.len().min(right.len()))?;
                 Ok(left == right)
             }
-            (Value::BP(left), Value::BP(right)) => {
+            (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
             (Value::RVKoszul(left), Value::RVKoszul(right)) => Ok(Rc::ptr_eq(left, right)
@@ -1913,7 +1926,7 @@ impl Model {
                 self.spend(left.len().min(right.len()))?;
                 Ok(left.iter().rev().cmp(right.iter().rev()))
             }
-            (Value::BP(left), Value::BP(right)) => {
+            (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 if Rc::ptr_eq(left, right) {
                     Ok(Ordering::Equal)
                 } else {
@@ -2103,6 +2116,11 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::BP(..) => return Err(Error::plain("cannot enumerate a BP polynomial ring")),
+                Kind::BPRel(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an integral BP relative cochain space",
+                    ))
+                }
                 Kind::BPExt(..) => self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?,
                 Kind::RVKoszul(ref grade) => {
                     let grade = grade.clone();
@@ -2547,12 +2565,15 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::BP(polynomial) => {
+            Value::BP(polynomial) | Value::BPRel(polynomial) => {
                 self.spend(polynomial.cells())?;
-                let Kind::BP(shape) = *self.kind(ty) else {
-                    unreachable!()
+                let shape = match *self.kind(ty) {
+                    Kind::BP(shape) => shape,
+                    Kind::BPRel(shape) => shape.upper,
+                    _ => unreachable!(),
                 };
-                out.push(&format!("{shape}{{"))?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
