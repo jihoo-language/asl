@@ -21,99 +21,222 @@ pub(crate) fn compute(
     order: usize,
     coefficients: &[Vec<usize>],
 ) -> Result<Report> {
-    if order == 0 {
-        return Err(Error::plain("rvjet requires a positive truncation order"));
-    }
-    let field = BinaryField::new(model, modulus)?;
-    model.check_q_endpoints(source, target, selected)?;
-    if selected.len() != coefficients.len() {
-        return Err(Error::plain(
-            "rvjet requires one jet per selected primitive",
-        ));
-    }
-    let mut active = Vec::new();
-    let mut arcs = Vec::new();
-    let mut cells = 0;
-    for (&primitive, polynomial) in selected.iter().zip(coefficients) {
-        let mut arc = Vec::new();
-        model.spend(1 + polynomial.len())?;
-        for (power, &coefficient) in polynomial.iter().enumerate() {
-            if coefficient >= field.order() {
-                return Err(Error::plain(format!(
-                    "field coefficient {coefficient} is out of range for F{}",
-                    field.order()
-                )));
-            }
-            if coefficient == 0 {
-                continue;
-            }
-            if power >= order {
-                return Err(Error::plain(
-                    "rvjet has a nonzero coefficient beyond the truncation order",
-                ));
-            }
-            cells += 2;
-            check_storage(cells)?;
-            arc.push((power, coefficient));
+    Path::new(model, selected, modulus, order, coefficients)?.report(model, source, target)
+}
+
+pub(crate) struct Path {
+    pub(crate) field: BinaryField,
+    pub(crate) order: usize,
+    pub(crate) selected: Vec<usize>,
+    active: Vec<usize>,
+    arcs: Vec<Column>,
+    cells: usize,
+}
+
+impl Path {
+    pub(crate) fn new(
+        model: &mut Model,
+        selected: &[usize],
+        modulus: usize,
+        order: usize,
+        coefficients: &[Vec<usize>],
+    ) -> Result<Self> {
+        if order == 0 {
+            return Err(Error::plain("rvjet requires a positive truncation order"));
         }
-        if !arc.is_empty() {
-            cells += 2;
-            check_storage(cells)?;
-            active.push(primitive);
-            arcs.push(arc);
+        let field = BinaryField::new(model, modulus)?;
+        if selected.len() != coefficients.len() {
+            return Err(Error::plain(
+                "rvjet requires one jet per selected primitive",
+            ));
         }
-    }
-    let from = Endpoint::build(model, source, &active)?;
-    let other = if source == target {
-        None
-    } else {
-        Some(Endpoint::build(model, target, &active)?)
-    };
-    let from = from.columns.as_slice();
-    let to = other
-        .as_ref()
-        .map_or(from, |target| target.columns.as_slice());
-    let hom = from
-        .len()
-        .checked_mul(to.len())
-        .ok_or_else(dimension_overflow)?;
-    let dimension = hom.checked_mul(order).ok_or_else(dimension_overflow)?;
-    if dimension == 0 || from.iter().chain(to).all(Vec::is_empty) {
-        return Ok(Report {
-            dimension,
-            blocks: if hom == 0 {
-                BTreeMap::new()
-            } else {
-                BTreeMap::from([(order, hom)])
-            },
-        });
+        let mut active = Vec::new();
+        let mut arcs = Vec::new();
+        let mut cells = 0;
+        for (&primitive, polynomial) in selected.iter().zip(coefficients) {
+            let mut arc = Vec::new();
+            model.spend(1 + polynomial.len())?;
+            for (power, &coefficient) in polynomial.iter().enumerate() {
+                field.check_element(coefficient)?;
+                if coefficient == 0 {
+                    continue;
+                }
+                if power >= order {
+                    return Err(Error::plain(
+                        "rvjet has a nonzero coefficient beyond the truncation order",
+                    ));
+                }
+                cells += 2;
+                check_storage(cells)?;
+                arc.push((power, coefficient));
+            }
+            if !arc.is_empty() {
+                cells += 2;
+                check_storage(cells)?;
+                active.push(primitive);
+                arcs.push(arc);
+            }
+        }
+        cells += 1 + selected.len();
+        check_storage(cells)?;
+        Ok(Self {
+            field,
+            order,
+            selected: selected.to_vec(),
+            active,
+            arcs,
+            cells,
+        })
     }
 
-    check_storage(dimension)?;
-    // Store the weighted transposed source action for precomposition.
-    cells += 2 * action_cells(from);
-    if other.is_some() {
-        cells += action_cells(to);
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
     }
-    check_storage(cells)?;
-    let mut transpose = vec![Vec::new(); from.len()];
-    model.spend(from.len())?;
-    for (domain, column) in from.iter().enumerate() {
-        model.spend(column.len())?;
-        for &(row, variable) in column {
-            transpose[row].push((domain, variable));
+
+    pub(crate) fn report(
+        &self,
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+    ) -> Result<Report> {
+        let matrix = Matrix::build(model, source, target, self)?;
+        let hom = matrix
+            .source_size()
+            .checked_mul(matrix.target_size())
+            .ok_or_else(dimension_overflow)?;
+        let dimension = hom.checked_mul(self.order).ok_or_else(dimension_overflow)?;
+        if dimension == 0 || matrix.is_zero() {
+            return Ok(Report {
+                dimension,
+                blocks: if hom == 0 {
+                    BTreeMap::new()
+                } else {
+                    BTreeMap::from([(self.order, hom)])
+                },
+            });
         }
+        check_storage(dimension)?;
+        let action = HomAction {
+            matrix: &matrix,
+            path: self,
+            hom,
+            dimension,
+            cells: matrix.cells + self.cells,
+        };
+        action.homology(model, self.field)
     }
-    let action = HomAction {
-        source: &transpose,
-        target: to,
-        arcs: &arcs,
-        hom,
-        order,
-        dimension,
-        cells,
-    };
-    action.homology(model, field)
+}
+
+pub(crate) struct Matrix {
+    source: Endpoint,
+    target: Option<Endpoint>,
+    transpose: Vec<Column>,
+    cells: usize,
+}
+
+impl Matrix {
+    pub(crate) fn build(
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+        path: &Path,
+    ) -> Result<Self> {
+        model.check_q_endpoints(source, target, &path.selected)?;
+        let from = Endpoint::build(model, source, &path.active)?;
+        let to = if source == target {
+            None
+        } else {
+            Some(Endpoint::build(model, target, &path.active)?)
+        };
+        let mut cells = 2 * action_cells(&from.columns);
+        if let Some(target) = &to {
+            cells += action_cells(&target.columns);
+        }
+        check_storage(cells + path.cells)?;
+        let mut transpose = vec![Vec::new(); from.columns.len()];
+        model.spend(from.columns.len())?;
+        for (domain, column) in from.columns.iter().enumerate() {
+            model.spend(column.len())?;
+            for &(row, variable) in column {
+                transpose[row].push((domain, variable));
+            }
+        }
+        Ok(Self {
+            source: from,
+            target: to,
+            transpose,
+            cells,
+        })
+    }
+
+    pub(crate) fn source(&self) -> &Endpoint {
+        &self.source
+    }
+
+    pub(crate) fn target(&self) -> &Endpoint {
+        self.target.as_ref().unwrap_or(&self.source)
+    }
+
+    pub(crate) fn source_size(&self) -> usize {
+        self.source.columns.len()
+    }
+
+    pub(crate) fn target_size(&self) -> usize {
+        self.target().columns.len()
+    }
+
+    fn is_zero(&self) -> bool {
+        self.source
+            .columns
+            .iter()
+            .chain(&self.target().columns)
+            .all(Vec::is_empty)
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
+    pub(crate) fn column(
+        &self,
+        model: &mut Model,
+        path: &Path,
+        power: usize,
+        source: usize,
+        target: usize,
+    ) -> Result<Vec<MatrixEntry>> {
+        let source_terms = self.transpose[source]
+            .iter()
+            .map(|&(row, variable)| (row, target, variable));
+        let target_terms = self.target().columns[target]
+            .iter()
+            .map(|&(row, variable)| (source, row, variable));
+        let mut result = Vec::new();
+        for (source, target, variable) in source_terms.chain(target_terms) {
+            model.spend(1)?;
+            for &(shift, coefficient) in &path.arcs[variable] {
+                model.spend(1)?;
+                if shift >= path.order - power {
+                    break;
+                }
+                check_storage(self.cells + path.cells + 4 * (result.len() + 1))?;
+                result.push(MatrixEntry {
+                    power: power + shift,
+                    source,
+                    target,
+                    coefficient,
+                });
+            }
+        }
+        Ok(result)
+    }
+}
+
+pub(crate) struct MatrixEntry {
+    pub(crate) power: usize,
+    pub(crate) source: usize,
+    pub(crate) target: usize,
+    pub(crate) coefficient: usize,
 }
 
 fn action_cells(columns: &[Column]) -> usize {
@@ -121,11 +244,9 @@ fn action_cells(columns: &[Column]) -> usize {
 }
 
 struct HomAction<'a> {
-    source: &'a [Column],
-    target: &'a [Column],
-    arcs: &'a [Column],
+    matrix: &'a Matrix,
+    path: &'a Path,
     hom: usize,
-    order: usize,
     dimension: usize,
     cells: usize,
 }
@@ -133,30 +254,22 @@ struct HomAction<'a> {
 impl HomAction<'_> {
     fn column(&self, model: &mut Model, index: usize) -> Result<Column> {
         let power = index / self.hom;
-        let source = (index % self.hom) / self.target.len();
-        let target = index % self.target.len();
-        let source_terms = self.source[source]
-            .iter()
-            .map(|&(row, variable)| (row * self.target.len() + target, variable));
-        let target_terms = self.target[target]
-            .iter()
-            .map(|&(row, variable)| (source * self.target.len() + row, variable));
-
-        let mut result = Vec::new();
-        for (row, variable) in source_terms.chain(target_terms) {
-            model.spend(1)?;
-            for &(shift, coefficient) in &self.arcs[variable] {
-                model.spend(1)?;
-                if shift >= self.order - power {
-                    break;
-                }
-                check_storage(self.cells + 2 * (result.len() + 1))?;
-                result.push(((power + shift) * self.hom + row, coefficient));
-            }
-        }
+        let source = (index % self.hom) / self.matrix.target_size();
+        let target = index % self.matrix.target_size();
+        let image = self
+            .matrix
+            .column(model, self.path, power, source, target)?;
+        let mut result: Column = image
+            .into_iter()
+            .map(|entry| {
+                let row = entry.power * self.hom
+                    + entry.source * self.matrix.target_size()
+                    + entry.target;
+                (row, entry.coefficient)
+            })
+            .collect();
         model.spend(result.len() * (1 + result.len().max(1).ilog2() as usize))?;
-        // Endpoints change in disjoint ways under the two actions.
-        // Distinct primitive degrees also land in distinct endpoint rows.
+        // The two endpoint actions and distinct primitive degrees land in disjoint rows.
         result.sort_unstable();
         Ok(result)
     }
@@ -204,7 +317,7 @@ impl HomAction<'_> {
 
         // At step j, span represents u^j H in the quotient by im(D).
         let mut ranks = vec![dimension];
-        for _ in 0..self.order {
+        for _ in 0..self.path.order {
             let mut next = Basis::default();
             for pivot in span.pivots.values() {
                 model.spend(1 + pivot.column.len())?;

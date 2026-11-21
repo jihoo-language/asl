@@ -11,6 +11,7 @@ mod complex;
 mod cyclic;
 mod engine;
 mod error;
+mod jet_hom;
 mod linear;
 mod map_bracket;
 mod map_cochain;

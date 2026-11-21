@@ -65,6 +65,12 @@ impl Endpoint {
         })
     }
 
+    pub(crate) fn generators(&self) -> impl Iterator<Item = Generator> + '_ {
+        self.groups.iter().flat_map(|(&degree, &(_, rank))| {
+            (0..rank).map(move |index| Generator { degree, index })
+        })
+    }
+
     pub(crate) fn coordinate(&self, generator: Generator) -> Option<usize> {
         let &(offset, rank) = self.groups.get(&generator.degree)?;
         if generator.index < rank {

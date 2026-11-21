@@ -11,6 +11,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
+use crate::jet_hom;
 use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
@@ -44,8 +45,9 @@ use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
-    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, Label, MapMaySpec, ParsedExpr, ParsedType,
-    QSpec, RvIdealOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
+    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, JetHomSpec, JetPathArg, Label, MapMaySpec,
+    ParsedExpr, ParsedType, QSpec, RvIdealOp, Statement, StatementForm, SuspensionForm, TypeForm,
+    VBockSpec, Witness,
 };
 use crate::transfer;
 use crate::v_bars;
@@ -177,6 +179,7 @@ enum TypedForm {
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
+    JetD(Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
     Transfer(ScalarField, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(ScalarField, Profile, Vec<TypedExpr>),
@@ -414,28 +417,54 @@ impl Engine {
                 let selected = q_koszul::indices(&mut self.model, spec.selected)?;
                 self.model.show_rv_minors(base, selected, size)?
             }
-            StatementForm::RankJet(spec) => {
-                let source = self.checker().q_endpoint(*spec.source)?;
-                let target = self.checker().q_endpoint(*spec.target)?;
+            StatementForm::JetPath(name, spec) => {
                 let selected = q_koszul::indices(&mut self.model, spec.selected)?;
-                let report = rank_jets::compute(
+                let path = rank_jets::Path::new(
                     &mut self.model,
-                    source,
-                    target,
                     &selected,
                     spec.modulus,
                     spec.order,
                     &spec.coefficients,
                 )?;
+                self.model.define_jet_path(name, path)?;
+                return Ok(None);
+            }
+            StatementForm::RankJet(spec) => {
+                let source = self.checker().q_endpoint(*spec.source)?;
+                let target = self.checker().q_endpoint(*spec.target)?;
                 let from = self.model.type_name(source);
                 let to = self.model.type_name(target);
-                let modulus = spec.modulus;
-                let order = spec.order;
-                let coefficients = spec.coefficients;
+                let (label, report) = match spec.path {
+                    JetPathArg::Inline(spec) => {
+                        let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                        let modulus = spec.modulus;
+                        let order = spec.order;
+                        let coefficients = spec.coefficients;
+                        let report = rank_jets::compute(
+                            &mut self.model,
+                            source,
+                            target,
+                            &selected,
+                            modulus,
+                            order,
+                            &coefficients,
+                        )?;
+                        (
+                            format!("{selected:?}, {modulus}, {order}, {coefficients:?}"),
+                            report,
+                        )
+                    }
+                    JetPathArg::Named(label) => {
+                        let id = self.model.jet_path_id(&label)?;
+                        let report =
+                            self.model
+                                .jet_path(id)
+                                .report(&mut self.model, source, target)?;
+                        (label.text, report)
+                    }
+                };
                 let rank_jets::Report { dimension, blocks } = report;
-                format!(
-                    "rvjet[{from}, {to}, {selected:?}, {modulus}, {order}, {coefficients:?}] = dimension {dimension}, blocks {blocks:?}"
-                )
+                format!("rvjet[{from}, {to}, {label}] = dimension {dimension}, blocks {blocks:?}")
             }
             StatementForm::RankOrbit(modulus, point) => {
                 let orbit = rv_arithmetic::orbit(&mut self.model, modulus, &point)?;
@@ -684,6 +713,9 @@ impl Engine {
                         let field = grade.field;
                         rv_hom::add(&mut self.model, field, &a, &b)
                     }
+                    (BinaryOp::Add, Value::JetHom(a), Value::JetHom(b)) => {
+                        jet_hom::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::QKoszul(a), Value::QKoszul(b)) => {
                         Ok(Value::QKoszul(q_koszul::add(&mut self.model, &a, &b)?))
                     }
@@ -711,6 +743,14 @@ impl Engine {
                     }
                     (BinaryOp::MapExtCompose, Value::RVHom(g), Value::RVHom(f)) => {
                         rv_hom::compose(&mut self.model, left.ty, &g, right.ty, &f)
+                    }
+                    (BinaryOp::MapExtCompose, Value::JetHom(g), Value::JetHom(f)) => {
+                        let Kind::JetHom(grade) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let path = self.model.jet_path(grade.diagram.path);
+                        let terms = jet_hom::compose(&mut self.model, &path, &g, &f)?;
+                        jet_hom::persist(&mut self.model, terms)
                     }
                     (BinaryOp::MapExtCompose, Value::QKoszul(g), Value::QKoszul(f)) => {
                         Ok(Value::QKoszul(q_koszul::compose(&mut self.model, &g, &f)?))
@@ -975,12 +1015,11 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
-            TypedForm::RVScale(field, scalar, input) => {
-                let Value::RVHom(value) = self.eval(input)? else {
-                    unreachable!()
-                };
-                rv_hom::scale(&mut self.model, *field, &value, *scalar)
-            }
+            TypedForm::RVScale(field, scalar, input) => match self.eval(input)? {
+                Value::RVHom(value) => rv_hom::scale(&mut self.model, *field, &value, *scalar),
+                Value::JetHom(value) => jet_hom::scale(&mut self.model, *field, &value, *scalar),
+                _ => unreachable!(),
+            },
             TypedForm::RVSpecialize(input) => {
                 let value = self.eval(input)?;
                 rv_hom::specialize(&mut self.model, input.ty, value, expr.ty)
@@ -1150,6 +1189,24 @@ impl Engine {
                 cohomology::suspend(&mut self.model, value.ty, &class, expr.ty)
             }
             TypedForm::Shift(value) => self.eval(value),
+            TypedForm::JetD(value) => {
+                let Value::JetHom(terms) = self.eval(value)? else {
+                    unreachable!()
+                };
+                if terms.is_empty() {
+                    return Ok(jet_hom::zero());
+                }
+                let Kind::JetHom(grade) = *self.model.kind(value.ty) else {
+                    unreachable!()
+                };
+                let path = self.model.jet_path(grade.diagram.path);
+                let terms = self.model.jet_complex(grade.diagram)?.differential(
+                    &mut self.model,
+                    &path,
+                    &terms,
+                )?;
+                jet_hom::persist(&mut self.model, terms)
+            }
             TypedForm::PScale(prime, scalar, value) => match self.eval(value)? {
                 Value::PCobar(terms) => odd_cobar::scale(&mut self.model, *prime, *scalar, &terms),
                 Value::OddClass(class) => odd_ext::scale(&mut self.model, *prime, *scalar, &class),
@@ -1501,6 +1558,10 @@ impl Checker<'_> {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_hom_type(grade)
             }
+            TypeForm::JetHom(spec) => {
+                let grade = self.jet_grade(spec)?;
+                self.model.jet_hom_type(grade)
+            }
             TypeForm::QKoszul(spec) => {
                 let grade = self.q_grade(spec)?;
                 self.model.q_koszul_type(grade)
@@ -1619,6 +1680,7 @@ impl Checker<'_> {
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
+                    Kind::JetHom(..) => jet_hom::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
@@ -1850,6 +1912,52 @@ impl Checker<'_> {
                 let ty = self.model.map_cobar_type(source_ty, target_ty, s, t)?;
                 Ok((ty, TypedForm::MapWord(source, target, Box::new(input))))
             }
+            ExprForm::JetTerm(literal) => {
+                let source = self.q_endpoint(literal.source.base)?;
+                let target = self.q_endpoint(literal.target.base)?;
+                let path = self.model.jet_path_id(&literal.path)?;
+                if literal.power >= self.model.jet_path(path).order {
+                    return Err(Error::new(
+                        span,
+                        "jetterm exponent is outside the arc truncation",
+                    ));
+                }
+                let term = jet_hom::Term {
+                    power: literal.power,
+                    source: q_module::generator(
+                        self.model,
+                        source,
+                        literal.source.degree,
+                        literal.source.index,
+                    )
+                    .map_err(|error| error.at(literal.source.span))?,
+                    target: q_module::generator(
+                        self.model,
+                        target,
+                        literal.target.degree,
+                        literal.target.index,
+                    )
+                    .map_err(|error| error.at(literal.target.span))?,
+                };
+                let ty = self.model.jet_hom_type(jet_hom::Grade {
+                    diagram: jet_hom::Diagram {
+                        source,
+                        target,
+                        path,
+                    },
+                    parity: term.parity(),
+                })?;
+                let value = jet_hom::persist(self.model, vec![(term, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::JetD(value) => {
+                let value = self.expr(*value)?;
+                let Kind::JetHom(grade) = *self.model.kind(value.ty) else {
+                    return Err(self.invalid_operand(&value, "jetD", "a JetHom cochain"));
+                };
+                let ty = self.model.jet_hom_type(grade.differential())?;
+                Ok((ty, TypedForm::JetD(Box::new(value))))
+            }
             ExprForm::QTerm(literal) => {
                 let source = self.q_endpoint(literal.source.base)?;
                 let target = self.q_endpoint(literal.target.base)?;
@@ -1928,10 +2036,17 @@ impl Checker<'_> {
             }
             ExprForm::RVScale(scalar, input) => {
                 let input = self.expr(*input)?;
-                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "rvScale", "an RVHom map"));
+                let field = match self.model.kind(input.ty) {
+                    Kind::RVHom(grade) => grade.field,
+                    Kind::JetHom(grade) => self.model.jet_path(grade.diagram.path).field,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "rvScale",
+                            "an RVHom map or JetHom cochain",
+                        ))
+                    }
                 };
-                let field = grade.field;
                 field.check_element(scalar)?;
                 Ok((input.ty, TypedForm::RVScale(field, scalar, Box::new(input))))
             }
@@ -2815,6 +2930,20 @@ impl Checker<'_> {
         )
     }
 
+    fn jet_grade(&mut self, spec: JetHomSpec) -> Result<jet_hom::Grade> {
+        let source = self.q_endpoint(*spec.source)?;
+        let target = self.q_endpoint(*spec.target)?;
+        let path = self.model.jet_path_id(&spec.path)?;
+        Ok(jet_hom::Grade {
+            diagram: jet_hom::Diagram {
+                source,
+                target,
+                path,
+            },
+            parity: spec.parity,
+        })
+    }
+
     fn q_endpoint(&mut self, ty: ParsedType) -> Result<TypeId> {
         if let TypeForm::Name(name) = &ty.kind {
             if let Some(base) = self.model.q_endpoint_named(&name.text) {
@@ -3134,6 +3263,7 @@ impl Checker<'_> {
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
+                        | Kind::JetHom(..)
                         | Kind::RVPoly(..)
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
@@ -3274,6 +3404,20 @@ impl Checker<'_> {
                     return rv_hom::composition_type(self.model, left.ty, right.ty)
                         .map_err(|error| error.at(right.span));
                 }
+                let left_kind = self.model.kind(left.ty);
+                let right_kind = self.model.kind(right.ty);
+                if matches!(left_kind, Kind::JetHom(..)) || matches!(right_kind, Kind::JetHom(..)) {
+                    let Kind::JetHom(outer) = *left_kind else {
+                        return Err(self.invalid_operand(left, "ecomp", "a JetHom cochain"));
+                    };
+                    let Kind::JetHom(inner) = *right_kind else {
+                        return Err(self.invalid_operand(right, "ecomp", "a JetHom cochain"));
+                    };
+                    return self
+                        .model
+                        .jet_hom_type(jet_hom::Grade::compose(outer, inner)?);
+                }
+
                 if matches!(self.model.kind(left.ty), Kind::VBock(..))
                     || matches!(self.model.kind(right.ty), Kind::VBock(..))
                 {

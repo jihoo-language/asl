@@ -47,6 +47,7 @@ pub(crate) enum TypeForm {
     QKoszul(QSpec),
     QExt(QSpec),
     RVHom(RankVarietySpec),
+    JetHom(JetHomSpec),
     VKoszul(QSpec<i64>),
     VExt(QSpec<i64>),
     VBock(VBockSpec),
@@ -85,6 +86,10 @@ pub(crate) struct RankVarietySpec {
 pub(crate) struct RankJetSpec {
     pub(crate) source: Box<ParsedType>,
     pub(crate) target: Box<ParsedType>,
+    pub(crate) path: JetPathArg,
+}
+
+pub(crate) struct JetPathSpec {
     pub(crate) selected: Vec<usize>,
     pub(crate) modulus: usize,
     pub(crate) order: usize,
@@ -96,6 +101,25 @@ pub(crate) struct RankArithmeticSpec {
     pub(crate) target: Box<ParsedType>,
     pub(crate) selected: Vec<usize>,
     pub(crate) max_degree: usize,
+}
+
+pub(crate) enum JetPathArg {
+    Inline(JetPathSpec),
+    Named(Label),
+}
+
+pub(crate) struct JetHomSpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) path: Label,
+    pub(crate) parity: usize,
+}
+
+pub(crate) struct JetTerm {
+    pub(crate) source: MapGenerator,
+    pub(crate) target: MapGenerator,
+    pub(crate) path: Label,
+    pub(crate) power: usize,
 }
 
 pub(crate) struct QSpec<S = usize> {
@@ -254,6 +278,9 @@ pub(crate) enum ExprForm {
     PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
+    RVScale(usize, Box<ParsedExpr>),
+    JetD(Box<ParsedExpr>),
+    JetTerm(JetTerm),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
@@ -272,7 +299,6 @@ pub(crate) enum ExprForm {
     QIdentity(ParsedType, Vec<usize>),
     RVGenerator(RankVarietySpec, usize, Span),
     RVIdentity(ParsedType, Vec<usize>, usize, Vec<usize>),
-    RVScale(usize, Box<ParsedExpr>),
     RVSpecialize(usize, Vec<usize>, Box<ParsedExpr>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
@@ -347,6 +373,7 @@ pub(crate) enum StatementForm {
     RvGroebner(Label),
     RvHilbert(Label, usize),
     RankJet(RankJetSpec),
+    JetPath(Label, JetPathSpec),
     VExtDimension(QSpec<i64>),
     VBars(BarFamilySpec),
     VBarDimension(QSpec<i64>),
@@ -833,33 +860,28 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvMinors(spec, size)
             }
+            Token::Word("rvpath") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let path = self.jet_path()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::JetPath(name, path)
+            }
             Token::Word("rvjet") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let (source, target) = self.map_endpoints(0)?;
-                let selected = self.exponents()?;
-                self.expect(Token::Comma)?;
-                let (modulus, _) = self.number()?;
-                self.expect(Token::Comma)?;
-                let (order, _) = self.number()?;
-                self.expect(Token::Comma)?;
-                self.expect(Token::LBracket)?;
-                let mut coefficients = Vec::new();
-                while self.token() != Token::RBracket {
-                    coefficients.push(self.exponents()?);
-                    if !self.eat(Token::Comma)? {
-                        break;
-                    }
-                }
-                self.expect(Token::RBracket)?;
+                let path = if self.token() == Token::LBracket {
+                    JetPathArg::Inline(self.jet_path()?)
+                } else {
+                    JetPathArg::Named(self.label()?)
+                };
                 self.expect(Token::RBracket)?;
                 StatementForm::RankJet(RankJetSpec {
                     source: Box::new(source),
                     target: Box::new(target),
-                    selected,
-                    modulus,
-                    order,
-                    coefficients,
+                    path,
                 })
             }
             Token::Word("rvorbit") => {
@@ -1071,6 +1093,30 @@ impl<'src> Parser<'src> {
             selected,
             modulus,
             point,
+        })
+    }
+
+    fn jet_path(&mut self) -> Result<JetPathSpec> {
+        let selected = self.exponents()?;
+        self.expect(Token::Comma)?;
+        let (modulus, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (order, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        self.expect(Token::LBracket)?;
+        let mut coefficients = Vec::new();
+        while self.token() != Token::RBracket {
+            coefficients.push(self.exponents()?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(JetPathSpec {
+            selected,
+            modulus,
+            order,
+            coefficients,
         })
     }
 
@@ -1309,6 +1355,24 @@ impl<'src> Parser<'src> {
                 TypeForm::MapExt(source, target, s, t)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "JetHom" && self.eat(Token::LParen)? {
+            let (source, target) = self.map_endpoints(nest)?;
+            let path = self.label()?;
+            self.expect(Token::Comma)?;
+            let (parity, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            let depth = source.depth.max(target.depth) + 1;
+            return ty(
+                span,
+                TypeForm::JetHom(JetHomSpec {
+                    source: Box::new(source),
+                    target: Box::new(target),
+                    path,
+                    parity,
+                }),
+                depth,
+            );
         }
         if matches!(name.text.as_str(), "QKoszul" | "QExt") && self.eat(Token::LParen)? {
             let spec = self.q_spec(nest)?;
@@ -1768,6 +1832,13 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::PCobarWord(p, factors), 0);
                 }
+                if name.text == "rvScale" && self.eat(Token::LBracket)? {
+                    let (scalar, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::RVScale(scalar, Box::new(value)), depth);
+                }
                 if name.text == "pscale" && self.eat(Token::LBracket)? {
                     let (scalar, _) = self.number()?;
                     self.expect(Token::RBracket)?;
@@ -1894,6 +1965,31 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapExtIdentity(base), 0);
                 }
+                if name.text == "jetterm" && self.eat(Token::LBracket)? {
+                    let source = self.map_generator(nest)?;
+                    self.expect(Token::Comma)?;
+                    let target = self.map_generator(nest)?;
+                    self.expect(Token::Comma)?;
+                    let path = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (power, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::JetTerm(JetTerm {
+                            source,
+                            target,
+                            path,
+                            power,
+                        }),
+                        0,
+                    );
+                }
+                if name.text == "jetD" && self.token() == Token::LParen {
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::JetD(Box::new(value)), depth);
+                }
                 if name.text == "qterm" && self.eat(Token::LBracket)? {
                     let source = self.map_generator(nest)?;
                     self.expect(Token::Comma)?;
@@ -1949,13 +2045,6 @@ impl<'src> Parser<'src> {
                         ExprForm::RVIdentity(base, selected, modulus, point),
                         0,
                     );
-                }
-                if name.text == "rvScale" && self.eat(Token::LBracket)? {
-                    let (scalar, _) = self.number()?;
-                    self.expect(Token::RBracket)?;
-                    let input = self.paren_expr(nest)?;
-                    let depth = input.depth + 1;
-                    return expr(span, ExprForm::RVScale(scalar, Box::new(input)), depth);
                 }
                 if name.text == "rvSpec" && self.eat(Token::LBracket)? {
                     let (modulus, _) = self.number()?;

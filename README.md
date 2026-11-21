@@ -540,6 +540,14 @@ Set $R=K[u]/(u^N)$. After forgetting the internal grading, the interpreter forms
 
 The three arcs $(u,0,1)$, $(0,u,1)$, and $(u^3,u^2,1)$ through the cusp have the same residue. At order seven from `One` to `Cusp` they give block multiplicities `{1: 4}`, `{1: 2, 2: 2}`, and `{2: 2, 7: 2}`. The example also computes the blocks for endomorphisms of `Cusp`. [Margolis jet example](examples/rank-jets.asl)
 
+### Named Margolis arcs and cochains
+
+`rvpath Axis[[0,1,2], 7, 7, [[],[0,1],[1]]];` names the arc $(0,u,1)$ at order seven over $\mathbb F_4$. Use the name with `rvjet[X, Y, Axis];` or with `JetHom(X, Y, Axis, parity)`. The two parities record target degree minus source degree modulo two, and $u$ has even parity.
+
+`jetterm[X,q,i,Y,p,j,Axis,k]` gives the elementary cochain that sends generator `i` in degree `q` of `X` to $u^k$ times generator `j` in degree `p` of `Y`. The exponent `k` must be below the arc order. Use `add`, `zero`, and `rvScale[c]` for the field operations. `jetD` applies the two endpoint actions and flips the parity. `ecomp(g,f)` composes cochains on one arc, adding their parities and multiplying the powers of $u$ modulo the truncation. The differential obeys the Leibniz rule.
+
+On the $y$-axis in the Cusp example, the corrected lift $a_1+u a_3$ has differential $u^2 b_3$. The lift $a_1+u a_2+u^2 a_3$ is closed along the cusp parametrization. [Named arc example](examples/jet-hom.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.

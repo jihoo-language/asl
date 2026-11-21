@@ -8,6 +8,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::error::{Error, Result};
+use crate::jet_hom;
 use crate::map_cochain;
 use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
@@ -21,6 +22,7 @@ use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
+use crate::rank_jets::Path;
 use crate::rv_hom::{self, Hom};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::steenrod::{self, Word};
@@ -66,6 +68,7 @@ pub(crate) enum Kind {
     QKoszul(Grade),
     QExt(Grade),
     RVHom(rv_hom::Grade),
+    JetHom(jet_hom::Grade),
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
@@ -150,6 +153,7 @@ pub(crate) enum Value {
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
+    JetHom(jet_hom::Support),
     RVPoly(Polynomial),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
@@ -218,6 +222,9 @@ pub(crate) struct Model {
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
+    jet_paths: Vec<(String, Rc<Path>)>,
+    jet_path_ids: HashMap<String, jet_hom::PathId>,
+    jet_complexes: HashMap<jet_hom::Diagram, Rc<jet_hom::Complex>>,
     work: usize,
     storage: usize,
 }
@@ -230,6 +237,9 @@ impl Model {
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
             minor_bases: HashMap::new(),
+            jet_paths: Vec::new(),
+            jet_path_ids: HashMap::new(),
+            jet_complexes: HashMap::new(),
             work: MAX_WORK,
             storage: MAX_STORAGE,
         };
@@ -385,7 +395,7 @@ impl Model {
             {
                 1
             }
-            Kind::QKoszul(..) | Kind::QExt(..) | Kind::RVHom(..) => usize::MAX,
+            Kind::QKoszul(..) | Kind::QExt(..) | Kind::JetHom(..) | Kind::RVHom(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -467,6 +477,7 @@ impl Model {
                 | Kind::MapCobar(..)
                 | Kind::MapExt(..)
                 | Kind::QKoszul(..)
+                | Kind::JetHom(..)
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
                 | Kind::VKoszul(..)
@@ -761,6 +772,56 @@ impl Model {
     ) -> Result<TypeId> {
         let depth = self.types[source.0].depth.max(self.types[target.0].depth) + 1;
         self.inhabited_type(Kind::MapMay(source, target, r, s, t, f), depth)
+    }
+
+    pub(crate) fn define_jet_path(&mut self, name: Label, path: Path) -> Result<()> {
+        if self.jet_path_ids.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Margolis arc '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(2 + path.cells() + 2 * name.text.len())?;
+        let id = jet_hom::PathId(self.jet_paths.len());
+        self.jet_path_ids.insert(name.text.clone(), id);
+        self.jet_paths.push((name.text, Rc::new(path)));
+        Ok(())
+    }
+
+    pub(crate) fn jet_path_id(&self, label: &Label) -> Result<jet_hom::PathId> {
+        self.jet_path_ids
+            .get(&label.text)
+            .copied()
+            .ok_or_else(|| Error::new(label.span, format!("unknown Margolis arc '{}'", label.text)))
+    }
+
+    pub(crate) fn jet_path(&self, id: jet_hom::PathId) -> Rc<Path> {
+        self.jet_paths[id.0].1.clone()
+    }
+
+    pub(crate) fn jet_complex(
+        &mut self,
+        diagram: jet_hom::Diagram,
+    ) -> Result<Rc<jet_hom::Complex>> {
+        if let Some(complex) = self.jet_complexes.get(&diagram) {
+            return Ok(complex.clone());
+        }
+        let complex = Rc::new(jet_hom::Complex::build(self, diagram)?);
+        self.jet_complexes.insert(diagram, complex.clone());
+        Ok(complex)
+    }
+
+    pub(crate) fn jet_hom_type(&mut self, grade: jet_hom::Grade) -> Result<TypeId> {
+        if grade.parity > 1 {
+            return Err(Error::plain("JetHom parity must be zero or one"));
+        }
+        let diagram = grade.diagram;
+        let path = self.jet_path(diagram.path);
+        self.check_q_endpoints(diagram.source, diagram.target, &path.selected)?;
+        let depth = 1 + self.types[diagram.source.0]
+            .depth
+            .max(self.types[diagram.target.0].depth);
+        self.inhabited_type(Kind::JetHom(grade), depth)
     }
 
     pub(crate) fn q_koszul_type(&mut self, grade: Grade) -> Result<TypeId> {
@@ -1237,6 +1298,7 @@ impl Model {
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
             | Kind::QKoszul(..)
+            | Kind::JetHom(..)
             | Kind::QExt(..)
             | Kind::RVHom(..)
             | Kind::VKoszul(..)
@@ -1391,6 +1453,11 @@ impl Model {
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
+            Kind::JetHom(grade) => {
+                out.push("JetHom(")?;
+                self.write_jet_diagram(out, grade.diagram)?;
+                out.push(&format!(", {})", grade.parity))
+            }
             Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
             Kind::RVHom(grade) => {
@@ -1511,6 +1578,13 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_hom::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::JetHom(left), Value::JetHom(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(true);
+                }
+                self.spend(6 * left.len().min(right.len()))?;
+                Ok(left == right)
+            }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || q_koszul::compare(self, left, right)? == Ordering::Equal)
@@ -1605,6 +1679,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 rv_hom::compare(self, left, right)
+            }
+            (Value::JetHom(left), Value::JetHom(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                self.spend(6 * left.len().min(right.len()))?;
+                Ok(left.iter().rev().cmp(right.iter().rev()))
             }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1756,6 +1837,7 @@ impl Model {
                         Value::RVPoly(support.iter().map(|&index| basis[index].clone()).collect())
                     })?
                 }
+                Kind::JetHom(grade) => jet_hom::elements(self, grade, MAX_ELEMENTS)?,
                 Kind::QKoszul(ref grade) => {
                     let grade = grade.clone();
                     let basis = q_koszul::basis(
@@ -1995,6 +2077,13 @@ impl Model {
         })
     }
 
+    fn write_jet_diagram(&self, out: &mut Text, diagram: jet_hom::Diagram) -> Result<()> {
+        self.write_type(out, diagram.source, 0)?;
+        out.push(", ")?;
+        self.write_type(out, diagram.target, 0)?;
+        out.push(&format!(", {}", self.jet_paths[diagram.path.0].0))
+    }
+
     fn write_koszul_type<S: std::fmt::Display>(
         &self,
         out: &mut Text,
@@ -2146,6 +2235,31 @@ impl Model {
                         out.push(&format!("{coefficient}*"))?;
                     }
                     out.push(&format!("g{coordinate}"))?;
+                }
+                out.push("}")
+            }
+            Value::JetHom(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                self.spend(6 * terms.len())?;
+                for (index, (term, coefficient)) in terms.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    if *coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    out.push(&format!(
+                        "u^{}*e({},{}, {},{})",
+                        term.power,
+                        term.source.degree,
+                        term.source.index,
+                        term.target.degree,
+                        term.target.index,
+                    ))?;
                 }
                 out.push("}")
             }
