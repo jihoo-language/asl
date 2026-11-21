@@ -1,0 +1,280 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
+use crate::binary_field::BinaryField;
+use crate::error::{Error, Result};
+use crate::model::Model;
+use crate::rv_curve::{affine_form, affine_gcd, binary_remainder};
+use crate::rv_newton;
+use crate::rv_poly::{self, Polynomial};
+
+#[derive(Clone, Copy)]
+pub(crate) enum Query {
+    Genus,
+    PRank,
+    Points(usize),
+    LPolynomial,
+    Newton,
+}
+
+impl Query {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Genus => "rvASGenus",
+            Self::PRank => "rvASPrank",
+            Self::Points(_) => "rvASPoints",
+            Self::LPolynomial => "rvASLPolynomial",
+            Self::Newton => "rvASNewton",
+        }
+    }
+}
+
+pub(crate) struct Cover {
+    numerator: Polynomial,
+    denominator: Polynomial,
+    infinity_value: Option<bool>,
+    genus: usize,
+    p_rank: usize,
+    counts: RefCell<BTreeMap<usize, usize>>,
+    l_polynomial: RefCell<Option<Rc<[i128]>>>,
+}
+
+impl Cover {
+    pub(crate) fn build(
+        model: &mut Model,
+        width: usize,
+        forms: Vec<(usize, Polynomial)>,
+    ) -> Result<Self> {
+        if width != 2 {
+            return Err(Error::plain(
+                "rvascover requires exactly two parameter variables",
+            ));
+        }
+        let [(numerator_degree, numerator), (degree, denominator)] = forms
+            .try_into()
+            .map_err(|_| Error::plain("rvascover requires a numerator and a denominator"))?;
+        if degree == 0 || numerator_degree != degree {
+            return Err(Error::plain(
+                "rvascover forms must have the same positive degree",
+            ));
+        }
+        if denominator.is_empty() {
+            return Err(Error::plain("rvascover denominator must be nonzero"));
+        }
+        model.spend(rv_poly::cells(&numerator) + rv_poly::cells(&denominator))?;
+        let numerator = affine_form(&numerator);
+        let denominator = affine_form(&denominator);
+        let infinity_order = degree - denominator.last().unwrap()[0];
+        let numerator_at_infinity = numerator.last().is_some_and(|term| term[0] == degree);
+        if infinity_order > 0 && !numerator_at_infinity {
+            return Err(Error::plain(
+                "rvascover forms have a common projective zero at [0:1]",
+            ));
+        }
+        let gcd = affine_gcd(model, &[numerator.clone(), denominator.clone()])?;
+        if !is_one(&gcd) {
+            return Err(Error::plain(
+                "rvascover forms have common projective zeros on the chart s != 0",
+            ));
+        }
+        if infinity_order > 0 && infinity_order.is_multiple_of(2) {
+            return Err(Error::plain(
+                "Artin–Schreier pole at [0:1] must have odd order",
+            ));
+        }
+        let radical = odd_radical(model, &denominator)?;
+        let poles = radical.last().unwrap()[0] + usize::from(infinity_order > 0);
+        let genus = ((degree as u128 + poles as u128) / 2 - 1) as usize;
+        model.allocate(5 + rv_poly::cells(&numerator) + rv_poly::cells(&denominator))?;
+        Ok(Self {
+            numerator,
+            denominator,
+            infinity_value: (infinity_order == 0).then_some(numerator_at_infinity),
+            genus,
+            p_rank: poles - 1,
+            counts: RefCell::new(BTreeMap::new()),
+            l_polynomial: RefCell::new(None),
+        })
+    }
+
+    pub(crate) fn report(&self, model: &mut Model, name: &str, query: Query) -> Result<String> {
+        let value = match query {
+            Query::Genus => self.genus.to_string(),
+            Query::PRank => self.p_rank.to_string(),
+            Query::Points(extension) => {
+                let points = self.points(model, extension)?;
+                return Ok(format!("rvASPoints[{name}, {extension}] = {points}"));
+            }
+            Query::LPolynomial => format!("{:?}", self.l_polynomial(model)?),
+            Query::Newton => {
+                let polynomial = self.l_polynomial(model)?;
+                format!(
+                    "[{}]",
+                    rv_newton::integral_slopes(model, &polynomial)?.join(", ")
+                )
+            }
+        };
+        Ok(format!("{}[{name}] = {value}", query.name()))
+    }
+
+    fn points(&self, model: &mut Model, extension: usize) -> Result<usize> {
+        if let Some(&points) = self.counts.borrow().get(&extension) {
+            return Ok(points);
+        }
+        let field_size = extension_size(extension)?;
+        // Visit every field element. Budget the scan before constructing the
+        // field, then charge the sparse evaluations and field arithmetic too.
+        model.spend(field_size.saturating_mul(1 + extension))?;
+        let field = BinaryField::of_degree(model, extension)?;
+        let mut points = match self.infinity_value {
+            None => 1,
+            Some(value) => 2 * usize::from(!value || extension.is_multiple_of(2)),
+        };
+        for parameter in 0..field_size {
+            let denominator = affine_value(model, field, &self.denominator, parameter)?;
+            if denominator == 0 {
+                points += 1;
+                continue;
+            }
+            let numerator = affine_value(model, field, &self.numerator, parameter)?;
+            model.spend(field.degree())?;
+            let value = field.multiply(numerator, field.inverse(model, denominator)?);
+            if trace_zero(model, field, value)? {
+                points += 2;
+            }
+        }
+        model.allocate(3)?;
+        self.counts.borrow_mut().insert(extension, points);
+        Ok(points)
+    }
+
+    fn l_polynomial(&self, model: &mut Model) -> Result<Rc<[i128]>> {
+        if let Some(polynomial) = self.l_polynomial.borrow().as_ref() {
+            return Ok(polynomial.clone());
+        }
+        let genus = self.genus;
+        if genus >= usize::BITS as usize {
+            return Err(Error::plain(
+                "Artin–Schreier L-polynomial exceeds the point-count extension range",
+            ));
+        }
+        let mut sums = vec![0i128; genus + 1];
+        for (extension, sum) in sums.iter_mut().enumerate().skip(1) {
+            *sum = 1 + extension_size(extension)? as i128 - self.points(model, extension)? as i128;
+        }
+        let mut coefficients = vec![0i128; 2 * genus + 1];
+        coefficients[0] = 1;
+        // Newton identities for L(T)=product_i(1-alpha_i T).
+        for degree in 1..=genus {
+            model.spend(degree)?;
+            let mut numerator = 0i128;
+            for extension in 1..=degree {
+                let contribution = coefficients[degree - extension]
+                    .checked_mul(sums[extension])
+                    .ok_or_else(coefficient_limit)?;
+                numerator = numerator
+                    .checked_sub(contribution)
+                    .ok_or_else(coefficient_limit)?;
+            }
+            if numerator % degree as i128 != 0 {
+                return Err(Error::plain(
+                    "Artin–Schreier Newton identity did not give an integer coefficient",
+                ));
+            }
+            coefficients[degree] = numerator / degree as i128;
+        }
+        // Complete the coefficients by the genus-g functional equation.
+        for degree in 0..genus {
+            coefficients[2 * genus - degree] = coefficients[degree]
+                .checked_mul(1i128 << (genus - degree))
+                .ok_or_else(coefficient_limit)?;
+        }
+        model.allocate(1 + 2 * coefficients.len())?;
+        let polynomial: Rc<[i128]> = coefficients.into();
+        *self.l_polynomial.borrow_mut() = Some(polynomial.clone());
+        Ok(polynomial)
+    }
+}
+
+fn coefficient_limit() -> Error {
+    Error::plain("Artin–Schreier L-polynomial coefficient is out of range")
+}
+
+fn extension_size(extension: usize) -> Result<usize> {
+    if !(1..usize::BITS as usize).contains(&extension) {
+        return Err(Error::plain(
+            "Artin–Schreier point-count extension degree is out of range",
+        ));
+    }
+    Ok(1 << extension)
+}
+
+fn is_one(polynomial: &Polynomial) -> bool {
+    polynomial.len() == 1 && polynomial[0][0] == 0
+}
+
+fn odd_radical(model: &mut Model, denominator: &Polynomial) -> Result<Polynomial> {
+    let (radical, mut remaining) = squarefree_layer(model, denominator)?;
+    while !is_one(&remaining) {
+        let (layer, next) = squarefree_layer(model, &remaining)?;
+        if !binary_remainder(model, &radical, &layer)?.is_empty() {
+            return Err(Error::plain(
+                "Artin–Schreier finite poles must all have odd order",
+            ));
+        }
+        remaining = next;
+    }
+    Ok(radical)
+}
+
+fn squarefree_layer(
+    model: &mut Model,
+    polynomial: &Polynomial,
+) -> Result<(Polynomial, Polynomial)> {
+    model.spend(rv_poly::cells(polynomial))?;
+    let derivative = polynomial
+        .iter()
+        .filter(|term| term[0] & 1 != 0)
+        .map(|term| [term[0] - 1].into())
+        .collect();
+    let square = affine_gcd(model, &[polynomial.clone(), derivative])?;
+    let odd = rv_poly::exact_divide(model, polynomial, &square)?;
+    // Every irreducible factor of the derivative gcd occurs with even
+    // multiplicity. Taking its square root peels another binary digit.
+    model.spend(rv_poly::cells(&square))?;
+    let remaining = square.iter().map(|term| [term[0] / 2].into()).collect();
+    Ok((odd, remaining))
+}
+
+fn affine_value(
+    model: &mut Model,
+    field: BinaryField,
+    polynomial: &Polynomial,
+    point: usize,
+) -> Result<usize> {
+    let Some((leading, tail)) = polynomial.split_last() else {
+        return Ok(0);
+    };
+    let mut power = leading[0];
+    let mut value = 1;
+    model.spend(field.degree() * polynomial.len())?;
+    for term in tail.iter().rev() {
+        value = field.multiply(value, field.power(model, point, (power - term[0]) as u128)?) ^ 1;
+        power = term[0];
+    }
+    Ok(field.multiply(value, field.power(model, point, power as u128)?))
+}
+
+fn trace_zero(model: &mut Model, field: BinaryField, mut value: usize) -> Result<bool> {
+    if value <= 1 {
+        return Ok(value == 0 || field.degree().is_multiple_of(2));
+    }
+    let mut trace = value;
+    model.spend(field.degree() * (field.degree() - 1))?;
+    for _ in 1..field.degree() {
+        value = field.multiply(value, value);
+        trace ^= value;
+    }
+    Ok(trace == 0)
+}

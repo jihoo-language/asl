@@ -8,6 +8,7 @@ use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
+use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -524,6 +525,8 @@ pub(crate) enum StatementForm {
     RvRees(ReesOp, Label, Label, Vec<usize>, Vec<ParsedExpr>),
     RvGauss(GaussOp, Label, Vec<usize>, ParsedExpr),
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvAsQuery(AsQuery, Label),
     RvOrders(Label),
     RvFrobeniusOrders(Label, usize),
     RvOrderAt(usize, Vec<usize>, ParsedExpr),
@@ -1133,6 +1136,35 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvIdeal(name, selected, self.rv_generators()?)
+            }
+            Token::Word("rvascover") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvAsCover(name, variables, self.rv_generators()?)
+            }
+            Token::Word(
+                "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton",
+            ) => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvASGenus") => AsQuery::Genus,
+                    Token::Word("rvASPrank") => AsQuery::PRank,
+                    Token::Word("rvASPoints") => {
+                        self.expect(Token::Comma)?;
+                        AsQuery::Points(self.number()?.0)
+                    }
+                    Token::Word("rvASLPolynomial") => AsQuery::LPolynomial,
+                    Token::Word("rvASNewton") => AsQuery::Newton,
+                    _ => unreachable!(),
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvAsQuery(query, name)
             }
             Token::Word("rvcurve") => {
                 self.advance()?;

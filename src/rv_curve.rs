@@ -51,14 +51,7 @@ impl Curve {
             model.spend(rv_poly::cells(&form))?;
             cells += 1 + 2 * form.len();
             rv_ideal::check_storage(cells)?;
-            // Exponent vectors are (s,t). On s=1 the exponent of t reverses
-            // the order of the homogeneous support.
-            affine.push(
-                form.iter()
-                    .rev()
-                    .map(|term| [term[1]].into())
-                    .collect::<Polynomial>(),
-            );
+            affine.push(affine_form(&form));
         }
         if !affine
             .iter()
@@ -377,7 +370,13 @@ fn is_one(polynomial: &[Monomial]) -> bool {
     polynomial.len() == 1 && polynomial[0][0] == 0
 }
 
-fn affine_gcd(model: &mut Model, polynomials: &[Polynomial]) -> Result<Polynomial> {
+pub(crate) fn affine_form(form: &Polynomial) -> Polynomial {
+    // Exponent vectors are (s,t). On s=1 the exponent of t reverses
+    // the order of the homogeneous support.
+    form.iter().rev().map(|term| [term[1]].into()).collect()
+}
+
+pub(crate) fn affine_gcd(model: &mut Model, polynomials: &[Polynomial]) -> Result<Polynomial> {
     let mut gcd: Polynomial = [].into();
     for polynomial in polynomials.iter().filter(|p| !p.is_empty()) {
         let mut other = polynomial.clone();
@@ -393,7 +392,7 @@ fn affine_gcd(model: &mut Model, polynomials: &[Polynomial]) -> Result<Polynomia
     Ok(gcd)
 }
 
-fn binary_remainder(
+pub(crate) fn binary_remainder(
     model: &mut Model,
     numerator: &[Monomial],
     denominator: &[Monomial],

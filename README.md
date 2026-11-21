@@ -715,6 +715,16 @@ For the cuspidal cubic and $H=(x,y)$, the normal cone in the chart $z\ne0$ has e
 
 The Ballico–Hefez parametrization $[s^5:s^4t+st^4:t^5]$ has ordinary Hasse orders $[0,1,4]$. For $q=4$ its Frobenius orders are $[0,4]$ and its Wronskian is $(st^4+s^4t)(st^{16}+s^{16}t)$. It vanishes twice at each point of $\mathbb P^1(\mathbb F_4)$ and once at each other point of $\mathbb P^1(\mathbb F_{16})$. For $q=2$ or $16$ the Frobenius orders are $[0,1]$. [Frobenius order and ramification example](examples/rank-frobenius.asl)
 
+#### Artin–Schreier covers
+
+`rvascover C[[s_idx,t_idx]] { F,G };` defines the smooth projective normalization of $y^2+y=F/G$. The binary forms must have the same positive degree $d$ and no common geometric zero. Each geometric pole of $F/G$ must have odd order. If $q(T)=G(1,T)$, the infinity order is $d-\deg q$. The quotient $q/\gcd(q,q')$ gives the finite odd-pole radical. Square-free layers of the derivative gcd check that this radical contains every finite pole.
+
+For $n$ geometric poles, `rvASGenus[C];` prints $(d+n)/2-1$ and `rvASPrank[C];` prints $n-1$. `rvASPoints[C,m];` counts points over $\mathbb F_{2^m}$. A rational pole contributes one point. At every other rational parameter, the fiber has two points when the absolute trace of $F/G$ is zero and zero points when it is one.
+
+`rvASLPolynomial[C];` prints the signed coefficient list of the zeta numerator. It computes the point counts through extension degree equal to the genus, then uses Newton identities and the functional equation. `rvASNewton[C];` gives the slopes and horizontal multiplicities of the lower hull of $(i,v_2(c_i))$ for its nonzero coefficients. The genus-zero numerator is `[1]`. Point queries may use higher extension degrees, subject to the field enumeration and computation budgets.
+
+The covers $y^2+y=t^3$ and $y^2+y=t+1/t$ have genus one and $L$-polynomials $1+2T^2$ and $1+T+2T^2$, respectively. The genus-two cover $y^2+y=t^5$ has $L=1+4T^4$. The denominator $t^2+t+1$ of the fourth example has two geometric poles and gives $p$-rank one even though neither pole is rational over $\mathbb F_2$. [Artin–Schreier cover example](examples/rank-artin-schreier.asl)
+
 
 ### Koszul syzygies and their products
 

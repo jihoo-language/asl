@@ -42,6 +42,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
@@ -618,6 +619,18 @@ impl Engine {
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
+            }
+            StatementForm::RvAsCover(name, variables, expressions) => {
+                self.model.check_new_rv_as_cover(&name)?;
+                let selected = q_koszul::indices(&mut self.model, variables)?;
+                let forms = self.rv_generator_values(expressions, &selected, "rvascover")?;
+                let cover = RvAsCover::build(&mut self.model, selected.len(), forms)?;
+                self.model.define_rv_as_cover(name.text, cover);
+                return Ok(None);
+            }
+            StatementForm::RvAsQuery(query, name) => {
+                let cover = self.model.rv_as_cover(&name)?;
+                cover.report(&mut self.model, &name.text, query)?
             }
             StatementForm::RvCurve(name, variables, expressions) => {
                 self.model.check_new_rv_curve(&name)?;

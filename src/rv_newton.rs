@@ -211,15 +211,14 @@ fn gcd(mut left: u128, mut right: u128) -> u128 {
     left
 }
 
-fn slope_list(
+fn lower_hull(
     model: &mut Model,
-    characteristic: &[Polynomial],
-    extension: usize,
-) -> Result<Vec<String>> {
+    valuations: impl IntoIterator<Item = Option<i64>>,
+) -> Result<Vec<Vertex>> {
     let mut vertices = Vec::new();
-    for (degree, coefficient) in characteristic.iter().enumerate() {
+    for (degree, valuation) in valuations.into_iter().enumerate() {
         model.spend(1)?;
-        let Some(&(valuation, _)) = coefficient.first() else {
+        let Some(valuation) = valuation else {
             continue;
         };
         let next = Vertex { degree, valuation };
@@ -232,22 +231,58 @@ fn slope_list(
         }
         vertices.push(next);
     }
+    Ok(vertices)
+}
+
+fn slope_list(
+    model: &mut Model,
+    characteristic: &[Polynomial],
+    extension: usize,
+) -> Result<Vec<String>> {
+    let vertices = lower_hull(
+        model,
+        characteristic
+            .iter()
+            .map(|p| p.first().map(|&(valuation, _)| valuation)),
+    )?;
     let mut slopes = Vec::new();
     for edge in vertices.windows(2).rev() {
         let [a, b] = edge else { unreachable!() };
         let width = b.degree - a.degree;
         let numerator = i128::from(a.valuation) - i128::from(b.valuation);
         let denominator = width as i128 * extension as i128;
-        let divisor = gcd(numerator.unsigned_abs(), denominator as u128) as i128;
-        let (numerator, denominator) = (numerator / divisor, denominator / divisor);
-        let slope = if denominator == 1 {
-            format!("{numerator}")
-        } else {
-            format!("{numerator}/{denominator}")
-        };
-        slopes.push(format!("{slope}: {width}"));
+        slopes.push(format_slope(numerator, denominator, width));
     }
     Ok(slopes)
+}
+
+pub(crate) fn integral_slopes(model: &mut Model, coefficients: &[i128]) -> Result<Vec<String>> {
+    let vertices = lower_hull(
+        model,
+        coefficients.iter().map(|&coefficient| {
+            (coefficient != 0).then(|| i64::from(coefficient.trailing_zeros()))
+        }),
+    )?;
+    Ok(vertices
+        .windows(2)
+        .map(|edge| {
+            let [a, b] = edge else { unreachable!() };
+            let width = b.degree - a.degree;
+            let numerator = i128::from(b.valuation) - i128::from(a.valuation);
+            format_slope(numerator, width as i128, width)
+        })
+        .collect())
+}
+
+fn format_slope(numerator: i128, denominator: i128, width: usize) -> String {
+    let divisor = gcd(numerator.unsigned_abs(), denominator as u128) as i128;
+    let (numerator, denominator) = (numerator / divisor, denominator / divisor);
+    let slope = if denominator == 1 {
+        format!("{numerator}")
+    } else {
+        format!("{numerator}/{denominator}")
+    };
+    format!("{slope}: {width}")
 }
 
 pub(crate) fn slopes(

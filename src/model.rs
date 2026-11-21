@@ -28,6 +28,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
@@ -256,6 +257,7 @@ pub(crate) struct Model {
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
+    rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
@@ -276,6 +278,7 @@ impl Model {
             v_bars: HashMap::new(),
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
+            rv_as_covers: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
@@ -1049,6 +1052,29 @@ impl Model {
     pub(crate) fn rv_ideal(&self, name: &Label) -> Result<Rc<RvIdeal>> {
         self.rv_ideal_named(&name.text)
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
+    }
+
+    pub(crate) fn rv_as_cover(&self, name: &Label) -> Result<Rc<RvAsCover>> {
+        self.rv_as_covers.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Artin–Schreier cover '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn check_new_rv_as_cover(&self, name: &Label) -> Result<()> {
+        if self.rv_as_covers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Artin–Schreier cover '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_rv_as_cover(&mut self, name: String, cover: RvAsCover) {
+        self.rv_as_covers.insert(name, Rc::new(cover));
     }
 
     pub(crate) fn rv_curve(&self, name: &Label) -> Result<Rc<RvCurve>> {
