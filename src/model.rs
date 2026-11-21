@@ -90,6 +90,7 @@ pub(crate) enum Kind {
     RVPoly(q_koszul::Indices, usize),
     BP(bp::Shape),
     BPRel(bp_rel::Shape),
+    BPRelExt(bp_rel::Grade),
     BPPage(bp_page::Grade),
     BPExt(bp_classes::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
@@ -457,7 +458,11 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
-            Kind::RVPoly(..) | Kind::BP(..) | Kind::BPRel(..) | Kind::BPExt(..) => usize::MAX,
+            Kind::RVPoly(..)
+            | Kind::BP(..)
+            | Kind::BPRel(..)
+            | Kind::BPExt(..)
+            | Kind::BPRelExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -548,6 +553,7 @@ impl Model {
                 | Kind::BP(..)
                 | Kind::BPRel(..)
                 | Kind::BPExt(..)
+                | Kind::BPRelExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -997,14 +1003,19 @@ impl Model {
         self.inhabited_type(Kind::BPExt(grade), 0)
     }
 
+    pub(crate) fn bp_rel_ext_type(&mut self, grade: bp_rel::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPRelExt(grade), 0)
+    }
+
     pub(crate) fn bp_ext(&mut self, ty: TypeId) -> Result<Rc<bp_classes::Cohomology>> {
         if let Some(group) = &self.types[ty.0].bp_ext {
             return Ok(group.clone());
         }
-        let Kind::BPExt(grade) = self.types[ty.0].kind else {
-            unreachable!()
-        };
-        let group = Rc::new(bp_classes::Cohomology::build(self, grade)?);
+        let group = Rc::new(match self.types[ty.0].kind {
+            Kind::BPExt(grade) => bp_classes::Cohomology::build(self, grade)?,
+            Kind::BPRelExt(grade) => bp_classes::Cohomology::build_relative(self, grade)?,
+            _ => unreachable!(),
+        });
         self.types[ty.0].bp_ext = Some(group.clone());
         Ok(group)
     }
@@ -1547,6 +1558,7 @@ impl Model {
             | Kind::BP(..)
             | Kind::BPRel(..)
             | Kind::BPExt(..)
+            | Kind::BPRelExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1726,6 +1738,14 @@ impl Model {
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
+            Kind::BPRelExt(grade) => out.push(&format!(
+                "BPRelExt({}, {}, {}, {}, {})",
+                grade.shape.upper.prime,
+                grade.shape.lower,
+                grade.shape.upper.height,
+                grade.shape.upper.arrows,
+                grade.t,
+            )),
             Kind::BPRel(shape) => out.push(&format!(
                 "BPRel({}, {}, {}, {})",
                 shape.upper.prime, shape.lower, shape.upper.height, shape.upper.arrows,
@@ -2190,7 +2210,9 @@ impl Model {
                         "cannot enumerate an integral BP relative cochain space",
                     ))
                 }
-                Kind::BPExt(..) => self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?,
+                Kind::BPExt(..) | Kind::BPRelExt(..) => {
+                    self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
                 Kind::RVBar(grade) => {
                     let basis = rv_bar::basis(
                         self,

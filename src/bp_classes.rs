@@ -3,8 +3,9 @@ use std::cmp::Ordering;
 use std::rc::Rc;
 
 use crate::bp::{self, Shape};
-use crate::bp_ext;
+use crate::bp_ext::{self, Domain};
 use crate::bp_polynomial::{Monomial, Polynomial};
+use crate::bp_rel;
 use crate::bp_smith::{PrimaryFrame, Projector};
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
@@ -17,10 +18,6 @@ pub(crate) struct Grade {
 }
 
 impl Grade {
-    pub(crate) fn is_free(self) -> bool {
-        self.shape.arrows == 0 && self.t == 0
-    }
-
     pub(crate) fn cup(self, other: Self) -> Result<Self> {
         let shape = self.shape.cup(other.shape)?;
         let t = self
@@ -34,7 +31,8 @@ impl Grade {
 pub(crate) type Support = Rc<[(usize, i128)]>;
 
 pub(crate) struct Cohomology {
-    grade: Grade,
+    domain: Domain,
+    t: usize,
     pub(crate) invariants: bp_ext::Group,
     frame: OnceCell<Frame>,
 }
@@ -47,13 +45,26 @@ struct Frame {
 
 impl Cohomology {
     pub(crate) fn build(model: &mut Model, grade: Grade) -> Result<Self> {
-        let invariants = bp_ext::group(model, grade.shape, grade.t)?;
+        Self::for_domain(model, Domain::absolute(grade.shape), grade.t)
+    }
+
+    pub(crate) fn build_relative(model: &mut Model, grade: bp_rel::Grade) -> Result<Self> {
+        Self::for_domain(model, grade.shape.domain(), grade.t)
+    }
+
+    fn for_domain(model: &mut Model, domain: Domain, t: usize) -> Result<Self> {
+        let invariants = domain.group(model, t)?;
         model.allocate(2 * invariants.torsion.len())?;
         Ok(Self {
-            grade,
+            domain,
+            t,
             invariants,
             frame: OnceCell::new(),
         })
+    }
+
+    fn is_free(&self) -> bool {
+        self.invariants.free != 0
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -69,14 +80,13 @@ impl Cohomology {
     }
 
     fn build_frame(&self, model: &mut Model) -> Result<Frame> {
-        let shape = self.grade.shape;
-        let t = self.grade.t;
-        let previous = bp_ext::previous_shape(shape)?;
-        let (source, rank) = bp_ext::incoming_basis(model, previous, t)?;
-        let basis = bp_ext::basis(model, shape, t)?;
-        let incoming = bp_ext::matrix(model, previous, &source, &basis)?;
+        let previous = self.domain.previous()?;
+        let (source, rank) = previous.incoming_basis(model, self.t)?;
+        let basis = self.domain.basis(model, self.t)?;
+        let incoming = previous.matrix(model, &source, &basis)?;
         let orders = &self.invariants.torsion;
-        let smith = PrimaryFrame::build(model, &incoming, shape.prime, rank, orders)?;
+        let prime = self.domain.shape.prime;
+        let smith = PrimaryFrame::build(model, &incoming, prime, rank, orders)?;
         let mut cells = basis
             .iter()
             .map(|monomial| 1 + 2 * monomial.len())
@@ -125,7 +135,7 @@ impl Cohomology {
         if cycle.is_zero() {
             return Ok([].into());
         }
-        if self.grade.is_free() {
+        if self.is_free() {
             let coefficient = cycle.terms().next().unwrap().1;
             return coordinates(model, vec![(0, coefficient)]);
         }
@@ -152,7 +162,7 @@ impl Cohomology {
         if support.is_empty() {
             return Ok(Polynomial::default());
         }
-        if self.grade.is_free() {
+        if self.is_free() {
             return Ok(Polynomial::integer(support[0].1));
         }
         let frame = self.frame(model)?;
@@ -166,7 +176,7 @@ impl Cohomology {
     }
 
     pub(crate) fn elements(&self, model: &mut Model, limit: usize) -> Result<Vec<Value>> {
-        if self.grade.is_free() {
+        if self.is_free() {
             return Err(Error::plain(
                 "cannot enumerate the infinite free BP Ext group",
             ));
@@ -230,21 +240,28 @@ pub(crate) fn class(model: &mut Model, ty: TypeId, cycle: &Polynomial) -> Result
     if cycle.is_zero() {
         return Ok(zero());
     }
-    let Kind::BPExt(grade) = *model.kind(ty) else {
-        unreachable!()
+    let (domain, t) = match *model.kind(ty) {
+        Kind::BPExt(grade) => (Domain::absolute(grade.shape), grade.t),
+        Kind::BPRelExt(grade) => (grade.shape.domain(), grade.t),
+        _ => unreachable!(),
     };
-    bp_ext::validate_cycle(model, grade.shape, grade.t, cycle)?;
+    domain.validate_cycle(model, t, cycle)?;
     let group = model.bp_ext(ty)?;
     Ok(Value::BPExt(group.project(model, cycle)?))
 }
 
 pub(crate) fn representative(model: &mut Model, ty: TypeId, support: &Support) -> Result<Value> {
+    let relative = matches!(model.kind(ty), Kind::BPRelExt(..));
     if support.is_empty() {
-        return Ok(bp::zero());
+        return Ok(if relative { bp_rel::zero() } else { bp::zero() });
     }
     let group = model.bp_ext(ty)?;
     let polynomial = group.representative(model, support)?;
-    bp::persist(model, polynomial)
+    if relative {
+        bp_rel::persist(model, polynomial)
+    } else {
+        bp::persist(model, polynomial)
+    }
 }
 
 pub(crate) fn add(model: &mut Model, ty: TypeId, left: &Support, right: &Support) -> Result<Value> {
@@ -335,18 +352,18 @@ pub(crate) fn cup(
     let left_group = model.bp_ext(left_ty)?;
     let right_group = model.bp_ext(right_ty)?;
     // The empty arrow word with integer coefficient acts by its scalar.
-    if left_group.grade.is_free() {
+    if left_group.is_free() {
         return scale(model, target, right, left[0].1);
     }
-    if right_group.grade.is_free() {
+    if right_group.is_free() {
         return scale(model, target, left, right[0].1);
     }
     let f = left_group.representative(model, left)?;
     let g = right_group.representative(model, right)?;
     let product = bp::cup(
         model,
-        left_group.grade.shape,
-        right_group.grade.shape,
+        left_group.domain.shape,
+        right_group.domain.shape,
         &f,
         &g,
     )?;

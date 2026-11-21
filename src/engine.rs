@@ -1819,6 +1819,38 @@ impl Engine {
                         let quotient = bp_rel::quotient(&mut self.model, *shape, &cochain)?;
                         bp_rel::persist(&mut self.model, quotient)
                     }
+                    (BpRelOp::Quotient(_), Value::BPExt(class)) => {
+                        if class.is_empty() {
+                            return Ok(bp_classes::zero());
+                        }
+                        let representative = self
+                            .model
+                            .bp_ext(input.ty)?
+                            .representative(&mut self.model, &class)?;
+                        let quotient = shape.domain().project(&mut self.model, &representative)?;
+                        bp_classes::class(&mut self.model, expr.ty, &quotient)
+                    }
+                    (BpRelOp::Class(_), Value::BPRel(cycle)) => {
+                        bp_classes::class(&mut self.model, expr.ty, &cycle)
+                    }
+                    (BpRelOp::Representative, Value::BPExt(class)) => {
+                        bp_classes::representative(&mut self.model, input.ty, &class)
+                    }
+                    (BpRelOp::HeightDelta, Value::BPRel(cycle)) => {
+                        let image = bp_rel::connecting(&mut self.model, *shape, &cycle)?;
+                        bp::persist(&mut self.model, image)
+                    }
+                    (BpRelOp::HeightDelta, Value::BPExt(class)) => {
+                        if class.is_empty() {
+                            return Ok(bp_classes::zero());
+                        }
+                        let representative = self
+                            .model
+                            .bp_ext(input.ty)?
+                            .representative(&mut self.model, &class)?;
+                        let image = bp_rel::connecting(&mut self.model, *shape, &representative)?;
+                        bp_classes::class(&mut self.model, expr.ty, &image)
+                    }
                     (BpRelOp::Lift, Value::BPRel(cochain)) => Ok(Value::BP(cochain)),
                     (BpRelOp::Differential, Value::BPRel(cochain)) => {
                         let result = shape.domain().differential(&mut self.model, &cochain)?;
@@ -2515,6 +2547,10 @@ impl Checker<'_> {
                 let grade = self.bp_page_grade(mode, spec)?;
                 self.model.bp_page_type(grade)
             }
+            TypeForm::BPRelExt(spec, t) => {
+                let shape = self.bp_relative_shape(spec)?;
+                self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })
+            }
             TypeForm::BPRel(spec) => {
                 let shape = self.bp_relative_shape(spec)?;
                 self.model.bp_rel_type(shape)
@@ -2648,7 +2684,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
-                    Kind::BPExt(..) => bp_classes::zero(),
+                    Kind::BPExt(..) | Kind::BPRelExt(..) => bp_classes::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -3226,27 +3262,76 @@ impl Checker<'_> {
             }
             ExprForm::BpRelOperation(operation, input) => {
                 let input = self.expr(*input)?;
-                let (ty, shape) = match operation {
-                    BpRelOp::Quotient(lower) => {
+                let (ty, shape) = match (operation, self.model.kind(input.ty).clone()) {
+                    (BpRelOp::Quotient(lower), Kind::BPExt(grade)) => {
+                        let shape = bp_rel::Shape::with_lower(grade.shape, lower)?;
+                        (
+                            self.model
+                                .bp_rel_ext_type(bp_rel::Grade { shape, t: grade.t })?,
+                            shape,
+                        )
+                    }
+                    (BpRelOp::Quotient(lower), _) => {
                         let upper = self.bp_shape(&input, "bpRel")?;
                         let shape = bp_rel::Shape::with_lower(upper, lower)?;
                         (self.model.bp_rel_type(shape)?, shape)
                     }
-                    BpRelOp::Lift => {
-                        let Kind::BPRel(shape) = *self.model.kind(input.ty) else {
-                            return Err(self.invalid_operand(
-                                &input,
-                                "bpRelLift",
-                                "a BPRel cochain",
-                            ));
-                        };
+                    (BpRelOp::Lift, Kind::BPRel(shape)) => {
                         (self.model.bp_type(shape.upper)?, shape)
+                    }
+                    (BpRelOp::Class(t), Kind::BPRel(shape)) => (
+                        self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?,
+                        shape,
+                    ),
+                    (BpRelOp::Representative, Kind::BPRelExt(grade)) => {
+                        (self.model.bp_rel_type(grade.shape)?, grade.shape)
+                    }
+                    (BpRelOp::HeightDelta, Kind::BPRel(shape)) => {
+                        (self.model.bp_type(shape.next()?.lower_shape())?, shape)
+                    }
+                    (BpRelOp::HeightDelta, Kind::BPRelExt(grade)) => {
+                        let shape = grade.shape.next()?.lower_shape();
+                        let ty = self
+                            .model
+                            .bp_ext_type(bp_classes::Grade { shape, t: grade.t })?;
+                        (ty, grade.shape)
+                    }
+                    (BpRelOp::Lift, _) => {
+                        return Err(self.invalid_operand(&input, "bpRelLift", "a BPRel cochain"))
+                    }
+                    (BpRelOp::Class(_), _) => {
+                        return Err(self.invalid_operand(&input, "bpRelClass", "a BPRel cochain"))
+                    }
+                    (BpRelOp::Representative, _) => {
+                        return Err(self.invalid_operand(&input, "bpRelRep", "a BPRelExt class"))
+                    }
+                    (BpRelOp::HeightDelta, _) => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "bpHeightDelta",
+                            "a BPRel cochain or BPRelExt class",
+                        ))
                     }
                     _ => unreachable!(),
                 };
                 Ok((
                     ty,
                     TypedForm::BpRelOperation(operation, shape, Box::new(input)),
+                ))
+            }
+            ExprForm::BpRelGenerator(spec, t, index, at) => {
+                let shape = self.bp_relative_shape(spec)?;
+                let ty = self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bprelgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
                 ))
             }
             ExprForm::BpExtGenerator(spec, t, index, at) => {
@@ -3277,11 +3362,14 @@ impl Checker<'_> {
                         self.model.bp_type(grade.shape)?
                     }
                     BpExtOp::Scale(_) => {
-                        if !matches!(self.model.kind(input.ty), Kind::BPExt(..) | Kind::BPRel(..)) {
+                        if !matches!(
+                            self.model.kind(input.ty),
+                            Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..)
+                        ) {
                             return Err(self.invalid_operand(
                                 &input,
                                 "bpScale",
-                                "a BPExt class or BPRel cochain",
+                                "a BPExt class, BPRel cochain, or BPRelExt class",
                             ));
                         }
                         input.ty
@@ -3293,7 +3381,7 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 let kind = self.model.kind(input.ty);
                 if matches!(operation, bp::Operation::Negate)
-                    && matches!(kind, Kind::BPExt(..) | Kind::BPRel(..))
+                    && matches!(kind, Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..))
                 {
                     return Ok((
                         input.ty,
@@ -4935,6 +5023,7 @@ impl Checker<'_> {
                         | Kind::BP(..)
                         | Kind::BPRel(..)
                         | Kind::BPExt(..)
+                        | Kind::BPRelExt(..)
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
                         | Kind::RVLaurent(..)

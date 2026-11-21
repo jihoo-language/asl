@@ -12,6 +12,12 @@ pub(crate) struct Shape {
     pub(crate) lower: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Grade {
+    pub(crate) shape: Shape,
+    pub(crate) t: usize,
+}
+
 impl Shape {
     pub(crate) fn new(
         model: &mut Model,
@@ -45,6 +51,13 @@ impl Shape {
         })
     }
 
+    pub(crate) fn lower_shape(self) -> bp::Shape {
+        bp::Shape {
+            height: self.lower,
+            ..self.upper
+        }
+    }
+
     pub(crate) fn domain(self) -> Domain {
         Domain::relative(self.upper, self.lower)
     }
@@ -59,6 +72,24 @@ pub(crate) fn retains(monomial: &Monomial, lower: usize, upper: usize) -> bool {
 pub(crate) fn quotient(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Polynomial> {
     bp_ext::check_normalized(model, shape.upper, input)?;
     shape.domain().project(model, input)
+}
+
+pub(crate) fn connecting(
+    model: &mut Model,
+    shape: Shape,
+    cycle: &Polynomial,
+) -> Result<Polynomial> {
+    let image = bp::differential(model, shape.upper, cycle)?;
+    model.spend(image.cells())?;
+    if image
+        .terms()
+        .any(|(monomial, _)| retains(monomial, shape.lower, shape.upper.height))
+    {
+        return Err(Error::plain(
+            "bpHeightDelta requires a closed relative cochain",
+        ));
+    }
+    bp::reindex_height(model, shape.upper.height, shape.lower, &image)
 }
 
 pub(crate) fn persist(model: &mut Model, cochain: Polynomial) -> Result<Value> {

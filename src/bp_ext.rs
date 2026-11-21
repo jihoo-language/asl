@@ -41,7 +41,7 @@ impl Domain {
         }
     }
 
-    fn previous(self) -> Result<Self> {
+    pub(crate) fn previous(self) -> Result<Self> {
         Ok(Self {
             shape: previous_shape(self.shape)?,
             ..self
@@ -123,14 +123,6 @@ impl Domain {
 
 pub(crate) fn group(model: &mut Model, shape: Shape, t: usize) -> Result<Group> {
     Domain::absolute(shape).group(model, t)
-}
-
-pub(crate) fn incoming_basis(
-    model: &mut Model,
-    shape: Shape,
-    t: usize,
-) -> Result<(Vec<Monomial>, usize)> {
-    Domain::absolute(shape).incoming_basis(model, t)
 }
 
 fn exact_rank(dimension: usize, incoming: usize) -> Result<usize> {
@@ -352,15 +344,6 @@ fn finite_order(
 
 fn order_overflow() -> Error {
     Error::plain("BP integral class order or its multiple exceeds the signed i128 range")
-}
-
-pub(crate) fn validate_cycle(
-    model: &mut Model,
-    shape: Shape,
-    t: usize,
-    cycle: &Polynomial,
-) -> Result<()> {
-    Domain::absolute(shape).validate_cycle(model, t, cycle)
 }
 
 pub(crate) fn check_normalized(
