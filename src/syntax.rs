@@ -57,6 +57,14 @@ pub(crate) enum TypeForm {
     Arrow(Box<ParsedType>, Box<ParsedType>),
 }
 
+pub(crate) struct RankVarietySpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) selected: Vec<usize>,
+    pub(crate) modulus: usize,
+    pub(crate) point: Option<Vec<usize>>,
+}
+
 pub(crate) struct QSpec<S = usize> {
     pub(crate) source: Box<ParsedType>,
     pub(crate) target: Box<ParsedType>,
@@ -277,6 +285,7 @@ pub(crate) enum StatementForm {
     MapExtDimension(ParsedType, ParsedType, usize, i64),
     MapMayDimension(MapMaySpec),
     QExtDimension(QSpec),
+    RankVariety(RankVarietySpec),
     VExtDimension(QSpec<i64>),
     VBockDimension(VBockSpec),
     MayDimension(usize, usize, usize, usize),
@@ -708,6 +717,29 @@ impl<'src> Parser<'src> {
                 let (source, target, s, t) = self.map_bidegree(0)?;
                 self.expect(Token::RBracket)?;
                 StatementForm::MapExtDimension(source, target, s, t)
+            }
+            Token::Word("rvdim" | "rvspectrum") => {
+                let affine = self.token() == Token::Word("rvdim");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (source, target) = self.map_endpoints(0)?;
+                let selected = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let (modulus, _) = self.number()?;
+                let point = if affine {
+                    self.expect(Token::Comma)?;
+                    Some(self.exponents()?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RankVariety(RankVarietySpec {
+                    source: Box::new(source),
+                    target: Box::new(target),
+                    selected,
+                    modulus,
+                    point,
+                })
             }
             Token::Word("qextdim") => {
                 self.advance()?;

@@ -497,7 +497,12 @@ impl Model {
         Ok(())
     }
 
-    fn check_q_endpoints(&self, source: TypeId, target: TypeId, selected: &[usize]) -> Result<()> {
+    pub(crate) fn check_q_endpoints(
+        &self,
+        source: TypeId,
+        target: TypeId,
+        selected: &[usize],
+    ) -> Result<()> {
         for endpoint in [source, target] {
             if let Some(module) = &self.types[endpoint.0].q_module {
                 module.check_selection(selected)?;

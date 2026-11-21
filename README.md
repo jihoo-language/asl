@@ -476,6 +476,17 @@ awk -v m=97 -f examples/flash-bockstein.awk | nix run path:. -- -
 
 The output is `VBock(One, Flash, [0, 1], 97, 1, 2, 97){g0}`. The generator checks the interpreter's source-size limit before emitting the program.
 
+## Rank varieties over binary extension fields
+
+`rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.
+
+The bits of `modulus` encode the coefficients of an irreducible polynomial over $\mathbb F_2$, from the constant term upward. For example, `3` gives $\mathbb F_2$, `7` gives $\mathbb F_4$ using $x^2+x+1$, and `11` gives $\mathbb F_8$ using $x^3+x+1$. For a modulus of degree $m$, each coefficient of `point` is an integer from zero to $2^m-1$ encoding a polynomial of degree below $m$. The interpreter reduces the action matrices over that field and uses $\dim H=\dim C-2\operatorname{rank}Q(\lambda)$.
+
+`rvspectrum[X, Y, I, modulus];` reports each Hom dimension with its multiplicity among projective points. The first nonzero coordinate is normalized to one, so every projective point is counted once. A spectrum can enumerate up to 4,096 projective points. An empty selection gives an empty spectrum.
+
+For the example module, the determinant of the three-by-three action block is $\lambda_1^3+\lambda_0^2\lambda_2$. In the chart $\lambda_2=1$, the equation parametrizes as $(\lambda_0,\lambda_1)=(r^3,r^2)$. At a nonzero point the inverse parameter is $r=\lambda_0/\lambda_1$. The cusp has Margolis dimension four, and the remaining $q-1$ affine curve points and the one point at infinity have dimension two over $\mathbb F_q$. The other $q^2$ projective points have dimension zero. [Rank variety example](examples/rank-variety.asl)
+
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.

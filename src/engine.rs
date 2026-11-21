@@ -33,6 +33,7 @@ use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade};
 use crate::q_module;
+use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::steenrod;
 use crate::syntax::{
@@ -346,6 +347,34 @@ impl Engine {
                     self.model.type_name(source),
                     self.model.type_name(target),
                 )
+            }
+            StatementForm::RankVariety(spec) => {
+                let source = self.checker().q_endpoint(*spec.source)?;
+                let target = self.checker().q_endpoint(*spec.target)?;
+                let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                let from = self.model.type_name(source);
+                let to = self.model.type_name(target);
+                let modulus = spec.modulus;
+                if let Some(point) = spec.point {
+                    let dimension = rank_variety::dimension(
+                        &mut self.model,
+                        source,
+                        target,
+                        &selected,
+                        modulus,
+                        &point,
+                    )?;
+                    format!("rvdim[{from}, {to}, {selected:?}, {modulus}, {point:?}] = {dimension}")
+                } else {
+                    let counts = rank_variety::spectrum(
+                        &mut self.model,
+                        source,
+                        target,
+                        &selected,
+                        modulus,
+                    )?;
+                    format!("rvspectrum[{from}, {to}, {selected:?}, {modulus}] = {counts:?}")
+                }
             }
             StatementForm::QExtDimension(spec) => {
                 let grade = self.checker().q_grade(spec)?;

@@ -467,6 +467,21 @@ impl Complex {
         Ok(support.finish())
     }
 
+    pub(crate) fn margolis_image(
+        &mut self,
+        model: &mut Model,
+        base: TypeId,
+        primitive: usize,
+        lower: usize,
+        generator: Generator,
+    ) -> Result<&[usize]> {
+        if lower == 0 && model.q_module(base).is_none() {
+            return Ok(&[]);
+        }
+        let action = self.action(model, base, primitive, lower, generator.degree)?;
+        Ok(&action.rows[generator.index])
+    }
+
     fn action(
         &mut self,
         model: &mut Model,
@@ -554,6 +569,14 @@ fn graded_ranks(
         }
     }
     Ok(result)
+}
+
+pub(crate) fn margolis_groups(model: &mut Model, base: TypeId) -> Result<Vec<(usize, usize)>> {
+    let Some(bound) = endpoint_bound(model, base)? else {
+        return Ok(Vec::new());
+    };
+    let bound = exact_bound(model, base, bound)?;
+    graded_ranks(model, base, 0..=bound)
 }
 
 fn endpoint_bound(model: &mut Model, base: TypeId) -> Result<Option<usize>> {
