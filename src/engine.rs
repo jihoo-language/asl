@@ -63,6 +63,7 @@ use crate::rv_field;
 use crate::rv_gauss;
 use crate::rv_hh;
 use crate::rv_hh_homology;
+use crate::rv_hive;
 use crate::rv_hochster;
 use crate::rv_hodge;
 use crate::rv_hom;
@@ -515,6 +516,39 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::HiveReport(weights, horn) => {
+                let boundary = rv_hive::Boundary::checked(&mut self.model, weights)?;
+                if horn {
+                    match rv_hive::horn(&mut self.model, &boundary)? {
+                        rv_hive::Horn::Admissible => "rvHorn = admissible".into(),
+                        rv_hive::Horn::Total { expected, actual } => {
+                            format!("rvHorn = total mismatch ({expected} != {actual})")
+                        }
+                        rv_hive::Horn::Violation {
+                            indices: [i, j, k],
+                            left,
+                            right,
+                        } => {
+                            format!("rvHorn = {i:?}, {j:?}, {k:?} gives {left} < {right}")
+                        }
+                    }
+                } else {
+                    let count = rv_hive::count(&mut self.model, &boundary)?;
+                    format!("rvHiveCount = {count}")
+                }
+            }
+            StatementForm::HiveVertex(i, j, input) => {
+                let input = self.checker().expr(input)?;
+                let Kind::RVHive(boundary) = self.model.kind(input.ty) else {
+                    return Err(Error::new(input.span, "rvHiveAt requires a hive"));
+                };
+                let boundary = boundary.clone();
+                let Value::RVHive(interior) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let value = rv_hive::vertex(&mut self.model, &boundary, &interior, i, j)?;
+                format!("rvHiveAt[{i}, {j}] = {value}")
             }
             StatementForm::SatakeQuery(v, coordinates, input) => {
                 let input = self.checker().expr(input)?;
@@ -3688,6 +3722,10 @@ impl Checker<'_> {
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
             TypeForm::RVSatake(rank) => self.model.satake_type(rank),
+            TypeForm::RVHive(weights) => {
+                let boundary = rv_hive::Boundary::checked(self.model, weights)?;
+                self.model.hive_type(boundary)
+            }
             TypeForm::RVLaurent(spec) => {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_laurent_type(grade)
@@ -4581,6 +4619,16 @@ impl Checker<'_> {
                     ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::Hive(weights, interior) => {
+                let boundary = rv_hive::Boundary::checked(self.model, weights)?;
+                let ty = self.model.hive_type(boundary.clone())?;
+                let value = if let Some(interior) = interior {
+                    rv_hive::literal(self.model, &boundary, interior)?
+                } else {
+                    self.model.hive_witness(ty)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::SphericalBasis(coweight) => {
                 let ty = self.model.sph_hecke_type(coweight.len())?;

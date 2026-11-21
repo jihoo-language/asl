@@ -72,6 +72,7 @@ pub(crate) enum TypeForm {
     RVIwHecke(usize),
     RVSphHecke(usize),
     RVSatake(usize),
+    RVHive(HiveSpec),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -117,6 +118,8 @@ pub(crate) enum RvIdealOp {
 }
 
 pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
+pub(crate) type HiveSpec = [Vec<i128>; 3];
+
 pub(crate) type RvHHSpec = (Label, i64, Vec<usize>);
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
@@ -503,6 +506,7 @@ pub(crate) enum ExprForm {
     SatakeInverse(Box<ParsedExpr>),
     SatakeCharacter(bool, Vec<i128>),
     SatakeScalar(usize, i128),
+    Hive(HiveSpec, Option<Vec<i128>>),
     SatakeProduct(Box<[ParsedExpr; 2]>),
     RVIwAdlv(
         crate::rv_iwahori::Boundary,
@@ -662,6 +666,8 @@ pub(crate) enum StatementForm {
     RVIwKL(Vec<i128>, Vec<i128>),
     HeckeCoefficient(bool, Option<i128>, Vec<i128>, ParsedExpr),
     SatakeQuery(Option<i128>, Vec<i128>, ParsedExpr),
+    HiveReport(HiveSpec, bool),
+    HiveVertex(usize, usize, ParsedExpr),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1359,6 +1365,23 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvHiveCount" | "rvHorn") => {
+                let horn = self.token() == Token::Word("rvHorn");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let weights = self.hive_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::HiveReport(weights, horn)
+            }
+            Token::Word("rvHiveAt") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (i, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (j, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::HiveVertex(i, j, self.paren_expr(0)?)
             }
             Token::Word("rvSatakeCoeff" | "rvSatakeAt") => {
                 let numeric = self.token() == Token::Word("rvSatakeAt");
@@ -2755,6 +2778,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVHive" && self.eat(Token::LParen)? {
+            let weights = self.hive_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVHive(weights), 0);
         }
         if name.text == "RVSatake" && self.eat(Token::LParen)? {
             let (rank, _) = self.number()?;
@@ -4464,6 +4492,23 @@ impl<'src> Parser<'src> {
                     let depth = 1 + arguments[0].depth.max(arguments[1].depth);
                     return expr(span, ExprForm::HeckeProduct(Box::new(arguments)), depth);
                 }
+                if matches!(name.text.as_str(), "rvHive" | "rvHiveWitness")
+                    && self.eat(Token::LBracket)?
+                {
+                    let weights = self.hive_spec()?;
+                    self.expect(Token::RBracket)?;
+                    let interior = if name.text == "rvHive" {
+                        self.expect(Token::LBrace)?;
+                        Some(self.signed_list(
+                            Token::RBrace,
+                            "a signed hive vertex",
+                            "hive vertex",
+                        )?)
+                    } else {
+                        None
+                    };
+                    return expr(span, ExprForm::Hive(weights, interior), 0);
+                }
                 if name.text == "rvSphBasis" && self.eat(Token::LBracket)? {
                     let coweight = self.affine_window()?;
                     self.expect(Token::RBracket)?;
@@ -4857,17 +4902,30 @@ impl<'src> Parser<'src> {
         self.signed_tuple("a signed affine window entry", "affine window entry")
     }
 
+    fn hive_spec(&mut self) -> Result<HiveSpec> {
+        let lambda = self.signed_tuple("a signed hive weight", "hive weight")?;
+        self.expect(Token::Comma)?;
+        let mu = self.signed_tuple("a signed hive weight", "hive weight")?;
+        self.expect(Token::Comma)?;
+        let nu = self.signed_tuple("a signed hive weight", "hive weight")?;
+        Ok([lambda, mu, nu])
+    }
+
     fn signed_tuple(&mut self, expected: &str, label: &str) -> Result<Vec<i128>> {
         self.expect(Token::LBracket)?;
-        let mut window = Vec::new();
-        while self.token() != Token::RBracket {
-            window.push(self.signed_wide(expected, label)?);
+        self.signed_list(Token::RBracket, expected, label)
+    }
+
+    fn signed_list(&mut self, end: Token<'src>, expected: &str, label: &str) -> Result<Vec<i128>> {
+        let mut values = Vec::new();
+        while self.token() != end {
+            values.push(self.signed_wide(expected, label)?);
             if !self.eat(Token::Comma)? {
                 break;
             }
         }
-        self.expect(Token::RBracket)?;
-        Ok(window)
+        self.expect(end)?;
+        Ok(values)
     }
 
     fn coweight(&mut self) -> Result<Vec<i64>> {

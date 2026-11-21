@@ -813,6 +813,16 @@ $$
 $$
 The example also writes the rank-two square $S_{(0,1)}^2$ as $\mathrm{IC}_{(0,2)}+q\mathrm{IC}_{(1,1)}$. [Satake inverse and IC example](examples/rv-satake-ic.asl)
 
+### Littlewood–Richardson hives and Horn inequalities
+
+`RVHive([lambda],[mu],[nu])` is the finite discrete type of integral hives with three prescribed dominant weights. Enter signed weights in weakly increasing order, as for `rvSphBasis`. A hive is a triangular array $H(i,j)$ for $i,j\geq0$ and $i+j\leq n$, with $H(0,0)=0$. The directed edges from $(0,0)$ to $(n,0)$, from $(n,0)$ to $(0,n)$, and from $(0,0)$ to $(0,n)$ carry the successive differences of $\lambda$, $\mu$, and $\nu$, each read in descending order. In each unit rhombus the sum at the obtuse vertices is at least the sum at the acute vertices.
+
+`rvHive[[lambda],[mu],[nu]]{coordinates}` supplies only the interior vertices in order of increasing $j$, then increasing $i$. The literal checks every rhombus. `rvHiveWitness[[lambda],[mu],[nu]]` constructs the lexicographically first integral point, and `rvHiveAt[i,j](h);` reads any vertex. An empty slice is an empty type. For small slices `card \h : RVHive([lambda],[mu],[nu]) => S.hi;` counts all points through normal finite-function enumeration. `rvHiveCount[[lambda],[mu],[nu]];` counts directly by interlacing successive rows and checking the third rhombus direction, including counts above the enumeration limit when the search fits its work budget.
+
+`rvHorn[[lambda],[mu],[nu]];` reports admissibility, a total mismatch, or a violated Horn inequality. For a triple of equal-sized subsets $I,J,K$ of the descending rank-$n$ weights, it reports $\sum_I\lambda+\sum_J\mu<\sum_K\nu$ only when $c_{\tau(I),\tau(J)}^{\tau(K)}>0$ in smaller rank. Here $\tau(I)=(i_r-r,\ldots,i_1-1)$ for $I=\{i_1<\cdots<i_r\}$. The interpreter checks positivity by finding a smaller integral hive. The integral type-A hive and Horn theorems identify these admissible boundaries with the nonzero Littlewood–Richardson multiplicities.
+
+For $\lambda=\mu=(0,1,2)$ and $\nu=(1,2,3)$, the two hives give the multiplicity behind the coefficient $2q^2$ in the spherical IC tensor-square calculation. Scaling all three weights by $k$ gives $k+1$ hives. Adding constants $a$ and $b$ to the two input weights and $a+b$ to the output shifts each vertex by $ai+(a+b)j$ and preserves the count. [Hive example](examples/rv-hive.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

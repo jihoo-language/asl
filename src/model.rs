@@ -45,6 +45,7 @@ use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_hh;
 use crate::rv_hh_homology;
+use crate::rv_hive::{self, Boundary as HiveBoundary};
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwhecke;
@@ -149,6 +150,7 @@ pub(crate) enum Kind {
     RVIwHecke(usize),
     RVSphHecke(usize),
     RVSatake(usize),
+    RVHive(HiveBoundary),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -264,6 +266,7 @@ pub(crate) enum Value {
     RVIwHecke(rv_iwhecke::Support),
     RVSphHecke(rv_sphhecke::Support),
     RVSatake(rv_satake::Support),
+    RVHive(rv_hive::Interior),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
     RVHHChain(rv_hh::Support),
@@ -338,6 +341,7 @@ struct TypeInfo {
     may_page: Option<Rc<MayPage>>,
     ce_page: Option<Rc<CePage>>,
     page_transition: Option<Rc<Transition>>,
+    hive_witness: Option<rv_hive::Interior>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
     inhabited: bool,
@@ -582,6 +586,13 @@ impl Model {
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..) => usize::MAX,
+            Kind::RVHive(..) => {
+                if inhabited {
+                    usize::MAX
+                } else {
+                    0
+                }
+            }
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -646,6 +657,7 @@ impl Model {
             may_page: None,
             ce_page: None,
             page_transition: None,
+            hive_witness: None,
             cardinality_bound,
             heights: [None; 2],
             inhabited,
@@ -710,6 +722,7 @@ impl Model {
                 | Kind::RVIwHecke(..)
                 | Kind::RVSphHecke(..)
                 | Kind::RVSatake(..)
+                | Kind::RVHive(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1405,6 +1418,30 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn hive_type(&mut self, boundary: HiveBoundary) -> Result<TypeId> {
+        let kind = Kind::RVHive(boundary);
+        if let Some(&ty) = self.type_ids.get(&kind) {
+            return Ok(ty);
+        }
+        self.check_type_limit(0)?;
+        let Kind::RVHive(boundary) = &kind else {
+            unreachable!()
+        };
+        let witness = rv_hive::witness(self, boundary)?;
+        self.allocate(3 * boundary.rank() + witness.as_ref().map_or(0, |point| point.len()))?;
+        let ty = self.insert(kind, None, None, witness.is_some(), 0);
+        self.types[ty.0].hive_witness = witness;
+        Ok(ty)
+    }
+
+    pub(crate) fn hive_witness(&self, ty: TypeId) -> Result<Value> {
+        self.types[ty.0]
+            .hive_witness
+            .clone()
+            .map(Value::RVHive)
+            .ok_or_else(|| Error::plain("hive boundary has no integral witness"))
     }
 
     pub(crate) fn satake_type(&mut self, rank: usize) -> Result<TypeId> {
@@ -2163,6 +2200,7 @@ impl Model {
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..)
+            | Kind::RVHive(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -2481,6 +2519,9 @@ impl Model {
             Kind::RVIwHecke(rank) => out.push(&format!("RVIwHecke({rank})")),
             Kind::RVSphHecke(rank) => out.push(&format!("RVSphHecke({rank})")),
             Kind::RVSatake(rank) => out.push(&format!("RVSatake({rank})")),
+            Kind::RVHive(HiveBoundary([lambda, mu, nu])) => {
+                out.push(&format!("RVHive({lambda:?}, {mu:?}, {nu:?})"))
+            }
             Kind::RVHom(grade) | Kind::RVLaurent(grade) => {
                 let name = if matches!(self.kind(ty), Kind::RVHom(..)) {
                     "RVHom("
@@ -2630,6 +2671,13 @@ impl Model {
             (Value::RVPoly(left), Value::RVPoly(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
+            }
+            (Value::RVHive(left), Value::RVHive(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(true);
+                }
+                self.spend(left.len().min(right.len()))?;
+                Ok(left == right)
             }
             (Value::RVSatake(left), Value::RVSatake(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_satake::compare(self, left, right)? == Ordering::Equal),
@@ -2811,6 +2859,13 @@ impl Model {
                     rv_poly::compare(self, left, right)
                 }
             }
+            (Value::RVHive(left), Value::RVHive(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.cmp(right))
+            }
             (Value::RVSatake(left), Value::RVSatake(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -2986,6 +3041,10 @@ impl Model {
                 }
                 Kind::RVSphHecke(..) => {
                     return Err(Error::plain("cannot enumerate a spherical Hecke algebra"))
+                }
+                Kind::RVHive(ref boundary) => {
+                    let boundary = boundary.clone();
+                    rv_hive::elements(self, &boundary, MAX_ELEMENTS)?
                 }
                 Kind::RVSatake(..) => {
                     return Err(Error::plain(
@@ -3860,6 +3919,18 @@ impl Model {
                     .iter()
                     .map(|term| (term.coweight.as_ref(), term.coefficient.as_ref())),
             ),
+            Value::RVHive(interior) => {
+                self.spend(interior.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, vertex) in interior.iter().enumerate() {
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&vertex.to_string())?;
+                }
+                out.push("}")
+            }
             Value::RVSatake(terms) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
