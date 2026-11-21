@@ -67,6 +67,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `VKoszul(X, Y, I, s, t)` | Bivariant Koszul cochains with the highest variable inverted. |
 | `VExt(X, Y, I, s, t)` | Cohomology classes of the localized complex. |
 | `RVHom(X, Y, I, modulus, point)` | Linear maps between the Margolis homologies of two endpoints at an affine field point. |
+| `RVLaurent(X, Y, I, modulus, point)` | Laurent-polynomial matrices between the Margolis homology spaces. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `MayAn(n, r, s, t, f)` | The corresponding May page for the finite Steenrod subalgebra `A(n)`. |
 | `CEAn(n, r, s, t, f)` | The Cartan–Eilenberg page for the central exterior generator of `A(n)`. |
@@ -580,6 +581,16 @@ The relation $A\sigma(N)A^{-1}=N$ makes the monic invariant factors of $N$ fixed
 `rvShintaniFrame[modulus, root](A)` constructs an invertible matrix $B$ over $L$ with $NB=B\iota(C)$. The reduction tracks the inverse Smith row operations on the cyclic generators by evaluating the polynomial operations at $N$. Their Krylov bases give the columns of $B$. Under $A\mapsto S^{-1}A\sigma(S)$ the norm becomes $S^{-1}NS$, so the canonical descended matrix stays the same.
 
 Over $\mathbb F_4/\mathbb F_2$ the example descends a norm with distinct eigenvalues $\omega$ and $\omega^2$ to the companion matrix of $T^2+T+1$. The identity norm and a unipotent norm both have characteristic polynomial $T^2+1$, while their invariant factors are $(T+1,T+1)$ and $(T^2+1)$, respectively. [Shintani example](examples/rv-shintani.asl)
+
+### Equal-characteristic Laurent isocrystals
+
+`RVLaurent(X, Y, I, modulus, point)` consists of finite Laurent-polynomial matrices between the two Margolis homology spaces. The affine point and field encoding are the same as for `RVHom`. Use `rvU[k](f)` to form $u^k f$ from an `RVHom` map. Laurent maps support equality, `zero`, `add`, `rvScale`, and composition `ecomp` at a common field point. Exponents are checked signed 64-bit integers. The operator `rvFrob[k]` raises the field coefficients and point coordinates to $2^k$ and fixes $u$.
+
+An invertible Laurent endomorphism over $L((u))$ gives a semilinear isocrystal over a specified subfield $K$. Its affine point must lie in $K$. The parameters `modulus, root` describe the inclusion $K\hookrightarrow L$. With $d=[L:K]$ and $\sigma=\operatorname{Frob}^{[K:\mathbb F_2]}$, `rvUNorm[modulus, root](A)` computes the ordered product $N=A\sigma(A)\cdots\sigma^{d-1}(A)$ over $L$. The determinant of $N$ must be nonzero, including when that determinant has more than one Laurent term.
+
+`rvNewtonCoeff[modulus, root, j](A)` gives the coefficient $c_j(u)$ of $T^j$ in $\det(TI-N)$. It returns a scalar `RVLaurent` map from `One` to `One` at the descended point. The calculation uses division-free Berkowitz reduction over the full Laurent coefficient ring. The coefficient polynomials descend since $N$ and $\sigma(N)$ are conjugate.
+
+`rvNewton[modulus, root](A);` takes the lower convex hull of $(j,\nu_u(c_j))$ for the nonzero characteristic coefficients. It reports the negative edge slopes divided by $d$ in increasing order, each with its horizontal width as multiplicity. The example computes slopes $0,1$ for an ordinary diagonal matrix, $1/2,1/2$ for a quadratic Frobenius cycle, and $1/3,1/3,1/3$ for a three-cycle. It checks cancellation in the determinant of a matrix with all entries of valuation zero. Composing with $u^{-2}I$ shifts the three-cycle slopes to $-5/3$. [Newton polygon example](examples/rv-newton.asl)
 
 ### Symbolic rank equations
 

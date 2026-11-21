@@ -54,6 +54,7 @@ pub(crate) enum TypeForm {
     QKoszul(QSpec),
     QExt(QSpec),
     RVHom(RankVarietySpec),
+    RVLaurent(RankVarietySpec),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -328,6 +329,8 @@ pub(crate) enum ExprForm {
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
+    RVLaurentMonomial(i64, Box<ParsedExpr>),
+    RVNewton(crate::rv_newton::Operation, usize, usize, Box<ParsedExpr>),
     JetOperation(JetOp, Box<ParsedExpr>),
     JetGenerator(JetPageSpec, usize, Span),
     JetTerm(JetTerm),
@@ -416,6 +419,7 @@ pub(crate) enum StatementForm {
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
     RVInvariantFactors(usize, usize, ParsedExpr),
+    RVNewton(usize, usize, ParsedExpr),
     Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
@@ -716,17 +720,21 @@ impl<'src> Parser<'src> {
     }
 
     fn signed_degree(&mut self) -> Result<i64> {
+        self.signed_number("signed internal degree")
+    }
+
+    fn signed_number(&mut self, name: &str) -> Result<i64> {
         let span = self.span();
         let negative = self.eat(Token::Minus)?;
         let Token::Number(text) = self.token() else {
-            return Err(self.expected("a signed internal degree"));
+            return Err(self.expected(&format!("a {name}")));
         };
-        let out_of_range = || Error::new(span, "signed internal degree is out of range");
+        let out_of_range = || Error::new(span, format!("{name} is out of range"));
         let magnitude = i128::from(text.parse::<u64>().map_err(|_| out_of_range())?);
-        let degree = i64::try_from(if negative { -magnitude } else { magnitude })
+        let value = i64::try_from(if negative { -magnitude } else { magnitude })
             .map_err(|_| out_of_range())?;
         self.advance()?;
-        Ok(degree)
+        Ok(value)
     }
 
     fn bp_coefficient(&mut self) -> Result<i128> {
@@ -849,6 +857,12 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 self.expect(Token::Equal)?;
                 StatementForm::Let(name, self.expr(0)?)
+            }
+            Token::Word("rvNewton") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, root) = self.embedding_parameters()?;
+                StatementForm::RVNewton(modulus, root, self.paren_expr(0)?)
             }
             Token::Word("rvInvariantFactors") => {
                 self.advance()?;
@@ -1661,11 +1675,16 @@ impl<'src> Parser<'src> {
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
         }
-        if name.text == "RVHom" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "RVHom" | "RVLaurent") && self.eat(Token::LParen)? {
             let spec = self.rank_variety_spec(nest, true)?;
             self.expect(Token::RParen)?;
             let depth = spec.source.depth.max(spec.target.depth) + 1;
-            return ty(span, TypeForm::RVHom(spec), depth);
+            let kind = if name.text == "RVHom" {
+                TypeForm::RVHom(spec)
+            } else {
+                TypeForm::RVLaurent(spec)
+            };
+            return ty(span, kind, depth);
         }
         if name.text == "MapMay" && self.eat(Token::LParen)? {
             let spec = self.map_may_spec(nest)?;
@@ -2545,6 +2564,39 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::RVShintani(operation, modulus, root, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvU" && self.eat(Token::LBracket)? {
+                    let power = self.signed_number("Laurent exponent")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RVLaurentMonomial(power, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvUNorm" | "rvNewtonCoeff")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_newton::Operation;
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (root, _) = self.number()?;
+                    let operation = if name.text == "rvNewtonCoeff" {
+                        self.expect(Token::Comma)?;
+                        Operation::Coefficient(self.number()?.0)
+                    } else {
+                        Operation::Norm
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RVNewton(operation, modulus, root, Box::new(input)),
                         depth,
                     );
                 }

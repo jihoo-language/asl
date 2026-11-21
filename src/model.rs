@@ -27,6 +27,7 @@ use crate::rank_jets::Path;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
+use crate::rv_laurent;
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -72,6 +73,7 @@ pub(crate) enum Kind {
     QKoszul(Grade),
     QExt(Grade),
     RVHom(rv_hom::Grade),
+    RVLaurent(rv_hom::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -161,6 +163,7 @@ pub(crate) enum Value {
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
+    RVLaurent(rv_laurent::Support),
     JetHom(jet_hom::Support),
     RVKoszul(rv_koszul::Support),
     JetClass(jet_page::Coordinates),
@@ -415,7 +418,8 @@ impl Model {
             | Kind::QExt(..)
             | Kind::JetHom(..)
             | Kind::JetPage(..)
-            | Kind::RVHom(..) => usize::MAX,
+            | Kind::RVHom(..)
+            | Kind::RVLaurent(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -508,6 +512,7 @@ impl Model {
                 | Kind::JetPage(..)
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
+                | Kind::RVLaurent(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -884,6 +889,14 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn rv_laurent_type(&mut self, grade: rv_hom::Grade) -> Result<TypeId> {
+        let depth = self.types[grade.source.0]
+            .depth
+            .max(self.types[grade.target.0].depth)
+            + 1;
+        self.inhabited_type(Kind::RVLaurent(grade), depth)
     }
 
     pub(crate) fn q_ext_type(&mut self, grade: Grade) -> Result<TypeId> {
@@ -1399,6 +1412,7 @@ impl Model {
             | Kind::JetPage(..)
             | Kind::QExt(..)
             | Kind::RVHom(..)
+            | Kind::RVLaurent(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -1581,8 +1595,13 @@ impl Model {
             }
             Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
-            Kind::RVHom(grade) => {
-                out.push("RVHom(")?;
+            Kind::RVHom(grade) | Kind::RVLaurent(grade) => {
+                let name = if matches!(self.kind(ty), Kind::RVHom(..)) {
+                    "RVHom("
+                } else {
+                    "RVLaurent("
+                };
+                out.push(name)?;
                 self.write_type(out, grade.source, 0)?;
                 out.push(", ")?;
                 self.write_type(out, grade.target, 0)?;
@@ -1700,6 +1719,8 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::RVLaurent(left), Value::RVLaurent(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_laurent::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHom(left), Value::RVHom(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
@@ -1814,6 +1835,12 @@ impl Model {
                 } else {
                     rv_poly::compare(self, left, right)
                 }
+            }
+            (Value::RVLaurent(left), Value::RVLaurent(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                rv_laurent::compare(self, left, right)
             }
             (Value::RVHom(left), Value::RVHom(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
@@ -1955,6 +1982,15 @@ impl Model {
                 Kind::MapMay(..) => {
                     let rank = self.map_may(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RVLaurent(..) => {
+                    let (source, target) = rv_laurent::dimensions(self, ty)?;
+                    if source != 0 && target != 0 {
+                        return Err(Error::plain(
+                            "cannot enumerate a positive-dimensional Laurent Margolis space",
+                        ));
+                    }
+                    vec![rv_laurent::zero()]
                 }
                 Kind::RVHom(ref grade) => {
                     let field = grade.field;
@@ -2419,6 +2455,29 @@ impl Model {
                 };
                 out.push(&format!("RVPoly({selected:?}, {degree}){{"))?;
                 write_rv_polynomial(out, selected, polynomial)?;
+                out.push("}")
+            }
+            Value::RVLaurent(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                self.spend(terms.len())?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, term) in terms.iter().enumerate() {
+                    if i != 0 {
+                        out.push(" + ")?;
+                    }
+                    if term.coefficient != 1 {
+                        out.push(&format!("{}*", term.coefficient))?;
+                    }
+                    match term.power {
+                        0 => (),
+                        1 => out.push("u*")?,
+                        power => out.push(&format!("u^{power}*"))?,
+                    }
+                    out.push(&format!("g{}", term.coordinate))?;
+                }
                 out.push("}")
             }
             Value::RVHom(support) | Value::JetClass(support) => {

@@ -35,7 +35,7 @@ fn endomorphism(grade: &Grade, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn rational_point(
+pub(crate) fn rational_point(
     model: &mut Model,
     grade: &Grade,
     modulus: usize,

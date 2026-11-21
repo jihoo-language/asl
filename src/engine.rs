@@ -47,6 +47,8 @@ use crate::rv_gauss;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
+use crate::rv_laurent;
+use crate::rv_newton;
 use crate::rv_poly;
 use crate::rv_rees;
 use crate::rv_scheme;
@@ -187,6 +189,9 @@ enum TypedForm {
     RestrictAlgebra(Profile, Box<TypedExpr>),
     QRestrict(Box<TypedExpr>),
     RVScale(BinaryField, usize, Box<TypedExpr>),
+    RVLaurentMonomial(i64, Box<TypedExpr>),
+    RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
+    RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
     RVSpecialize(Box<TypedExpr>),
     RVField(rv_field::Map, Box<TypedExpr>),
     RVInverse(Box<TypedExpr>),
@@ -296,6 +301,21 @@ impl Engine {
                 );
                 self.values.push(value);
                 return Ok(None);
+            }
+            StatementForm::RVNewton(modulus, root, input) => {
+                let input = self.checker().expr(input)?;
+                let (_, embedding) = rv_newton::plan(
+                    &mut self.model,
+                    input.ty,
+                    modulus,
+                    root,
+                    rv_newton::Operation::Slopes,
+                )?;
+                let Value::RVLaurent(support) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let slopes = rv_newton::slopes(&mut self.model, input.ty, &embedding, &support)?;
+                format!("rvNewton[{modulus}, {root}] = {{{slopes}}}")
             }
             StatementForm::RVInvariantFactors(modulus, root, input) => {
                 let input = self.checker().expr(input)?;
@@ -974,6 +994,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVLaurent(a), Value::RVLaurent(b)) => {
+                        rv_laurent::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVHom(a), Value::RVHom(b)) => {
                         let Kind::RVHom(grade) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -1017,6 +1040,9 @@ impl Engine {
                     }
                     (BinaryOp::XMap, Value::Map(f), Value::Class(b)) => {
                         comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::MapExtCompose, Value::RVLaurent(g), Value::RVLaurent(f)) => {
+                        rv_laurent::compose(&mut self.model, left.ty, &g, right.ty, &f)
                     }
                     (BinaryOp::MapExtCompose, Value::RVHom(g), Value::RVHom(f)) => {
                         rv_hom::compose(&mut self.model, left.ty, &g, right.ty, &f)
@@ -1342,7 +1368,29 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::RVLaurentMonomial(power, input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_laurent::monomial(&mut self.model, &value, *power)
+            }
+            TypedForm::RVLaurentFrobenius(field, powers, input) => {
+                let Value::RVLaurent(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = rv_laurent::frobenius(&mut self.model, *field, &value, *powers)?;
+                rv_laurent::persist(&mut self.model, image)
+            }
+            TypedForm::RVNewton(operation, embedding, input) => {
+                let Value::RVLaurent(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_newton::evaluate(&mut self.model, input.ty, embedding, &value, *operation)
+            }
             TypedForm::RVScale(field, scalar, input) => match self.eval(input)? {
+                Value::RVLaurent(value) => {
+                    rv_laurent::scale(&mut self.model, *field, &value, *scalar)
+                }
                 Value::RVHom(value) => rv_hom::scale(&mut self.model, *field, &value, *scalar),
                 Value::JetHom(value) => jet_hom::scale(&mut self.model, *field, &value, *scalar),
                 Value::JetClass(value) => {
@@ -2017,6 +2065,10 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::RVLaurent(spec) => {
+                let grade = self.rv_grade(spec)?;
+                self.model.rv_laurent_type(grade)
+            }
             TypeForm::RVHom(spec) => {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_hom_type(grade)
@@ -2167,6 +2219,7 @@ impl Checker<'_> {
                     Kind::BP(..) => bp::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
+                    Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
@@ -2526,17 +2579,34 @@ impl Checker<'_> {
                 let value = rv_hom::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::RVLaurentMonomial(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvU", "an RVHom map"));
+                };
+                let ty = self.model.rv_laurent_type(grade.clone())?;
+                Ok((ty, TypedForm::RVLaurentMonomial(power, Box::new(input))))
+            }
+            ExprForm::RVNewton(operation, modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let (ty, embedding) =
+                    rv_newton::plan(self.model, input.ty, modulus, root, operation)?;
+                Ok((
+                    ty,
+                    TypedForm::RVNewton(operation, embedding, Box::new(input)),
+                ))
+            }
             ExprForm::RVScale(scalar, input) => {
                 let input = self.expr(*input)?;
                 let field = match self.model.kind(input.ty) {
-                    Kind::RVHom(grade) => grade.field,
+                    Kind::RVHom(grade) | Kind::RVLaurent(grade) => grade.field,
                     Kind::JetHom(grade) => self.model.jet_path(grade.diagram.path).field,
                     Kind::JetPage(grade) => self.model.jet_path(grade.chain.diagram.path).field,
                     _ => {
                         return Err(self.invalid_operand(
                             &input,
                             "rvScale",
-                            "an RVHom map, JetHom cochain, or JetPage class",
+                            "an RVHom or RVLaurent map, JetHom cochain, or JetPage class",
                         ))
                     }
                 };
@@ -2545,6 +2615,16 @@ impl Checker<'_> {
             }
             ExprForm::RVField(operation, input) => {
                 let input = self.expr(*input)?;
+                if let (Kind::RVLaurent(grade), rv_field::Operation::Frobenius(iterations)) =
+                    (self.model.kind(input.ty), operation)
+                {
+                    let field = grade.field;
+                    let ty = rv_laurent::frobenius_type(self.model, grade.clone(), iterations)?;
+                    return Ok((
+                        ty,
+                        TypedForm::RVLaurentFrobenius(field, iterations, Box::new(input)),
+                    ));
+                }
                 let Kind::RVHom(grade) = self.model.kind(input.ty) else {
                     return Err(self.invalid_operand(&input, operation.name(), "an RVHom map"));
                 };
@@ -4070,6 +4150,7 @@ impl Checker<'_> {
                         | Kind::BP(..)
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
+                        | Kind::RVLaurent(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)
@@ -4219,6 +4300,12 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
+                if matches!(self.model.kind(left.ty), Kind::RVLaurent(..))
+                    || matches!(self.model.kind(right.ty), Kind::RVLaurent(..))
+                {
+                    return rv_laurent::composition_type(self.model, left.ty, right.ty)
+                        .map_err(|error| error.at(right.span));
+                }
                 if matches!(self.model.kind(left.ty), Kind::RVHom(..))
                     || matches!(self.model.kind(right.ty), Kind::RVHom(..))
                 {
