@@ -576,6 +576,14 @@ The three arcs $(u,0,1)$, $(0,u,1)$, and $(u^3,u^2,1)$ through the cusp have the
 
 On the $y$-axis in the Cusp example, the corrected lift $a_1+u a_3$ has differential $u^2 b_3$. The lift $a_1+u a_2+u^2 a_3$ is closed along the cusp parametrization. [Named arc example](examples/jet-hom.asl)
 
+### The u-adic Bockstein pages
+
+`JetPage(X, Y, Axis, r, parity, f)` is the filtration-`f` slice on page `r` of the two-periodic complex over the named arc. The decreasing filtration is $F^f=u^f C$, where $C$ is the raw jet complex. Page zero is the associated graded complex and its differential uses the constant coefficients of the arc. Page one is its Margolis homology. The differential $d_r$ flips parity and increases filtration by $r$. At arc order $N$, page $N$ has stabilized, and summing its ranks over parity and filtration gives the dimension from `rvjet`.
+
+`jetdim[X, Y, Axis, r, parity, f];` prints a rank and `jetgen[X, Y, Axis, r, parity, f, i]` selects a generator. `jetClass[r, f](c)` projects a raw cochain in $F^f$ whose differential lies in $F^{f+r}$. The operation `jetRep` returns a canonical lift. Use `jetD` for the page differential, `jetNext` to advance a cycle to the next page, and `jetPrev` to take a chosen lift to the preceding page. Composition on a common page and arc adds filtrations and obeys the Leibniz rule. The operations `add`, `zero`, and `rvScale` act in each slice.
+
+On $(0,u,1)$, the class of $a_2$ supports $d_1$ with target $u b_2$, and the corrected class of $a_1$ supports $d_2$ with target $u^2 b_3$. On $(u,0,1)$ both remaining differentials from filtration zero occur on page one. Along $(u^3,u^2,1)$ the corrected $a_1+u a_2+u^2 a_3$ gives a nonzero stabilized class. [Jet page example](examples/jet-pages.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.

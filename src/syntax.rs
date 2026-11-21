@@ -49,6 +49,7 @@ pub(crate) enum TypeForm {
     QExt(QSpec),
     RVHom(RankVarietySpec),
     JetHom(JetHomSpec),
+    JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
     VExt(QSpec<i64>),
     VBock(VBockSpec),
@@ -124,6 +125,21 @@ pub(crate) struct JetHomSpec {
     pub(crate) target: Box<ParsedType>,
     pub(crate) path: Label,
     pub(crate) parity: usize,
+}
+
+pub(crate) struct JetPageSpec {
+    pub(crate) chain: JetHomSpec,
+    pub(crate) r: usize,
+    pub(crate) f: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum JetOp {
+    Class(usize, usize),
+    Representative,
+    Differential,
+    Next,
+    Prev,
 }
 
 pub(crate) struct JetTerm {
@@ -296,7 +312,8 @@ pub(crate) enum ExprForm {
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
-    JetD(Box<ParsedExpr>),
+    JetOperation(JetOp, Box<ParsedExpr>),
+    JetGenerator(JetPageSpec, usize, Span),
     JetTerm(JetTerm),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
@@ -398,6 +415,7 @@ pub(crate) enum StatementForm {
     RvHilbert(Label, usize),
     RankJet(RankJetSpec),
     JetPath(Label, JetPathSpec),
+    JetDimension(JetPageSpec),
     VExtDimension(QSpec<i64>),
     VBars(BarFamilySpec),
     VBarDimension(QSpec<i64>),
@@ -913,6 +931,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvMinors(spec, size)
             }
+            Token::Word("jetdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.jet_page(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::JetDimension(spec)
+            }
             Token::Word("rvpath") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -1146,6 +1171,27 @@ impl<'src> Parser<'src> {
             selected,
             modulus,
             point,
+        })
+    }
+
+    fn jet_page(&mut self, nest: usize) -> Result<JetPageSpec> {
+        let (source, target) = self.map_endpoints(nest)?;
+        let path = self.label()?;
+        self.expect(Token::Comma)?;
+        let (r, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (parity, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (f, _) = self.number()?;
+        Ok(JetPageSpec {
+            chain: JetHomSpec {
+                source: Box::new(source),
+                target: Box::new(target),
+                path,
+                parity,
+            },
+            r,
+            f,
         })
     }
 
@@ -1408,6 +1454,12 @@ impl<'src> Parser<'src> {
                 TypeForm::MapExt(source, target, s, t)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "JetPage" && self.eat(Token::LParen)? {
+            let spec = self.jet_page(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = spec.chain.source.depth.max(spec.chain.target.depth) + 1;
+            return ty(span, TypeForm::JetPage(spec), depth);
         }
         if name.text == "JetHom" && self.eat(Token::LParen)? {
             let (source, target) = self.map_endpoints(nest)?;
@@ -2122,10 +2174,43 @@ impl<'src> Parser<'src> {
                         0,
                     );
                 }
-                if name.text == "jetD" && self.token() == Token::LParen {
-                    let value = self.paren_expr(nest)?;
-                    let depth = value.depth + 1;
-                    return expr(span, ExprForm::JetD(Box::new(value)), depth);
+                if name.text == "jetgen" && self.eat(Token::LBracket)? {
+                    let spec = self.jet_page(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::JetGenerator(spec, index, at), 0);
+                }
+                if name.text == "jetClass" && self.eat(Token::LBracket)? {
+                    let (r, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (f, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::JetOperation(JetOp::Class(r, f), Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "jetD" => Some(JetOp::Differential),
+                        "jetRep" => Some(JetOp::Representative),
+                        "jetNext" => Some(JetOp::Next),
+                        "jetPrev" => Some(JetOp::Prev),
+                        _ => None,
+                    };
+                    if let Some(operation) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::JetOperation(operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "qterm" && self.eat(Token::LBracket)? {
                     let source = self.map_generator(nest)?;

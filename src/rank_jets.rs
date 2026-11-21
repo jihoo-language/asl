@@ -185,7 +185,7 @@ impl Matrix {
         self.target().columns.len()
     }
 
-    fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.source
             .columns
             .iter()

@@ -22,6 +22,10 @@ struct Pivot {
 }
 
 impl Basis {
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
     pub(crate) fn rank(&self) -> usize {
         self.pivots.len()
     }
@@ -38,7 +42,7 @@ impl Basis {
 
     // Each stored pivot has coefficient one. A dependent column returns its
     // tracked linear combination of source coordinates.
-    fn insert_with_witness(
+    pub(crate) fn insert_with_witness(
         &mut self,
         model: &mut Model,
         field: BinaryField,
@@ -74,7 +78,7 @@ impl Basis {
         Ok(Some(witness))
     }
 
-    fn reduce(
+    pub(crate) fn reduce(
         &self,
         model: &mut Model,
         field: BinaryField,

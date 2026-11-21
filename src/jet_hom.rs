@@ -51,7 +51,7 @@ impl Grade {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct Term {
     pub(crate) power: usize,
     pub(crate) source: Generator,
@@ -90,6 +90,10 @@ impl Complex {
             sources,
             targets,
         })
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        self.matrix.is_zero()
     }
 
     pub(crate) fn differential(

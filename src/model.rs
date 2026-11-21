@@ -9,6 +9,7 @@ use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::error::{Error, Result};
 use crate::jet_hom;
+use crate::jet_page;
 use crate::map_cochain;
 use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
@@ -72,6 +73,7 @@ pub(crate) enum Kind {
     QExt(Grade),
     RVHom(rv_hom::Grade),
     JetHom(jet_hom::Grade),
+    JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
@@ -161,6 +163,7 @@ pub(crate) enum Value {
     RVHom(rv_hom::Support),
     JetHom(jet_hom::Support),
     RVKoszul(rv_koszul::Support),
+    JetClass(jet_page::Coordinates),
     RVPoly(Polynomial),
     BP(Rc<bp_polynomial::Polynomial>),
     Suspension(SuspensionPoint),
@@ -212,6 +215,7 @@ struct TypeInfo {
     rv_hom: Option<Rc<Hom>>,
     q_module: Option<Rc<Module>>,
     vbock: Option<Rc<BocksteinPage>>,
+    jet_page: Option<Rc<jet_page::Page>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
     ce_page: Option<Rc<CePage>>,
@@ -407,7 +411,11 @@ impl Model {
             {
                 1
             }
-            Kind::QKoszul(..) | Kind::QExt(..) | Kind::JetHom(..) | Kind::RVHom(..) => usize::MAX,
+            Kind::QKoszul(..)
+            | Kind::QExt(..)
+            | Kind::JetHom(..)
+            | Kind::JetPage(..)
+            | Kind::RVHom(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -445,6 +453,7 @@ impl Model {
             rv_hom: None,
             q_module: None,
             vbock: None,
+            jet_page: None,
             map_may: None,
             may_page: None,
             ce_page: None,
@@ -496,6 +505,7 @@ impl Model {
                 | Kind::MapExt(..)
                 | Kind::QKoszul(..)
                 | Kind::JetHom(..)
+                | Kind::JetPage(..)
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
                 | Kind::VKoszul(..)
@@ -830,6 +840,23 @@ impl Model {
         let complex = Rc::new(jet_hom::Complex::build(self, diagram)?);
         self.jet_complexes.insert(diagram, complex.clone());
         Ok(complex)
+    }
+
+    pub(crate) fn jet_page_type(&mut self, grade: jet_page::Grade) -> Result<TypeId> {
+        let chain = self.jet_hom_type(grade.chain)?;
+        self.inhabited_type(Kind::JetPage(grade), self.types[chain.0].depth)
+    }
+
+    pub(crate) fn jet_page(&mut self, ty: TypeId) -> Result<Rc<jet_page::Page>> {
+        if let Some(page) = &self.types[ty.0].jet_page {
+            return Ok(page.clone());
+        }
+        let Kind::JetPage(grade) = self.types[ty.0].kind else {
+            unreachable!()
+        };
+        let page = Rc::new(jet_page::Page::build(self, grade)?);
+        self.types[ty.0].jet_page = Some(page.clone());
+        Ok(page)
     }
 
     pub(crate) fn jet_hom_type(&mut self, grade: jet_hom::Grade) -> Result<TypeId> {
@@ -1369,6 +1396,7 @@ impl Model {
             | Kind::MapExt(..)
             | Kind::QKoszul(..)
             | Kind::JetHom(..)
+            | Kind::JetPage(..)
             | Kind::QExt(..)
             | Kind::RVHom(..)
             | Kind::VKoszul(..)
@@ -1541,6 +1569,14 @@ impl Model {
                 "BP({}, {}, {})",
                 shape.prime, shape.height, shape.arrows
             )),
+            Kind::JetPage(grade) => {
+                out.push("JetPage(")?;
+                self.write_jet_diagram(out, grade.chain.diagram)?;
+                out.push(&format!(
+                    ", {}, {}, {})",
+                    grade.r, grade.chain.parity, grade.f
+                ))
+            }
             Kind::JetHom(grade) => {
                 out.push("JetHom(")?;
                 self.write_jet_diagram(out, grade.diagram)?;
@@ -1667,7 +1703,8 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
             }
-            (Value::RVHom(left), Value::RVHom(right)) => {
+            (Value::RVHom(left), Value::RVHom(right))
+            | (Value::JetClass(left), Value::JetClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_hom::compare(self, left, right)? == Ordering::Equal)
             }
@@ -1781,7 +1818,8 @@ impl Model {
                     rv_poly::compare(self, left, right)
                 }
             }
-            (Value::RVHom(left), Value::RVHom(right)) => {
+            (Value::RVHom(left), Value::RVHom(right))
+            | (Value::JetClass(left), Value::JetClass(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
                 }
@@ -1964,6 +2002,11 @@ impl Model {
                     self.enumerate_supports(0, basis.len(), |support| {
                         Value::RVPoly(support.iter().map(|&index| basis[index].clone()).collect())
                     })?
+                }
+                Kind::JetPage(grade) => {
+                    let rank = self.jet_page(ty)?.rank();
+                    let field = self.jet_path(grade.chain.diagram.path).field;
+                    jet_page::elements(self, field, rank, MAX_ELEMENTS)?
                 }
                 Kind::JetHom(grade) => jet_hom::elements(self, grade, MAX_ELEMENTS)?,
                 Kind::QKoszul(ref grade) => {
@@ -2384,7 +2427,7 @@ impl Model {
                 write_rv_polynomial(out, selected, polynomial)?;
                 out.push("}")
             }
-            Value::RVHom(support) => {
+            Value::RVHom(support) | Value::JetClass(support) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
