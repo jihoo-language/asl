@@ -64,6 +64,7 @@ pub(crate) enum TypeForm {
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
     RVBar(RvBarSpec),
+    ASDiff(Label, usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPRel(BpRelSpec),
@@ -458,6 +459,9 @@ pub(crate) enum ExprForm {
     RvGenerator(Label, usize, Span),
     RvOscMinor(Label, usize, Vec<usize>),
     RvFrobeniusWronskian(Label, usize),
+    RvAsOmega(Label, usize, usize),
+    RvAsDiffScale(usize, Box<ParsedExpr>),
+    RvAsCartier(Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -1194,7 +1198,8 @@ impl<'src> Parser<'src> {
                 StatementForm::RvAsCover(name, variables, self.rv_generators()?)
             }
             Token::Word(
-                "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton",
+                "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton"
+                | "rvASCartierRank" | "rvASaNumber",
             ) => {
                 let operation = self.token();
                 self.advance()?;
@@ -1209,6 +1214,11 @@ impl<'src> Parser<'src> {
                     }
                     Token::Word("rvASLPolynomial") => AsQuery::LPolynomial,
                     Token::Word("rvASNewton") => AsQuery::Newton,
+                    Token::Word("rvASCartierRank") => {
+                        self.expect(Token::Comma)?;
+                        AsQuery::CartierRank(self.number()?.0)
+                    }
+                    Token::Word("rvASaNumber") => AsQuery::ANumber,
                     _ => unreachable!(),
                 };
                 self.expect(Token::RBracket)?;
@@ -2052,6 +2062,13 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if name.text == "ASDiff" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::Comma)?;
+            let modulus = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASDiff(cover, modulus), 0);
+        }
         if name.text == "RVPoly" && self.eat(Token::LParen)? {
             let selected = self.exponents()?;
             self.expect(Token::Comma)?;
@@ -2789,6 +2806,31 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvASOmega" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let modulus = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvAsOmega(cover, modulus, index), 0);
+                }
+                if name.text == "rvASDiffScale" && self.eat(Token::LBracket)? {
+                    let scalar = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvAsDiffScale(scalar, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASCartier" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvAsCartier(Box::new(input)), depth);
                 }
                 if name.text == "rvFrobWronskian" && self.eat(Token::LBracket)? {
                     let curve = self.label()?;

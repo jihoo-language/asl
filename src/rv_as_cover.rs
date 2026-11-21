@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::binary_field::BinaryField;
 use crate::error::{Error, Result};
 use crate::model::Model;
+use crate::rv_as_cartier;
 use crate::rv_curve::{affine_form, affine_gcd, binary_remainder};
 use crate::rv_newton;
 use crate::rv_poly::{self, Polynomial};
@@ -16,6 +17,8 @@ pub(crate) enum Query {
     Points(usize),
     LPolynomial,
     Newton,
+    CartierRank(usize),
+    ANumber,
 }
 
 impl Query {
@@ -26,6 +29,8 @@ impl Query {
             Self::Points(_) => "rvASPoints",
             Self::LPolynomial => "rvASLPolynomial",
             Self::Newton => "rvASNewton",
+            Self::CartierRank(_) => "rvASCartierRank",
+            Self::ANumber => "rvASaNumber",
         }
     }
 }
@@ -38,6 +43,9 @@ pub(crate) struct Cover {
     p_rank: usize,
     counts: RefCell<BTreeMap<usize, usize>>,
     l_polynomial: RefCell<Option<Rc<[i128]>>>,
+    radical: Polynomial,
+    pole_half: Polynomial,
+    cartier_denominator: RefCell<Option<Polynomial>>,
 }
 
 impl Cover {
@@ -83,10 +91,15 @@ impl Cover {
                 "Artin–Schreier pole at [0:1] must have odd order",
             ));
         }
-        let radical = odd_radical(model, &denominator)?;
+        let (radical, pole_half) = odd_radical(model, &denominator)?;
         let poles = radical.last().unwrap()[0] + usize::from(infinity_order > 0);
         let genus = ((degree as u128 + poles as u128) / 2 - 1) as usize;
-        model.allocate(5 + rv_poly::cells(&numerator) + rv_poly::cells(&denominator))?;
+        model.allocate(
+            7 + [&numerator, &denominator, &radical, &pole_half]
+                .into_iter()
+                .map(|p| rv_poly::cells(p))
+                .sum::<usize>(),
+        )?;
         Ok(Self {
             numerator,
             denominator,
@@ -95,7 +108,26 @@ impl Cover {
             p_rank: poles - 1,
             counts: RefCell::new(BTreeMap::new()),
             l_polynomial: RefCell::new(None),
+            radical,
+            pole_half,
+            cartier_denominator: RefCell::new(None),
         })
+    }
+
+    pub(crate) fn genus(&self) -> usize {
+        self.genus
+    }
+
+    pub(crate) fn cartier_denominator(&self, model: &mut Model) -> Result<Polynomial> {
+        if let Some(denominator) = self.cartier_denominator.borrow().as_ref() {
+            return Ok(denominator.clone());
+        }
+        // q=R*H² for the radical R and the stored square root H. Hence
+        // sqrt(q*R)=R*H, avoiding a needless square and square-root pass.
+        let denominator = rv_poly::multiply(model, &self.radical, &self.pole_half)?;
+        model.allocate(rv_poly::cells(&denominator))?;
+        *self.cartier_denominator.borrow_mut() = Some(denominator.clone());
+        Ok(denominator)
     }
 
     pub(crate) fn report(&self, model: &mut Model, name: &str, query: Query) -> Result<String> {
@@ -106,6 +138,11 @@ impl Cover {
                 let points = self.points(model, extension)?;
                 return Ok(format!("rvASPoints[{name}, {extension}] = {points}"));
             }
+            Query::CartierRank(power) => {
+                let rank = rv_as_cartier::rank(model, self, power)?;
+                return Ok(format!("rvASCartierRank[{name}, {power}] = {rank}"));
+            }
+            Query::ANumber => (self.genus - rv_as_cartier::rank(model, self, 1)?).to_string(),
             Query::LPolynomial => format!("{:?}", self.l_polynomial(model)?),
             Query::Newton => {
                 let polynomial = self.l_polynomial(model)?;
@@ -214,8 +251,9 @@ fn is_one(polynomial: &Polynomial) -> bool {
     polynomial.len() == 1 && polynomial[0][0] == 0
 }
 
-fn odd_radical(model: &mut Model, denominator: &Polynomial) -> Result<Polynomial> {
-    let (radical, mut remaining) = squarefree_layer(model, denominator)?;
+fn odd_radical(model: &mut Model, denominator: &Polynomial) -> Result<(Polynomial, Polynomial)> {
+    let (radical, half) = squarefree_layer(model, denominator)?;
+    let mut remaining = half.clone();
     while !is_one(&remaining) {
         let (layer, next) = squarefree_layer(model, &remaining)?;
         if !binary_remainder(model, &radical, &layer)?.is_empty() {
@@ -225,7 +263,7 @@ fn odd_radical(model: &mut Model, denominator: &Polynomial) -> Result<Polynomial
         }
         remaining = next;
     }
-    Ok(radical)
+    Ok((radical, half))
 }
 
 fn squarefree_layer(

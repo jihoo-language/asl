@@ -745,6 +745,14 @@ For $n$ geometric poles, `rvASGenus[C];` prints $(d+n)/2-1$ and `rvASPrank[C];` 
 
 The covers $y^2+y=t^3$ and $y^2+y=t+1/t$ have genus one and $L$-polynomials $1+2T^2$ and $1+T+2T^2$, respectively. The genus-two cover $y^2+y=t^5$ has $L=1+4T^4$. The denominator $t^2+t+1$ of the fourth example has two geometric poles and gives $p$-rank one even though neither pole is rational over $\mathbb F_2$. [Artin–Schreier cover example](examples/rank-artin-schreier.asl)
 
+#### Cartier on holomorphic differentials
+
+For a declared cover with finite denominator $q(x)$ and pole radical $R(x)$, put $Q(x)=\sqrt{q(x)R(x)}$. The differentials $\omega_j=x^j\,dx/Q(x)$ for $0\le j<g$ form a basis of the holomorphic differentials. `ASDiff(C, P)` is this vector space over the binary field with modulus `P`. Use `rvASOmega[C,P,j]` for $\omega_j$ and `rvASDiffScale[c](v)` to scale coefficients using the field encoding of `c`.
+
+`rvASCartier(v)` applies Cartier. On $\omega_j$ the coefficient of $\omega_i$ is the coefficient of $x^{2i+1-j}$ in $Q$. The operator acts on scalar coefficients by square root, the inverse of absolute Frobenius. `rvASCartierRank[C,k];` prints the rank of its $k$-th power, and `rvASaNumber[C];` prints $g$ minus the rank of Cartier. The rank for $k=0$ is $g$ and the eventual rank is the $p$-rank.
+
+For $y^2+y=x^5$, Cartier sends $\omega_1$ to $\omega_0$ and has square zero. The $a$-number is one. For $y^2+y=x^9$ the ranks are $4,2,1,0$ and the $a$-number is two. For $y^2+y=x+1/x$, Cartier fixes $\omega_0$. [Cartier operator example](examples/rank-cartier.asl)
+
 
 ### Koszul syzygies and their products
 

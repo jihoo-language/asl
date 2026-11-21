@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::adams::Adams;
+use crate::binary_field::BinaryField;
+use crate::binary_linear;
 use crate::bp_classes;
 use crate::bp_page;
 use crate::bp_rel;
@@ -81,6 +83,7 @@ pub(crate) enum Kind {
     QKoszul(Grade),
     QExt(Grade),
     RVHom(rv_hom::Grade),
+    ASDiff(Rc<str>, BinaryField),
     RVLaurent(rv_hom::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
@@ -178,6 +181,7 @@ pub(crate) enum Value {
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
+    ASDiff(rv_hom::Support),
     RVLaurent(rv_laurent::Support),
     JetHom(jet_hom::Support),
     RVBar(rv_bar::Support),
@@ -468,6 +472,12 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
+            Kind::ASDiff(ref name, field) => {
+                let genus = self.rv_as_covers[name.as_ref()].genus();
+                field
+                    .order()
+                    .saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
+            }
             Kind::RVPoly(..)
             | Kind::BP(..)
             | Kind::BPRel(..)
@@ -553,6 +563,7 @@ impl Model {
                 | Kind::JetPage(..)
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
+                | Kind::ASDiff(..)
                 | Kind::RVLaurent(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
@@ -1077,8 +1088,18 @@ impl Model {
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
     }
 
+    pub(crate) fn rv_as_diff_type(&mut self, name: &Label, modulus: usize) -> Result<TypeId> {
+        self.rv_as_cover(name)?;
+        let field = BinaryField::new(self, modulus)?;
+        self.inhabited_type(Kind::ASDiff(name.text.as_str().into(), field), 0)
+    }
+
+    pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {
+        self.rv_as_covers.get(name).cloned()
+    }
+
     pub(crate) fn rv_as_cover(&self, name: &Label) -> Result<Rc<RvAsCover>> {
-        self.rv_as_covers.get(&name.text).cloned().ok_or_else(|| {
+        self.rv_as_cover_named(&name.text).ok_or_else(|| {
             Error::new(
                 name.span,
                 format!("unknown Artin–Schreier cover '{}'", name.text),
@@ -1610,6 +1631,7 @@ impl Model {
             | Kind::JetPage(..)
             | Kind::QExt(..)
             | Kind::RVHom(..)
+            | Kind::ASDiff(..)
             | Kind::RVLaurent(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
@@ -1810,6 +1832,7 @@ impl Model {
                     ))
                 }
             }
+            Kind::ASDiff(name, field) => out.push(&format!("ASDiff({name}, {})", field.modulus())),
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
             Kind::BPRelExt(grade) => out.push(&format!(
@@ -1989,6 +2012,7 @@ impl Model {
             (Value::RVLaurent(left), Value::RVLaurent(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_laurent::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHom(left), Value::RVHom(right))
+            | (Value::ASDiff(left), Value::ASDiff(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_hom::compare(self, left, right)? == Ordering::Equal)
@@ -2131,6 +2155,7 @@ impl Model {
                 rv_laurent::compare(self, left, right)
             }
             (Value::RVHom(left), Value::RVHom(right))
+            | (Value::ASDiff(left), Value::ASDiff(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -2279,6 +2304,10 @@ impl Model {
                         ));
                     }
                     vec![rv_laurent::zero()]
+                }
+                Kind::ASDiff(ref name, field) => {
+                    let genus = self.rv_as_covers[name.as_ref()].genus();
+                    binary_linear::elements(self, field, genus, MAX_ELEMENTS, Value::ASDiff)?
                 }
                 Kind::RVHom(ref grade) => {
                     let field = grade.field;
@@ -2871,7 +2900,12 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::RVHom(support) | Value::JetClass(support) => {
+            Value::RVHom(support) | Value::JetClass(support) | Value::ASDiff(support) => {
+                let symbol = if matches!(value, Value::ASDiff(_)) {
+                    "omega"
+                } else {
+                    "g"
+                };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
@@ -2884,7 +2918,7 @@ impl Model {
                     if coefficient != 1 {
                         out.push(&format!("{coefficient}*"))?;
                     }
-                    out.push(&format!("g{coordinate}"))?;
+                    out.push(&format!("{symbol}{coordinate}"))?;
                 }
                 out.push("}")
             }

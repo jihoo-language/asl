@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::binary_field::BinaryField;
-use crate::binary_linear::{add_multiple, check_storage, Basis, Entry, Quotient, Vector};
+use crate::binary_linear::{self, add_multiple, check_storage, Basis, Entry, Quotient, Vector};
 use crate::comodule::Generator;
 use crate::error::{Error, Result};
 use crate::model::{Kind, Model, TypeId, Value};
@@ -137,9 +137,7 @@ pub(crate) fn zero() -> Value {
 }
 
 pub(crate) fn persist(model: &mut Model, coordinates: Vector) -> Result<Value> {
-    check_storage(2 * coordinates.len())?;
-    model.allocate(2 * coordinates.len())?;
-    Ok(Value::RVHom(coordinates.into()))
+    Ok(Value::RVHom(binary_linear::persist(model, coordinates)?))
 }
 
 pub(crate) fn identity(model: &mut Model, ty: TypeId) -> Result<Value> {
@@ -169,17 +167,8 @@ pub(crate) fn scale(
     value: &[Entry],
     scalar: usize,
 ) -> Result<Value> {
-    if scalar == 0 || value.is_empty() {
-        return Ok(zero());
-    }
-    model.spend(field.degree() * value.len())?;
-    persist(
-        model,
-        value
-            .iter()
-            .map(|&(index, coefficient)| (index, field.multiply(scalar, coefficient)))
-            .collect(),
-    )
+    let coordinates = binary_linear::scaled(model, field, value, scalar)?;
+    persist(model, coordinates)
 }
 
 pub(crate) fn compare(model: &mut Model, left: &[Entry], right: &[Entry]) -> Result<Ordering> {
@@ -194,31 +183,7 @@ pub(crate) fn elements(
     limit: usize,
 ) -> Result<Vec<Value>> {
     let rank = model.rv_hom(ty)?.rank();
-    let q = field.order();
-    let mut size = 1;
-    for _ in 0..rank {
-        if size > limit / q {
-            return Err(Error::plain(format!(
-                "type exceeds the enumeration limit of {limit} elements"
-            )));
-        }
-        size *= q;
-    }
-    model.allocate(size)?;
-    model.spend(size * (1 + rank))?;
-    let mut values = Vec::with_capacity(size);
-    for mut index in 0..size {
-        let mut coefficients = Vec::new();
-        for generator in 0..rank {
-            let digit = index % q;
-            if digit != 0 {
-                coefficients.push((generator, digit));
-            }
-            index /= q;
-        }
-        values.push(persist(model, coefficients)?);
-    }
-    Ok(values)
+    binary_linear::elements(model, field, rank, limit, Value::RVHom)
 }
 
 pub(crate) fn composition_type(model: &mut Model, outer: TypeId, inner: TypeId) -> Result<TypeId> {

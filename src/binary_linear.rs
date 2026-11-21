@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::binary_field::BinaryField;
 use crate::error::{Error, Result};
@@ -216,6 +217,62 @@ pub(crate) fn add_multiple(
     result.extend(right.iter().map(|&(row, value)| (row, scale(value))));
     check_storage(2 * result.len())?;
     Ok(result)
+}
+
+pub(crate) fn persist(model: &mut Model, coordinates: Vector) -> Result<Rc<[Entry]>> {
+    check_storage(2 * coordinates.len())?;
+    model.allocate(2 * coordinates.len())?;
+    Ok(coordinates.into())
+}
+
+pub(crate) fn scaled(
+    model: &mut Model,
+    field: BinaryField,
+    value: &[Entry],
+    scalar: usize,
+) -> Result<Vector> {
+    if scalar == 0 || value.is_empty() {
+        return Ok(Vec::new());
+    }
+    model.spend(field.degree() * value.len())?;
+    Ok(value
+        .iter()
+        .map(|&(index, coefficient)| (index, field.multiply(scalar, coefficient)))
+        .collect())
+}
+
+pub(crate) fn elements<T>(
+    model: &mut Model,
+    field: BinaryField,
+    rank: usize,
+    limit: usize,
+    wrap: impl Fn(Rc<[Entry]>) -> T,
+) -> Result<Vec<T>> {
+    let q = field.order();
+    let mut size = 1;
+    for _ in 0..rank {
+        if size > limit / q {
+            return Err(Error::plain(format!(
+                "type exceeds the enumeration limit of {limit} elements"
+            )));
+        }
+        size *= q;
+    }
+    model.allocate(size)?;
+    model.spend(size * (1 + rank))?;
+    let mut values = Vec::with_capacity(size);
+    for mut index in 0..size {
+        let mut coefficients = Vec::new();
+        for generator in 0..rank {
+            let digit = index % q;
+            if digit != 0 {
+                coefficients.push((generator, digit));
+            }
+            index /= q;
+        }
+        values.push(wrap(persist(model, coefficients)?));
+    }
+    Ok(values)
 }
 
 pub(crate) fn check_storage(cells: usize) -> Result<()> {
