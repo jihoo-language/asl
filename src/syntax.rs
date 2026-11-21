@@ -524,6 +524,7 @@ pub(crate) enum StatementForm {
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     BpPageDimension(BpPageMode, BpPageSpec),
+    BpHeightPage(bool, BpPageSpec),
     PMayDimension(usize, usize, usize, usize, usize),
     PMayAnDimension(usize, usize, usize, usize, usize, usize),
     PCeAnDimension(usize, usize, usize, usize, usize, usize),
@@ -1120,6 +1121,14 @@ impl<'src> Parser<'src> {
                 let (p, s, t) = self.prime_bidegree()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::PExtDimension(p, s, t)
+            }
+            Token::Word("bpHeightPage" | "bpHeightImage") => {
+                let image = self.token() == Token::Word("bpHeightImage");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.prime_profile_page_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpHeightPage(image, spec)
             }
             Token::Word("bpBockdim") | Token::Word("bpNovdim") => {
                 let mode = if self.token() == Token::Word("bpBockdim") {

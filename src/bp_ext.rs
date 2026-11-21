@@ -411,7 +411,7 @@ impl Domain {
         Ok(())
     }
 
-    fn has_monomials(self, t: usize) -> bool {
+    pub(crate) fn has_monomials(self, t: usize) -> bool {
         if t == 0 {
             return self.lower.is_none() && self.shape.arrows == 0;
         }
@@ -594,27 +594,55 @@ impl Domain {
         source: &[Monomial],
         target: &[Monomial],
     ) -> Result<Matrix> {
-        let mut matrix = Matrix::new(target.len(), source.len())?;
-        if target.is_empty() {
-            return Ok(matrix);
-        }
-        model.spend(target.len() * source.len())?;
-        for (column, monomial) in source.iter().enumerate() {
-            let cochain = Polynomial::from_terms(model, [(monomial, 1)])?;
-            let image = bp::differential(model, self.shape, &cochain)?;
-            if self.lower.is_some() {
-                model.spend(image.cells())?;
-            }
-            for (monomial, coefficient) in image.terms() {
-                if !self.retains(monomial) {
-                    continue;
-                }
-                let row = index_of(model, target, monomial)?;
-                matrix.set(row, column, coefficient);
-            }
-        }
-        Ok(matrix)
+        restricted_matrix(
+            model,
+            self.shape,
+            source,
+            target,
+            self.lower.map(|height| (height, true)),
+        )
     }
+}
+
+pub(crate) fn low_matrix(
+    model: &mut Model,
+    shape: Shape,
+    source: &[Monomial],
+    target: &[Monomial],
+    cutoff: usize,
+) -> Result<Matrix> {
+    restricted_matrix(model, shape, source, target, Some((cutoff, false)))
+}
+
+fn restricted_matrix(
+    model: &mut Model,
+    shape: Shape,
+    source: &[Monomial],
+    target: &[Monomial],
+    filter: Option<(usize, bool)>,
+) -> Result<Matrix> {
+    let mut matrix = Matrix::new(target.len(), source.len())?;
+    if target.is_empty() {
+        return Ok(matrix);
+    }
+    model.spend(target.len() * source.len())?;
+    for (column, monomial) in source.iter().enumerate() {
+        let cochain = Polynomial::from_terms(model, [(monomial, 1)])?;
+        let image = bp::differential(model, shape, &cochain)?;
+        if filter.is_some() {
+            model.spend(image.cells())?;
+        }
+        for (monomial, coefficient) in image.terms() {
+            if filter.is_some_and(|(height, keep_high)| {
+                bp_rel::retains(monomial, height, shape.height) != keep_high
+            }) {
+                continue;
+            }
+            let row = index_of(model, target, monomial)?;
+            matrix.set(row, column, coefficient);
+        }
+    }
+    Ok(matrix)
 }
 
 pub(crate) fn coordinates(
@@ -630,7 +658,11 @@ pub(crate) fn coordinates(
     Ok(result)
 }
 
-fn index_of(model: &mut Model, basis: &[Monomial], monomial: &Monomial) -> Result<usize> {
+pub(crate) fn index_of(
+    model: &mut Model,
+    basis: &[Monomial],
+    monomial: &Monomial,
+) -> Result<usize> {
     model.spend((1 + 2 * monomial.len()) * (1 + basis.len().max(1).ilog2() as usize))?;
     basis
         .binary_search(monomial)

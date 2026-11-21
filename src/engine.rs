@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
+use crate::bp_height;
 use crate::bp_page;
 use crate::bp_triple;
 use crate::bracket;
@@ -594,6 +595,25 @@ impl Engine {
                 let ty = self.model.odd_ext_type(prime, s, t)?;
                 let rank = self.model.odd_ext_rank(ty)?;
                 format!("pextdim[{p}, {s}, {t}] = {rank}")
+            }
+            StatementForm::BpHeightPage(image, (p, n, r, h, a, t)) => {
+                let top = bp::Shape::new(&mut self.model, p, n, a)?;
+                let grade = bp_height::Grade { top, r, h, t }.validate()?;
+                if image {
+                    let label = format!("bpHeightImage[{p}, {n}, {r}, {h}, {a}, {t}]");
+                    match bp_height::image(&mut self.model, grade)? {
+                        bp_height::Image::Finite(order) => format!("{label} = order {order}"),
+                        bp_height::Image::Free(rank) => {
+                            format!("{label} = free {rank}, order infinite")
+                        }
+                    }
+                } else {
+                    let group = bp_height::page(&mut self.model, grade)?;
+                    format!(
+                        "bpHeightPage[{p}, {n}, {r}, {h}, {a}, {t}] = free {}, torsion {:?}",
+                        group.free, group.torsion
+                    )
+                }
             }
             StatementForm::BpPageDimension(mode, (p, n, r, a, t, f)) => {
                 let shape = bp::Shape::new(&mut self.model, p, n, a)?;

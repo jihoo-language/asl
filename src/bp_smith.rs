@@ -21,6 +21,27 @@ impl Matrix {
         })
     }
 
+    pub(crate) fn apply_residue(
+        &self,
+        model: &mut Model,
+        vector: &[u64],
+        modulus: u64,
+    ) -> Result<Vec<u64>> {
+        debug_assert_eq!(vector.len(), self.columns);
+        model.spend(self.entries.len() + self.rows)?;
+        let wide_modulus = u128::from(modulus);
+        let mut result = Vec::with_capacity(self.rows);
+        for row in 0..self.rows {
+            let mut sum = 0u128;
+            for (&entry, &coefficient) in self.row(row).iter().zip(vector) {
+                let residue = entry.rem_euclid(i128::from(modulus)) as u128;
+                sum = (sum + residue * u128::from(coefficient)) % wide_modulus;
+            }
+            result.push(sum as u64);
+        }
+        Ok(result)
+    }
+
     pub(crate) fn row(&self, row: usize) -> &[i128] {
         let start = row * self.columns;
         &self.entries[start..start + self.columns]
@@ -80,27 +101,14 @@ pub(crate) fn primary_factors(
     if rank == 0 {
         return Ok(Vec::new());
     }
-    let prime = u64::from(prime);
-    let mut modulus = prime * prime;
+    let mut modulus = u64::from(prime) * u64::from(prime);
     loop {
-        if let Some(factors) = primary_diagonal(model, matrix, prime, modulus, rank)? {
+        if let Some(factors) = factors_at_precision(model, matrix, prime, modulus, rank)? {
             return Ok(factors);
         }
-        let previous = modulus;
-        // Double the precision, or use the largest power fitting a u64.
-        modulus = if let Some(square) = modulus.checked_mul(modulus) {
-            square
-        } else {
-            while let Some(power) = modulus.checked_mul(prime) {
-                modulus = power;
-            }
-            modulus
-        };
-        if modulus == previous {
-            return Err(Error::plain(
-                "BP primary Smith precision exceeds the u64 modulus limit",
-            ));
-        }
+        modulus = next_precision(modulus, prime).ok_or_else(|| {
+            Error::plain("BP primary Smith precision exceeds the u64 modulus limit")
+        })?;
     }
 }
 
@@ -239,14 +247,29 @@ struct ModularMatrix {
     operations: Option<Vec<RowOperation>>,
 }
 
-fn primary_diagonal(
+pub(crate) fn next_precision(modulus: u64, prime: u32) -> Option<u64> {
+    // Double the precision or use the largest power fitting a u64.
+    let next = modulus.checked_mul(modulus).unwrap_or_else(|| {
+        let mut next = modulus;
+        while let Some(power) = next.checked_mul(u64::from(prime)) {
+            next = power;
+        }
+        next
+    });
+    (next > modulus).then_some(next)
+}
+
+pub(crate) fn factors_at_precision(
     model: &mut Model,
     matrix: &Matrix,
-    prime: u64,
+    prime: u32,
     modulus: u64,
     rank: usize,
 ) -> Result<Option<Vec<i128>>> {
-    let mut reduced = ModularMatrix::new(model, matrix, prime, modulus)?;
+    if rank > matrix.rows.min(matrix.columns) {
+        return Err(incompatible_rank());
+    }
+    let mut reduced = ModularMatrix::new(model, matrix, u64::from(prime), modulus)?;
     let mut factors = Vec::with_capacity(rank);
     for pivot in 0..rank {
         let Some((row, column, divisor)) = reduced.find_pivot(model, pivot)? else {
@@ -293,6 +316,88 @@ pub(crate) fn modular_preimage(
         diagonal.push((divisor, inverse));
     }
     reduced.solution(model, &diagonal, reduced.rhs.as_ref().unwrap())
+}
+
+pub(crate) struct IntegralKernel {
+    width: usize,
+    modulus: u64,
+    frame: Option<KernelFrame>,
+}
+
+struct KernelFrame {
+    matrix: ModularMatrix,
+    diagonal: Vec<(u64, u64)>,
+}
+
+impl IntegralKernel {
+    pub(crate) fn build(
+        model: &mut Model,
+        matrix: &Matrix,
+        prime: u32,
+        rank: usize,
+        exponent: u64,
+        modulus: u64,
+    ) -> Result<Self> {
+        let mut kernel = Self {
+            width: matrix.columns,
+            modulus,
+            frame: None,
+        };
+        if rank == 0 {
+            return Ok(kernel);
+        }
+        if rank > matrix.rows.min(matrix.columns) {
+            return Err(incompatible_rank());
+        }
+        // After reduction to the requested modulus, all the pivot
+        // coordinates in a modular Smith kernel vanish. The free columns
+        // then generate the image of the saturated integral kernel.
+        let precision = modulus.checked_mul(exponent).ok_or_else(|| {
+            Error::plain("BP height kernel precision exceeds the u64 modulus limit")
+        })?;
+        let mut matrix = ModularMatrix::new(model, matrix, u64::from(prime), precision)?;
+        model.spend(matrix.columns)?;
+        matrix.permutation = Some((0..matrix.columns).collect());
+        let mut diagonal = Vec::with_capacity(rank);
+        for pivot in 0..rank {
+            let (row, column, divisor) = matrix
+                .find_pivot(model, pivot)?
+                .ok_or_else(incompatible_rank)?;
+            matrix.swap_pivot(model, pivot, row, column)?;
+            let inverse = matrix.clear_column(model, pivot, divisor)?;
+            diagonal.push((divisor, inverse));
+        }
+        kernel.frame = Some(KernelFrame { matrix, diagonal });
+        Ok(kernel)
+    }
+
+    pub(crate) fn generator(&self, model: &mut Model, index: usize) -> Result<Vec<u64>> {
+        let Some(frame) = &self.frame else {
+            model.spend(self.width)?;
+            let mut vector = vec![0; self.width];
+            vector[index] = 1;
+            return Ok(vector);
+        };
+        let matrix = &frame.matrix;
+        let rank = frame.diagonal.len();
+        let free = rank + index;
+        model.spend(matrix.rows + self.width)?;
+        let mut rhs = vec![0; matrix.rows];
+        for (row, value) in rhs.iter_mut().enumerate().take(rank) {
+            *value = subtract_modulo(
+                0,
+                matrix.entries[row * matrix.columns + free],
+                matrix.modulus,
+            );
+        }
+        let mut vector: Vec<_> = matrix
+            .solution(model, &frame.diagonal, &rhs)?
+            .into_iter()
+            .map(|value| value.rem_euclid(i128::from(self.modulus)) as u64)
+            .collect();
+        vector[matrix.permutation.as_ref().unwrap()[free]] = 1;
+        Ok(vector)
+    }
 }
 
 impl ModularMatrix {
@@ -566,5 +671,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn integral_kernel_precision_removes_spurious_modular_pivots() {
+        let mut model = Model::new();
+        let matrix = Matrix {
+            rows: 1,
+            columns: 2,
+            entries: vec![2, 4],
+        };
+        let kernel = IntegralKernel::build(&mut model, &matrix, 2, 1, 2, 4)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            kernel
+                .generator(&mut model, 0)
+                .unwrap_or_else(|error| panic!("{error}")),
+            [2, 1]
+        );
     }
 }

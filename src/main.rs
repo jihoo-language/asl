@@ -4,6 +4,7 @@ mod binary_linear;
 mod bp;
 mod bp_classes;
 mod bp_ext;
+mod bp_height;
 mod bp_lattice;
 mod bp_page;
 mod bp_polynomial;
@@ -102,7 +103,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, bpext, bprelext, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 
