@@ -942,6 +942,14 @@ Use `zero`, `add`, and `rvASDeRhamScale[c](x)` for vector operations. Frobenius 
 
 `rvASEO[C];` computes the Ekedahl–Oort final type by closing the zero and full de Rham spaces under $V$ and $F^{-1}$ and using the ranks of $V$ along this canonical flag. The final type for the polynomial covers is $\nu_i=\lfloor i/2\rfloor$ for $1\le i\le g$. The flag computation uses bounded sparse elimination. The example has a nonzero pairing between two $\eta$ basis classes, and checks semilinearity and the Cartier restriction over $\mathbb F_8$. [Artin–Schreier de Rham example](examples/rank-as-derham.asl)
 
+#### Geometric pole orders and Ekedahl–Oort type
+
+`rvASPoleOrders[C];` lists pairs `(order, count)` in increasing order for the geometric poles of a reduced `rvascover`. The calculation separates binary multiplicity layers in the finite denominator with polynomial gcds. The degree of each separated squarefree factor counts all its roots over the algebraic closure. A pole at infinity contributes its own order.
+
+`rvASEO[C];` works for these covers over $\overline{\mathbb F}_2$. For geometric pole orders $m_i$, assemble one ordinary two-dimensional block for each pole after the first and a one-pole block of genus $(m_i-1)/2$ for every pole. The Frobenius and Verschiebung matrices of this direct sum give the canonical flag by taking images under $V$ and preimages under $F$. This uses the geometric decomposition of the Jacobian's 2-torsion in Elkin and Pries, Theorems 1.2–1.3. [Ekedahl–Oort strata of hyperelliptic curves in characteristic 2](https://arxiv.org/abs/1007.1226)
+
+The genus-five curves $y^2+y=x^9+x^5+x^{-1}$ and $y^2+y=x^5+x+x^{-1}+x^{-3}+x^{-5}$ have equal zeta numerators, $p$-rank one, and $a$-number two. Their respective geometric pole orders $(1,9)$ and $(5,5)$ give the final types $[1,1,2,2,3]$ and $[1,1,1,2,3]$. [Geometric Ekedahl–Oort example](examples/rank-as-geometric-eo.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

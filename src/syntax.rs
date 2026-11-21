@@ -1894,7 +1894,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton"
-                | "rvASCartierRank" | "rvASaNumber" | "rvASEO",
+                | "rvASCartierRank" | "rvASaNumber" | "rvASEO" | "rvASPoleOrders",
             ) => {
                 let operation = self.token();
                 self.advance()?;
@@ -1915,6 +1915,7 @@ impl<'src> Parser<'src> {
                     }
                     Token::Word("rvASaNumber") => AsQuery::ANumber,
                     Token::Word("rvASEO") => AsQuery::FinalType,
+                    Token::Word("rvASPoleOrders") => AsQuery::PoleOrders,
                     _ => unreachable!(),
                 };
                 self.expect(Token::RBracket)?;

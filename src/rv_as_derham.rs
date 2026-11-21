@@ -189,25 +189,66 @@ struct Matrices {
 }
 
 impl Matrices {
-    fn build(model: &mut Model, chart: &Chart<'_>) -> Result<Self> {
-        let dimension = 2 * chart.genus;
-        let mut cells = 6usize.saturating_mul(dimension);
+    fn new(dimension: usize) -> Result<Self> {
+        let cells = 6usize.saturating_mul(dimension);
         check_storage(cells)?;
-        let mut frobenius = Vec::with_capacity(dimension);
-        let mut verschiebung = Vec::with_capacity(dimension);
-        for i in 0..dimension {
-            let f = chart.frobenius(model, i)?;
-            let v = chart.verschiebung(model, i)?;
-            cells += f.len() + v.len();
-            check_storage(cells)?;
-            frobenius.push(f);
-            verschiebung.push(v);
-        }
         Ok(Self {
-            frobenius,
-            verschiebung,
+            frobenius: Vec::with_capacity(dimension),
+            verschiebung: Vec::with_capacity(dimension),
             cells,
         })
+    }
+
+    fn push(&mut self, model: &mut Model, f: Vec<usize>, v: Vec<usize>) -> Result<()> {
+        model.spend(1 + f.len() + v.len())?;
+        self.cells += f.len() + v.len();
+        check_storage(self.cells)?;
+        self.frobenius.push(f);
+        self.verschiebung.push(v);
+        Ok(())
+    }
+
+    fn append_chart(&mut self, model: &mut Model, chart: &Chart<'_>) -> Result<()> {
+        let offset = self.frobenius.len();
+        for i in 0..2 * chart.genus {
+            let mut f = chart.frobenius(model, i)?;
+            let mut v = chart.verschiebung(model, i)?;
+            for index in f.iter_mut().chain(&mut v) {
+                *index += offset;
+            }
+            self.push(model, f, v)?;
+        }
+        Ok(())
+    }
+
+    fn geometric(model: &mut Model, cover: &Cover, dimension: usize) -> Result<Self> {
+        let mut matrices = Self::new(dimension)?;
+        let profile = cover.geometric_pole_profile(model)?;
+        // Elkin–Pries Theorems 1.2–1.3 over the algebraic closure. Each
+        // G_c can use the one-pole model with monomial x^(2c+1).
+        for _ in 0..cover.p_rank() {
+            let offset = matrices.frobenius.len();
+            matrices.push(model, vec![offset], Vec::new())?;
+            matrices.push(model, Vec::new(), vec![offset + 1])?;
+        }
+        for (order, count) in profile {
+            let genus = (order - 1) / 2;
+            if genus == 0 {
+                continue;
+            }
+            let polynomial: Polynomial = [[order].into()].into();
+            let chart = Chart {
+                polynomial: &polynomial,
+                genus,
+            };
+            for _ in 0..count {
+                matrices.append_chart(model, &chart)?;
+            }
+        }
+        if matrices.frobenius.len() != dimension {
+            return Err(dimension_error());
+        }
+        Ok(matrices)
     }
 
     // The F2 spans extend to the canonical flag of the semilinear
@@ -288,11 +329,21 @@ fn contained(model: &mut Model, lower: &Basis, upper: &Basis) -> Result<()> {
     Ok(())
 }
 
+fn dimension_error() -> Error {
+    Error::plain("Artin–Schreier geometric Dieudonné dimension is out of range")
+}
+
 pub(crate) fn final_type(model: &mut Model, cover: &Cover) -> Result<Vec<usize>> {
-    let chart = Chart::new(cover)?;
-    let genus = chart.genus;
-    let dimension = 2 * genus;
-    let matrices = Matrices::build(model, &chart)?;
+    let genus = cover.genus();
+    let dimension = genus.checked_mul(2).ok_or_else(dimension_error)?;
+    let matrices = if cover.has_polynomial_chart() {
+        let chart = Chart::new(cover)?;
+        let mut matrices = Matrices::new(dimension)?;
+        matrices.append_chart(model, &chart)?;
+        matrices
+    } else {
+        Matrices::geometric(model, cover, dimension)?
+    };
     let mut flag = Flag {
         steps: BTreeMap::new(),
         pending: VecDeque::new(),

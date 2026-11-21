@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::binary_field::BinaryField;
+use crate::binary_linear::check_storage;
 use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::rv_as_cartier;
@@ -21,6 +22,7 @@ pub(crate) enum Query {
     CartierRank(usize),
     ANumber,
     FinalType,
+    PoleOrders,
 }
 
 impl Query {
@@ -34,6 +36,7 @@ impl Query {
             Self::CartierRank(_) => "rvASCartierRank",
             Self::ANumber => "rvASaNumber",
             Self::FinalType => "rvASEO",
+            Self::PoleOrders => "rvASPoleOrders",
         }
     }
 }
@@ -121,12 +124,86 @@ impl Cover {
         self.genus
     }
 
+    pub(crate) fn p_rank(&self) -> usize {
+        self.p_rank
+    }
+
+    pub(crate) fn has_polynomial_chart(&self) -> bool {
+        is_one(&self.denominator)
+    }
+
     pub(crate) fn polynomial_chart(&self) -> Result<&Polynomial> {
-        if is_one(&self.denominator) {
+        if self.has_polynomial_chart() {
             Ok(&self.numerator)
         } else {
             Err(Error::plain("Artin–Schreier de Rham requires a one-pole polynomial cover with affine denominator 1"))
         }
+    }
+
+    pub(crate) fn geometric_pole_profile(&self, model: &mut Model) -> Result<Vec<(usize, usize)>> {
+        // A finite pole of order 2e+1 occurs once in R and to order e in H,
+        // where the denominator is R H^2. Split R by the binary digits of e.
+        let mut factors = BTreeMap::from([(1usize, self.radical.clone())]);
+        let mut remaining = self.pole_half.clone();
+        let mut bit = 2usize;
+        while !is_one(&remaining) {
+            let (layer, next) = squarefree_layer(model, &remaining)?;
+            if !is_one(&layer) {
+                let cells: usize = factors
+                    .values()
+                    .map(|factor| 4 + rv_poly::cells(factor))
+                    .sum();
+                let mut next_cells = 0;
+                let mut divided = BTreeMap::new();
+                for (order, factor) in factors {
+                    let present = affine_gcd(model, &[factor.clone(), layer.clone()])?;
+                    if is_one(&present) {
+                        next_cells += 4 + rv_poly::cells(&factor);
+                        divided.insert(order, factor);
+                    } else {
+                        let shifted = order.checked_add(bit).ok_or_else(pole_profile_error)?;
+                        let absent = rv_poly::exact_divide(model, &factor, &present)?;
+                        next_cells += 4 + rv_poly::cells(&present);
+                        divided.insert(shifted, present);
+                        if !is_one(&absent) {
+                            next_cells += 4 + rv_poly::cells(&absent);
+                            divided.insert(order, absent);
+                        }
+                    }
+                    check_storage(cells + next_cells)?;
+                }
+                factors = divided;
+            }
+            remaining = next;
+            if !is_one(&remaining) {
+                bit = bit.checked_mul(2).ok_or_else(pole_profile_error)?;
+            }
+        }
+        // The factors are squarefree. Degree counts roots over the algebraic
+        // closure, including every member of a nonrational Frobenius orbit.
+        let mut profile = BTreeMap::new();
+        for (order, factor) in factors {
+            let degree = factor.last().unwrap()[0];
+            if degree != 0 {
+                profile.insert(order, degree);
+            }
+        }
+        if self.infinity_value.is_none() {
+            let order = self.numerator.last().unwrap()[0] - self.denominator.last().unwrap()[0];
+            *profile.entry(order).or_default() += 1;
+        }
+        let poles: usize = profile.values().copied().sum();
+        let Some(ordinary) = poles.checked_sub(1) else {
+            return Err(pole_profile_error());
+        };
+        let local_genera: u128 = profile
+            .iter()
+            .map(|(&m, &count)| ((m - 1) / 2) as u128 * count as u128)
+            .sum();
+        if ordinary != self.p_rank || local_genera + ordinary as u128 != self.genus as u128 {
+            return Err(pole_profile_error());
+        }
+        Ok(profile.into_iter().collect())
     }
 
     pub(crate) fn cartier_denominator(&self, model: &mut Model) -> Result<Polynomial> {
@@ -155,6 +232,7 @@ impl Cover {
             }
             Query::ANumber => (self.genus - rv_as_cartier::rank(model, self, 1)?).to_string(),
             Query::FinalType => format!("{:?}", rv_as_derham::final_type(model, self)?),
+            Query::PoleOrders => format!("{:?}", self.geometric_pole_profile(model)?),
             Query::LPolynomial => format!("{:?}", self.l_polynomial(model)?),
             Query::Newton => {
                 let polynomial = self.l_polynomial(model)?;
@@ -273,6 +351,10 @@ fn extension_size(extension: usize) -> Result<usize> {
         return Err(Error::plain("point-count extension degree is out of range"));
     }
     Ok(1 << extension)
+}
+
+fn pole_profile_error() -> Error {
+    Error::plain("Artin–Schreier geometric pole orders do not agree with the curve dimensions")
 }
 
 fn is_one(polynomial: &Polynomial) -> bool {

@@ -189,7 +189,6 @@ fn rejects_invalid_coordinates_fields_and_nonpolynomial_charts() {
             "show rvASDeRhamPair(zero[ASDeRham(C,3)],zero[ASDeRham(C,11)]);",
             "expected type ASDeRham(C, 3)",
         ),
-        ("rvASEO[Ordinary];", "requires a one-pole polynomial cover"),
         (
             "show zero[ASDeRham(Ordinary,11)];",
             "requires a one-pole polynomial cover",
