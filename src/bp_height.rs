@@ -1,6 +1,7 @@
-use crate::bp::Shape;
+use crate::bp::{self, Shape};
 use crate::bp_ext::{self, Domain, Group};
-use crate::bp_polynomial::Monomial;
+use crate::bp_polynomial::{Monomial, Polynomial};
+use crate::bp_rel;
 use crate::bp_smith::{self, IntegralKernel, Matrix};
 use crate::error::{Error, Result};
 use crate::model::Model;
@@ -408,4 +409,202 @@ fn widen(model: &mut Model, monomial: &Monomial, old: usize, new: usize) -> Resu
             (slot * new + level, power)
         })
         .collect())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ClassGrade {
+    pub(crate) top: Shape,
+    pub(crate) r: usize,
+    pub(crate) h: i128,
+    pub(crate) t: usize,
+}
+
+impl ClassGrade {
+    pub(crate) fn validate(self) -> Result<Self> {
+        if self.h > self.top.height as i128 {
+            return Err(Error::plain(
+                "BP height filtration exceeds the ambient height",
+            ));
+        }
+        Ok(self)
+    }
+
+    fn numeric(self) -> Option<Grade> {
+        Some(Grade {
+            top: self.top,
+            r: self.r.min(self.top.height + 1),
+            h: usize::try_from(self.h).ok()?,
+            t: self.t,
+        })
+    }
+
+    pub(crate) fn target(self) -> Result<Self> {
+        let top = self.top.next()?;
+        let h = self
+            .h
+            .checked_sub(self.r as i128)
+            .ok_or_else(|| Error::plain("bpHeightD target height exceeds the signed i128 range"))?;
+        Ok(Self { top, h, ..self })
+    }
+
+    pub(crate) fn next_page(self) -> Result<Self> {
+        let r = self
+            .r
+            .checked_add(1)
+            .ok_or_else(|| Error::plain("bpHeightNext page index is out of range"))?;
+        Ok(Self { r, ..self })
+    }
+
+    pub(crate) fn previous_page(self) -> Result<Self> {
+        let r = self
+            .r
+            .checked_sub(1)
+            .ok_or_else(|| Error::plain("bpHeightPrev requires a positive page"))?;
+        Ok(Self { r, ..self })
+    }
+
+    pub(crate) fn group(self, model: &mut Model) -> Result<Group> {
+        if let Some(grade) = self.numeric() {
+            page(model, grade)
+        } else {
+            Ok(Group {
+                free: 0,
+                torsion: Vec::new(),
+            })
+        }
+    }
+
+    pub(crate) fn leading_basis(self, model: &mut Model) -> Result<Vec<Monomial>> {
+        let grade = self.numeric().unwrap();
+        if grade.h == 0 {
+            return Ok(vec![Box::new([])]);
+        }
+        grade.leading().basis(model, self.t)
+    }
+
+    pub(crate) fn widen(self, model: &mut Model, cochain: &Polynomial) -> Result<Polynomial> {
+        if cochain.is_zero() {
+            return Ok(Polynomial::default());
+        }
+        bp::reindex_height(model, self.h as usize, self.top.height, cochain)
+    }
+
+    pub(crate) fn cycle(self, model: &mut Model, upper: &Polynomial) -> Result<Polynomial> {
+        let grade = self.numeric().ok_or_else(outside_filtration)?;
+        bp_ext::validate_homogeneous(model, self.top, self.t, upper)?;
+        model.spend(upper.cells())?;
+        if upper
+            .terms()
+            .any(|(monomial, _)| bp_rel::retains(monomial, grade.h, self.top.height))
+        {
+            return Err(outside_filtration());
+        }
+        let compact = bp::reindex_height(model, self.top.height, grade.h, upper)?;
+        if grade.r == 0 && grade.h > 0 {
+            return grade.leading().project(model, &compact);
+        }
+        if !grade.constraint_image(model, &compact)?.is_zero() {
+            return Err(Error::plain(
+                "bpHeightClass requires a cycle on the requested height page",
+            ));
+        }
+        Ok(compact)
+    }
+
+    pub(crate) fn denominator(
+        self,
+        model: &mut Model,
+        modulus: u64,
+    ) -> Result<(Vec<Monomial>, Matrix, usize)> {
+        let prepared = PageLattices::build(model, self.numeric().unwrap())?;
+        let matrix = prepared.quotient_matrix(model, modulus, None)?;
+        Ok((prepared.ambient, matrix, prepared.rank))
+    }
+
+    pub(crate) fn lift_cycle(
+        self,
+        model: &mut Model,
+        mut candidate: Polynomial,
+        modulus: u64,
+    ) -> Result<Polynomial> {
+        let grade = self.numeric().unwrap();
+        let mut error = grade.constraint_image(model, &candidate)?;
+        if error.is_zero() {
+            return Ok(candidate);
+        }
+        let modulus = i128::from(modulus);
+        error.divide_exact(model, modulus)?;
+        let cutoff = grade.h.saturating_sub(grade.r);
+        let next = grade.shape().next()?;
+        // The residue is certified to be in the reduction of the integral
+        // cycle lattice. Dividing its error gives an exact relative cochain.
+        let relative = Domain::relative(next, cutoff);
+        let mut correction = relative
+            .primitive(model, self.t, &error)?
+            .ok_or_else(|| Error::plain("BP height residue has no certified integral lift"))?;
+        correction.scale(model, modulus)?;
+        candidate.add_assign(model, &correction, true)?;
+        Ok(candidate)
+    }
+
+    pub(crate) fn correct_next(
+        self,
+        model: &mut Model,
+        mut upper: Polynomial,
+    ) -> Result<Polynomial> {
+        let grade = self.numeric().unwrap();
+        if grade.r > grade.h || self.t == 0 {
+            return Ok(upper);
+        }
+        let compact = bp::reindex_height(model, self.top.height, grade.h, &upper)?;
+        let lower = grade.h.saturating_sub(grade.r + 1);
+        let shape = grade.shape().next()?;
+        let image = Domain::relative(grade.shape(), lower).differential(model, &compact)?;
+        if image.is_zero() {
+            return Ok(upper);
+        }
+        if grade.r == 0 {
+            return Err(next_requires_cycle());
+        }
+        // A correction in F_(h-1) automatically has differential in
+        // F_(h-r), because its differential agrees with d(x) above F_(h-r-1).
+        let below = grade.h - 1;
+        let shape_below = Shape {
+            height: below,
+            ..shape
+        };
+        let error = bp::reindex_height(model, grade.h, below, &image)?;
+        let correction = Domain::relative(shape_below, lower)
+            .primitive(model, self.t, &error)?
+            .ok_or_else(next_requires_cycle)?;
+        let correction = bp::reindex_height(model, below, self.top.height, &correction)?;
+        upper.add_assign(model, &correction, true)?;
+        Ok(upper)
+    }
+}
+
+impl Grade {
+    fn constraint_image(self, model: &mut Model, cycle: &Polynomial) -> Result<Polynomial> {
+        if self.r == 0 || self.h == 0 || self.t == 0 {
+            return Ok(Polynomial::default());
+        }
+        let shape = self.shape();
+        let cutoff = self.h.saturating_sub(self.r);
+        let next = Shape {
+            arrows: shape.arrows + 1,
+            ..shape
+        };
+        if !Domain::relative(next, cutoff).has_monomials(self.t) {
+            return Ok(Polynomial::default());
+        }
+        Domain::relative(shape, cutoff).differential(model, cycle)
+    }
+}
+
+fn outside_filtration() -> Error {
+    Error::plain("bpHeightClass cochain exceeds the requested height filtration")
+}
+
+fn next_requires_cycle() -> Error {
+    Error::plain("bpHeightNext requires a cycle for the page differential")
 }

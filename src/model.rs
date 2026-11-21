@@ -6,6 +6,7 @@ use crate::adams::Adams;
 use crate::binary_field::BinaryField;
 use crate::binary_linear;
 use crate::bp_classes;
+use crate::bp_height;
 use crate::bp_page;
 use crate::bp_rel;
 use crate::bp_triple;
@@ -102,6 +103,7 @@ pub(crate) enum Kind {
     BP(bp::Shape),
     BPRel(bp_rel::Shape),
     BPRelExt(bp_rel::Grade),
+    BPHeight(bp_height::ClassGrade),
     BPPage(bp_page::Grade),
     BPExt(bp_classes::Grade),
     BPTriple(bp_classes::Grade),
@@ -493,7 +495,8 @@ impl Model {
             | Kind::BPRel(..)
             | Kind::BPExt(..)
             | Kind::BPTriple(..)
-            | Kind::BPRelExt(..) => usize::MAX,
+            | Kind::BPRelExt(..)
+            | Kind::BPHeight(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -590,6 +593,7 @@ impl Model {
                 | Kind::BPExt(..)
                 | Kind::BPTriple(..)
                 | Kind::BPRelExt(..)
+                | Kind::BPHeight(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -1089,6 +1093,10 @@ impl Model {
         self.inhabited_type(Kind::BPExt(grade), 0)
     }
 
+    pub(crate) fn bp_height_type(&mut self, grade: bp_height::ClassGrade) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPHeight(grade.validate()?), 0)
+    }
+
     pub(crate) fn bp_rel_ext_type(&mut self, grade: bp_rel::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::BPRelExt(grade), 0)
     }
@@ -1100,6 +1108,7 @@ impl Model {
         let group = Rc::new(match self.types[ty.0].kind {
             Kind::BPExt(grade) => bp_classes::Cohomology::build(self, grade)?,
             Kind::BPRelExt(grade) => bp_classes::Cohomology::build_relative(self, grade)?,
+            Kind::BPHeight(grade) => bp_classes::Cohomology::build_height(self, grade)?,
             _ => unreachable!(),
         });
         self.types[ty.0].bp_ext = Some(group.clone());
@@ -1704,6 +1713,7 @@ impl Model {
             | Kind::BPExt(..)
             | Kind::BPTriple(..)
             | Kind::BPRelExt(..)
+            | Kind::BPHeight(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1900,6 +1910,10 @@ impl Model {
             Kind::ASDiff(name, field) => out.push(&format!("ASDiff({name}, {})", field.modulus())),
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
+            Kind::BPHeight(grade) => out.push(&format!(
+                "BPHeight({}, {}, {}, {}, {}, {})",
+                grade.top.prime, grade.top.height, grade.r, grade.h, grade.top.arrows, grade.t,
+            )),
             Kind::BPRelExt(grade) => out.push(&format!(
                 "BPRelExt({}, {}, {}, {}, {})",
                 grade.shape.upper.prime,
@@ -2397,7 +2411,7 @@ impl Model {
                         "BPTriple types do not enumerate ambient cosets",
                     ))
                 }
-                Kind::BPExt(..) | Kind::BPRelExt(..) => {
+                Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
                 }
                 Kind::RVPathExt(..) => {

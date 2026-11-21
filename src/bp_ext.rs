@@ -187,9 +187,29 @@ impl Domain {
         t: usize,
         cycle: &Polynomial,
     ) -> Result<Polynomial> {
+        // Without an order restriction every torsion class has a witness.
+        Ok(self.integral_witness(model, t, cycle, false)?.unwrap())
+    }
+
+    pub(crate) fn primitive(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+    ) -> Result<Option<Polynomial>> {
+        self.integral_witness(model, t, cycle, true)
+    }
+
+    fn integral_witness(
+        self,
+        model: &mut Model,
+        t: usize,
+        cycle: &Polynomial,
+        require_boundary: bool,
+    ) -> Result<Option<Polynomial>> {
         let previous = self.previous()?;
         if cycle.is_zero() {
-            return Ok(Polynomial::default());
+            return Ok(Some(Polynomial::default()));
         }
         self.validate_cycle(model, t, cycle)?;
         let ClosedSystem {
@@ -199,6 +219,9 @@ impl Domain {
             rank,
         } = self.closed_system(model, t, cycle)?;
         let order = finite_order(model, &incoming, &target, self.shape.prime, rank)?;
+        if require_boundary && order != 1 {
+            return Ok(None);
+        }
         drop(incoming);
         let mut multiple = cycle.clone();
         multiple.scale(model, order)?;
@@ -221,7 +244,7 @@ impl Domain {
                 "BP integral witness does not have the required differential",
             ));
         }
-        Ok(witness)
+        Ok(Some(witness))
     }
 
     fn integral_lift(

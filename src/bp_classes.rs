@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::bp::{self, Shape};
 use crate::bp_ext::{self, Domain};
+use crate::bp_height;
 use crate::bp_polynomial::{Monomial, Polynomial};
 use crate::bp_rel;
 use crate::bp_smith::{PrimaryFrame, Projector};
@@ -30,9 +31,14 @@ impl Grade {
 
 pub(crate) type Support = Rc<[(usize, i128)]>;
 
+#[derive(Clone, Copy)]
+enum Presentation {
+    Cobar(Domain, usize),
+    Height(bp_height::ClassGrade),
+}
+
 pub(crate) struct Cohomology {
-    domain: Domain,
-    t: usize,
+    presentation: Presentation,
     pub(crate) invariants: bp_ext::Group,
     frame: OnceCell<Frame>,
 }
@@ -54,10 +60,22 @@ impl Cohomology {
 
     fn for_domain(model: &mut Model, domain: Domain, t: usize) -> Result<Self> {
         let invariants = domain.group(model, t)?;
+        Self::cache(model, Presentation::Cobar(domain, t), invariants)
+    }
+
+    pub(crate) fn build_height(model: &mut Model, grade: bp_height::ClassGrade) -> Result<Self> {
+        let invariants = grade.group(model)?;
+        Self::cache(model, Presentation::Height(grade), invariants)
+    }
+
+    fn cache(
+        model: &mut Model,
+        presentation: Presentation,
+        invariants: bp_ext::Group,
+    ) -> Result<Self> {
         model.allocate(2 * invariants.torsion.len())?;
         Ok(Self {
-            domain,
-            t,
+            presentation,
             invariants,
             frame: OnceCell::new(),
         })
@@ -80,17 +98,32 @@ impl Cohomology {
     }
 
     fn build_frame(&self, model: &mut Model) -> Result<Frame> {
-        let previous = self.domain.previous()?;
-        let (source, rank) = previous.incoming_basis(model, self.t)?;
-        let basis = self.domain.basis(model, self.t)?;
-        let incoming = previous.matrix(model, &source, &basis)?;
         let orders = &self.invariants.torsion;
-        let prime = self.domain.shape.prime;
+        let (basis, incoming, rank, prime, modulus) = match self.presentation {
+            Presentation::Cobar(domain, t) => {
+                let previous = domain.previous()?;
+                let (source, rank) = previous.incoming_basis(model, t)?;
+                let basis = domain.basis(model, t)?;
+                let incoming = previous.matrix(model, &source, &basis)?;
+                (basis, incoming, rank, domain.shape.prime, None)
+            }
+            Presentation::Height(grade) if self.is_free() => {
+                let basis = grade.leading_basis(model)?;
+                model.allocate(basis_cells(&basis))?;
+                return Ok(Frame {
+                    basis,
+                    generators: Vec::new(),
+                    projectors: Vec::new(),
+                });
+            }
+            Presentation::Height(grade) => {
+                let modulus = PrimaryFrame::precision(orders)?;
+                let (basis, denominator, rank) = grade.denominator(model, modulus)?;
+                (basis, denominator, rank, grade.top.prime, Some(modulus))
+            }
+        };
         let smith = PrimaryFrame::build(model, &incoming, prime, rank, orders)?;
-        let mut cells = basis
-            .iter()
-            .map(|monomial| 1 + 2 * monomial.len())
-            .sum::<usize>();
+        let mut cells = basis_cells(&basis);
         let mut projectors = Vec::with_capacity(orders.len());
         for i in 0..orders.len() {
             let projector = smith.projector(model, i)?;
@@ -99,17 +132,28 @@ impl Cohomology {
             projectors.push(projector);
         }
         let mut generators = Vec::with_capacity(orders.len());
-        for (i, &modulus) in orders.iter().enumerate() {
+        for (i, &order) in orders.iter().enumerate() {
             let preimage = smith.lift(model, i)?;
-            let mut cycle = incoming.apply(model, &preimage)?;
-            // The exact incoming image is divisible by the local Smith pivot.
-            // Dividing gives an integral cycle with the corresponding unit coordinate.
+            let mut cycle = if let Some(modulus) = modulus {
+                let preimage: Vec<_> = preimage
+                    .into_iter()
+                    .map(|value| value.rem_euclid(i128::from(modulus)) as u64)
+                    .collect();
+                incoming
+                    .apply_residue(model, &preimage, modulus)?
+                    .into_iter()
+                    .map(i128::from)
+                    .collect()
+            } else {
+                incoming.apply(model, &preimage)?
+            };
+            // Dividing the Smith pivot image gives the corresponding unit coordinate.
             model.spend(cycle.len())?;
             for coefficient in &mut cycle {
-                if *coefficient % modulus != 0 {
+                if *coefficient % order != 0 {
                     return Err(Error::plain("BP Ext generator is not exactly divisible"));
                 }
-                *coefficient /= modulus;
+                *coefficient /= order;
             }
             for (j, projector) in projectors.iter().enumerate() {
                 if projector.evaluate(model, &cycle)? != i128::from(i == j) {
@@ -118,7 +162,10 @@ impl Cohomology {
                     ));
                 }
             }
-            let representative = Polynomial::from_terms(model, basis.iter().zip(cycle))?;
+            let mut representative = Polynomial::from_terms(model, basis.iter().zip(cycle))?;
+            if let (Presentation::Height(grade), Some(modulus)) = (self.presentation, modulus) {
+                representative = grade.lift_cycle(model, representative, modulus / order as u64)?;
+            }
             cells += 1 + representative.cells();
             check_frame(cells)?;
             generators.push(representative);
@@ -136,6 +183,15 @@ impl Cohomology {
             return Ok([].into());
         }
         if self.is_free() {
+            if matches!(self.presentation, Presentation::Height(..)) {
+                let frame = self.frame(model)?;
+                let support = bp_ext::coordinates(model, cycle, &frame.basis)?
+                    .into_iter()
+                    .enumerate()
+                    .filter(|&(_, coefficient)| coefficient != 0)
+                    .collect();
+                return coordinates(model, support);
+            }
             let coefficient = cycle.terms().next().unwrap().1;
             return coordinates(model, vec![(0, coefficient)]);
         }
@@ -162,9 +218,27 @@ impl Cohomology {
         if support.is_empty() {
             return Ok(Polynomial::default());
         }
+        if let Presentation::Height(grade) = self.presentation {
+            let compact = if self.is_free() {
+                let frame = self.frame(model)?;
+                Polynomial::from_terms(
+                    model,
+                    support
+                        .iter()
+                        .map(|&(index, value)| (&frame.basis[index], value)),
+                )?
+            } else {
+                self.combine(model, support)?
+            };
+            return grade.widen(model, &compact);
+        }
         if self.is_free() {
             return Ok(Polynomial::integer(support[0].1));
         }
+        self.combine(model, support)
+    }
+
+    fn combine(&self, model: &mut Model, support: &[(usize, i128)]) -> Result<Polynomial> {
         let frame = self.frame(model)?;
         let mut result = Polynomial::default();
         for &(coordinate, coefficient) in support {
@@ -177,9 +251,11 @@ impl Cohomology {
 
     pub(crate) fn elements(&self, model: &mut Model, limit: usize) -> Result<Vec<Value>> {
         if self.is_free() {
-            return Err(Error::plain(
-                "cannot enumerate the infinite free BP Ext group",
-            ));
+            let message = match self.presentation {
+                Presentation::Cobar(..) => "cannot enumerate the infinite free BP Ext group",
+                Presentation::Height(..) => "cannot enumerate the infinite free BP height page",
+            };
+            return Err(Error::plain(message));
         }
         let orders = &self.invariants.torsion;
         let mut count = 1usize;
@@ -214,6 +290,10 @@ fn too_many_elements(limit: usize) -> Error {
     ))
 }
 
+fn basis_cells(basis: &[Monomial]) -> usize {
+    basis.iter().map(|monomial| 1 + 2 * monomial.len()).sum()
+}
+
 fn check_frame(cells: usize) -> Result<()> {
     if cells > MAX_PIVOT_CELLS {
         return Err(Error::plain(
@@ -243,6 +323,11 @@ pub(crate) fn class(model: &mut Model, ty: TypeId, cycle: &Polynomial) -> Result
     let (domain, t) = match *model.kind(ty) {
         Kind::BPExt(grade) => (Domain::absolute(grade.shape), grade.t),
         Kind::BPRelExt(grade) => (grade.shape.domain(), grade.t),
+        Kind::BPHeight(grade) => {
+            let compact = grade.cycle(model, cycle)?;
+            let group = model.bp_ext(ty)?;
+            return Ok(Value::BPExt(group.project(model, &compact)?));
+        }
         _ => unreachable!(),
     };
     domain.validate_cycle(model, t, cycle)?;
@@ -360,13 +445,12 @@ pub(crate) fn cup(
     }
     let f = left_group.representative(model, left)?;
     let g = right_group.representative(model, right)?;
-    let product = bp::cup(
-        model,
-        left_group.domain.shape,
-        right_group.domain.shape,
-        &f,
-        &g,
-    )?;
+    let (Presentation::Cobar(left_domain, _), Presentation::Cobar(right_domain, _)) =
+        (left_group.presentation, right_group.presentation)
+    else {
+        unreachable!()
+    };
+    let product = bp::cup(model, left_domain.shape, right_domain.shape, &f, &g)?;
     class(model, target, &product)
 }
 

@@ -151,6 +151,14 @@ impl Projector {
 }
 
 impl PrimaryFrame {
+    pub(crate) fn precision(torsion: &[i128]) -> Result<u64> {
+        let largest = u64::try_from(*torsion.last().ok_or_else(incompatible_rank)?)
+            .map_err(|_| frame_precision())?;
+        // Dividing an image by an invariant factor loses precision by at most
+        // that factor. Leave enough precision to certify the coordinates.
+        largest.checked_mul(largest).ok_or_else(frame_precision)
+    }
+
     pub(crate) fn build(
         model: &mut Model,
         matrix: &Matrix,
@@ -161,12 +169,7 @@ impl PrimaryFrame {
         if rank > matrix.rows.min(matrix.columns) || torsion.len() > rank {
             return Err(incompatible_rank());
         }
-        let largest = u64::try_from(*torsion.last().ok_or_else(incompatible_rank)?)
-            .map_err(|_| frame_precision())?;
-        // Dividing an exact integral image by one of its invariant factors
-        // loses precision by at most that factor. Start with the square of
-        // the largest so the resulting cycle still has certain coordinates.
-        let modulus = largest.checked_mul(largest).ok_or_else(frame_precision)?;
+        let modulus = Self::precision(torsion)?;
         let mut echelon = ModularMatrix::new(model, matrix, u64::from(prime), modulus)?;
         echelon.permutation = Some((0..matrix.columns).collect());
         echelon.operations = Some(Vec::new());

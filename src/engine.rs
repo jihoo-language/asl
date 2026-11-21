@@ -75,9 +75,9 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
-    BinaryOp, BpExtOp, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm, JetHomSpec, JetOp,
-    JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp,
-    RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
+    BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
+    JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
+    RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::transfer;
@@ -240,6 +240,7 @@ enum TypedForm {
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
     BpRelOperation(BpRelOp, bp_rel::Shape, Box<TypedExpr>),
+    BpHeightOperation(BpHeightOp, Box<TypedExpr>),
     BpExtOperation(BpExtOp, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
     BpHigher(bp_higher::Layout, Vec<TypedExpr>, Option<Vec<TypedExpr>>),
@@ -2161,6 +2162,39 @@ impl Engine {
                 };
                 odd_ext::persist(&mut self.model, output)
             }
+            TypedForm::BpHeightOperation(operation, input) => {
+                use BpHeightOp::{Class, Differential, Next, Previous, Representative};
+                let value = self.eval(input)?;
+                if matches!(operation, Class(..)) {
+                    let Value::BP(cycle) = value else {
+                        unreachable!()
+                    };
+                    return bp_classes::class(&mut self.model, expr.ty, &cycle);
+                }
+                let Value::BPExt(support) = value else {
+                    unreachable!()
+                };
+                if matches!(operation, Representative) {
+                    return bp_classes::representative(&mut self.model, input.ty, &support);
+                }
+                let Kind::BPHeight(grade) = *self.model.kind(input.ty) else {
+                    unreachable!();
+                };
+                if support.is_empty()
+                    || matches!(operation, Differential) && grade.h < grade.r as i128
+                {
+                    return Ok(bp_classes::zero());
+                }
+                let group = self.model.bp_ext(input.ty)?;
+                let cycle = group.representative(&mut self.model, &support)?;
+                let result = match operation {
+                    Differential => bp::differential(&mut self.model, grade.top, &cycle)?,
+                    Next => grade.correct_next(&mut self.model, cycle)?,
+                    Previous => cycle,
+                    _ => unreachable!(),
+                };
+                bp_classes::class(&mut self.model, expr.ty, &result)
+            }
             TypedForm::BpRelOperation(operation, shape, input) => {
                 let value = self.eval(input)?;
                 match (*operation, value) {
@@ -2912,6 +2946,10 @@ impl Checker<'_> {
                 let grade = self.bp_page_grade(mode, spec)?;
                 self.model.bp_page_type(grade)
             }
+            TypeForm::BPHeight(spec) => {
+                let grade = self.bp_height_grade(spec)?;
+                self.model.bp_height_type(grade)
+            }
             TypeForm::BPRelExt(spec, t) => {
                 let shape = self.bp_relative_shape(spec)?;
                 self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })
@@ -3069,7 +3107,7 @@ impl Checker<'_> {
                     Kind::ASDiff(..) => Value::ASDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
-                    Kind::BPExt(..) | Kind::BPRelExt(..) => bp_classes::zero(),
+                    Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => bp_classes::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -3707,6 +3745,48 @@ impl Checker<'_> {
                     TypedForm::BpMassey(layout, inputs),
                 ))
             }
+            ExprForm::BpHeightGenerator(spec, index, at) => {
+                let grade = self.bp_height_grade(spec)?;
+                let ty = self.model.bp_height_type(grade)?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bpHeightgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
+                ))
+            }
+            ExprForm::BpHeightOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = if let BpHeightOp::Class(r, h, t) = operation {
+                    let top = self.bp_shape(&input, operation.name())?;
+                    top.require_integral(operation.name())?;
+                    self.model
+                        .bp_height_type(bp_height::ClassGrade { top, r, h, t })?
+                } else {
+                    let Kind::BPHeight(grade) = *self.model.kind(input.ty) else {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "a BPHeight class",
+                        ));
+                    };
+                    match operation {
+                        BpHeightOp::Representative => self.model.bp_type(grade.top)?,
+                        BpHeightOp::Differential => self.model.bp_height_type(grade.target()?)?,
+                        BpHeightOp::Next => self.model.bp_height_type(grade.next_page()?)?,
+                        BpHeightOp::Previous => {
+                            self.model.bp_height_type(grade.previous_page()?)?
+                        }
+                        BpHeightOp::Class(..) => unreachable!(),
+                    }
+                };
+                Ok((ty, TypedForm::BpHeightOperation(operation, Box::new(input))))
+            }
             ExprForm::BpRelOperation(operation, input) => {
                 let input = self.expr(*input)?;
                 let (ty, shape) = match (operation, self.model.kind(input.ty).clone()) {
@@ -3811,12 +3891,15 @@ impl Checker<'_> {
                     BpExtOp::Scale(_) => {
                         if !matches!(
                             self.model.kind(input.ty),
-                            Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..)
+                            Kind::BPExt(..)
+                                | Kind::BPRel(..)
+                                | Kind::BPRelExt(..)
+                                | Kind::BPHeight(..)
                         ) {
                             return Err(self.invalid_operand(
                                 &input,
                                 "bpScale",
-                                "a BPExt class, BPRel cochain, or BPRelExt class",
+                                "a BPExt, BPRelExt, or BPHeight class or a BPRel cochain",
                             ));
                         }
                         input.ty
@@ -3828,7 +3911,10 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 let kind = self.model.kind(input.ty);
                 if matches!(operation, bp::Operation::Negate)
-                    && matches!(kind, Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..))
+                    && matches!(
+                        kind,
+                        Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..) | Kind::BPHeight(..)
+                    )
                 {
                     return Ok((
                         input.ty,
@@ -5024,6 +5110,14 @@ impl Checker<'_> {
         })
     }
 
+    fn bp_height_grade(
+        &mut self,
+        BpHeightSpec(spec, r, h, t): BpHeightSpec,
+    ) -> Result<bp_height::ClassGrade> {
+        let top = self.bp_ext_grade(spec, t)?.shape;
+        Ok(bp_height::ClassGrade { top, r, h, t })
+    }
+
     fn bp_relative_shape(&mut self, spec: crate::syntax::BpRelSpec) -> Result<bp_rel::Shape> {
         bp_rel::Shape::new(self.model, spec.0, spec.1, spec.2, spec.3)
     }
@@ -5609,6 +5703,7 @@ impl Checker<'_> {
                         | Kind::BPRel(..)
                         | Kind::BPExt(..)
                         | Kind::BPRelExt(..)
+                        | Kind::BPHeight(..)
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
                         | Kind::RVLaurent(..)

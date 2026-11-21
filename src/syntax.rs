@@ -72,6 +72,7 @@ pub(crate) enum TypeForm {
     BP(BpSpec, Option<usize>),
     BPRel(BpRelSpec),
     BPRelExt(BpRelSpec, usize),
+    BPHeight(BpHeightSpec),
     BpPage(BpPageMode, BpPageSpec),
     BPExt(BpSpec, usize),
     BPTriple(BpSpec, usize),
@@ -94,6 +95,34 @@ pub(crate) enum RvIdealOp {
 }
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
+
+pub(crate) struct BpHeightSpec(
+    pub(crate) BpSpec,
+    pub(crate) usize,
+    pub(crate) i128,
+    pub(crate) usize,
+);
+
+#[derive(Clone, Copy)]
+pub(crate) enum BpHeightOp {
+    Class(usize, i128, usize),
+    Representative,
+    Differential,
+    Next,
+    Previous,
+}
+
+impl BpHeightOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Class(..) => "bpHeightClass",
+            Self::Representative => "bpHeightRep",
+            Self::Differential => "bpHeightD",
+            Self::Next => "bpHeightNext",
+            Self::Previous => "bpHeightPrev",
+        }
+    }
+}
 
 pub(crate) struct BpRelSpec(
     pub(crate) usize,
@@ -450,6 +479,8 @@ pub(crate) enum ExprForm {
     BpOperation(BpOperation, Box<ParsedExpr>),
     BpRelOperation(BpRelOp, Box<ParsedExpr>),
     BpRelGenerator(BpRelSpec, usize, usize, Span),
+    BpHeightGenerator(BpHeightSpec, usize, Span),
+    BpHeightOperation(BpHeightOp, Box<ParsedExpr>),
     BpExtOperation(BpExtOp, Box<ParsedExpr>),
     BpExtGenerator(BpSpec, usize, usize, Span),
     BpMassey(Vec<ParsedExpr>),
@@ -874,6 +905,17 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (t, _) = self.number()?;
         Ok((BpSpec(prime, height, arrows), t))
+    }
+
+    fn bp_height_spec(&mut self) -> Result<BpHeightSpec> {
+        let (prime, height, r) = self.prime_bidegree()?;
+        self.expect(Token::Comma)?;
+        let h = self.signed_wide("a signed BP height", "BP height filtration")?;
+        self.expect(Token::Comma)?;
+        let (a, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (t, _) = self.number()?;
+        Ok(BpHeightSpec(BpSpec(prime, height, a), r, h, t))
     }
 
     fn bp_coefficient(&mut self) -> Result<i128> {
@@ -2074,6 +2116,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BpPage(mode, spec), 0);
         }
+        if name.text == "BPHeight" && self.eat(Token::LParen)? {
+            let spec = self.bp_height_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BPHeight(spec), 0);
+        }
         if name.text == "BPRelExt" && self.eat(Token::LParen)? {
             let shape = self.bp_relative_shape()?;
             self.expect(Token::Comma)?;
@@ -2708,6 +2755,47 @@ impl<'src> Parser<'src> {
                     }
                     let depth = arguments.iter().map(|arg| arg.depth + 1).max().unwrap();
                     return expr(span, ExprForm::BpMassey(arguments), depth);
+                }
+                if name.text == "bpHeightgen" && self.eat(Token::LBracket)? {
+                    let spec = self.bp_height_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::BpHeightGenerator(spec, index, at), 0);
+                }
+                if name.text == "bpHeightClass" && self.eat(Token::LBracket)? {
+                    let (r, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let h = self.signed_wide("a signed BP height", "BP height filtration")?;
+                    self.expect(Token::Comma)?;
+                    let (t, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let op = BpHeightOp::Class(r, h, t);
+                    return expr(
+                        span,
+                        ExprForm::BpHeightOperation(op, Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "bpHeightRep" => Some(BpHeightOp::Representative),
+                        "bpHeightD" => Some(BpHeightOp::Differential),
+                        "bpHeightNext" => Some(BpHeightOp::Next),
+                        "bpHeightPrev" => Some(BpHeightOp::Previous),
+                        _ => None,
+                    };
+                    if let Some(op) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::BpHeightOperation(op, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "bprelgen" && self.eat(Token::LBracket)? {
                     let shape = self.bp_relative_shape()?;
