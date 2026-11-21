@@ -1,0 +1,12 @@
+let x = rvmon[[0]]{1};
+let z = zero[RVPoly([0],0)];
+rvwitttower T[[0]] {x,z,z,z};
+rvWittTowerCharacterNewton[T,4];
+rvWittTowerNewton[T];
+rvWittTowerCharacterBaseL[T,3,2];
+rvWittTowerCharacterBaseL[T,3,4];
+rvWittTowerPoints[T,8];
+rvWittTowerFrobPoints[T,8];
+rvWittTowerFrobPoints[T,32];
+rvWittTowerFrobPoints[T,48];
+rvWittTowerFrobPoints[T,96];

@@ -257,19 +257,28 @@ fn slope_list(
 }
 
 pub(crate) fn integral_slopes(model: &mut Model, coefficients: &[i128]) -> Result<Vec<String>> {
-    let vertices = lower_hull(
+    scaled_slopes(
         model,
         coefficients.iter().map(|&coefficient| {
             (coefficient != 0).then(|| i64::from(coefficient.trailing_zeros()))
         }),
-    )?;
+        1,
+    )
+}
+
+pub(crate) fn scaled_slopes(
+    model: &mut Model,
+    valuations: impl IntoIterator<Item = Option<i64>>,
+    scale: usize,
+) -> Result<Vec<String>> {
+    let vertices = lower_hull(model, valuations)?;
     Ok(vertices
         .windows(2)
         .map(|edge| {
             let [a, b] = edge else { unreachable!() };
             let width = b.degree - a.degree;
             let numerator = i128::from(b.valuation) - i128::from(a.valuation);
-            format_slope(numerator, width as i128, width)
+            format_slope(numerator, width as i128 * scale as i128, width)
         })
         .collect())
 }

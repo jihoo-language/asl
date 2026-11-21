@@ -21,6 +21,9 @@ pub(crate) enum Query {
     Genus,
     Points(usize),
     CharacterL(usize),
+    CharacterNewton(usize),
+    CharacterBaseL(usize, usize),
+    FrobPoints(usize),
     LPolynomial,
     Newton,
 }
@@ -32,6 +35,9 @@ impl Query {
             Self::Genus => "rvWittTowerGenus",
             Self::Points(_) => "rvWittTowerPoints",
             Self::CharacterL(_) => "rvWittTowerCharacterL",
+            Self::CharacterNewton(_) => "rvWittTowerCharacterNewton",
+            Self::CharacterBaseL(..) => "rvWittTowerCharacterBaseL",
+            Self::FrobPoints(_) => "rvWittTowerFrobPoints",
             Self::LPolynomial => "rvWittTowerLPolynomial",
             Self::Newton => "rvWittTowerNewton",
         }
@@ -115,6 +121,24 @@ impl Tower {
                     query.name()
                 ));
             }
+            Query::CharacterNewton(height) => {
+                let character = self.character_l(model, height)?;
+                let slopes = character_slopes(model, &character)?.join(", ");
+                return Ok(format!("{}[{name}, {height}] = [{slopes}]", query.name()));
+            }
+            Query::CharacterBaseL(height, extension) => {
+                check_positive_extension(extension)?;
+                let character = self.character_l(model, height)?;
+                let base = character_base_l(model, &character, extension)?;
+                return Ok(format!(
+                    "{}[{name}, {height}, {extension}] = {base:?}",
+                    query.name()
+                ));
+            }
+            Query::FrobPoints(extension) => {
+                let points = self.frobenius_points(model, extension)?;
+                return Ok(format!("{}[{name}, {extension}] = {points}", query.name()));
+            }
             Query::LPolynomial => format!("{:?}", self.l_polynomial(model)?),
             Query::Newton => {
                 let coefficients = self.l_polynomial(model)?;
@@ -195,29 +219,43 @@ impl Tower {
                     .collect(),
             );
         }
-        let mut one = vec![0; width];
-        one[0] = 1;
-        let mut polynomial = vec![one];
-        for n in 1..=degree {
-            let mut numerator = vec![0; width];
-            for k in 1..=n {
-                add_product(model, &mut numerator, &sums[k], &polynomial[n - k])?;
-            }
-            for coefficient in &mut numerator {
-                let divisor = n as i128;
-                if *coefficient % divisor != 0 {
-                    return Err(Error::plain(
-                        "Witt tower Newton identity is not integral in the power basis",
-                    ));
-                }
-                *coefficient /= divisor;
-            }
-            polynomial.push(numerator);
-        }
+        let polynomial = from_negative_power_sums(model, &sums)?;
         model.allocate(1 + (1 + 2 * width) * polynomial.len())?;
         let polynomial: Character = polynomial.into();
         self.characters.borrow_mut()[height - 1] = Some(polynomial.clone());
         Ok(polynomial)
+    }
+
+    fn frobenius_points(&self, model: &mut Model, extension: usize) -> Result<u128> {
+        check_positive_extension(extension)?;
+        if extension >= u128::BITS as usize {
+            return Err(Error::plain(
+                "Witt tower Frobenius point-count extension degree exceeds 127",
+            ));
+        }
+        let mut negative_trace = 0i128;
+        for height in (1..=self.coordinates.len()).rev() {
+            let character = self.character_l(model, height)?;
+            if character.len() == 1 {
+                continue;
+            }
+            let sums = negative_power_sums(model, &character, extension, 1)?;
+            // In the power basis, the field trace of 1 is the degree
+            // and every other basis element has field trace zero.
+            let trace = sums[1][0]
+                .checked_mul(character[0].len() as i128)
+                .ok_or_else(coefficient_error)?;
+            negative_trace = negative_trace
+                .checked_add(trace)
+                .ok_or_else(coefficient_error)?;
+        }
+        let base = (1u128 << extension) + 1;
+        let points = if negative_trace >= 0 {
+            base.checked_add(negative_trace as u128)
+        } else {
+            base.checked_sub(negative_trace.unsigned_abs())
+        };
+        points.ok_or_else(|| Error::plain("Witt tower Frobenius point count is out of range"))
     }
 
     fn l_polynomial(&self, model: &mut Model) -> Result<Rc<[i128]>> {
@@ -254,6 +292,139 @@ impl Tower {
         *self.numerator.borrow_mut() = Some(polynomial.clone());
         Ok(polynomial)
     }
+}
+
+fn check_positive_extension(extension: usize) -> Result<()> {
+    if extension == 0 {
+        return Err(Error::plain(
+            "Witt tower Frobenius extension degree must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn character_slopes(model: &mut Model, character: &[Vec<i128>]) -> Result<Vec<String>> {
+    let width = character[0].len();
+    let valuations = character
+        .iter()
+        .map(|a| uniformizer_order(model, a))
+        .collect::<Result<Vec<_>>>()?;
+    rv_newton::scaled_slopes(model, valuations, width)
+}
+
+// The local uniformizer is pi = zeta - 1, with ord_pi(2) = width.
+fn uniformizer_order(model: &mut Model, a: &[i128]) -> Result<Option<i64>> {
+    let width = a.len();
+    model.spend(width)?;
+    let Some(k) = a
+        .iter()
+        .filter(|&&c| c != 0)
+        .map(|c| c.trailing_zeros())
+        .min()
+    else {
+        return Ok(None);
+    };
+    let mut parity: Vec<_> = a.iter().map(|&c| ((c >> k) & 1) != 0).collect();
+    // After dividing out 2^k, the coefficient of pi^j modulo 2 is
+    // the parity sum over the supersets of j, by Lucas's theorem.
+    for direction in 0..width.ilog2() {
+        model.spend(width)?;
+        let bit = 1 << direction;
+        for i in 0..width {
+            if i & bit == 0 {
+                parity[i] ^= parity[i | bit];
+            }
+        }
+    }
+    let first = parity
+        .into_iter()
+        .position(|odd| odd)
+        .ok_or_else(|| Error::plain("normalized Witt character coefficient is zero modulo 2"))?;
+    Ok(Some(i64::from(k) * width as i64 + first as i64))
+}
+
+fn character_base_l(
+    model: &mut Model,
+    character: &[Vec<i128>],
+    extension: usize,
+) -> Result<Vec<Vec<i128>>> {
+    if extension == 1 || character.len() == 1 {
+        model.spend(character[0].len() * character.len())?;
+        return Ok(character.to_vec());
+    }
+    let degree = character.len() - 1;
+    let sums = negative_power_sums(model, character, extension, degree)?;
+    from_negative_power_sums(model, &sums)
+}
+
+// Recover -sum alpha_i^(k*stride) for 1 <= k <= count from
+// L(T) = product (1 - alpha_i T). Keep only one recurrence window.
+fn negative_power_sums(
+    model: &mut Model,
+    character: &[Vec<i128>],
+    stride: usize,
+    count: usize,
+) -> Result<Vec<Vec<i128>>> {
+    let degree = character.len() - 1;
+    debug_assert!(degree != 0 && stride != 0);
+    let width = character[0].len();
+    let last = stride
+        .checked_mul(count)
+        .ok_or_else(|| Error::plain("Witt tower Frobenius power index is out of range"))?;
+    model.spend(last)?;
+    check_cells((1 + 2 * width) * (degree + count + 2))?;
+    let mut window = vec![vec![0; width]; degree];
+    let mut sums = Vec::with_capacity(count + 1);
+    sums.push(vec![0; width]);
+    for power in 1..=last {
+        let mut sum = vec![0; width];
+        model.spend(width)?;
+        if let Some(coefficient) = character.get(power) {
+            for (entry, &c) in sum.iter_mut().zip(coefficient) {
+                *entry = c.checked_mul(power as i128).ok_or_else(coefficient_error)?;
+            }
+        }
+        for (i, c) in character
+            .iter()
+            .enumerate()
+            .take(power.min(degree + 1))
+            .skip(1)
+        {
+            let previous = &window[(power - i) % degree];
+            accumulate_product(model, &mut sum, c, previous, true)?;
+        }
+        if power.is_multiple_of(stride) {
+            model.spend(width)?;
+            sums.push(sum.clone());
+        }
+        window[power % degree] = sum;
+    }
+    Ok(sums)
+}
+
+fn from_negative_power_sums(model: &mut Model, sums: &[Vec<i128>]) -> Result<Vec<Vec<i128>>> {
+    let width = sums[0].len();
+    check_cells((2 + 4 * width) * sums.len())?;
+    let mut one = vec![0; width];
+    one[0] = 1;
+    let mut polynomial = vec![one];
+    for n in 1..sums.len() {
+        let mut numerator = vec![0; width];
+        for k in 1..=n {
+            accumulate_product(model, &mut numerator, &sums[k], &polynomial[n - k], false)?;
+        }
+        let divisor = n as i128;
+        for coefficient in &mut numerator {
+            if *coefficient % divisor != 0 {
+                return Err(Error::plain(
+                    "Witt tower Newton identity is not integral in the power basis",
+                ));
+            }
+            *coefficient /= divisor;
+        }
+        polynomial.push(numerator);
+    }
+    Ok(polynomial)
 }
 
 struct TeichTrace {
@@ -375,13 +546,19 @@ fn product(model: &mut Model, left: &[Vec<i128>], right: &[Vec<i128>]) -> Result
     let mut polynomial = vec![vec![0; width]; degree];
     for (i, a) in left.iter().enumerate() {
         for (j, b) in right.iter().enumerate() {
-            add_product(model, &mut polynomial[i + j], a, b)?;
+            accumulate_product(model, &mut polynomial[i + j], a, b, false)?;
         }
     }
     Ok(polynomial)
 }
 
-fn add_product(model: &mut Model, out: &mut [i128], left: &[i128], right: &[i128]) -> Result<()> {
+fn accumulate_product(
+    model: &mut Model,
+    out: &mut [i128],
+    left: &[i128],
+    right: &[i128],
+    subtract: bool,
+) -> Result<()> {
     let width = out.len();
     model.spend(width)?;
     for (i, &a) in left.iter().enumerate().filter(|&(_, &c)| c != 0) {
@@ -389,10 +566,10 @@ fn add_product(model: &mut Model, out: &mut [i128], left: &[i128], right: &[i128
         for (j, &b) in right.iter().enumerate().filter(|&(_, &c)| c != 0) {
             let product = a.checked_mul(b).ok_or_else(coefficient_error)?;
             let target = &mut out[(i + j) & (width - 1)];
-            *target = if i + j < width {
-                target.checked_add(product)
-            } else {
+            *target = if subtract ^ (i + j >= width) {
                 target.checked_sub(product)
+            } else {
+                target.checked_add(product)
             }
             .ok_or_else(coefficient_error)?;
         }
@@ -411,4 +588,34 @@ fn check_cells(cells: usize) -> Result<()> {
 
 fn coefficient_error() -> Error {
     Error::plain("Witt tower L-polynomial coefficient is out of range")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{character_base_l, Model};
+
+    #[test]
+    fn character_base_change_composes_in_the_original_power_basis() {
+        let mut model = Model::new();
+        let character = vec![
+            vec![1, 0, 0, 0],
+            vec![1, 1, 0, 0],
+            vec![1, 1, 1, -1],
+            vec![2, 0, 2, 0],
+        ];
+        let quadratic =
+            character_base_l(&mut model, &character, 2).unwrap_or_else(|error| panic!("{error}"));
+        let quadratic_twice =
+            character_base_l(&mut model, &quadratic, 2).unwrap_or_else(|error| panic!("{error}"));
+        let quartic =
+            character_base_l(&mut model, &character, 4).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(quadratic_twice, quartic);
+        assert_eq!(quartic.last(), Some(&vec![64, 0, 0, 0]));
+        let twice_then_thrice =
+            character_base_l(&mut model, &quadratic, 3).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            twice_then_thrice,
+            character_base_l(&mut model, &character, 6).unwrap_or_else(|error| panic!("{error}"))
+        );
+    }
 }

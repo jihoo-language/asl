@@ -1524,6 +1524,9 @@ impl<'src> Parser<'src> {
                 | "rvWittTowerGenus"
                 | "rvWittTowerPoints"
                 | "rvWittTowerCharacterL"
+                | "rvWittTowerCharacterNewton"
+                | "rvWittTowerCharacterBaseL"
+                | "rvWittTowerFrobPoints"
                 | "rvWittTowerLPolynomial"
                 | "rvWittTowerNewton",
             ) => {
@@ -1541,6 +1544,20 @@ impl<'src> Parser<'src> {
                     Token::Word("rvWittTowerCharacterL") => {
                         self.expect(Token::Comma)?;
                         TowerQuery::CharacterL(self.number()?.0)
+                    }
+                    Token::Word("rvWittTowerCharacterNewton") => {
+                        self.expect(Token::Comma)?;
+                        TowerQuery::CharacterNewton(self.number()?.0)
+                    }
+                    Token::Word("rvWittTowerCharacterBaseL") => {
+                        self.expect(Token::Comma)?;
+                        let height = self.number()?.0;
+                        self.expect(Token::Comma)?;
+                        TowerQuery::CharacterBaseL(height, self.number()?.0)
+                    }
+                    Token::Word("rvWittTowerFrobPoints") => {
+                        self.expect(Token::Comma)?;
+                        TowerQuery::FrobPoints(self.number()?.0)
                     }
                     Token::Word("rvWittTowerLPolynomial") => TowerQuery::LPolynomial,
                     Token::Word("rvWittTowerNewton") => TowerQuery::Newton,
