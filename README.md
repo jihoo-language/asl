@@ -487,6 +487,16 @@ The bits of `modulus` encode the coefficients of an irreducible polynomial over 
 For the example module, the determinant of the three-by-three action block is $\lambda_1^3+\lambda_0^2\lambda_2$. In the chart $\lambda_2=1$, the equation parametrizes as $(\lambda_0,\lambda_1)=(r^3,r^2)$. At a nonzero point the inverse parameter is $r=\lambda_0/\lambda_1$. The cusp has Margolis dimension four, and the remaining $q-1$ affine curve points and the one point at infinity have dimension two over $\mathbb F_q$. The other $q^2$ projective points have dimension zero. [Rank variety example](examples/rank-variety.asl)
 
 
+### Rank-two localized torsion bars
+
+For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.
+
+`vbars[X, Y, [i, n]];` computes the decomposition of its cohomology and reports the free generator grades and the torsion pairs $(d,e)$ for a generator of grade $d$ killed by $w^e$. The calculation uses graded Smith reduction on the coefficient matrix. Minimum-exponent pivots allow homogeneous row and column operations, so each entry stays a single monomial. The tracked target and source basis changes give the torsion representatives and their boundary witnesses. The cokernel projects onto the free image by the normalized differential of degree $-D_n$. This split quotient subtracts one free generator in the original grade of each pivot source column from the unpivoted target grades.
+
+`vbardim[X, Y, [i, n], s, t];` recovers the rank at any signed bidegree from this decomposition. A bar of grade $d$ contributes when $d-g=kL$ for an integer $k\ge0$. A torsion bar also requires $k<e$.
+
+`vbarRep[X, Y, [i, n], d, e, k]` gives the raw representative in bidegree $(0,d)$ of the $k$th torsion bar with pair $(d,e)$, with indexing from zero among equal pairs. `vbarNull` takes the same arguments and gives the witness in bidegree $(-1,d-eL)$. The differential of that witness equals `vRatio[e]` of the representative. The operation `vRatio[k](x)` multiplies a rank-two localized cochain or class by $w^k$ for a nonnegative integer $k$. The Flash example gives a bar of grade 7 and exact order 4. [Graded Smith example](examples/v-bars.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
@@ -608,6 +618,8 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
 | `qextdim[X, Y, I, s, t];` | Print the dimension of `QExt(X, Y, I, s, t)` over 𝔽₂. |
 | `vextdim[X, Y, I, s, t];` | Print the dimension of `VExt(X, Y, I, s, t)` over 𝔽₂. |
+| `vbars[X, Y, [i, n]];` | Print free generator grades and torsion bars of rank-two localized Koszul cohomology. |
+| `vbardim[X, Y, [i, n], s, t];` | Read a signed bidegree rank from the rank-two decomposition. |
 | `mapmaydim[X, Y, r, s, t, f];` | Print the dimension of a bivariant May page component over 𝔽₂. |
 | `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 

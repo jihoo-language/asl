@@ -23,6 +23,7 @@ use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
+use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock::{self, BocksteinPage};
 
@@ -205,6 +206,7 @@ pub(crate) struct Model {
     types: Vec<TypeInfo>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
+    v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     work: usize,
     storage: usize,
 }
@@ -215,6 +217,7 @@ impl Model {
             types: Vec::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
+            v_bars: HashMap::new(),
             work: MAX_WORK,
             storage: MAX_STORAGE,
         };
@@ -887,6 +890,15 @@ impl Model {
 
     pub(crate) fn cached_odd_ext(&self, ty: TypeId) -> Option<Rc<OddExt>> {
         self.types[ty.0].odd_ext.clone()
+    }
+
+    pub(crate) fn v_bars(&mut self, family: v_bars::Family) -> Result<Rc<v_bars::Decomposition>> {
+        if let Some(decomposition) = self.v_bars.get(&family) {
+            return Ok(decomposition.clone());
+        }
+        let decomposition = Rc::new(v_bars::Decomposition::build(self, family)?);
+        self.v_bars.insert(family, decomposition.clone());
+        Ok(decomposition)
     }
 
     pub(crate) fn odd_ext(&mut self, ty: TypeId) -> Result<Rc<OddExt>> {

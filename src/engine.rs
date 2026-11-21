@@ -36,11 +36,13 @@ use crate::q_module;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::steenrod;
+use crate::syntax::BarFamilySpec;
 use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType, QSpec,
     Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::transfer;
+use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock;
 
@@ -150,6 +152,7 @@ enum TypedForm {
     RestrictAlgebra(Profile, Box<TypedExpr>),
     QRestrict(Box<TypedExpr>),
     VShift(i64, Box<TypedExpr>),
+    VRatio(usize, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
     Nakamura(usize, Box<TypedExpr>),
@@ -418,6 +421,31 @@ impl Engine {
                     localized.s,
                     localized.t,
                     grade.f,
+                )
+            }
+            StatementForm::VBars(spec) => {
+                let family = self.checker().vbar_family(spec)?;
+                let bars = self.model.v_bars(family)?;
+                let description = bars.report(&mut self.model)?;
+                format!(
+                    "vbars[{}, {}, {:?}] = {description}",
+                    self.model.type_name(family.source),
+                    self.model.type_name(family.target),
+                    family.indices,
+                )
+            }
+            StatementForm::VBarDimension(spec) => {
+                let grade = self.checker().q_grade(spec)?;
+                let family = v_bars::Family::new(grade.source, grade.target, &grade.selected)?;
+                let bars = self.model.v_bars(family)?;
+                let rank = bars.rank(&mut self.model, family, grade.s, grade.t)?;
+                format!(
+                    "vbardim[{}, {}, {:?}, {}, {}] = {rank}",
+                    self.model.type_name(family.source),
+                    self.model.type_name(family.target),
+                    family.indices,
+                    grade.s,
+                    grade.t,
                 )
             }
             StatementForm::MapMayDimension(spec) => {
@@ -823,6 +851,10 @@ impl Engine {
                     return vbock::shift(&mut self.model, input.ty, expr.ty, *k, &class);
                 }
                 v_koszul::shift(&mut self.model, input.ty, expr.ty, *k, value)
+            }
+            TypedForm::VRatio(k, input) => {
+                let value = self.eval(input)?;
+                v_bars::ratio(&mut self.model, input.ty, expr.ty, *k, value)
             }
             TypedForm::RestrictAlgebra(profile, input) => {
                 let value = self.eval(input)?;
@@ -1701,6 +1733,18 @@ impl Checker<'_> {
                 };
                 Ok((ty, TypedForm::VShift(k, Box::new(input))))
             }
+            ExprForm::VRatio(k, input) => {
+                let input = self.expr(*input)?;
+                let ty = v_bars::ratio_type(self.model, input.ty, k)?;
+                Ok((ty, TypedForm::VRatio(k, Box::new(input))))
+            }
+            ExprForm::VBarCertificate(operation, spec, degree, exponent, index) => {
+                let family = self.vbar_family(spec)?;
+                let ty = operation.ty(self.model, family, degree, exponent)?;
+                let bars = self.model.v_bars(family)?;
+                let value = bars.certificate(self.model, operation, degree, exponent, index)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::QRestrict(selected, input) => {
                 let input = self.expr(*input)?;
                 let selected = q_koszul::indices(self.model, selected)?;
@@ -2236,6 +2280,13 @@ impl Checker<'_> {
             });
         }
         Ok(())
+    }
+
+    fn vbar_family(&mut self, spec: BarFamilySpec) -> Result<v_bars::Family> {
+        let source = self.q_endpoint(spec.source)?;
+        let target = self.q_endpoint(spec.target)?;
+        let selected = q_koszul::indices(self.model, spec.indices)?;
+        v_bars::Family::new(source, target, &selected)
     }
 
     fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {

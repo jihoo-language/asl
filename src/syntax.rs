@@ -5,6 +5,7 @@ use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::transfer::Operation as TransferOp;
+use crate::v_bars::Certificate as BarCertificate;
 
 const MAX_NESTING: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 128;
@@ -77,6 +78,12 @@ pub(crate) struct VBockSpec {
     pub(crate) localized: QSpec<i64>,
     pub(crate) r: usize,
     pub(crate) f: usize,
+}
+
+pub(crate) struct BarFamilySpec {
+    pub(crate) source: ParsedType,
+    pub(crate) target: ParsedType,
+    pub(crate) indices: Vec<usize>,
 }
 
 pub(crate) struct MapMaySpec {
@@ -233,6 +240,8 @@ pub(crate) enum ExprForm {
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
+    VRatio(usize, Box<ParsedExpr>),
+    VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
     QRestrict(Vec<usize>, Box<ParsedExpr>),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
@@ -287,6 +296,8 @@ pub(crate) enum StatementForm {
     QExtDimension(QSpec),
     RankVariety(RankVarietySpec),
     VExtDimension(QSpec<i64>),
+    VBars(BarFamilySpec),
+    VBarDimension(QSpec<i64>),
     VBockDimension(VBockSpec),
     MayDimension(usize, usize, usize, usize),
     MayAnDimension(usize, usize, usize, usize, usize),
@@ -762,6 +773,20 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::VBockDimension(spec)
             }
+            Token::Word("vbars") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.bar_family(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::VBars(spec)
+            }
+            Token::Word("vbardim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.v_spec(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::VBarDimension(spec)
+            }
             Token::Word("mapmaydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -900,6 +925,16 @@ impl<'src> Parser<'src> {
             },
             r,
             f,
+        })
+    }
+
+    fn bar_family(&mut self, nest: usize) -> Result<BarFamilySpec> {
+        let (source, target) = self.map_endpoints(nest)?;
+        let indices = self.exponents()?;
+        Ok(BarFamilySpec {
+            source,
+            target,
+            indices,
         })
     }
 
@@ -1653,6 +1688,35 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::VShift(k, Box::new(input)), depth);
+                }
+                if name.text == "vRatio" && self.eat(Token::LBracket)? {
+                    let (k, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::VRatio(k, Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "vbarRep" | "vbarNull")
+                    && self.eat(Token::LBracket)?
+                {
+                    let kind = if name.text == "vbarRep" {
+                        BarCertificate::Representative
+                    } else {
+                        BarCertificate::Nullhomotopy
+                    };
+                    let spec = self.bar_family(nest)?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.signed_degree()?;
+                    self.expect(Token::Comma)?;
+                    let (exponent, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (index, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::VBarCertificate(kind, spec, degree, exponent, index),
+                        0,
+                    );
                 }
                 if name.text == "qRes" && self.token() == Token::LBracket {
                     let selected = self.exponents()?;

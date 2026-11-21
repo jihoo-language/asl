@@ -118,15 +118,27 @@ pub(crate) fn shift(
     if k == 0 {
         return Ok(value);
     }
+    multiply(model, source, target, value, |model, terms| {
+        shift_terms(model, terms, k)
+    })
+}
+
+pub(crate) fn multiply(
+    model: &mut Model,
+    source: TypeId,
+    target: TypeId,
+    value: Value,
+    transform: impl FnOnce(&mut Model, &[Term]) -> Result<Vec<Term>>,
+) -> Result<Value> {
     match value {
         Value::QKoszul(terms) => {
-            let shifted = shift_terms(model, &terms, k)?;
+            let shifted = transform(model, &terms)?;
             Ok(Value::QKoszul(q_koszul::persist(model, shifted)?))
         }
         Value::Class(class) if class.is_empty() => Ok(Value::Class([].into())),
         Value::Class(class) => {
             let terms = model.q_ext(source)?.representative(model, &class)?;
-            let shifted = shift_terms(model, &terms, k)?;
+            let shifted = transform(model, &terms)?;
             q_koszul::class(model, target, &shifted)
         }
         _ => unreachable!(),

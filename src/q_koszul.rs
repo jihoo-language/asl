@@ -284,6 +284,43 @@ impl Complex {
         })
     }
 
+    pub(crate) fn coefficient_basis(&self, model: &mut Model) -> Result<Vec<Term>> {
+        if self.source_bound.is_none() || self.target_bound.is_none() {
+            return Ok(Vec::new());
+        }
+        let sources = margolis_groups(model, self.source)?;
+        if sources.is_empty() {
+            return Ok(Vec::new());
+        }
+        let targets = margolis_groups(model, self.target)?;
+        let total = |ranks: &[(usize, usize)]| ranks.iter().map(|&(_, rank)| rank).sum::<usize>();
+        let size = total(&sources).saturating_mul(total(&targets));
+        if size > MAX_BASIS_TERMS {
+            return Err(basis_limit());
+        }
+        let cells = size * (5 + power_cells(self.primitives.len()));
+        check_storage(cells)?;
+        model.spend(1 + cells)?;
+        let zero: Powers = vec![0; self.primitives.len()].into();
+        let mut basis = Vec::with_capacity(size);
+        for (q, source_rank) in sources {
+            for index in 0..source_rank {
+                let source = Generator { degree: q, index };
+                for &(p, target_rank) in &targets {
+                    for index in 0..target_rank {
+                        let target = Generator { degree: p, index };
+                        basis.push(Term {
+                            source,
+                            target,
+                            powers: zero.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(basis)
+    }
+
     fn basis(
         &self,
         model: &mut Model,
