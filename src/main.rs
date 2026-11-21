@@ -54,6 +54,7 @@ mod rv_curve;
 mod rv_descent;
 mod rv_field;
 mod rv_gauss;
+mod rv_hochster;
 mod rv_hodge;
 mod rv_hom;
 mod rv_ideal;
@@ -94,7 +95,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, bpext, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvbetti, rvmbetti, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, bpext, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvbetti, rvmbetti, rvhochster, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 

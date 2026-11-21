@@ -382,6 +382,7 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvHFace(Label, Vec<usize>, Vec<usize>),
     RvMTerm(Label, Vec<usize>, Box<ParsedExpr>),
     RvMComponent(Vec<usize>, Box<ParsedExpr>),
     RvKoszulTerm(Label, Vec<usize>, Box<ParsedExpr>),
@@ -472,6 +473,7 @@ pub(crate) enum StatementForm {
     RankVariety(RankVarietySpec),
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
+    RvHochster(Label, Vec<usize>, i64),
     RvBetti(RvGradeSpec),
     RvMinors(RvMatrixSpec, usize),
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
@@ -1128,6 +1130,17 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 form
+            }
+            Token::Word("rvhochster") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let ideal = self.label()?;
+                self.expect(Token::Comma)?;
+                let vertices = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let degree = self.signed_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvHochster(ideal, vertices, degree)
             }
             Token::Word(name @ ("rvbetti" | "rvmbetti")) => {
                 self.advance()?;
@@ -2126,6 +2139,15 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvhface" && self.eat(Token::LBracket)? {
+                    let ideal = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let vertices = self.exponents()?;
+                    self.expect(Token::Comma)?;
+                    let face = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvHFace(ideal, vertices, face), 0);
+                }
                 if name.text == "rvMComponent" && self.eat(Token::LBracket)? {
                     let multidegree = self.exponents()?;
                     self.expect(Token::RBracket)?;

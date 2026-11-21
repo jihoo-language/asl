@@ -45,6 +45,7 @@ use crate::rv_curve::Curve as RvCurve;
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
+use crate::rv_hochster;
 use crate::rv_hodge;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -641,6 +642,10 @@ impl Engine {
                 let ideal = self.model.rv_ideal(&name)?;
                 let count = ideal.hilbert(&mut self.model, degree)?;
                 format!("rvhilbert[{}, {degree}] = {count}", name.text)
+            }
+            StatementForm::RvHochster(name, vertices, degree) => {
+                let rank = rv_hochster::rank(&mut self.model, &name, &vertices, degree)?;
+                format!("rvhochster[{}, {vertices:?}, {degree}] = {rank}", name.text)
             }
             StatementForm::RvBetti(spec) => {
                 let grade = self.checker().rv_koszul_grade(spec)?;
@@ -3079,6 +3084,11 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvHFace(name, vertices, face) => {
+                let (grade, terms) = rv_hochster::face(self.model, name, &vertices, &face)?;
+                let ty = self.model.rv_complex_type(grade, false)?;
+                Ok((ty, TypedForm::Constant(Value::RVKoszul(terms))))
             }
             ExprForm::RvMTerm(name, indices, input) => {
                 let ExprForm::RvMonomial(selected, powers) = input.kind else {

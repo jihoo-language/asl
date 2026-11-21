@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -13,6 +14,7 @@ pub(crate) struct Ideal {
     pub(crate) selected: Indices,
     degrees: Vec<usize>,
     basis: Vec<Row>,
+    squarefree: OnceCell<Option<Vec<usize>>>,
 }
 
 struct Row {
@@ -146,6 +148,7 @@ impl Ideal {
             selected,
             degrees,
             basis,
+            squarefree: OnceCell::new(),
         })
     }
 
@@ -162,8 +165,42 @@ impl Ideal {
         })
     }
 
+    pub(crate) fn squarefree_masks(&self, model: &mut Model) -> Result<Option<&[usize]>> {
+        if let Some(cached) = self.squarefree.get() {
+            return Ok(cached.as_deref());
+        }
+        let mut masks = Vec::new();
+        for row in &self.basis {
+            let [powers] = row.polynomial.as_ref() else {
+                return Ok(self.squarefree.get_or_init(|| None).as_deref());
+            };
+            model.spend(1 + powers.len())?;
+            if powers.iter().any(|&power| power > 1) {
+                return Ok(self.squarefree.get_or_init(|| None).as_deref());
+            }
+            masks.push(support_mask(powers, 1));
+        }
+        model.allocate(1 + masks.len())?;
+        Ok(self.squarefree.get_or_init(|| Some(masks)).as_deref())
+    }
+
     pub(crate) fn normal(&self, model: &mut Model, polynomial: Polynomial) -> Result<Polynomial> {
-        reduce(model, polynomial, &self.basis, None, None)
+        if polynomial.is_empty() || self.basis.is_empty() {
+            return Ok(polynomial);
+        }
+        let Some(masks) = self.squarefree_masks(model)? else {
+            return reduce(model, polynomial, &self.basis, None, None);
+        };
+        // A normal form for a monomial ideal only drops terms. For squarefree
+        // generators the divisibility tests need only the support bitsets.
+        let mut normal = Vec::new();
+        for powers in polynomial.iter() {
+            model.spend(1 + powers.len())?;
+            if standard_support(model, masks, support_mask(powers, 1))? {
+                normal.push(powers.clone());
+            }
+        }
+        Ok(normal.into())
     }
 
     pub(crate) fn witness_degree(&self, index: usize, degree: usize) -> Result<usize> {
@@ -232,6 +269,21 @@ pub(crate) fn eliminate_prefix(
         }
     }
     Ok(result)
+}
+
+pub(crate) fn support_mask(powers: &[usize], lower: usize) -> usize {
+    powers.iter().enumerate().fold(0, |mask, (index, &power)| {
+        mask | (usize::from(power >= lower) << index)
+    })
+}
+
+pub(crate) fn standard_support(
+    model: &mut Model,
+    initial: &[usize],
+    support: usize,
+) -> Result<bool> {
+    model.spend(1 + initial.len())?;
+    Ok(!initial.iter().any(|&leading| leading & support == leading))
 }
 
 pub(crate) fn check_storage(cells: usize) -> Result<()> {

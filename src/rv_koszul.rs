@@ -6,7 +6,7 @@ use crate::complex::xor_sorted;
 use crate::error::{Error, Result};
 use crate::linear::{Basis, QuotientBasis};
 use crate::model::Model;
-use crate::rv_ideal::Ideal;
+use crate::rv_ideal::{self, Ideal};
 use crate::rv_poly::{self, Monomial, Polynomial};
 
 const MAX_BASIS: usize = 32_768;
@@ -394,11 +394,27 @@ impl Slice {
             .collect();
         let mut wedges = Vec::new();
         if s <= active.len() {
-            let initial = monomial_initial(model, ideal)?.unwrap();
+            let masks = ideal.squarefree_masks(model)?;
+            if matches!(masks, Some([0])) {
+                return Ok(Self::default());
+            }
+            let initial = if masks.is_none() {
+                monomial_initial(model, ideal)?.unwrap()
+            } else {
+                Vec::new()
+            };
+            model.spend(2 * multidegree.len())?;
+            let positive = rv_ideal::support_mask(&multidegree, 1);
+            let repeated = rv_ideal::support_mask(&multidegree, 2);
             visit_wedges(model, &active, s, 0, &mut |model, wedge| {
-                model.spend(1 + multidegree.len())?;
-                let powers = coefficient_powers(&multidegree, wedge);
-                if is_standard(model, &initial, &powers)? {
+                let standard = if let Some(masks) = masks {
+                    rv_ideal::standard_support(model, masks, repeated | (positive & !wedge))?
+                } else {
+                    model.spend(1 + multidegree.len())?;
+                    let powers = coefficient_powers(&multidegree, wedge);
+                    is_standard(model, &initial, &powers)?
+                };
+                if standard {
                     if wedges.len() == limit {
                         return Err(basis_limit());
                     }

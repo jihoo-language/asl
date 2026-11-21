@@ -688,6 +688,12 @@ For a monomial ideal, `RVMKoszul(J,s,[mu])` fixes the full multidegree $\mu$, th
 
 `rvMComponent[[mu]](x)` projects a total chain or class of internal degree $|\mu|$ to one multidegree. `rvMForget(x)` includes a multigraded chain or class in the total group. Including a class requires the total Tor slice to fit the computation limits. For example, over $\mathbb F_2[x]/(x^2)$ the cycle $x e_x$ generates `RVMTor(J,1,[2])`.
 
+#### Hochster cochains
+
+For a squarefree monomial ideal $J$, `rvhochster[J,[W],q];` gives the reduced cohomology dimension of the induced Stanley–Reisner complex on the selected vertices $W$. It computes `RVMTor` at homological degree $|W|-q-1$ and multidegree $1_W$. Degree $q=-1$ is the augmented degree.
+
+`rvhface[J,[W],[F]]` gives the cochain of an actual face $F\subseteq W$ as $x_F e_{W\setminus F}$, including the empty face. The Koszul differential adds one allowed vertex to $F$, which gives the augmented simplicial coboundary. A repeated exponent gives an acyclic slice because toggling its exterior factor preserves the support of the coefficient. In the Flag example the cochain of edge $15$ evaluates to one on the cycle $1-4-2-5-1$ and represents both the local triple value and the corresponding transferred product. [Hochster example](examples/rank-hochster.asl)
+
 ### Triple Massey products in Tor
 
 `rvTBracket(a,b,c)` returns the predicate for the triple Massey product of three `RVTor` classes over the same ideal. If either adjacent product is nonzero in Tor, the predicate is empty. Otherwise the interpreter chooses cycle representatives $A,B,C$ and solves $dU=AB$, $dV=BC$. The class of $AV+UC$ lies in homological degree $s_a+s_b+s_c+1$ and internal degree $t_a+t_b+t_c$. All possible values form its coset modulo $a\operatorname{Tor}_{s_b+s_c+1,t_b+t_c}+\operatorname{Tor}_{s_a+s_b+1,t_a+t_b}c$.
@@ -706,7 +712,7 @@ The fourfold example uses the classes of $x_1e_5$, $x_2e_6$, $x_3e_7$, and $x_4e
 
 #### Transferred higher products
 
-`rvTHigher(a1,...,an)` evaluates the minimal $A_\infty$ operation $m_n$ on `RVTor` for $n\ge2$. It adds $n-2$ to the total homological degree and preserves the total internal degree. `rvTLift(a1,...,an)` evaluates the corresponding Koszul chain $F_n$, which adds $n-1$ to the homological degree. The unary lift $F_1$ is the chosen cycle representative, $m_1=0$, and $m_2$ is `rvTorProd`.
+`rvTHigher(a1,...,an)` evaluates the minimal $A_\infty$ operation $m_n$ on `RVTor` or `RVMTor` for $n\ge2$. It adds $n-2$ to the total homological degree and preserves the total internal degree. `rvTLift(a1,...,an)` evaluates the corresponding Koszul chain $F_n$, which adds $n-1$ to the homological degree. The unary lift $F_1$ is the chosen cycle representative, $m_1=0$, and $m_2$ is `rvTorProd`. On multigraded classes the operation and the lift add the full multidegrees and use the corresponding local slices.
 
 Let $P$ be the linear boundary preimage given by the ordered incoming Koszul columns. For an arbitrary chain $w$, set $q=w+P(dw)$. Then $p(w)=[q]$ and $h(w)=P(q+i(p(w)))$, with $i$ the chosen cycle inclusion. Over $\mathbb F_2$ the signs disappear, so $dh+hd=1+ip$ and $h^2=hi=ph=0$. For each interval the interpreter forms $U=\sum F_{\rm left}F_{\rm right}$ and takes $m=p(U)$ and $F=h(U)$. The closure step handles $U$ even when $dU\ne0$. Each interval lift is computed once per call.
 
@@ -717,6 +723,14 @@ awk -v n=6 -f examples/staircase-transfer.awk | nix run path:. -- -
 ```
 
 The generated program checks the proper products and prints `RVTor(Stair, 10, 12){g0}`. The checks run at arities three through six with the standard computation limits.
+
+Use multigraded slices for the longer calculation.
+
+```sh
+awk -v local=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+The result is the generator of `RVMTor` in homological degree 38 and multidegree $(1,\ldots,1)$ on forty variables. This program checks all 189 proper contiguous products and the nonzero twentieth product within the same computation limits.
 
 ### Rank-two localized torsion bars
 

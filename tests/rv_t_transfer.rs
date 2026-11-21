@@ -122,8 +122,14 @@ fn staircase_operations_first_appear_at_arities_three_through_six() {
         writeln!(program, "assert rvTHigher({args}) == target;").unwrap();
 
         if n == 4 {
+            for j in 1..=n {
+                let local = term(2 * n, &[n + j], &[j]).replacen("rvkterm", "rvmkterm", 1);
+                writeln!(program, "let l{j} = rvTorClass({local});").unwrap();
+            }
             program.push_str(
                 "
+                assert rvMForget(rvTHigher(l1,l2,l3,l4)) == target;
+                assert rvMForget(rvTLift(l1,l2,l3,l4)) == rvTLift(a1,a2,a3,a4);
                 let u = rvkProd(rvTLift(a1),rvTLift(a2,a3,a4));
                 let v = rvkProd(rvTLift(a1,a2),rvTLift(a3,a4));
                 let w = rvkProd(rvTLift(a1,a2,a3),rvTLift(a4));

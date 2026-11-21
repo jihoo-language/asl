@@ -87,10 +87,14 @@
           {
             awk -v n=3 -f ${./examples/staircase-transfer.awk} | asl -
             awk -v n=6 -f ${./examples/staircase-transfer.awk} | asl -
+            awk -v local=1 -v n=7 -f ${./examples/staircase-transfer.awk} | asl -
+            awk -v local=1 -v n=20 -f ${./examples/staircase-transfer.awk} | asl -
           } > "$out"
           diff -u - "$out" <<'EXPECTED'
           RVTor(Stair, 4, 6){g0}
           RVTor(Stair, 10, 12){g0}
+          RVMTor(Stair, 12, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]){g0}
+          RVMTor(Stair, 38, [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]){g0}
           EXPECTED
           for invalid in 2 32 2.5 bad; do
             if awk -v n="$invalid" -f ${./examples/staircase-transfer.awk} > rejected.asl; then
@@ -98,6 +102,10 @@
             fi
             test ! -s rejected.asl
           done
+          if awk -v local=2 -f ${./examples/staircase-transfer.awk} > rejected.asl; then
+            exit 1
+          fi
+          test ! -s rejected.asl
         '';
       });
     };

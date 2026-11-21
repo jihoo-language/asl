@@ -68,27 +68,33 @@ pub(crate) fn result_type(
     let arity = inputs.len();
     operation.require_arity(arity)?;
     let name = operation.name();
-    let mut ideal = None;
-    let mut s = operation.shift(arity) as u128;
-    let mut t = 0usize;
+    let mut sum: Option<Grade> = None;
     for input in inputs {
         let Kind::RVTor(grade) = model.kind(input) else {
             return Err(Error::plain(format!(
-                "{name} requires RVTor classes, found {}",
+                "{name} requires RVTor or RVMTor classes, found {}",
                 model.type_name(input)
             )));
         };
-        if grade.multidegree.is_some() {
-            return Err(Error::plain(format!("{name} requires total RVTor classes")));
-        }
-        if ideal.get_or_insert_with(|| grade.ideal.clone()) != &grade.ideal {
-            return Err(Error::plain(format!("{name} requires the same rank ideal")));
-        }
-        s += grade.s as u128;
-        t = t.checked_add(grade.t).ok_or_else(degree_limit)?;
+        sum = Some(if let Some(sum) = sum {
+            if sum.ideal != grade.ideal {
+                return Err(Error::plain(format!("{name} requires the same rank ideal")));
+            }
+            if sum.multidegree.is_some() != grade.multidegree.is_some() {
+                return Err(Error::plain(format!(
+                    "{name} requires either all total or all multigraded classes"
+                )));
+            }
+            sum.product(grade)?
+        } else {
+            grade.clone()
+        });
     }
-    let s = usize::try_from(s).map_err(|_| degree_limit())?;
-    let grade = Grade::total(ideal.unwrap(), s, t);
+    let mut grade = sum.unwrap();
+    grade.s = grade
+        .s
+        .checked_add(operation.shift(arity))
+        .ok_or_else(degree_limit)?;
     model.rv_complex_type(grade, matches!(operation, Operation::Higher))
 }
 
@@ -118,9 +124,9 @@ pub(crate) fn evaluate(
     let name = grade.ideal.clone();
     let ideal = model.rv_ideal_named(&name).unwrap();
     let contraction = Contraction::new(model, &ideal)?;
-    let intervals = Intervals::build(model, &name, &contraction, inputs)?;
+    let intervals = Intervals::build(model, &contraction, inputs)?;
     let source = intervals.obstruction(model, &ideal, 0, inputs.len())?;
-    let grade = intervals.obstruction_grade(&name, 0, inputs.len())?;
+    let grade = intervals.obstruction_grade(0, inputs.len())?;
     match operation {
         Operation::Higher => {
             let class = contraction.project(model, &grade, source)?;
@@ -135,34 +141,31 @@ pub(crate) fn evaluate(
 }
 
 struct Intervals {
-    prefixes: Vec<(u128, usize)>,
+    prefixes: Vec<Grade>,
     lifts: Vec<Vec<Chain>>,
 }
 
 impl Intervals {
-    fn build(
-        model: &mut Model,
-        name: &Rc<str>,
-        contraction: &Contraction<'_>,
-        inputs: &[Input],
-    ) -> Result<Self> {
+    fn build(model: &mut Model, contraction: &Contraction<'_>, inputs: &[Input]) -> Result<Self> {
         let arity = inputs.len();
         let interval_count = arity.saturating_mul(arity.saturating_add(1)) / 2;
         model.spend(interval_count)?;
-        let mut cells = interval_count.saturating_add(3 * (arity + 1));
+        let Kind::RVTor(first) = model.kind(inputs[0].0) else {
+            unreachable!();
+        };
+        let width = first.multidegree.as_ref().map_or(0, |mu| mu.len());
+        let mut cells = interval_count.saturating_add((4 + width) * (arity + 1));
         rv_koszul::check_storage(cells)?;
-
-        let mut prefixes = vec![(0, 0usize)];
+        let mut zero = Grade::total(first.ideal.clone(), 0, 0);
+        zero.multidegree = first.multidegree.as_ref().map(|_| vec![0; width].into());
+        model.spend(width * arity)?;
+        let mut prefixes = vec![zero];
         let mut singletons = Vec::with_capacity(arity);
         for (ty, class) in inputs {
             let Kind::RVTor(grade) = model.kind(*ty) else {
                 unreachable!();
             };
-            let &(s, t) = prefixes.last().unwrap();
-            prefixes.push((
-                s + grade.s as u128,
-                t.checked_add(grade.t).ok_or_else(degree_limit)?,
-            ));
+            prefixes.push(prefixes.last().unwrap().product(grade)?);
             let chain = model.rv_tor(*ty)?.representative_terms(model, class)?;
             cells += rv_koszul::cells(&chain);
             rv_koszul::check_storage(cells)?;
@@ -178,7 +181,7 @@ impl Intervals {
             for start in 0..=arity - length {
                 let end = start + length;
                 let source = intervals.obstruction(model, contraction.ideal, start, end)?;
-                let grade = intervals.obstruction_grade(name, start, end)?;
+                let grade = intervals.obstruction_grade(start, end)?;
                 let lift = contraction.homotopy(model, &grade, source)?;
                 cells += rv_koszul::cells(&lift);
                 rv_koszul::check_storage(cells)?;
@@ -189,12 +192,29 @@ impl Intervals {
         Ok(intervals)
     }
 
-    fn obstruction_grade(&self, name: &Rc<str>, start: usize, end: usize) -> Result<Grade> {
-        let (before_s, before_t) = self.prefixes[start];
-        let (after_s, after_t) = self.prefixes[end];
-        let s = usize::try_from(after_s - before_s + (end - start - 2) as u128)
-            .map_err(|_| degree_limit())?;
-        Ok(Grade::total(name.clone(), s, after_t - before_t))
+    fn obstruction_grade(&self, start: usize, end: usize) -> Result<Grade> {
+        let before = &self.prefixes[start];
+        let after = &self.prefixes[end];
+        let s = (after.s - before.s)
+            .checked_add(end - start - 2)
+            .ok_or_else(degree_limit)?;
+        let multidegree = before
+            .multidegree
+            .as_ref()
+            .zip(after.multidegree.as_ref())
+            .map(|(before, after)| {
+                before
+                    .iter()
+                    .zip(after.iter())
+                    .map(|(&a, &b)| b - a)
+                    .collect()
+            });
+        Ok(Grade {
+            ideal: after.ideal.clone(),
+            s,
+            t: after.t - before.t,
+            multidegree,
+        })
     }
 
     fn obstruction(
@@ -231,21 +251,14 @@ struct Contraction<'a> {
 
 impl<'a> Contraction<'a> {
     fn new(model: &mut Model, ideal: &'a Ideal) -> Result<Self> {
-        let mut initial = Vec::new();
-        for polynomial in ideal.polynomials() {
-            model.spend(1)?;
-            if polynomial.len() != 1 {
-                return Ok(Self {
-                    ideal,
-                    initial: None,
-                });
-            }
-            initial.push(polynomial[0].as_ref());
-        }
-        Ok(Self {
-            ideal,
-            initial: (!initial.is_empty()).then_some(initial),
-        })
+        let initial = rv_koszul::monomial_initial(model, ideal)?.filter(|rows| !rows.is_empty());
+        Ok(Self { ideal, initial })
+    }
+
+    fn total_monomials(&self, grade: &Grade) -> Option<&[&[usize]]> {
+        self.initial
+            .as_deref()
+            .filter(|_| grade.multidegree.is_none())
     }
 
     fn close(&self, model: &mut Model, grade: &Grade, source: Chain) -> Result<Chain> {
@@ -272,7 +285,7 @@ impl<'a> Contraction<'a> {
         if closed.is_empty() {
             return Ok(Vec::new());
         }
-        if let Some(initial) = &self.initial {
+        if let Some(initial) = self.total_monomials(grade) {
             if monomial_primitive(model, initial, grade, &closed)?.is_some() {
                 return Ok(Vec::new());
             }
@@ -286,7 +299,7 @@ impl<'a> Contraction<'a> {
         if closed.is_empty() {
             return Ok(closed);
         }
-        if let Some(initial) = &self.initial {
+        if let Some(initial) = self.total_monomials(grade) {
             if let Some(primitive) = monomial_primitive(model, initial, grade, &closed)? {
                 return Ok(primitive);
             }
@@ -310,7 +323,7 @@ impl<'a> Contraction<'a> {
         if boundary.is_empty() {
             return Ok(Some(Vec::new()));
         }
-        if let Some(initial) = &self.initial {
+        if let Some(initial) = self.total_monomials(grade) {
             return monomial_primitive(model, initial, grade, boundary);
         }
         let ty = model.rv_complex_type(grade.clone(), true)?;
@@ -350,9 +363,9 @@ fn monomial_primitive(
             .filter_map(|(index, &e)| (e != 0).then_some(1usize << index))
             .collect();
         let mut images = Basis::default();
-        visit_wedges(model, &active, source_degree, 0, &mut |model, wedge| {
-            let mut powers = remove_wedge(&multidegree, wedge);
-            if !standard(model, initial, &powers)? {
+        rv_koszul::visit_wedges(model, &active, source_degree, 0, &mut |model, wedge| {
+            let mut powers = rv_koszul::coefficient_powers(&multidegree, wedge);
+            if !rv_koszul::is_standard(model, initial, &powers)? {
                 return Ok(());
             }
             let mut image = Vec::new();
@@ -363,7 +376,7 @@ fn monomial_primitive(
                 let bit = 1usize << index;
                 remaining ^= bit;
                 powers[index] += 1;
-                if standard(model, initial, &powers)? {
+                if rv_koszul::is_standard(model, initial, &powers)? {
                     image.push(wedge ^ bit);
                 }
                 powers[index] -= 1;
@@ -380,54 +393,12 @@ fn monomial_primitive(
         model.spend((1 + width) * witness.len())?;
         primitive.extend(witness.into_iter().map(|wedge| Term {
             wedge,
-            powers: remove_wedge(&multidegree, wedge).into(),
+            powers: rv_koszul::coefficient_powers(&multidegree, wedge).into(),
         }));
     }
     model.spend((1 + width) * primitive.len() * (1 + primitive.len().max(1).ilog2() as usize))?;
     primitive.sort_unstable();
     Ok(Some(primitive))
-}
-
-fn remove_wedge(multidegree: &[usize], wedge: usize) -> Vec<usize> {
-    multidegree
-        .iter()
-        .enumerate()
-        .map(|(index, &e)| e - ((wedge >> index) & 1))
-        .collect()
-}
-
-fn standard(model: &mut Model, initial: &[&[usize]], powers: &[usize]) -> Result<bool> {
-    for &leading in initial {
-        model.spend(1 + powers.len())?;
-        if leading.iter().zip(powers).all(|(&a, &b)| a <= b) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn visit_wedges(
-    model: &mut Model,
-    active: &[usize],
-    remaining: usize,
-    wedge: usize,
-    visit: &mut impl FnMut(&mut Model, usize) -> Result<()>,
-) -> Result<()> {
-    model.spend(1)?;
-    if remaining == 0 {
-        visit(model, wedge)
-    } else {
-        for index in remaining - 1..active.len() {
-            visit_wedges(
-                model,
-                &active[..index],
-                remaining - 1,
-                wedge | active[index],
-                visit,
-            )?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
