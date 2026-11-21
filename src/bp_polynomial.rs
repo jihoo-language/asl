@@ -112,23 +112,78 @@ impl Polynomial {
         Ok(())
     }
 
-    pub(crate) fn divisible(&self, model: &mut Model, positive: i128) -> Result<bool> {
-        model.spend(self.terms.len())?;
-        Ok(self
-            .terms
-            .values()
-            .all(|coefficient| coefficient % positive == 0))
-    }
-
     pub(crate) fn divide_exact(&mut self, model: &mut Model, positive: i128) -> Result<()> {
-        if !self.divisible(model, positive)? {
+        debug_assert!(positive > 0);
+        if !self.divide_if_exact(model, positive as u128)? {
             return Err(Error::plain("BP polynomial is not exactly divisible"));
         }
-        model.spend(self.terms.len())?;
-        for coefficient in self.terms.values_mut() {
-            *coefficient /= positive;
-        }
         Ok(())
+    }
+
+    pub(crate) fn divide_if_exact(&mut self, model: &mut Model, divisor: u128) -> Result<bool> {
+        debug_assert!(divisor != 0);
+        if divisor == 1 {
+            return Ok(true);
+        }
+        model.spend(self.terms.len())?;
+        if self
+            .terms
+            .values()
+            .any(|value| value.unsigned_abs() % divisor != 0)
+        {
+            return Ok(false);
+        }
+        model.spend(self.terms.len())?;
+        for value in self.terms.values_mut() {
+            // Dividing by at least two also handles the magnitude of i128::MIN.
+            let magnitude = value.unsigned_abs() / divisor;
+            *value = value.signum() * magnitude as i128;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn reduce(
+        &mut self,
+        model: &mut Model,
+        prime: u32,
+        killed_variables: usize,
+    ) -> Result<()> {
+        model.spend(self.cells)?;
+        let modulus = i128::from(prime);
+        self.terms.retain(|monomial, coefficient| {
+            *coefficient = coefficient.rem_euclid(modulus);
+            let keep = *coefficient != 0
+                && monomial
+                    .first()
+                    .is_none_or(|&(variable, _)| variable >= killed_variables);
+            if !keep {
+                self.cells -= 3 + 2 * monomial.len();
+            }
+            keep
+        });
+        Ok(())
+    }
+
+    pub(crate) fn divide_variable(
+        self,
+        model: &mut Model,
+        variable: usize,
+    ) -> Result<Option<Self>> {
+        let mut quotient = Self::default();
+        for (monomial, coefficient) in self.terms {
+            model.spend(1 + monomial.len())?;
+            let Ok(index) = monomial.binary_search_by_key(&variable, |&(index, _)| index) else {
+                return Ok(None);
+            };
+            let mut monomial = monomial.into_vec();
+            if monomial[index].1 == 1 {
+                monomial.remove(index);
+            } else {
+                monomial[index].1 -= 1;
+            }
+            quotient.insert(model, monomial.into_boxed_slice(), coefficient, false)?;
+        }
+        Ok(Some(quotient))
     }
 
     pub(crate) fn multiply(&self, model: &mut Model, rhs: &Self) -> Result<Self> {
@@ -148,7 +203,16 @@ impl Polynomial {
         Ok(result)
     }
 
-    pub(crate) fn power(&self, model: &mut Model, mut exponent: usize) -> Result<Self> {
+    pub(crate) fn power(&self, model: &mut Model, exponent: usize) -> Result<Self> {
+        self.power_mod(model, exponent, None)
+    }
+
+    pub(crate) fn power_mod(
+        &self,
+        model: &mut Model,
+        mut exponent: usize,
+        prime: Option<u32>,
+    ) -> Result<Self> {
         model.spend(self.cells)?;
         if exponent == 0 {
             return Ok(Self::integer(1));
@@ -159,12 +223,18 @@ impl Polynomial {
             model.spend(1)?;
             if exponent & 1 != 0 {
                 result = result.multiply(model, &base)?;
+                if let Some(prime) = prime {
+                    result.reduce(model, prime, 0)?;
+                }
             }
             exponent >>= 1;
             if exponent == 0 {
                 return Ok(result);
             }
             base = base.multiply(model, &base)?;
+            if let Some(prime) = prime {
+                base.reduce(model, prime, 0)?;
+            }
         }
     }
 
@@ -185,13 +255,21 @@ impl Polynomial {
             .map_or(0, |index| index + 1))
     }
 
-    pub(crate) fn substitute(&self, model: &mut Model, images: &[Self]) -> Result<Self> {
+    pub(crate) fn substitute(
+        &self,
+        model: &mut Model,
+        images: &[Self],
+        prime: Option<u32>,
+    ) -> Result<Self> {
         let mut result = Self::default();
         for (monomial, &coefficient) in &self.terms {
             let mut term = Self::integer(coefficient);
             for &(variable, exponent) in monomial.iter() {
-                let power = images[variable].power(model, exponent)?;
+                let power = images[variable].power_mod(model, exponent, prime)?;
                 term = term.multiply(model, &power)?;
+                if let Some(prime) = prime {
+                    term.reduce(model, prime, 0)?;
+                }
             }
             result.add_assign(model, &term, false)?;
         }

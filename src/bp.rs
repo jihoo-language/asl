@@ -1,3 +1,4 @@
+use std::fmt;
 use std::rc::Rc;
 
 use crate::bp_polynomial::Polynomial;
@@ -13,6 +14,23 @@ pub(crate) struct Shape {
     pub(crate) prime: u32,
     pub(crate) height: usize,
     pub(crate) arrows: usize,
+    pub(crate) depth: usize,
+}
+
+impl fmt::Display for Shape {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            prime,
+            height,
+            arrows,
+            depth,
+        } = *self;
+        if depth == 0 {
+            write!(out, "BP({prime}, {height}, {arrows})")
+        } else {
+            write!(out, "BPI({prime}, {height}, {arrows}, {depth})")
+        }
+    }
 }
 
 impl Shape {
@@ -36,7 +54,39 @@ impl Shape {
             prime,
             height,
             arrows,
+            depth: 0,
         })
+    }
+
+    pub(crate) fn quotient(self, depth: usize) -> Result<Self> {
+        if depth == 0 || depth > self.height + 1 {
+            return Err(Error::plain(format!(
+                "BPI ideal depth must be in 1..={}",
+                self.height + 1
+            )));
+        }
+        if depth < self.depth {
+            return Err(Error::plain("bpReduce cannot decrease the ideal depth"));
+        }
+        Ok(Self { depth, ..self })
+    }
+
+    fn coefficient_prime(self) -> Option<u32> {
+        (self.depth != 0).then_some(self.prime)
+    }
+
+    pub(crate) fn normalize(self, model: &mut Model, polynomial: &mut Polynomial) -> Result<()> {
+        if let Some(prime) = self.coefficient_prime() {
+            polynomial.reduce(model, prime, self.depth - 1)?;
+        }
+        Ok(())
+    }
+
+    fn require_quotient(self, operation: &str) -> Result<()> {
+        if self.depth == 0 {
+            return Err(Error::plain(format!("{operation} requires a BPI cochain")));
+        }
+        Ok(())
     }
 
     pub(crate) fn next(self) -> Result<Self> {
@@ -101,8 +151,7 @@ impl Log {
     }
 
     fn reduce(&mut self, model: &mut Model, prime: u32) -> Result<()> {
-        while self.denominator != 0 && self.numerator.divisible(model, i128::from(prime))? {
-            self.numerator.divide_exact(model, i128::from(prime))?;
+        while self.denominator != 0 && self.numerator.divide_if_exact(model, u128::from(prime))? {
             self.denominator -= 1;
         }
         Ok(())
@@ -276,16 +325,23 @@ pub(crate) fn coface(
     }
     let used_height = input.max_used_index(model, shape.height, face)?;
     let mut transported = target.variables(0, used_height);
-    if used_height != 0 {
+    for variable in transported.iter_mut().take(target.depth.saturating_sub(1)) {
+        *variable = Polynomial::default();
+    }
+    // The first depth generators are invariant in this quotient.
+    if used_height > target.depth {
         for slot in 1..face {
             let arrow = target.variables(slot, used_height);
             transported = right_unit(model, shape.prime, &transported, &arrow)?;
+            for coordinate in &mut transported {
+                target.normalize(model, coordinate)?;
+            }
         }
     }
     let mut images = Vec::with_capacity((shape.arrows + 1) * shape.height);
     for slot in 0..=shape.arrows {
         let mut variables = target.variables(slot + usize::from(slot > face), shape.height);
-        if slot == face && used_height != 0 {
+        if slot == face && used_height != 0 && (face != 0 || used_height > target.depth) {
             let arrow = target.variables(slot + 1, used_height);
             let coordinates = if face == 0 {
                 right_unit(model, shape.prime, &transported, &arrow)?
@@ -297,7 +353,12 @@ pub(crate) fn coface(
         }
         images.extend(variables);
     }
-    input.substitute(model, &images)
+    for image in &mut images {
+        target.normalize(model, image)?;
+    }
+    let mut output = input.substitute(model, &images, target.coefficient_prime())?;
+    target.normalize(model, &mut output)?;
+    Ok(output)
 }
 
 pub(crate) fn differential(
@@ -311,7 +372,52 @@ pub(crate) fn differential(
         let image = coface(model, shape, face, input)?;
         result.add_assign(model, &image, face % 2 != 0)?;
     }
+    shape.normalize(model, &mut result)?;
     Ok(result)
+}
+
+fn connecting(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Polynomial> {
+    // The canonical residues can also be read as a lift into the preceding
+    // quotient. Its differential lies in the kernel precisely for cycles.
+    let previous = Shape {
+        depth: shape.depth - 1,
+        ..shape
+    };
+    let mut numerator = differential(model, previous, input)?;
+    let noncycle = || Error::plain("bpDelta requires a closed BPI cochain");
+    if previous.depth == 0 {
+        if !numerator.divide_if_exact(model, u128::from(shape.prime))? {
+            return Err(noncycle());
+        }
+        Ok(numerator)
+    } else {
+        numerator
+            .divide_variable(model, previous.depth - 1)?
+            .ok_or_else(noncycle)
+    }
+}
+
+fn p_bockstein(
+    model: &mut Model,
+    shape: Shape,
+    input: &Polynomial,
+    exponent: usize,
+) -> Result<Polynomial> {
+    let mut numerator = differential(model, shape, input)?;
+    if numerator.is_zero() {
+        return Ok(numerator);
+    }
+    let divisor = u32::try_from(exponent)
+        .ok()
+        .and_then(|power| u128::from(shape.prime).checked_pow(power));
+    if let Some(divisor) = divisor {
+        if numerator.divide_if_exact(model, divisor)? {
+            return Ok(numerator);
+        }
+    }
+    Err(Error::plain(format!(
+        "bpBockP requires the differential to be divisible by p^{exponent}"
+    )))
 }
 
 #[derive(Clone, Copy)]
@@ -320,6 +426,10 @@ pub(crate) enum Operation {
     Power(usize),
     Coface(usize),
     Differential,
+    Reduce(usize),
+    Lift,
+    Delta,
+    BockP(usize),
 }
 
 impl Operation {
@@ -329,6 +439,10 @@ impl Operation {
             Self::Power(_) => "bpPow",
             Self::Coface(_) => "bpCoface",
             Self::Differential => "bpD",
+            Self::Reduce(_) => "bpReduce",
+            Self::Lift => "bpLift",
+            Self::Delta => "bpDelta",
+            Self::BockP(_) => "bpBockP",
         }
     }
 
@@ -340,6 +454,24 @@ impl Operation {
             }
             Self::Differential => shape.next(),
             Self::Negate | Self::Power(_) => Ok(shape),
+            Self::Reduce(depth) => shape.quotient(depth),
+            Self::Lift => {
+                shape.require_quotient(self.name())?;
+                Ok(Shape { depth: 0, ..shape })
+            }
+            Self::Delta => {
+                shape.require_quotient(self.name())?;
+                Ok(Shape {
+                    depth: shape.depth - 1,
+                    ..shape.next()?
+                })
+            }
+            Self::BockP(_) => {
+                if shape.depth != 0 {
+                    return Err(Error::plain("bpBockP requires an integral BP cochain"));
+                }
+                shape.next()
+            }
         }
     }
 
@@ -349,16 +481,26 @@ impl Operation {
         shape: Shape,
         input: &Polynomial,
     ) -> Result<Polynomial> {
+        let target = self.target(shape)?;
         match self {
             Self::Negate => {
                 model.spend(input.cells())?;
                 let mut output = input.clone();
                 output.scale(model, -1)?;
+                target.normalize(model, &mut output)?;
                 Ok(output)
             }
-            Self::Power(power) => input.power(model, power),
+            Self::Power(power) => input.power_mod(model, power, shape.coefficient_prime()),
             Self::Coface(face) => coface(model, shape, face, input),
             Self::Differential => differential(model, shape, input),
+            Self::Reduce(_) | Self::Lift => {
+                model.spend(input.cells())?;
+                let mut output = input.clone();
+                target.normalize(model, &mut output)?;
+                Ok(output)
+            }
+            Self::Delta => connecting(model, shape, input),
+            Self::BockP(exponent) => p_bockstein(model, shape, input, exponent),
         }
     }
 }

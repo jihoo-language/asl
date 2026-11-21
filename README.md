@@ -307,6 +307,16 @@ Over $\mathcal A_p(1)$ the class of $[\tau_1]^{p-1}\mid[\xi_1]$ survives to $E_p
 
 The coordinate formulas use the Hazewinkel recursion $pL_k=\sum_{i=0}^{k-1}L_i v_{k-i}^{p^i}$ with $L_0=1$ and the right unit $\eta_R(L_k)=\sum_{i=0}^k L_i t_{k-i}^{p^i}$ with $t_0=1$. Intermediate log coefficients use exact powers of $p$ as denominators. Each public coordinate formula must divide integrally. ASL bounds heights by 8 and arrow counts by 16. Coefficients and intermediate numerators and denominators use checked signed 128-bit arithmetic. Large expansions can reach the term storage or computation limit. [Brown–Peterson cobar example](examples/bp-cobar.asl)
 
+### Invariant ideals and connecting cocycles
+
+`BPI(p, n, a, h)` is the quotient of `BP(p, n, a)` by the invariant ideal $I_h=(p,v_1,\ldots,v_{h-1})$, for $1\le h\le n+1$. `bpReduce[h](f)` takes an integral cochain or a cochain from a shallower quotient to this quotient. It fixes elements already at depth `h`. Addition, `bpNeg`, `bpMul`, `bpPow`, `bpCoface`, and `bpD` act in the quotient. `bpLift(f)` uses integer coefficients in $0,\ldots,p-1$ and the monomials that survive the quotient. It selects a representative in each cochain degree.
+
+For a closed `BPI` cochain `x`, `bpDelta(x)` takes the differential of its canonical lift in the preceding quotient and divides exactly by $v_{h-1}$ for $h\ge2$, or by $p$ in `BP` at $h=1$. The result is a closed cochain one arrow longer. It represents the connecting map for multiplication by this invariant element. A noncycle gives an error. On integral `BP` cochains `bpBockP[e](f)` computes $d(f)/p^e$ if every coefficient is divisible by $p^e$.
+
+At $p=3$ the first connecting cocycle of $v_2$ from $I_2$ is $2v_1^2t+t^3$ modulo $p$. Its next connecting representative is $\beta=4v_1tu+5t^2u-tu^2$, with $t$ and $u$ the two arrows' first coordinates. The differential of the integral lift $2v_1^2t+t^3$ is $3\beta$. In weight 12 the normalized one-cochains have basis $v_1^2t$, $v_1t^2$, and $t^3$. Their differentials have $t^2u$ coefficients $9$, $0$, and $-3$, respectively, while $\beta$ has coefficient $5$. Thus $\beta$ has order three in the integral cobar cohomology of this weight.
+
+At $p=2$ the analogous canonical iterated lifts of $v_2$ and $v_3$ vanish. At $p=3$ the three-step lift of $v_3$ is a closed 27-term cochain. At $p=2$ and height one, `bpBockP[3]` applied to $v_1^4$ gives $\alpha_{4/3}$ with $8\alpha_{4/3}=d(v_1^4)$. Here $v_1^4$ spans the zero-cochains of weight eight, so the nonzero cocycle detects order eight at that height. [Greek-letter cocycle example](examples/bp-greek.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

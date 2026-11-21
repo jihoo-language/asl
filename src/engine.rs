@@ -746,6 +746,14 @@ impl Engine {
         Ok((left, right))
     }
 
+    fn persist_bp(&mut self, ty: TypeId, mut value: BpPolynomial) -> Result<Value> {
+        let Kind::BP(shape) = *self.model.kind(ty) else {
+            unreachable!()
+        };
+        shape.normalize(&mut self.model, &mut value)?;
+        bp::persist(&mut self.model, value)
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -771,11 +779,11 @@ impl Engine {
                         self.model.spend(a.cells())?;
                         let mut result = (*a).clone();
                         result.add_assign(&mut self.model, &b, false)?;
-                        bp::persist(&mut self.model, result)
+                        self.persist_bp(expr.ty, result)
                     }
                     (BinaryOp::BpMultiply, Value::BP(a), Value::BP(b)) => {
                         let result = a.multiply(&mut self.model, &b)?;
-                        bp::persist(&mut self.model, result)
+                        self.persist_bp(expr.ty, result)
                     }
                     (BinaryOp::Add, Value::RVPoly(a), Value::RVPoly(b)) => {
                         let polynomial = rv_poly::add(&mut self.model, &a, &b)?;
@@ -1801,8 +1809,11 @@ impl Checker<'_> {
                 self.model.v_ext_type(grade)
             }
             TypeForm::VBock(spec) => self.vbock_type(spec),
-            TypeForm::BP(spec) => {
-                let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
+            TypeForm::BP(spec, depth) => {
+                let mut shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
+                if let Some(depth) = depth {
+                    shape = shape.quotient(depth)?;
+                }
                 self.model.bp_type(shape)
             }
             TypeForm::RVComplex(spec, homology) => {

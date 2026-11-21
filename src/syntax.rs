@@ -55,7 +55,7 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVComplex(RvGradeSpec, bool),
-    BP(BpSpec),
+    BP(BpSpec, Option<usize>),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -1541,10 +1541,16 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, depth);
         }
-        if name.text == "BP" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "BP" | "BPI") && self.eat(Token::LParen)? {
             let (prime, height, arrows) = self.prime_bidegree()?;
+            let depth = if name.text == "BPI" {
+                self.expect(Token::Comma)?;
+                Some(self.number()?.0)
+            } else {
+                None
+            };
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::BP(BpSpec(prime, height, arrows)), 0);
+            return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
         if matches!(name.text.as_str(), "RVKoszul" | "RVTor") && self.eat(Token::LParen)? {
             let grade = self.rv_grade()?;
@@ -1935,15 +1941,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, kind, 0);
                 }
-                if matches!(name.text.as_str(), "bpPow" | "bpCoface")
-                    && self.eat(Token::LBracket)?
+                if matches!(
+                    name.text.as_str(),
+                    "bpPow" | "bpCoface" | "bpReduce" | "bpBockP"
+                ) && self.eat(Token::LBracket)?
                 {
                     let (index, _) = self.number()?;
                     self.expect(Token::RBracket)?;
-                    let operation = if name.text == "bpPow" {
-                        BpOperation::Power(index)
-                    } else {
-                        BpOperation::Coface(index)
+                    let operation = match name.text.as_str() {
+                        "bpPow" => BpOperation::Power(index),
+                        "bpCoface" => BpOperation::Coface(index),
+                        "bpReduce" => BpOperation::Reduce(index),
+                        "bpBockP" => BpOperation::BockP(index),
+                        _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
@@ -1953,11 +1963,15 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
-                if matches!(name.text.as_str(), "bpNeg" | "bpD") && self.token() == Token::LParen {
-                    let operation = if name.text == "bpNeg" {
-                        BpOperation::Negate
-                    } else {
-                        BpOperation::Differential
+                if matches!(name.text.as_str(), "bpNeg" | "bpD" | "bpLift" | "bpDelta")
+                    && self.token() == Token::LParen
+                {
+                    let operation = match name.text.as_str() {
+                        "bpNeg" => BpOperation::Negate,
+                        "bpD" => BpOperation::Differential,
+                        "bpLift" => BpOperation::Lift,
+                        "bpDelta" => BpOperation::Delta,
+                        _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;

@@ -1565,10 +1565,7 @@ impl Model {
                 ))
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
-            Kind::BP(shape) => out.push(&format!(
-                "BP({}, {}, {})",
-                shape.prime, shape.height, shape.arrows
-            )),
+            Kind::BP(shape) => out.push(&shape.to_string()),
             Kind::JetPage(grade) => {
                 out.push("JetPage(")?;
                 self.write_jet_diagram(out, grade.chain.diagram)?;
@@ -2388,10 +2385,7 @@ impl Model {
                 let Kind::BP(shape) = *self.kind(ty) else {
                     unreachable!()
                 };
-                out.push(&format!(
-                    "BP({}, {}, {}){{",
-                    shape.prime, shape.height, shape.arrows
-                ))?;
+                out.push(&format!("{shape}{{"))?;
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
