@@ -48,6 +48,7 @@ use crate::rv_laurent;
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
+use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -325,6 +326,7 @@ pub(crate) struct Model {
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
+    rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
@@ -349,6 +351,7 @@ impl Model {
             rv_curves: HashMap::new(),
             rv_as_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
+            rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
@@ -1228,6 +1231,27 @@ impl Model {
     pub(crate) fn rv_ideal(&self, name: &Label) -> Result<Rc<RvIdeal>> {
         self.rv_ideal_named(&name.text)
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
+    }
+
+    pub(crate) fn rv_witt_tower(&self, name: &Label) -> Result<Rc<RvWittTower>> {
+        self.rv_witt_towers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Witt tower '{}'", name.text)))
+    }
+
+    pub(crate) fn check_new_rv_witt_tower(&self, name: &Label) -> Result<()> {
+        if self.rv_witt_towers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Witt tower '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_rv_witt_tower(&mut self, name: String, tower: RvWittTower) {
+        self.rv_witt_towers.insert(name, Rc::new(tower));
     }
 
     pub(crate) fn rv_witt_cover(&self, name: &Label) -> Result<Rc<RvWittCover>> {

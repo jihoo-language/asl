@@ -17,6 +17,7 @@ use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
+use crate::rv_witt_tower::Query as TowerQuery;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -636,6 +637,8 @@ pub(crate) enum StatementForm {
     RvAsQuery(AsQuery, Label),
     RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvWittQuery(WittQuery, Label),
+    RvWittTower(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvWittTowerQuery(TowerQuery, Label),
     RvOrders(Label),
     RvFrobeniusOrders(Label, usize),
     RvOrderAt(usize, Vec<usize>, ParsedExpr),
@@ -1362,13 +1365,49 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvIdeal(name, selected, self.rv_generators()?)
             }
-            Token::Word("rvwittcover") => {
+            Token::Word("rvwittcover" | "rvwitttower") => {
+                let tower = self.token() == Token::Word("rvwitttower");
                 self.advance()?;
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
                 let variables = self.exponents()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::RvWittCover(name, variables, self.rv_generators()?)
+                let coordinates = self.rv_generators()?;
+                if tower {
+                    StatementForm::RvWittTower(name, variables, coordinates)
+                } else {
+                    StatementForm::RvWittCover(name, variables, coordinates)
+                }
+            }
+            Token::Word(
+                "rvWittTowerBreaks"
+                | "rvWittTowerGenus"
+                | "rvWittTowerPoints"
+                | "rvWittTowerCharacterL"
+                | "rvWittTowerLPolynomial"
+                | "rvWittTowerNewton",
+            ) => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvWittTowerBreaks") => TowerQuery::Breaks,
+                    Token::Word("rvWittTowerGenus") => TowerQuery::Genus,
+                    Token::Word("rvWittTowerPoints") => {
+                        self.expect(Token::Comma)?;
+                        TowerQuery::Points(self.number()?.0)
+                    }
+                    Token::Word("rvWittTowerCharacterL") => {
+                        self.expect(Token::Comma)?;
+                        TowerQuery::CharacterL(self.number()?.0)
+                    }
+                    Token::Word("rvWittTowerLPolynomial") => TowerQuery::LPolynomial,
+                    Token::Word("rvWittTowerNewton") => TowerQuery::Newton,
+                    _ => unreachable!(),
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvWittTowerQuery(query, name)
             }
             Token::Word(
                 "rvWittBreaks" | "rvWittGenus" | "rvWittPoints" | "rvWittLPolynomial"

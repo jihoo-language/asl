@@ -78,6 +78,7 @@ use crate::rv_t_system;
 use crate::rv_t_transfer;
 use crate::rv_tree;
 use crate::rv_witt_cover::Cover as RvWittCover;
+use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -826,17 +827,8 @@ impl Engine {
             }
             StatementForm::RvWittCover(name, variables, expressions) => {
                 self.model.check_new_rv_witt_cover(&name)?;
-                let selected = q_koszul::indices(&mut self.model, variables)?;
-                let &[variable] = selected.as_ref() else {
-                    return Err(Error::new(
-                        name.span,
-                        "rvwittcover requires exactly one parameter variable",
-                    ));
-                };
-                let forms = expressions
-                    .into_iter()
-                    .map(|expression| self.rv_witt_polynomial(expression, variable))
-                    .collect::<Result<_>>()?;
+                let forms =
+                    self.rv_witt_coordinates(variables, expressions, &name, "rvwittcover")?;
                 let cover = RvWittCover::build(&mut self.model, forms)?;
                 self.model.define_rv_witt_cover(name.text, cover);
                 return Ok(None);
@@ -844,6 +836,18 @@ impl Engine {
             StatementForm::RvWittQuery(query, name) => {
                 let cover = self.model.rv_witt_cover(&name)?;
                 cover.report(&mut self.model, &name.text, query)?
+            }
+            StatementForm::RvWittTower(name, variables, expressions) => {
+                self.model.check_new_rv_witt_tower(&name)?;
+                let coordinates =
+                    self.rv_witt_coordinates(variables, expressions, &name, "rvwitttower")?;
+                let tower = RvWittTower::build(&mut self.model, coordinates)?;
+                self.model.define_rv_witt_tower(name.text, tower);
+                return Ok(None);
+            }
+            StatementForm::RvWittTowerQuery(query, name) => {
+                let tower = self.model.rv_witt_tower(&name)?;
+                tower.report(&mut self.model, &name.text, query)?
             }
             StatementForm::RvAsCover(name, variables, expressions) => {
                 self.model.check_new_rv_as_cover(&name)?;
@@ -1348,13 +1352,34 @@ impl Engine {
         Ok(Value::Class(coordinates.into()))
     }
 
+    fn rv_witt_coordinates(
+        &mut self,
+        variables: Vec<usize>,
+        expressions: Vec<ParsedExpr>,
+        name: &Label,
+        operation: &str,
+    ) -> Result<Vec<rv_poly::Polynomial>> {
+        let selected = q_koszul::indices(&mut self.model, variables)?;
+        let &[variable] = selected.as_ref() else {
+            return Err(Error::new(
+                name.span,
+                format!("{operation} requires exactly one parameter variable"),
+            ));
+        };
+        expressions
+            .into_iter()
+            .map(|expression| self.rv_witt_polynomial(expression, variable, operation))
+            .collect()
+    }
+
     fn rv_witt_polynomial(
         &mut self,
         expression: ParsedExpr,
         variable: usize,
+        operation: &str,
     ) -> Result<rv_poly::Polynomial> {
         let input = self.checker().expr(expression)?;
-        let (variables, degree) = self.checker().rv_poly_grade(&input, "rvwittcover")?;
+        let (variables, degree) = self.checker().rv_poly_grade(&input, operation)?;
         let Value::RVPoly(polynomial) = self.eval(&input)? else {
             unreachable!()
         };
@@ -1364,7 +1389,7 @@ impl Engine {
             [index, _] if *index == variable => Ok(polynomial.iter().map(|term| [term[0]].into()).collect()),
             [_, index] if *index == variable => Ok(rv_curve::affine_form(&polynomial)),
             [] if degree == 0 => Ok(polynomial.iter().map(|_| [0].into()).collect()),
-            _ => Err(Error::new(input.span, "rvwittcover requires a univariate polynomial or a binary homogenization in the chosen variable")),
+            _ => Err(Error::new(input.span, format!("{operation} requires a univariate polynomial or a binary homogenization in the chosen variable"))),
         }
     }
 

@@ -839,6 +839,16 @@ The pole orders of $x,y,w$ on the quartic curve are $4,2m,b_2$. The four monomia
 
 For $f=x^3$ and $g(x)=0$, the genus is six and the Cartier ranks are $6,4,3,2,1,0$. The basis contains a Cartier chain from $w\,dx$ through $xy\,dx$, $y\,dx$, $x\,dx$, and $dx$. [Witt holomorphic differential example](examples/rank-witt-cartier.asl)
 
+#### One-pole Witt towers and cyclotomic characters
+
+`rvwitttower W[[x_idx]] { f0,...,f_{s-1} };` defines a cyclic degree-$2^s$ cover of the projective line for $1\le s\le8$. Its equation is $F(\mathbf y)-\mathbf y=(f_0,\ldots,f_{s-1})$ in the length-$s$ Witt ring. Each coordinate uses the univariate or binary-homogenized syntax of `rvwittcover`. The first has positive odd degree. Later coordinates may be zero, constant, or of positive odd degree. Infinity is its only pole and is totally ramified.
+
+`rvWittTowerBreaks[W];` prints the upper jumps $u_1=\deg f_0$ and $u_j=\max(2u_{j-1},\deg f_{j-1})$, with zero or constant degree taken as zero. `rvWittTowerGenus[W];` gives the genus from $2g-2=-2\cdot 2^s+\sum_{j=1}^s 2^{j-1}(u_j+1)$. For extension degree $e$, `rvWittTowerPoints[W,e];` counts the one point at infinity and $2^s$ points at every finite parameter with zero Witt trace. The calculation lifts finite-field elements to Teichmüller representatives in the unramified ring modulo $2^s$ and sums their Frobenius conjugates.
+
+`rvWittTowerCharacterL[W,j];` prints the primitive Artin $L$-factor of conductor $2^j$ and degree $u_j-1$. Each signed array lists one coefficient in the power basis $1,\zeta,\ldots,\zeta^{2^{j-1}-1}$ for $\zeta=\zeta_{2^j}$. The character sends a Witt trace $a$ in $\mathbb Z/2^j$ to $\zeta^a$. `rvWittTowerLPolynomial[W];` multiplies the integral cyclotomic norms of these factors. `rvWittTowerNewton[W];` prints the dyadic Newton slopes and their multiplicities. Computing the numerator uses counts of character values only through extension degree $u_s-1$, subject to the field, work, storage, and signed coefficient bounds. The leading coefficient is $2^g$, so an integral numerator requires genus below 127 in the signed 128-bit coefficient type.
+
+The length-four tower $(x,0,0,0)$ has upper jumps $[1,2,4,8]$ and genus $35$. Its degree-$70$ numerator uses extension degrees at most seven. The slopes are $1/8,1/4,3/8,1/2,5/8,3/4,7/8$ with multiplicities $8,12,8,14,8,12,8$. [Witt tower example](examples/rank-witt-tower.asl)
+
 
 ### Koszul syzygies and their products
 
