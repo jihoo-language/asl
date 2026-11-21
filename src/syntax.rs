@@ -33,6 +33,7 @@ pub(crate) enum TypeForm {
     PExtAn(usize, usize, usize, usize),
     PMay(usize, usize, usize, usize, usize),
     PMayAn(usize, usize, usize, usize, usize, usize),
+    PCeAn(usize, usize, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -202,6 +203,7 @@ pub(crate) enum ExprForm {
     PExtAnGenerator(usize, usize, usize, usize, usize, Span),
     PMayGenerator(usize, usize, usize, usize, usize, usize, Span),
     PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
+    PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
@@ -269,6 +271,7 @@ pub(crate) enum StatementForm {
     PExtAnDimension(usize, usize, usize, usize),
     PMayDimension(usize, usize, usize, usize, usize),
     PMayAnDimension(usize, usize, usize, usize, usize, usize),
+    PCeAnDimension(usize, usize, usize, usize, usize, usize),
     ExtAnDimension(usize, usize, usize),
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
@@ -759,12 +762,16 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::PMayDimension(p, r, s, t, f)
             }
-            Token::Word("pmayandim") => {
+            Token::Word(name @ ("pmayandim" | "pceandim")) => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::PMayAnDimension(p, n, r, s, t, f)
+                if name == "pceandim" {
+                    StatementForm::PCeAnDimension(p, n, r, s, t, f)
+                } else {
+                    StatementForm::PMayAnDimension(p, n, r, s, t, f)
+                }
             }
             Token::Word("homotopy") => {
                 self.advance()?;
@@ -1093,10 +1100,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::PMay(p, r, s, t, f), 0);
         }
-        if name.text == "PMayAn" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "PMayAn" | "PCEAn") && self.eat(Token::LParen)? {
             let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::PMayAn(p, n, r, s, t, f), 0);
+            let kind = if name.text == "PCEAn" {
+                TypeForm::PCeAn(p, n, r, s, t, f)
+            } else {
+                TypeForm::PMayAn(p, n, r, s, t, f)
+            };
+            return ty(span, kind, 0);
         }
         if matches!(
             name.text.as_str(),
@@ -1651,16 +1663,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PMayGenerator(p, r, s, t, f, index, at), 0);
                 }
-                if name.text == "pmayangen" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "pmayangen" | "pceangen")
+                    && self.eat(Token::LBracket)?
+                {
                     let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
                     self.expect(Token::Comma)?;
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
-                    return expr(
-                        span,
-                        ExprForm::PMayAnGenerator(p, n, r, s, t, f, index, at),
-                        0,
-                    );
+                    let kind = if name.text == "pceangen" {
+                        ExprForm::PCeAnGenerator(p, n, r, s, t, f, index, at)
+                    } else {
+                        ExprForm::PMayAnGenerator(p, n, r, s, t, f, index, at)
+                    };
+                    return expr(span, kind, 0);
                 }
                 if matches!(name.text.as_str(), "mayClass" | "ceClass")
                     && self.eat(Token::LBracket)?

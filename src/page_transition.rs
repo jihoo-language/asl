@@ -52,6 +52,12 @@ impl Direction {
                 return model.profile_pmay_type(p, profile, page, s, t, f);
             }
         }
+        if family == PageFamily::Ce {
+            if let Some((p, n, r, s, t, f)) = model.kind(ty).pce_grade() {
+                let page = self.target_page(r, family)?;
+                return model.pce_type(p, n, page, s, t, f);
+            }
+        }
         if family == PageFamily::VBock {
             if let Kind::VBock(grade) = model.kind(ty) {
                 let mut grade = grade.clone();

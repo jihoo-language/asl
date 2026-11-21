@@ -302,7 +302,7 @@ impl Engine {
             StatementForm::PMayDimension(p, r, s, t, f) => {
                 let prime = Prime::new(&mut self.model, p)?;
                 let ty = self.model.pmay_type(prime, r, s, t, f)?;
-                let rank = self.model.pmay(ty)?.rank();
+                let rank = self.model.odd_page(ty)?.rank();
                 format!("pmaydim[{p}, {r}, {s}, {t}, {f}] = {rank}")
             }
             StatementForm::PMayAnDimension(p, n, r, s, t, f) => {
@@ -310,8 +310,14 @@ impl Engine {
                 let ty = self
                     .model
                     .profile_pmay_type(prime, Profile::An(n), r, s, t, f)?;
-                let rank = self.model.pmay(ty)?.rank();
+                let rank = self.model.odd_page(ty)?.rank();
                 format!("pmayandim[{p}, {n}, {r}, {s}, {t}, {f}] = {rank}")
+            }
+            StatementForm::PCeAnDimension(p, n, r, s, t, f) => {
+                let prime = Prime::new(&mut self.model, p)?;
+                let ty = self.model.pce_type(prime, n, r, s, t, f)?;
+                let rank = self.model.odd_page(ty)?.rank();
+                format!("pceandim[{p}, {n}, {r}, {s}, {t}, {f}] = {rank}")
             }
             StatementForm::ExtDimension(s, t) => {
                 let ty = self.model.ext_type(s, t)?;
@@ -475,7 +481,8 @@ impl Engine {
                         let (Kind::PExt(p, ..)
                         | Kind::PExtAn(p, ..)
                         | Kind::PMay(p, ..)
-                        | Kind::PMayAn(p, ..)) = *self.model.kind(expr.ty)
+                        | Kind::PMayAn(p, ..)
+                        | Kind::PCeAn(p, ..)) = *self.model.kind(expr.ty)
                         else {
                             unreachable!()
                         };
@@ -543,9 +550,11 @@ impl Engine {
                     (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
                         may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
-                    (BinaryOp::MayMul, Value::OddClass(a), Value::OddClass(b)) => {
-                        odd_may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
-                    }
+                    (
+                        BinaryOp::MayMul | BinaryOp::CeMul,
+                        Value::OddClass(a),
+                        Value::OddClass(b),
+                    ) => odd_may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty),
                     (BinaryOp::CeMul, Value::Class(a), Value::Class(b)) => {
                         ce::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
@@ -663,7 +672,7 @@ impl Engine {
                 (CobarOp::MayClass, Value::MapCobar(terms)) => {
                     map_may::class(&mut self.model, expr.ty, &terms)
                 }
-                (CobarOp::MayClass, Value::PCobar(terms)) => {
+                (CobarOp::MayClass | CobarOp::CeClass, Value::PCobar(terms)) => {
                     odd_may::class(&mut self.model, expr.ty, &terms)
                 }
                 (CobarOp::MayDifferential, Value::Class(class)) => {
@@ -694,22 +703,23 @@ impl Engine {
                 (CobarOp::PageTransition(_, PageDirection::Previous), Value::Class(class)) => {
                     page_transition::previous(&mut self.model, input.ty, expr.ty, &class)
                 }
-                (CobarOp::MayDifferential, Value::OddClass(class)) => {
+                (CobarOp::MayDifferential | CobarOp::CeDifferential, Value::OddClass(class)) => {
                     odd_may::differential(&mut self.model, input.ty, &class, expr.ty)
                 }
+                (CobarOp::PageTransition(_, PageDirection::Next), Value::OddClass(class)) => {
+                    odd_may::next(&mut self.model, input.ty, &class, expr.ty)
+                }
+                (CobarOp::PageTransition(_, PageDirection::Previous), Value::OddClass(class)) => {
+                    odd_may::previous(&mut self.model, input.ty, &class, expr.ty)
+                }
                 (
-                    CobarOp::PageTransition(PageFamily::May, PageDirection::Next),
+                    CobarOp::MayRepresentative | CobarOp::CeRepresentative,
                     Value::OddClass(class),
-                ) => odd_may::next(&mut self.model, input.ty, &class, expr.ty),
-                (
-                    CobarOp::PageTransition(PageFamily::May, PageDirection::Previous),
-                    Value::OddClass(class),
-                ) => odd_may::previous(&mut self.model, input.ty, &class, expr.ty),
-                (CobarOp::MayRepresentative, Value::OddClass(class)) => {
+                ) => {
                     if class.is_empty() {
                         return Ok(odd_cobar::zero());
                     }
-                    let page = self.model.pmay(input.ty)?;
+                    let page = self.model.odd_page(input.ty)?;
                     let terms = page.representative(&mut self.model, &class)?;
                     odd_cobar::persist(&mut self.model, terms)
                 }
@@ -1185,6 +1195,10 @@ impl Checker<'_> {
                 self.model
                     .profile_pmay_type(prime, Profile::An(n), r, s, t, f)
             }
+            TypeForm::PCeAn(p, n, r, s, t, f) => {
+                let prime = Prime::new(self.model, p)?;
+                self.model.pce_type(prime, n, r, s, t, f)
+            }
             TypeForm::PCobar(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.pcobar_type(prime, s, t)
@@ -1312,7 +1326,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
-                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) => odd_ext::zero(),
+                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
@@ -1370,12 +1384,13 @@ impl Checker<'_> {
                     | Kind::PExt(p, ..)
                     | Kind::PExtAn(p, ..)
                     | Kind::PMay(p, ..)
-                    | Kind::PMayAn(p, ..) => p,
+                    | Kind::PMayAn(p, ..)
+                    | Kind::PCeAn(p, ..) => p,
                     _ => {
                         return Err(self.invalid_operand(
                             &value,
                             "pscale",
-                            "a PCobar cochain, PExt class, or PMay class",
+                            "a PCobar cochain, PExt class, PMay class, or PCEAn class",
                         ))
                     }
                 };
@@ -1400,7 +1415,7 @@ impl Checker<'_> {
             ExprForm::PMayGenerator(p, r, s, t, f, index, at) => {
                 let prime = Prime::new(self.model, p)?;
                 let ty = self.model.pmay_type(prime, r, s, t, f)?;
-                let rank = self.model.pmay(ty)?.rank();
+                let rank = self.model.odd_page(ty)?.rank();
                 let value = self.prime_generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
@@ -1409,7 +1424,14 @@ impl Checker<'_> {
                 let ty = self
                     .model
                     .profile_pmay_type(prime, Profile::An(n), r, s, t, f)?;
-                let rank = self.model.pmay(ty)?.rank();
+                let rank = self.model.odd_page(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::PCeAnGenerator(p, n, r, s, t, f, index, at) => {
+                let prime = Prime::new(self.model, p)?;
+                let ty = self.model.pce_type(prime, n, r, s, t, f)?;
+                let rank = self.model.odd_page(ty)?.rank();
                 let value = self.prime_generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
@@ -1663,10 +1685,17 @@ impl Checker<'_> {
             }
             ExprForm::CeClass(r, f, value) => {
                 let value = self.expr(*value)?;
-                let Kind::CobarAn(n, s, t) = *self.model.kind(value.ty) else {
-                    return Err(self.invalid_operand(&value, "ceClass", "a CobarAn cochain"));
+                let ty = match *self.model.kind(value.ty) {
+                    Kind::CobarAn(n, s, t) => self.model.ce_type(n, r, s, t, f)?,
+                    Kind::PCobarAn(p, n, s, t) => self.model.pce_type(p, n, r, s, t, f)?,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &value,
+                            "ceClass",
+                            "a CobarAn cochain or a PCobarAn cochain",
+                        ))
+                    }
                 };
-                let ty = self.model.ce_type(n, r, s, t, f)?;
                 Ok((ty, TypedForm::Cobar(CobarOp::CeClass, Box::new(value))))
             }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
@@ -2435,10 +2464,18 @@ impl Checker<'_> {
                     .map_err(|error| error.at(argument.span));
             }
             CobarOp::CeRepresentative => {
+                if let Some((p, n, _, s, t, _)) = self.model.kind(argument.ty).pce_grade() {
+                    return self.model.profile_pcobar_type(p, Profile::An(n), s, t);
+                }
                 let (n, _, s, t, _) = self.ce_degree(argument, name)?;
                 return self.model.profile_cobar_type(Profile::An(n), s, t);
             }
             CobarOp::CeDifferential => {
+                if let Some((p, n, r, s, t, f)) = self.model.kind(argument.ty).pce_grade() {
+                    let s = checked_degree(s, 1, name, span)?;
+                    let f = checked_degree(f, r, name, span)?;
+                    return self.model.pce_type(p, n, r, s, t, f);
+                }
                 let (n, r, s, t, f) = self.ce_degree(argument, name)?;
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
@@ -2643,6 +2680,7 @@ impl Checker<'_> {
                         | Kind::PExtAn(..)
                         | Kind::PMay(..)
                         | Kind::PMayAn(..)
+                        | Kind::PCeAn(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
@@ -2835,6 +2873,25 @@ impl Checker<'_> {
                 }
             }
             BinaryOp::CeMul => {
+                if let Some((p, n, r, s, t, f)) = self.model.kind(left.ty).pce_grade() {
+                    let Some((q, m, page, u, v, g)) = self.model.kind(right.ty).pce_grade() else {
+                        return Err(self.invalid_operand(right, "ceMul", "a PCEAn class"));
+                    };
+                    if p != q {
+                        return Err(Error::new(right.span, "ceMul requires the same prime"));
+                    }
+                    require_profile(Profile::An(n), Profile::An(m), "ceMul", right.span)?;
+                    if r != page {
+                        return Err(Error::new(
+                            right.span,
+                            "ceMul requires classes on the same page",
+                        ));
+                    }
+                    let s = checked_degree(s, u, "ceMul", span)?;
+                    let t = checked_degree(t, v, "ceMul", span)?;
+                    let f = checked_degree(f, g, "ceMul", span)?;
+                    return self.model.pce_type(p, n, r, s, t, f);
+                }
                 let (n, r, s, t, f) = self.ce_degree(left, "ceMul")?;
                 let (m, page, u, v, g) = self.ce_degree(right, "ceMul")?;
                 require_profile(Profile::An(n), Profile::An(m), "ceMul", right.span)?;

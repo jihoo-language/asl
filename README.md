@@ -55,6 +55,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `PExtAn(p, n, s, t)` | The discrete space of Ext classes over $\mathcal A_p(n)$. |
 | `PMay(p, r, s, t, f)` | The discrete space of odd-prime algebraic May classes on page `r` in filtration `f`. |
 | `PMayAn(p, n, r, s, t, f)` | The algebraic May page of the finite odd-primary profile $\mathcal A_p(n)$. |
+| `PCEAn(p, n, r, s, t, f)` | The Cartan–Eilenberg page for the central extension by $E(Q_n)$ in $\mathcal A_p(n)$. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
@@ -288,6 +289,14 @@ The central extension $E(Q_n)\to\mathcal A(n)\to\mathcal A(n)//E(Q_n)$ filters t
 `ceandim[n, r, s, t, f];` prints the rank and `ceangen[n, r, s, t, f, i]` selects generator `i`. `ceClass[r, f]` takes a `CobarAn` cochain satisfying the page cycle condition and `ceRep` returns a corrected lift. `ceD` increases `s` by one and `f` by `r`. `ceMul` multiplies classes on the same page over the same profile. `ceNext` takes a $d_r$-cycle to its next-page class, and `cePrev` uses the chosen lift to represent a class on the previous page.
 
 For $\mathcal A(1)$ the example computes $d_2(v_1)=h_0h_1$ and $d_3(v_1^2)=h_1^3$. The class of $v_1^4$ survives and its closed lift generates `ExtAn(1, 4, 12)`. [Cartan–Eilenberg example](examples/cartan-eilenberg.asl)
+
+### Odd-primary central extensions
+
+`PCEAn(p, n, r, s, t, f)` uses the signed cobar complex of $\mathcal A_p(n)$ with the filtration for $E(Q_n)\to\mathcal A_p(n)\to\mathcal A_p(n)//E(Q_n)$. If $q$ counts the factors containing $\tau_n$ in a word of length $s$, its filtration is $f=s-q$. Splitting a factor increases $f$ by one when its $\tau_n$ count stays the same and by two when it loses $\tau_n$. The page-zero differential is therefore zero.
+
+`pceandim[p, n, r, s, t, f];` prints a rank and `pceangen[p, n, r, s, t, f, i]` selects a generator. The `ceClass[r, f]` and `ceRep` operations project and lift cochains in `PCobarAn`. The operations `ceD`, `ceMul`, `ceNext`, `cePrev`, and `pscale` retain coefficients in $\mathbb F_p$ and preserve the profile.
+
+Over $\mathcal A_p(1)$ the class of $[\tau_1]^{p-1}\mid[\xi_1]$ survives to $E_p$ at $p=3$ and $p=5$. Its differential is $-a_0^{p-1}b_{1,0}$, with the $\tau_0$ factors first. Both components vanish on $E_{p+1}$. The class with leading term $[\tau_1]^p$ survives and gives a nonzero class in bidegree $(p,p(2p-1))$ of `PExtAn` at these primes. [Odd-primary Cartan–Eilenberg example](examples/odd-ce.asl)
 
 ## Transferred homotopy operations on Ext
 
@@ -576,6 +585,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `pextandim[p, n, s, t];` | Print the dimension of `PExtAn(p, n, s, t)` over 𝔽ₚ. |
 | `pmaydim[p, r, s, t, f];` | Print the dimension of `PMay(p, r, s, t, f)` over 𝔽ₚ. |
 | `pmayandim[p, n, r, s, t, f];` | Print the dimension of `PMayAn(p, n, r, s, t, f)` over 𝔽ₚ. |
+| `pceandim[p, n, r, s, t, f];` | Print the dimension of `PCEAn(p, n, r, s, t, f)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
 | `ceandim[n, r, s, t, f];` | Print the dimension of a Cartan–Eilenberg page component over 𝔽₂. |

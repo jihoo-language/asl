@@ -12,9 +12,31 @@ use crate::profile::Profile;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
-pub(crate) struct OddMay {
+#[derive(Clone, Copy)]
+pub(crate) enum Filtration {
+    May(Profile),
+    Ce(usize),
+}
+
+impl Filtration {
+    fn profile(self) -> Profile {
+        match self {
+            Self::May(profile) => profile,
+            Self::Ce(n) => Profile::An(n),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::May(_) => "May",
+            Self::Ce(_) => "Cartan–Eilenberg",
+        }
+    }
+}
+
+pub(crate) struct OddPage {
     prime: Prime,
-    profile: Profile,
+    filter: Filtration,
     r: usize,
     s: usize,
     t: usize,
@@ -27,11 +49,11 @@ pub(crate) struct OddMay {
     transition: OnceCell<Basis>,
 }
 
-impl OddMay {
+impl OddPage {
     pub(crate) fn build(
         model: &mut Model,
         prime: Prime,
-        profile: Profile,
+        filter: Filtration,
         r: usize,
         s: usize,
         t: usize,
@@ -39,7 +61,7 @@ impl OddMay {
     ) -> Result<Self> {
         let mut page = Self {
             prime,
-            profile,
+            filter,
             r,
             s,
             t,
@@ -51,6 +73,9 @@ impl OddMay {
             representatives: Vec::new(),
             transition: OnceCell::new(),
         };
+        if !page.can_lead() {
+            return Ok(page);
+        }
         let mut leading = Vec::new();
         for word in page.basis(model, s, f)? {
             let filtration = page.filtration(model, &word)?;
@@ -72,12 +97,44 @@ impl OddMay {
         Ok(page)
     }
 
+    fn can_lead(&self) -> bool {
+        let Filtration::Ce(n) = self.filter else {
+            return true;
+        };
+        let (Some(q), Some(excess)) = (self.s.checked_sub(self.f), self.t.checked_sub(self.s))
+        else {
+            return false;
+        };
+        if n == 0 {
+            return self.f == 0 && excess == 0;
+        }
+        if q == 0 {
+            return self.s > 0 || self.t == 0;
+        }
+        // Each of the q factors containing tau_n contributes at least
+        // |tau_n|-1 more internal degree than the minimum per factor.
+        odd_cobar::xi_degree(self.prime, n).is_ok_and(|extra| q <= excess / extra)
+    }
+
     fn basis(&self, model: &mut Model, s: usize, f: usize) -> Result<Vec<Word>> {
-        // Each positive-degree factor has at least one unit of May weight.
-        if s > self.t || f > self.t - s {
+        let Some(excess) = self.t.checked_sub(s) else {
+            return Ok(Vec::new());
+        };
+        let max_filtration = match self.filter {
+            Filtration::May(_) => excess,
+            Filtration::Ce(_) => s,
+        };
+        if f > max_filtration {
             return Ok(Vec::new());
         }
-        odd_cobar::basis_profile(model, self.prime, self.profile, s, self.t, MAX_BASIS_WORDS)
+        odd_cobar::basis_profile(
+            model,
+            self.prime,
+            self.filter.profile(),
+            s,
+            self.t,
+            MAX_BASIS_WORDS,
+        )
     }
 
     fn build_quotient(&mut self, model: &mut Model) -> Result<()> {
@@ -88,7 +145,9 @@ impl OddMay {
         let mut cells = 0;
         for (index, word) in self.words.iter().enumerate() {
             let mut lower = Vec::new();
-            for term in odd_cobar::differential_profile_word(model, prime, self.profile, word)? {
+            for term in
+                odd_cobar::differential_profile_word(model, prime, self.filter.profile(), word)?
+            {
                 if self.filtration(model, &term.0)? < self.cutoff {
                     lower.push(term);
                 }
@@ -138,7 +197,9 @@ impl OddMay {
             }
             let mut lower = Vec::new();
             let mut leading = Vec::new();
-            for term in odd_cobar::differential_profile_word(model, prime, self.profile, &word)? {
+            for term in
+                odd_cobar::differential_profile_word(model, prime, self.filter.profile(), &word)?
+            {
                 match self.filtration(model, &term.0)?.cmp(&self.f) {
                     Ordering::Less => lower.push(term),
                     Ordering::Equal => leading.push(term),
@@ -173,15 +234,17 @@ impl OddMay {
         let mut below_cutoff = Vec::new();
         for (word, coefficient) in terms {
             if odd_cobar::word_metadata(word)? != (self.s, self.t) {
-                return Err(Error::plain(
-                    "odd-prime cobar chain has the wrong May bidegree",
-                ));
+                return Err(Error::plain(format!(
+                    "odd-prime cobar chain has the wrong {} bidegree",
+                    self.filter.name()
+                )));
             }
             let filtration = self.filtration(model, word)?;
             if filtration < self.f {
-                return Err(Error::plain(
-                    "odd-prime cobar chain lies below the requested May filtration",
-                ));
+                return Err(Error::plain(format!(
+                    "odd-prime cobar chain lies below the requested {} filtration",
+                    self.filter.name()
+                )));
             }
             if filtration == self.f {
                 leading.push((word.clone(), *coefficient));
@@ -196,16 +259,18 @@ impl OddMay {
         }
         for (word, _) in self.differential(model, &below_cutoff)? {
             if self.filtration(model, &word)? < self.cutoff {
-                return Err(Error::plain(
-                    "odd-prime cobar chain does not satisfy the May page cycle condition",
-                ));
+                return Err(Error::plain(format!(
+                    "odd-prime cobar chain does not satisfy the {} page cycle condition",
+                    self.filter.name()
+                )));
             }
         }
         let (remainder, coordinates) = self.span.reduce_with_witness(model, self.prime, leading)?;
         if !remainder.is_empty() {
-            return Err(Error::plain(
-                "cobar cycle is missing from the odd-prime May page basis",
-            ));
+            return Err(Error::plain(format!(
+                "cobar cycle is missing from the odd-prime {} page basis",
+                self.filter.name()
+            )));
         }
         Ok(coordinates)
     }
@@ -237,9 +302,16 @@ impl OddMay {
     }
 
     fn filtration(&self, model: &mut Model, word: &Word) -> Result<usize> {
+        model.spend(word_cells(word))?;
+        if let Filtration::Ce(n) = self.filter {
+            // The top exterior generator occurs at most once in each factor.
+            return Ok(word
+                .iter()
+                .filter(|factor| factor.taus.last().copied() != Some(n))
+                .count());
+        }
         // Each generator's weight is bounded by its internal degree, and
         // the base-p digit sum of an exponent is bounded by the exponent.
-        model.spend(word_cells(word))?;
         let p = self.prime.get() as usize;
         let mut weight = 0;
         for monomial in word.iter() {
@@ -261,14 +333,19 @@ impl OddMay {
     }
 
     fn differential(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
-        odd_cobar::differential_profile_support(model, self.prime, self.profile, terms)
+        odd_cobar::differential_profile_support(model, self.prime, self.filter.profile(), terms)
     }
 
     fn build_transition(&self, model: &mut Model, target: TypeId) -> Result<Basis> {
         let mut cycles = Basis::default();
         if let (Some(s), Some(f)) = (self.s.checked_sub(1), self.f.checked_sub(self.r)) {
-            let ty = model.profile_pmay_type(self.prime, self.profile, self.r, s, self.t, f)?;
-            let incoming = model.pmay(ty)?;
+            let ty = match self.filter {
+                Filtration::May(profile) => {
+                    model.profile_pmay_type(self.prime, profile, self.r, s, self.t, f)?
+                }
+                Filtration::Ce(n) => model.pce_type(self.prime, n, self.r, s, self.t, f)?,
+            };
+            let incoming = model.odd_page(ty)?;
             for index in 0..incoming.rank() {
                 let lift = incoming.representative(model, &[(index, 1)])?;
                 let image = self.differential(model, &lift)?;
@@ -277,7 +354,7 @@ impl OddMay {
             }
         }
 
-        let next = model.pmay(target)?;
+        let next = model.odd_page(target)?;
         for index in 0..next.rank() {
             let lift = next.representative(model, &[(index, 1)])?;
             let earlier = self.project(model, &lift)?;
@@ -285,9 +362,10 @@ impl OddMay {
                 .insert_with_witness(model, self.prime, earlier, vec![(index, 1)])?
                 .is_some()
             {
-                return Err(Error::plain(
-                    "odd-prime May page transition has dependent cycle lifts",
-                ));
+                return Err(Error::plain(format!(
+                    "odd-prime {} page transition has dependent cycle lifts",
+                    self.filter.name()
+                )));
             }
         }
         model.allocate(cycles.cells())?;
@@ -299,7 +377,7 @@ pub(crate) fn class(model: &mut Model, ty: TypeId, terms: &[Term]) -> Result<Val
     if terms.is_empty() {
         return Ok(odd_ext::zero());
     }
-    let coordinates = model.pmay(ty)?.project(model, terms)?;
+    let coordinates = model.odd_page(ty)?.project(model, terms)?;
     odd_ext::persist(model, coordinates)
 }
 
@@ -312,7 +390,7 @@ pub(crate) fn differential(
     if coordinates.is_empty() {
         return Ok(odd_ext::zero());
     }
-    let page = model.pmay(source)?;
+    let page = model.odd_page(source)?;
     let lift = page.representative(model, coordinates)?;
     let image = page.differential(model, &lift)?;
     class(model, target, &image)
@@ -329,9 +407,9 @@ pub(crate) fn multiply(
     if left.is_empty() || right.is_empty() {
         return Ok(odd_ext::zero());
     }
-    let page = model.pmay(left_ty)?;
+    let page = model.odd_page(left_ty)?;
     let left = page.representative(model, left)?;
-    let right = model.pmay(right_ty)?.representative(model, right)?;
+    let right = model.odd_page(right_ty)?.representative(model, right)?;
     let product = odd_cobar::concat_support(model, page.prime, &left, &right)?;
     class(model, target, &product)
 }
@@ -345,7 +423,7 @@ pub(crate) fn next(
     if coordinates.is_empty() {
         return Ok(odd_ext::zero());
     }
-    let page = model.pmay(source)?;
+    let page = model.odd_page(source)?;
     let transition = if let Some(transition) = page.transition.get() {
         transition
     } else {
@@ -355,8 +433,12 @@ pub(crate) fn next(
     let (remainder, class) =
         transition.reduce_with_witness(model, page.prime, coordinates.to_vec())?;
     if !remainder.is_empty() {
+        let name = match page.filter {
+            Filtration::May(_) => "mayNext",
+            Filtration::Ce(_) => "ceNext",
+        };
         return Err(Error::plain(format!(
-            "mayNext requires a cycle for d_{}",
+            "{name} requires a cycle for d_{}",
             page.r
         )));
     }
@@ -372,7 +454,7 @@ pub(crate) fn previous(
     if coordinates.is_empty() {
         return Ok(odd_ext::zero());
     }
-    let lift = model.pmay(source)?.representative(model, coordinates)?;
+    let lift = model.odd_page(source)?.representative(model, coordinates)?;
     class(model, target, &lift)
 }
 
@@ -388,7 +470,7 @@ pub(crate) fn restrict(
     let (_, Profile::An(n), ..) = model.kind(target).pmay_grade().unwrap() else {
         unreachable!()
     };
-    let page = model.pmay(source)?;
+    let page = model.odd_page(source)?;
     let lift = page.representative(model, coordinates)?;
     let terms = odd_profile::restrict(model, page.prime, n, &lift)?;
     class(model, target, &terms)
@@ -397,7 +479,7 @@ pub(crate) fn restrict(
 fn check_storage(cells: usize) -> Result<()> {
     if cells > MAX_PIVOT_CELLS {
         return Err(Error::plain(
-            "odd-prime May calculation exceeds the storage limit",
+            "odd-prime filtered page calculation exceeds the storage limit",
         ));
     }
     Ok(())

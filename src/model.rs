@@ -15,7 +15,7 @@ use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
-use crate::odd_may::OddMay;
+use crate::odd_may::{Filtration, OddPage};
 use crate::page_transition::Transition;
 use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
@@ -53,6 +53,7 @@ pub(crate) enum Kind {
     PExtAn(Prime, usize, usize, usize),
     PMay(Prime, usize, usize, usize, usize),
     PMayAn(Prime, usize, usize, usize, usize, usize),
+    PCeAn(Prime, usize, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -75,6 +76,13 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn pce_grade(&self) -> Option<(Prime, usize, usize, usize, usize, usize)> {
+        match *self {
+            Self::PCeAn(p, n, r, s, t, f) => Some((p, n, r, s, t, f)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn pmay_grade(&self) -> Option<(Prime, Profile, usize, usize, usize, usize)> {
         match *self {
             Self::PMay(p, r, s, t, f) => Some((p, Profile::Full, r, s, t, f)),
@@ -177,7 +185,7 @@ struct TypeInfo {
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
     odd_ext: Option<Rc<OddExt>>,
-    pmay: Option<Rc<OddMay>>,
+    odd_page: Option<Rc<OddPage>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
@@ -300,12 +308,15 @@ impl Model {
             Kind::PMay(prime, _, s, t, _) | Kind::PMayAn(prime, _, _, s, t, _) if s == t => {
                 prime.get() as usize
             }
+            Kind::PCeAn(_, _, _, s, t, f) if s > t || f > s || (s == 0 && t != 0) => 1,
+            Kind::PCeAn(prime, _, _, s, t, _) if s == t => prime.get() as usize,
             Kind::PCobar(..)
             | Kind::PCobarAn(..)
             | Kind::PExt(..)
             | Kind::PExtAn(..)
             | Kind::PMay(..)
-            | Kind::PMayAn(..) => usize::MAX,
+            | Kind::PMayAn(..)
+            | Kind::PCeAn(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -380,7 +391,7 @@ impl Model {
             cohomology: None,
             adams: None,
             odd_ext: None,
-            pmay: None,
+            odd_page: None,
             xext: None,
             map_ext: None,
             q_ext: None,
@@ -428,6 +439,7 @@ impl Model {
                 | Kind::PExtAn(..)
                 | Kind::PMay(..)
                 | Kind::PMayAn(..)
+                | Kind::PCeAn(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -645,6 +657,18 @@ impl Model {
             Profile::An(n) => Kind::PMayAn(prime, n, r, s, t, f),
         };
         self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn pce_type(
+        &mut self,
+        prime: Prime,
+        n: usize,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::PCeAn(prime, n, r, s, t, f), 0)
     }
 
     pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
@@ -866,13 +890,19 @@ impl Model {
         Ok(data)
     }
 
-    pub(crate) fn pmay(&mut self, ty: TypeId) -> Result<Rc<OddMay>> {
-        if let Some(data) = &self.types[ty.0].pmay {
+    pub(crate) fn odd_page(&mut self, ty: TypeId) -> Result<Rc<OddPage>> {
+        if let Some(data) = &self.types[ty.0].odd_page {
             return Ok(data.clone());
         }
-        let (prime, profile, r, s, t, f) = self.kind(ty).pmay_grade().unwrap();
-        let data = Rc::new(OddMay::build(self, prime, profile, r, s, t, f)?);
-        self.types[ty.0].pmay = Some(data.clone());
+        let (prime, filter, r, s, t, f) =
+            if let Some((prime, n, r, s, t, f)) = self.kind(ty).pce_grade() {
+                (prime, Filtration::Ce(n), r, s, t, f)
+            } else {
+                let (prime, profile, r, s, t, f) = self.kind(ty).pmay_grade().unwrap();
+                (prime, Filtration::May(profile), r, s, t, f)
+            };
+        let data = Rc::new(OddPage::build(self, prime, filter, r, s, t, f)?);
+        self.types[ty.0].odd_page = Some(data.clone());
         Ok(data)
     }
 
@@ -1069,6 +1099,7 @@ impl Model {
             | Kind::PExtAn(..)
             | Kind::PMay(..)
             | Kind::PMayAn(..)
+            | Kind::PCeAn(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -1208,6 +1239,9 @@ impl Model {
             }
             &Kind::PMayAn(p, n, r, s, t, f) => {
                 out.push(&format!("PMayAn({}, {n}, {r}, {s}, {t}, {f})", p.get()))
+            }
+            &Kind::PCeAn(p, n, r, s, t, f) => {
+                out.push(&format!("PCEAn({}, {n}, {r}, {s}, {t}, {f})", p.get()))
             }
             &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
@@ -1595,8 +1629,8 @@ impl Model {
                     let rank = self.odd_ext(ty)?.rank();
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }
-                Kind::PMay(p, ..) | Kind::PMayAn(p, ..) => {
-                    let rank = self.pmay(ty)?.rank();
+                Kind::PMay(p, ..) | Kind::PMayAn(p, ..) | Kind::PCeAn(p, ..) => {
+                    let rank = self.odd_page(ty)?.rank();
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }
                 Kind::MapCobar(source, target, s, t) => {
