@@ -64,6 +64,7 @@ pub(crate) enum TypeForm {
     RVLaurent(RankVarietySpec),
     RVIwHecke(usize),
     RVSphHecke(usize),
+    RVSatake(usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -451,6 +452,9 @@ pub(crate) enum ExprForm {
     SphericalScalar(usize, usize),
     SphericalProduct(Box<[ParsedExpr; 2]>),
     SphericalEmbedding(Box<ParsedExpr>),
+    SatakeTransform(Box<ParsedExpr>),
+    SatakeScalar(usize, i128),
+    SatakeProduct(Box<[ParsedExpr; 2]>),
     RVIwAdlv(
         crate::rv_iwahori::Boundary,
         usize,
@@ -592,6 +596,7 @@ pub(crate) enum StatementForm {
     RVIw(bool, ParsedExpr),
     RVIwKL(Vec<i128>, Vec<i128>),
     HeckeCoefficient(bool, Option<i128>, Vec<i128>, ParsedExpr),
+    SatakeQuery(Option<i128>, Vec<i128>, ParsedExpr),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1156,6 +1161,23 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvSatakeCoeff" | "rvSatakeAt") => {
+                let numeric = self.token() == Token::Word("rvSatakeAt");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let v = if numeric {
+                    let value =
+                        self.signed_wide("a signed v specialization", "v specialization")?;
+                    self.expect(Token::Comma)?;
+                    Some(value)
+                } else {
+                    None
+                };
+                let coordinates =
+                    self.signed_tuple("a signed Satake coordinate", "Satake coordinate")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SatakeQuery(v, coordinates, self.paren_expr(0)?)
             }
             Token::Word("rvHeckeCoeff" | "rvHeckeAt" | "rvSphCoeff" | "rvSphAt") => {
                 let evaluate = matches!(self.token(), Token::Word("rvHeckeAt" | "rvSphAt"));
@@ -2417,6 +2439,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVSatake" && self.eat(Token::LParen)? {
+            let (rank, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVSatake(rank), 0);
         }
         if matches!(name.text.as_str(), "RVIwHecke" | "RVSphHecke") && self.eat(Token::LParen)? {
             let (rank, _) = self.number()?;
@@ -3864,6 +3891,24 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::SphericalEmbedding(Box::new(input)), depth);
                 }
+                if name.text == "rvSatake" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SatakeTransform(Box::new(input)), depth);
+                }
+                if name.text == "rvSatV" && self.eat(Token::LBracket)? {
+                    let (rank, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let power =
+                        self.signed_wide("a signed Laurent v exponent", "Laurent v exponent")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SatakeScalar(rank, power), 0);
+                }
+                if name.text == "rvSatakeMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::SatakeProduct(Box::new(arguments)), depth);
+                }
                 if name.text == "rvU" && self.eat(Token::LBracket)? {
                     let power = self.signed_number("Laurent exponent")?;
                     self.expect(Token::RBracket)?;
@@ -4199,10 +4244,14 @@ impl<'src> Parser<'src> {
     }
 
     fn affine_window(&mut self) -> Result<Vec<i128>> {
+        self.signed_tuple("a signed affine window entry", "affine window entry")
+    }
+
+    fn signed_tuple(&mut self, expected: &str, label: &str) -> Result<Vec<i128>> {
         self.expect(Token::LBracket)?;
         let mut window = Vec::new();
         while self.token() != Token::RBracket {
-            window.push(self.signed_wide("a signed affine window entry", "affine window entry")?);
+            window.push(self.signed_wide(expected, label)?);
             if !self.eat(Token::Comma)? {
                 break;
             }

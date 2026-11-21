@@ -1,6 +1,6 @@
 # ASL · Alexandrov Section Lambda
 
-ASL is a pure functional language in which every type is a finite T₀ topological space and every function is continuous. Its two-point space `S` has exactly three endomorphisms. You can return the low point, preserve the input, or return the high point. Try to exchange the two points and the interpreter reports the order relation your function breaks.
+ASL is a pure functional language that starts from finite T₀ spaces and continuous maps. It also computes with graded cochains and sparse polynomial rings. Its two-point space `S` has exactly three endomorphisms. You can return the low point, preserve the input, or return the high point. Try to exchange the two points and the interpreter reports the order relation your function breaks.
 
 The classifying spaces of the cyclic groups of orders 4 and 4,096 have isomorphic mod-two cohomology rings. ASL can distinguish them by how many copies of the degree-one generator it takes to produce a nonzero Massey product. [Run the higher-product experiment](#how-late-can-a-higher-product-appear)
 
@@ -739,6 +739,20 @@ For finite $\mathrm{GL}_3$ flags over $\mathbb F_q$, these evaluated structure c
 The map `rvSphIwahori` sends $S_\lambda$ to the sum of the distinct $T_w$ in the double coset $S_n t^\lambda S_n$. Its windows are obtained by assigning a distinct permutation of the exponents $\lambda$ and a permutation of the row residues. If $i$ is this map, it satisfies $i(a)i(b)=P_n(q)i(ab)$ with $P_n(q)=\prod_{j=1}^n(1+q+\cdots+q^{j-1})$. The interpreter checks that each orbit in the raw product is complete with constant coefficient, then divides that coefficient exactly by $P_n(q)$.
 
 `rvSphCoeff[[nu0,...]](h);` prints the coefficient of $S_\nu$ in ascending powers of $q$. `rvSphAt[q,[nu0,...]](h);` evaluates it at the supplied integer. For nonnegative coweights these values count intermediate lattices with prescribed quotient types, equivalently submodules with prescribed submodule and quotient partitions in a finite nilpotent Jordan module. In rank two the example computes $S_{(0,1)}^2=S_{(0,2)}+(q+1)S_{(1,1)}$. In rank three it gives $1+q+q^2$ at $(1,1,1)$ in $S_{(0,1,1)}S_{(0,0,1)}$, and $q^2+q$ at $(0,2,2)$ in $S_{(0,0,2)}^2$. [Spherical Hecke example](examples/rv-spherical-hecke.asl)
+
+### Normalized Satake transform
+
+`RVSatake(n)` is the ring of symmetric Laurent polynomials in $X_1,\ldots,X_n$ with coefficients in $\mathbb Z[v^{\pm1}]$. Use `rvSatV[n,k]` for the scalar $v^k$. The elements support `zero`, `add`, `neg`, equality, and `rvSatakeMul`.
+
+`rvSatake(h)` takes a spherical Hecke element to this ring by sending $q$ to $v^2$. For a basis element $S_\lambda$, write the coweight in descending order, take $c=\min\lambda$, and put $\nu=\lambda-c(1,\ldots,1)$. The image is
+$$
+(X_1\cdots X_n)^c\,v^{\sum_i(n+1-2i)\nu_i}P_\nu(X_1,\ldots,X_n;v^{-2}).
+$$
+The interpreter expands the Hall–Littlewood $P$ polynomial by interlacing partitions. At each step its branching multiplier is $\prod_{a>0,\ m_a(\mu)>m_a(\nu)}(1-t^{m_a(\mu)})$ with $t=v^{-2}$. Separating the determinant power gives an exact Laurent image for negative coweights.
+
+`rvSatakeCoeff[[a0,...]](f);` reports the coefficient of $X_1^{a_0}\cdots X_n^{a_{n-1}}$ as a map from signed powers of $v$ to integer coefficients. `rvSatakeAt[v,[x0,...]](f);` substitutes integers for $v$ and the $X_i$ and prints a reduced exact rational. A base of zero requires its Laurent powers to be nonnegative.
+
+In rank two the images of $S_{(0,1)}$, $S_{(0,2)}$, and $S_{(1,1)}$ are $v(X_1+X_2)$, $v^2(X_1^2+X_2^2)+(v^2-1)X_1X_2$, and $X_1X_2$. The example checks multiplication in ranks two and three and evaluates a negatively translated coweight. [Satake example](examples/rv-satake.asl)
 
 ### Symbolic rank equations
 

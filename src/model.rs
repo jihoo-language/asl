@@ -47,6 +47,7 @@ use crate::rv_iwhecke;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
 use crate::rv_poly::{self, Minors, Polynomial};
+use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
@@ -136,6 +137,7 @@ pub(crate) enum Kind {
     RVLaurent(rv_hom::Grade),
     RVIwHecke(usize),
     RVSphHecke(usize),
+    RVSatake(usize),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -243,6 +245,7 @@ pub(crate) enum Value {
     RVLaurent(rv_laurent::Support),
     RVIwHecke(rv_iwhecke::Support),
     RVSphHecke(rv_sphhecke::Support),
+    RVSatake(rv_satake::Support),
     JetHom(jet_hom::Support),
     RVHHChain(rv_hh::Support),
     RVBarCobar(rv_barcobar::Support),
@@ -531,7 +534,8 @@ impl Model {
             | Kind::RVHom(..)
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
-            | Kind::RVSphHecke(..) => usize::MAX,
+            | Kind::RVSphHecke(..)
+            | Kind::RVSatake(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -651,6 +655,7 @@ impl Model {
                 | Kind::RVLaurent(..)
                 | Kind::RVIwHecke(..)
                 | Kind::RVSphHecke(..)
+                | Kind::RVSatake(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1159,6 +1164,10 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn satake_type(&mut self, rank: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVSatake(rank), 0)
     }
 
     pub(crate) fn sph_hecke_type(&mut self, rank: usize) -> Result<TypeId> {
@@ -1891,6 +1900,7 @@ impl Model {
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
+            | Kind::RVSatake(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -2169,6 +2179,7 @@ impl Model {
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
             Kind::RVIwHecke(rank) => out.push(&format!("RVIwHecke({rank})")),
             Kind::RVSphHecke(rank) => out.push(&format!("RVSphHecke({rank})")),
+            Kind::RVSatake(rank) => out.push(&format!("RVSatake({rank})")),
             Kind::RVHom(grade) | Kind::RVLaurent(grade) => {
                 let name = if matches!(self.kind(ty), Kind::RVHom(..)) {
                     "RVHom("
@@ -2312,6 +2323,8 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::RVSatake(left), Value::RVSatake(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_satake::compare(self, left, right)? == Ordering::Equal),
             (Value::RVSphHecke(left), Value::RVSphHecke(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_sphhecke::compare(self, left, right)? == Ordering::Equal),
             (Value::RVIwHecke(left), Value::RVIwHecke(right)) => Ok(Rc::ptr_eq(left, right)
@@ -2468,6 +2481,12 @@ impl Model {
                 } else {
                     rv_poly::compare(self, left, right)
                 }
+            }
+            (Value::RVSatake(left), Value::RVSatake(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                rv_satake::compare(self, left, right)
             }
             (Value::RVSphHecke(left), Value::RVSphHecke(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -2634,6 +2653,11 @@ impl Model {
                 }
                 Kind::RVSphHecke(..) => {
                     return Err(Error::plain("cannot enumerate a spherical Hecke algebra"))
+                }
+                Kind::RVSatake(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a symmetric Laurent polynomial ring",
+                    ))
                 }
                 Kind::RVLaurent(..) => {
                     let (source, target) = rv_laurent::dimensions(self, ty)?;
@@ -3014,6 +3038,22 @@ impl Model {
         Ok(out.string)
     }
 
+    pub(crate) fn show_satake_coefficient(
+        &self,
+        coefficient: &[rv_satake::Term],
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push("rvSatakeCoeff = {")?;
+        for (index, term) in coefficient.iter().enumerate() {
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!("{}: {}", term.power, term.coefficient))?;
+        }
+        out.push("}")?;
+        Ok(out.string)
+    }
+
     pub(crate) fn show(&mut self, ty: TypeId, value: &Value) -> Result<String> {
         let mut out = Text::new(MAX_SHOWN_BYTES);
         self.write_value(&mut out, ty, value)?;
@@ -3358,6 +3398,53 @@ impl Model {
                     .iter()
                     .map(|term| (term.coweight.as_ref(), term.coefficient.as_ref())),
             ),
+            Value::RVSatake(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().enumerate() {
+                    self.spend(1 + term.exponents.len())?;
+                    if index != 0 {
+                        out.push(if term.coefficient < 0 { " - " } else { " + " })?;
+                    } else if term.coefficient < 0 {
+                        out.push("-")?;
+                    }
+                    let magnitude = term.coefficient.unsigned_abs();
+                    let mut has_factor = magnitude != 1;
+                    if has_factor {
+                        out.push(&magnitude.to_string())?;
+                    }
+                    if term.power != 0 {
+                        if has_factor {
+                            out.push("*")?;
+                        }
+                        if term.power == 1 {
+                            out.push("v")?;
+                        } else {
+                            out.push(&format!("v^{}", term.power))?;
+                        }
+                        has_factor = true;
+                    }
+                    for (index, &power) in term.exponents.iter().enumerate() {
+                        if power != 0 {
+                            if has_factor {
+                                out.push("*")?;
+                            }
+                            out.push(&format!("X{}", index + 1))?;
+                            if power != 1 {
+                                out.push(&format!("^{power}"))?;
+                            }
+                            has_factor = true;
+                        }
+                    }
+                    if !has_factor {
+                        out.push("1")?;
+                    }
+                }
+                out.push("}")
+            }
             Value::RVLaurent(terms) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;

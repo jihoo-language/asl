@@ -71,6 +71,7 @@ use crate::rv_laurent;
 use crate::rv_newton;
 use crate::rv_poly;
 use crate::rv_rees;
+use crate::rv_satake;
 use crate::rv_scheme;
 use crate::rv_shintani;
 use crate::rv_sphhecke;
@@ -255,6 +256,8 @@ enum TypedForm {
     HeckeProduct(Box<[TypedExpr; 2]>),
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
+    SatakeTransform(Box<TypedExpr>),
+    SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
     RVAdlv(rv_hodge::Boundary, usize, Vec<i64>, Box<[TypedExpr; 2]>),
@@ -406,6 +409,35 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::SatakeQuery(v, coordinates, input) => {
+                let input = self.checker().expr(input)?;
+                let name = if v.is_some() {
+                    "rvSatakeAt"
+                } else {
+                    "rvSatakeCoeff"
+                };
+                let Kind::RVSatake(rank) = self.model.kind(input.ty) else {
+                    return Err(Error::plain(format!(
+                        "{name} requires a Satake Laurent polynomial"
+                    )));
+                };
+                if coordinates.len() != *rank {
+                    return Err(Error::plain(
+                        "Satake coordinates must match the polynomial rank",
+                    ));
+                }
+                let Value::RVSatake(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                if let Some(v) = v {
+                    let numeric = rv_satake::evaluate(&mut self.model, &terms, v, &coordinates)?;
+                    format!("{name} = {numeric}")
+                } else {
+                    let coefficient =
+                        rv_satake::coefficient(&mut self.model, &terms, &coordinates)?;
+                    self.model.show_satake_coefficient(coefficient)?
+                }
             }
             StatementForm::HeckeCoefficient(spherical, parameter, index, input) => {
                 let input = self.checker().expr(input)?;
@@ -1633,6 +1665,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVSatake(a), Value::RVSatake(b)) => {
+                        rv_satake::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVSphHecke(a), Value::RVSphHecke(b)) => {
                         rv_sphhecke::add(&mut self.model, &a, &b)
                     }
@@ -2133,6 +2168,7 @@ impl Engine {
             TypedForm::HeckeNegate(input) => match self.eval(input)? {
                 Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
                 Value::RVSphHecke(value) => rv_sphhecke::neg(&mut self.model, &value),
+                Value::RVSatake(value) => rv_satake::neg(&mut self.model, &value),
                 _ => unreachable!(),
             },
             TypedForm::SphericalProduct(arguments) => {
@@ -2145,6 +2181,20 @@ impl Engine {
                     unreachable!()
                 };
                 rv_sphhecke::multiply(&mut self.model, rank, &left, &right)
+            }
+            TypedForm::SatakeTransform(input) => {
+                let Value::RVSphHecke(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_satake::transform(&mut self.model, &terms)
+            }
+            TypedForm::SatakeProduct(arguments) => {
+                let [left, right] = arguments.as_ref();
+                let values = [self.eval(left)?, self.eval(right)?];
+                let [Value::RVSatake(left), Value::RVSatake(right)] = values else {
+                    unreachable!()
+                };
+                rv_satake::multiply(&mut self.model, &left, &right)
             }
             TypedForm::SphericalEmbedding(input) => {
                 let Kind::RVIwHecke(rank) = *self.model.kind(expr.ty) else {
@@ -3231,6 +3281,7 @@ impl Checker<'_> {
             }
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
+            TypeForm::RVSatake(rank) => self.model.satake_type(rank),
             TypeForm::RVLaurent(spec) => {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_laurent_type(grade)
@@ -3462,6 +3513,7 @@ impl Checker<'_> {
                     Kind::RVHom(..) => rv_hom::zero(),
                     Kind::RVIwHecke(..) => rv_iwhecke::zero(),
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
+                    Kind::RVSatake(..) => rv_satake::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -3881,12 +3933,12 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 if !matches!(
                     self.model.kind(input.ty),
-                    Kind::RVIwHecke(..) | Kind::RVSphHecke(..)
+                    Kind::RVIwHecke(..) | Kind::RVSphHecke(..) | Kind::RVSatake(..)
                 ) {
                     return Err(self.invalid_operand(
                         &input,
                         "neg",
-                        "an affine Hecke element or a spherical Hecke element",
+                        "an affine Hecke element, a spherical Hecke element, or a Satake polynomial",
                     ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
@@ -3917,6 +3969,33 @@ impl Checker<'_> {
                     left.ty,
                     TypedForm::SphericalProduct(Box::new([left, right])),
                 ))
+            }
+            ExprForm::SatakeTransform(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSatake",
+                        "a spherical Hecke element",
+                    ));
+                };
+                let ty = self.model.satake_type(rank)?;
+                Ok((ty, TypedForm::SatakeTransform(Box::new(input))))
+            }
+            ExprForm::SatakeScalar(rank, power) => {
+                let ty = self.model.satake_type(rank)?;
+                let value = rv_satake::scalar(self.model, rank, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SatakeProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVSatake(..)) {
+                    return Err(self.invalid_operand(&left, "rvSatakeMul", "a Satake polynomial"));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvSatakeMul")?;
+                Ok((left.ty, TypedForm::SatakeProduct(Box::new([left, right]))))
             }
             ExprForm::SphericalEmbedding(input) => {
                 let input = self.expr(*input)?;
@@ -6379,6 +6458,7 @@ impl Checker<'_> {
                         | Kind::RVLaurent(..)
                         | Kind::RVIwHecke(..)
                         | Kind::RVSphHecke(..)
+                        | Kind::RVSatake(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)
