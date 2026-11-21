@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::adams::Adams;
+use crate::bp_page;
 use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
@@ -83,6 +84,7 @@ pub(crate) enum Kind {
     RVTor(RvGrade),
     RVPoly(q_koszul::Indices, usize),
     BP(bp::Shape),
+    BPPage(bp_page::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -212,6 +214,7 @@ struct TypeInfo {
     odd_ext: Option<Rc<OddExt>>,
     odd_ext_rank: Option<usize>,
     odd_page: Option<Rc<OddPage>>,
+    bp_page: Option<Rc<bp_page::Page>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
@@ -360,7 +363,8 @@ impl Model {
             | Kind::PExtAn(..)
             | Kind::PMay(..)
             | Kind::PMayAn(..)
-            | Kind::PCeAn(..) => usize::MAX,
+            | Kind::PCeAn(..)
+            | Kind::BPPage(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -451,6 +455,7 @@ impl Model {
             odd_ext: None,
             odd_ext_rank: None,
             odd_page: None,
+            bp_page: None,
             xext: None,
             map_ext: None,
             q_ext: None,
@@ -501,6 +506,7 @@ impl Model {
                 | Kind::PMay(..)
                 | Kind::PMayAn(..)
                 | Kind::PCeAn(..)
+                | Kind::BPPage(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -919,6 +925,10 @@ impl Model {
         self.inhabited_type(Kind::VExt(grade), depth)
     }
 
+    pub(crate) fn bp_page_type(&mut self, grade: bp_page::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPPage(grade), 0)
+    }
+
     pub(crate) fn bp_type(&mut self, shape: bp::Shape) -> Result<TypeId> {
         self.inhabited_type(Kind::BP(shape), 0)
     }
@@ -1178,6 +1188,18 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn bp_page(&mut self, ty: TypeId) -> Result<Rc<bp_page::Page>> {
+        if let Some(data) = &self.types[ty.0].bp_page {
+            return Ok(data.clone());
+        }
+        let Kind::BPPage(grade) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(bp_page::Page::build(self, grade)?);
+        self.types[ty.0].bp_page = Some(data.clone());
+        Ok(data)
+    }
+
     pub(crate) fn odd_page(&mut self, ty: TypeId) -> Result<Rc<OddPage>> {
         if let Some(data) = &self.types[ty.0].odd_page {
             return Ok(data.clone());
@@ -1401,6 +1423,7 @@ impl Model {
             | Kind::PMay(..)
             | Kind::PMayAn(..)
             | Kind::PCeAn(..)
+            | Kind::BPPage(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -1580,6 +1603,7 @@ impl Model {
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
+            Kind::BPPage(grade) => out.push(&grade.to_string()),
             Kind::JetPage(grade) => {
                 out.push("JetPage(")?;
                 self.write_jet_diagram(out, grade.chain.diagram)?;
@@ -2095,6 +2119,15 @@ impl Model {
                 Kind::PExt(p, ..) | Kind::PExtAn(p, ..) => {
                     let rank = self.odd_ext_rank(ty)?;
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
+                }
+                Kind::BPPage(grade) => {
+                    let rank = self.bp_page(ty)?.rank();
+                    odd_ext::elements(
+                        self,
+                        Prime::validated(grade.shape.prime),
+                        rank,
+                        MAX_ELEMENTS,
+                    )?
                 }
                 Kind::PMay(p, ..) | Kind::PMayAn(p, ..) | Kind::PCeAn(p, ..) => {
                     let rank = self.odd_page(ty)?.rank();

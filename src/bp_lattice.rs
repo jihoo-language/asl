@@ -20,6 +20,10 @@ pub(crate) struct Lattice {
 }
 
 impl Lattice {
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
     pub(crate) fn build(
         model: &mut Model,
         prime: Prime,

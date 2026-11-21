@@ -127,6 +127,10 @@ impl Basis {
         self.rows.len()
     }
 
+    pub(crate) fn has_pivot(&self, coordinate: usize) -> bool {
+        self.rows.contains_key(&coordinate)
+    }
+
     pub(crate) fn cells(&self) -> usize {
         self.cells
     }

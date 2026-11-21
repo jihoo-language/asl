@@ -1,5 +1,5 @@
 use crate::bp::Operation as BpOperation;
-use crate::bp_page::Mode as BpPageMode;
+use crate::bp_page::{Mode as BpPageMode, Operation as BpPageOp};
 use crate::comodule::Generator;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
@@ -63,6 +63,7 @@ pub(crate) enum TypeForm {
     RVPoly(Vec<usize>, usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
+    BpPage(BpPageMode, BpPageSpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -368,6 +369,9 @@ pub(crate) enum ExprForm {
     BpVariable(BpSpec, Option<usize>, usize),
     BpOperation(BpOperation, Box<ParsedExpr>),
     BpMassey(Vec<ParsedExpr>),
+    BpPageGenerator(BpPageMode, BpPageSpec, usize, Span),
+    BpPageClass(BpPageMode, (usize, usize, usize), Box<ParsedExpr>),
+    BpPageOperation(Label, BpPageMode, BpPageOp, Box<ParsedExpr>),
     RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
     RvHasse(Vec<usize>, Box<ParsedExpr>),
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
@@ -1646,6 +1650,16 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, depth);
         }
+        if matches!(name.text.as_str(), "BPBock" | "BPNov") && self.eat(Token::LParen)? {
+            let mode = if name.text == "BPBock" {
+                BpPageMode::Bockstein
+            } else {
+                BpPageMode::Novikov
+            };
+            let spec = self.prime_profile_page_degree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BpPage(mode, spec), 0);
+        }
         if matches!(name.text.as_str(), "BP" | "BPI") && self.eat(Token::LParen)? {
             let (prime, height, arrows) = self.prime_bidegree()?;
             let depth = if name.text == "BPI" {
@@ -2048,6 +2062,49 @@ impl<'src> Parser<'src> {
                     self.expect(Token::LBrace)?;
                     let powers = self.unsigned_list(Token::RBrace)?;
                     return expr(span, ExprForm::RvMonomial(selected, powers), 0);
+                }
+                if matches!(name.text.as_str(), "bpBockgen" | "bpNovgen")
+                    && self.eat(Token::LBracket)?
+                {
+                    let mode = if name.text == "bpBockgen" {
+                        BpPageMode::Bockstein
+                    } else {
+                        BpPageMode::Novikov
+                    };
+                    let spec = self.prime_profile_page_degree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::BpPageGenerator(mode, spec, index, at), 0);
+                }
+                if matches!(name.text.as_str(), "bpBockClass" | "bpNovClass")
+                    && self.eat(Token::LBracket)?
+                {
+                    let mode = if name.text == "bpBockClass" {
+                        BpPageMode::Bockstein
+                    } else {
+                        BpPageMode::Novikov
+                    };
+                    let specification = self.prime_bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpPageClass(mode, specification, Box::new(input)),
+                        depth,
+                    );
+                }
+                if let Some((mode, operation)) = BpPageOp::from_name(&name.text) {
+                    if self.token() == Token::LParen {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::BpPageOperation(name, mode, operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "bpMassey" && self.eat(Token::LParen)? {
                     let arguments = self.arguments(nest)?;

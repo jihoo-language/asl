@@ -344,6 +344,10 @@ Page zero is $F^f/F^{f+1}$. If $Z_r^{a,f}$ consists of $x\in F^f C^a_t$ with $dx
 
 In internal degree eight at $p=2$, the Bockstein starting in cobar degree zero and filtration zero survives to page four at height two and to page three at height one. In internal degree 16 the height-two Novikov $d_2$ from $(a,f)=(1,1)$ to $(2,3)$ has rank one. [Filtered Brown–Peterson page example](examples/bp-pages.asl)
 
+The page types are `BPBock(p, n, r, a, t, f)` and `BPNov(p, n, r, a, t, f)`. Use `bpBockgen[p, n, r, a, t, f, i]` or `bpNovgen[p, n, r, a, t, f, i]` for generator `i`. They support `zero`, `add`, and `pscale` over $\mathbb F_p$. Use `bpBockClass[r, t, f](x)` or `bpNovClass[r, t, f](x)` to project an integral homogeneous normalized filtered cycle. The `Rep` operations give a chosen integral cycle representative, including its filtration factor. The `D` operations apply the normalized cobar differential and project in degree $(a+1,t,f+r)$ on the same page.
+
+`bpBockNext` and `bpNovNext` solve for a corrected lift of a cycle to its next-page class. `bpBockPrev` and `bpNovPrev` project the chosen representative onto the preceding page. In the height-two Bockstein example, $v_1^4$ gives a page-three cycle. The corrected lift $v_1^4+8v_1v_2$ represents its page-four class, whose $d_4$ is nonzero. The implementation can remove common powers of $p$ for page differentials and transitions. A request for an absolute integral representative remains subject to the signed 128-bit coefficient bound.
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

@@ -202,6 +202,8 @@ enum TypedForm {
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
+    BpPageClass(Box<TypedExpr>),
+    BpPageOperation(bp_page::Operation, Box<TypedExpr>),
     RvKoszulTerm(usize, Rc<RvIdeal>, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
@@ -980,13 +982,14 @@ impl Engine {
                         cobar::add(&mut self.model, &a, &b)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
-                        let (Kind::PExt(p, ..)
-                        | Kind::PExtAn(p, ..)
-                        | Kind::PMay(p, ..)
-                        | Kind::PMayAn(p, ..)
-                        | Kind::PCeAn(p, ..)) = *self.model.kind(expr.ty)
-                        else {
-                            unreachable!()
+                        let p = match *self.model.kind(expr.ty) {
+                            Kind::PExt(p, ..)
+                            | Kind::PExtAn(p, ..)
+                            | Kind::PMay(p, ..)
+                            | Kind::PMayAn(p, ..)
+                            | Kind::PCeAn(p, ..) => p,
+                            Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                            _ => unreachable!(),
                         };
                         odd_ext::add(&mut self.model, p, &a, &b)
                     }
@@ -1466,6 +1469,44 @@ impl Engine {
                 let values: [_; 5] = values.try_into().unwrap_or_else(|_| unreachable!());
                 let result = layout.apply(&mut self.model, values.each_ref().map(Rc::as_ref))?;
                 bp::persist(&mut self.model, result)
+            }
+            TypedForm::BpPageClass(input) => {
+                let Value::BP(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if polynomial.is_zero() {
+                    return Ok(odd_ext::zero());
+                }
+                let coordinates = self
+                    .model
+                    .bp_page(expr.ty)?
+                    .class(&mut self.model, &polynomial)?;
+                odd_ext::persist(&mut self.model, coordinates)
+            }
+            TypedForm::BpPageOperation(operation, input) => {
+                use bp_page::Operation::{Differential, Next, Previous, Representative};
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if coordinates.is_empty() {
+                    return Ok(match operation {
+                        Representative => bp::zero(),
+                        _ => odd_ext::zero(),
+                    });
+                }
+                let source = self.model.bp_page(input.ty)?;
+                if matches!(operation, Representative) {
+                    let polynomial = source.representative(&mut self.model, &coordinates, true)?;
+                    return bp::persist(&mut self.model, polynomial);
+                }
+                let target = self.model.bp_page(expr.ty)?;
+                let output = match operation {
+                    Differential => source.differential(&mut self.model, &target, &coordinates)?,
+                    Next => source.next(&mut self.model, &target, &coordinates)?,
+                    Previous => source.previous(&mut self.model, &target, &coordinates)?,
+                    Representative => unreachable!(),
+                };
+                odd_ext::persist(&mut self.model, output)
             }
             TypedForm::BpOperation(operation, shape, input) => {
                 let Value::BP(polynomial) = self.eval(input)? else {
@@ -2098,6 +2139,10 @@ impl Checker<'_> {
                 self.model.v_ext_type(grade)
             }
             TypeForm::VBock(spec) => self.vbock_type(spec),
+            TypeForm::BpPage(mode, spec) => {
+                let grade = self.bp_page_grade(mode, spec)?;
+                self.model.bp_page_type(grade)
+            }
             TypeForm::BP(spec, depth) => {
                 let mut shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
                 if let Some(depth) = depth {
@@ -2208,7 +2253,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
-                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) => odd_ext::zero(),
+                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::JetPage(..) => jet_page::zero(),
@@ -2276,13 +2321,12 @@ impl Checker<'_> {
                     | Kind::PMay(p, ..)
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..) => p,
-                    _ => {
-                        return Err(self.invalid_operand(
-                            &value,
-                            "pscale",
-                            "a PCobar cochain, PExt class, PMay class, or PCEAn class",
-                        ))
-                    }
+                    Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                    _ => return Err(self.invalid_operand(
+                        &value,
+                        "pscale",
+                        "a PCobar cochain, PExt class, PMay class, PCEAn class, or BP page class",
+                    )),
                 };
                 Ok((value.ty, TypedForm::PScale(p, scalar, Box::new(value))))
             }
@@ -2697,6 +2741,48 @@ impl Checker<'_> {
                 let polynomial = shape.variable(slot.unwrap_or(0), index)?;
                 let value = bp::persist(self.model, polynomial)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpPageGenerator(mode, spec, index, at) => {
+                let grade = self.bp_page_grade(mode, spec)?;
+                let ty = self.model.bp_page_type(grade)?;
+                let rank = self.model.bp_page(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpPageClass(mode, (page, t, filtration), input) => {
+                let input = self.expr(*input)?;
+                let name = match mode {
+                    bp_page::Mode::Bockstein => "bpBockClass",
+                    bp_page::Mode::Novikov => "bpNovClass",
+                };
+                let shape = self.bp_shape(&input, name)?;
+                if shape.depth != 0 {
+                    return Err(self.invalid_operand(&input, name, "an integral BP cochain"));
+                }
+                let grade = bp_page::Grade {
+                    shape,
+                    mode,
+                    page,
+                    t,
+                    filtration,
+                };
+                let ty = self.model.bp_page_type(grade)?;
+                Ok((ty, TypedForm::BpPageClass(Box::new(input))))
+            }
+            ExprForm::BpPageOperation(name, mode, operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::BPPage(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
+                };
+                if grade.mode != mode {
+                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
+                }
+                let ty = if matches!(operation, bp_page::Operation::Representative) {
+                    self.model.bp_type(grade.shape)?
+                } else {
+                    self.model.bp_page_type(operation.target(grade)?)?
+                };
+                Ok((ty, TypedForm::BpPageOperation(operation, Box::new(input))))
             }
             ExprForm::BpMassey(inputs) => {
                 let inputs = inputs
@@ -3709,6 +3795,21 @@ impl Checker<'_> {
         }
     }
 
+    fn bp_page_grade(
+        &mut self,
+        mode: bp_page::Mode,
+        (p, n, page, a, t, filtration): crate::syntax::BpPageSpec,
+    ) -> Result<bp_page::Grade> {
+        let shape = bp::Shape::new(self.model, p, n, a)?;
+        Ok(bp_page::Grade {
+            mode,
+            shape,
+            page,
+            t,
+            filtration,
+        })
+    }
+
     fn bp_shape(&self, value: &TypedExpr, name: &str) -> Result<bp::Shape> {
         match self.model.kind(value.ty) {
             Kind::BP(shape) => Ok(*shape),
@@ -4139,6 +4240,7 @@ impl Checker<'_> {
                         | Kind::PMay(..)
                         | Kind::PMayAn(..)
                         | Kind::PCeAn(..)
+                        | Kind::BPPage(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
