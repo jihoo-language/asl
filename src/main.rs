@@ -10,6 +10,7 @@ mod error;
 mod linear;
 mod map_bracket;
 mod map_cochain;
+mod map_defining;
 mod map_ext;
 mod map_may;
 mod map_transfer;

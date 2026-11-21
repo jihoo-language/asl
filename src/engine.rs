@@ -93,7 +93,7 @@ enum TypedForm {
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     MapBracket {
         target: TypeId,
-        inputs: Box<[TypedExpr; 3]>,
+        inputs: Vec<TypedExpr>,
         query: Option<Box<TypedExpr>>,
     },
     DefiningSystem {
@@ -568,8 +568,10 @@ impl Engine {
                     };
                     Ok((term.ty, coordinates))
                 };
-                let [h, g, f] = inputs.as_ref();
-                let inputs = [eval_class(h)?, eval_class(g)?, eval_class(f)?];
+                let inputs = inputs
+                    .iter()
+                    .map(&mut eval_class)
+                    .collect::<Result<Vec<_>>>()?;
                 if let Some(query) = query {
                     let (_, coordinates) = eval_class(query)?;
                     map_bracket::member(&mut self.model, *target, &inputs, &coordinates)
@@ -1161,28 +1163,35 @@ impl Checker<'_> {
     fn map_bracket(
         &mut self,
         operation: map_bracket::Operation,
-        inputs: Vec<ParsedExpr>,
+        mut inputs: Vec<ParsedExpr>,
     ) -> Result<(TypeId, TypedForm)> {
         operation.require_arity(inputs.len())?;
-        let mut inputs = inputs.into_iter();
-        let h = self.expr(inputs.next().unwrap())?;
-        let g = self.expr(inputs.next().unwrap())?;
-        let f = self.expr(inputs.next().unwrap())?;
-        let target = map_bracket::result_type(self.model, [h.ty, g.ty, f.ty], operation.name())?;
+        let query = match operation {
+            map_bracket::Operation::Predicate => None,
+            map_bracket::Operation::Membership => Some(inputs.pop().unwrap()),
+        };
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let target = map_bracket::result_type(
+            self.model,
+            inputs.iter().map(|input| input.ty),
+            operation.name(),
+        )?;
         let range = self.model.named("S").unwrap();
-        let (ty, query) = match operation {
-            map_bracket::Operation::Predicate => (self.model.arrow(target, range)?, None),
-            map_bracket::Operation::Membership => {
-                let query = self.expr(inputs.next().unwrap())?;
-                self.require_type(target, &query, operation.name())?;
-                (range, Some(Box::new(query)))
-            }
+        let (ty, query) = if let Some(query) = query {
+            let query = self.expr(query)?;
+            self.require_type(target, &query, operation.name())?;
+            (range, Some(Box::new(query)))
+        } else {
+            (self.model.arrow(target, range)?, None)
         };
         Ok((
             ty,
             TypedForm::MapBracket {
                 target,
-                inputs: Box::new([h, g, f]),
+                inputs,
                 query,
             },
         ))

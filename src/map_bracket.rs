@@ -3,6 +3,7 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::linear::{self, Basis};
 use crate::map_cochain;
+use crate::map_defining;
 use crate::map_ext::{self, Term};
 use crate::model::{Kind, Model, TypeId, Value};
 
@@ -32,10 +33,10 @@ impl Operation {
 
     pub(crate) fn require_arity(self, arity: usize) -> Result<()> {
         let (expected, message) = match self {
-            Self::Predicate => (3, "eBracket requires three MapExt arguments"),
-            Self::Membership => (4, "eInBracket requires four MapExt arguments"),
+            Self::Predicate => (3, "eBracket requires at least three MapExt arguments"),
+            Self::Membership => (4, "eInBracket requires at least four MapExt arguments"),
         };
-        if arity == expected {
+        if arity >= expected {
             Ok(())
         } else {
             Err(Error::plain(message))
@@ -68,31 +69,45 @@ impl Hom {
     }
 }
 
-pub(crate) fn result_type(model: &mut Model, [h, g, f]: [TypeId; 3], name: &str) -> Result<TypeId> {
-    let h = Hom::read(model, h, name)?;
-    let g = Hom::read(model, g, name)?;
-    let f = Hom::read(model, f, name)?;
-    if g.target != h.source || f.target != g.source {
-        return Err(Error::plain(format!(
-            "{name} requires composable MapExt endpoints"
-        )));
+pub(crate) fn result_type(
+    model: &mut Model,
+    inputs: impl DoubleEndedIterator<Item = TypeId> + ExactSizeIterator,
+    name: &str,
+) -> Result<TypeId> {
+    let shift = (inputs.len() - 2) as u128;
+    let mut source_order = inputs.rev();
+    let first = Hom::read(model, source_order.next().unwrap(), name)?;
+    let mut target = first.target;
+    let mut filtration = first.s as u128;
+    let mut internal = i128::from(first.t);
+    for ty in source_order {
+        let hom = Hom::read(model, ty, name)?;
+        if target != hom.source {
+            return Err(Error::plain(format!(
+                "{name} requires composable MapExt endpoints"
+            )));
+        }
+        target = hom.target;
+        filtration += hom.s as u128;
+        internal += i128::from(hom.t);
     }
-    let filtration = f.s as u128 + g.s as u128 + h.s as u128;
     let s = filtration
-        .checked_sub(1)
+        .checked_sub(shift)
         .ok_or_else(|| Error::plain(format!("{name} produces a negative cohomological degree")))?;
     let s = usize::try_from(s)
         .map_err(|_| Error::plain(format!("{name} cohomological degree is out of range")))?;
-    let internal = i128::from(f.t) + i128::from(g.t) + i128::from(h.t);
     let t = i64::try_from(internal)
         .map_err(|_| Error::plain(format!("{name} internal degree is out of range")))?;
-    model.map_ext_type(f.source, h.target, s, t)
+    model.map_ext_type(first.source, target, s, t)
 }
 
-pub(crate) fn predicate(model: &mut Model, target: TypeId, inputs: &[Input; 3]) -> Result<Value> {
+pub(crate) fn predicate(model: &mut Model, target: TypeId, inputs: &[Input]) -> Result<Value> {
+    let Ok(triple) = inputs.try_into() else {
+        return map_defining::predicate(model, target, inputs);
+    };
     let points = model.elements(target)?;
     model.allocate(1 + points.len())?;
-    let Some(system) = DefiningSystem::new(model, target, inputs)? else {
+    let Some(system) = DefiningSystem::new(model, target, triple)? else {
         return Ok(Value::Map(vec![Value::Point(0); points.len()].into()));
     };
     let directions = system.indeterminacy(model, target)?;
@@ -111,10 +126,13 @@ pub(crate) fn predicate(model: &mut Model, target: TypeId, inputs: &[Input; 3]) 
 pub(crate) fn member(
     model: &mut Model,
     target: TypeId,
-    inputs: &[Input; 3],
+    inputs: &[Input],
     query: &[usize],
 ) -> Result<Value> {
-    let Some(system) = DefiningSystem::new(model, target, inputs)? else {
+    let Ok(triple) = inputs.try_into() else {
+        return map_defining::member(model, target, inputs, query);
+    };
+    let Some(system) = DefiningSystem::new(model, target, triple)? else {
         return Ok(Value::Point(0));
     };
     model.spend(system.base.len() + query.len())?;

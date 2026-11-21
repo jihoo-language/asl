@@ -244,13 +244,17 @@ A cochain basis term $[a_1\mid\cdots\mid a_s]\otimes z$ has internal degree $t=|
 
 `eClass(c)` takes a closed cochain to its class in `MapExt` of the same endpoints and bidegree. `eRep(x)` gives the deterministic closed representative of a `MapExt` class, so `eClass(eRep(x)) == x`. The example checks the differential of the projective-plane identity term by term. [Bivariant cobar example](examples/map-cobar.asl)
 
-## Algebraic triple Massey products of Adams maps
+## Algebraic Massey products of Adams maps
 
-`eBracket(h, g, f)` takes composable classes `f : X0 -> X1`, `g : X1 -> X2`, and `h : X2 -> X3` in `MapExt`. It returns a membership predicate on `MapExt(X0, X3, sum s - 1, sum t)`, where the input filtrations are summed and decreased by one and the signed internal degrees are summed. A negative result filtration gives an error. `eInBracket(h, g, f, x)` checks the same membership for one class `x` without enumerating the target group.
+`eBracket(fn, ..., f1)` takes $n\ge3$ composable `MapExt` classes $f_i:X_{i-1}\to X_i$, with the outermost map first. It returns a membership predicate on `MapExt(X0, Xn, sum s + 2 - n, sum t)`. A negative result filtration gives an error. `eInBracket(fn, ..., f1, x)` checks membership for one class `x` without enumerating the target group.
 
-For the chosen cobar representatives $F,G,H$, the interpreter finds primitives $U,V$ with $dU=GF$ and $dV=HG$ by sparse elimination. If either adjacent composition has no primitive, the predicate is empty. Otherwise the possible classes form the affine coset of $[HU+VF]$ by the sum of the spaces of composites $h\circ u$ and $v\circ f$. Here $u$ and $v$ range over the `MapExt` groups in the endpoints and bidegrees of $U$ and $V$. Computing those images on basis classes gives the complete indeterminacy. A negative primitive filtration allows only the zero cochain.
+Three inputs use a sparse affine calculation. For the chosen representatives $F,G,H$, the interpreter finds primitives $U,V$ with $dU=GF$ and $dV=HG$. If either has no primitive, the predicate is empty. Otherwise the answer is the affine coset of $[HU+VF]$ by the sum of the spaces of composites $h\circ u$ and $v\circ f$, where $u,v$ range over the `MapExt` groups in the endpoints and bidegrees of $U,V$.
 
-On `One` the algebraic triple Massey product $\langle h_0,h_1,h_0\rangle$ consists of the nonzero class $h_1^2$. The construction uses Adams $E_2$ classes and cobar primitives. A topological Toda bracket uses stable maps and their nullhomotopies. [Algebraic triple Massey example](examples/map-massey.asl)
+With more inputs, the interpreter fills entries $A_{ij}:X_i\to X_j$ in order of increasing span $j-i$. The adjacent entries are canonical cobar representatives. For each other proper interval it solves $dA_{ij}=\sum_{i<k<j}A_{kj}A_{ik}$ in filtration $1-(j-i)+\sum_{i<k\le j}s_k$ and internal degree $\sum_{i<k\le j}t_k$. A negative filtration allows only the zero cochain. For an exact obstruction the interpreter tries one primitive plus each canonical representative of the corresponding cohomology group. At the omitted top corner it takes the class of $\sum_{0<k<n}A_{kn}A_{0k}$.
+
+If a proper entry changes by a boundary $dB$, the unitriangular change of basis $1+B E_{ij}$ leaves the shorter entries fixed and adjusts the longer ones. The curvature of the defining system is supported in the top corner, where unitriangular conjugation acts trivially. Discarding the top entry that conjugation introduces changes the curvature by a boundary. Thus searching one representative of each cohomology class gives every top class. The search reports a resource-limit diagnostic if it cannot finish the requested calculation.
+
+On `One` the algebraic triple Massey product $\langle h_0,h_1,h_0\rangle$ consists of the nonzero class $h_1^2$. A four-input example begins and ends at a two-point space and uses zero maps. The possible outcomes are the matrices of rank at most one, 10 out of 16, since the top term factors through a one-dimensional homology group. The construction uses Adams $E_2$ classes and cobar primitives. A topological Toda bracket uses stable maps and their nullhomotopies. [Triple example](examples/map-massey.asl) · [Four-input example](examples/map-massey-four.asl)
 
 ## May pages for bivariant cobar morphisms
 
