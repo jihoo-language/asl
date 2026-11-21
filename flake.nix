@@ -102,6 +102,8 @@
             fi
             test ! -s rejected.asl
           done
+          awk -v n=20 -v pages=1 -f ${./examples/staircase-transfer.awk} | asl - > bar-pages.out
+          test "$(tail -n 1 bar-pages.out)" = 'RVBarE(StairBar, 0, 20, 19, 39, 1){g0}'
           if awk -v local=2 -f ${./examples/staircase-transfer.awk} > rejected.asl; then
             exit 1
           fi

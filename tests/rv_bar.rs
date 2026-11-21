@@ -211,9 +211,7 @@ fn overflowing_suffix_counts_do_not_obscure_a_zero_degree() {
     assert!(error.contains("dimension is out of range"), "{error}");
 }
 
-#[test]
-fn binary_and_ternary_replacements_cancel_in_the_length_one_part_of_d_squared() {
-    let source = "
+const FLAG_SQUARE: &str = "
         rvideal FlagSquare[[1,2,3,4,5,6,7]] {
             rvmon[[1,2,3,4,5,6,7]]{1,1,0,0,0,0,0},
             rvmon[[1,2,3,4,5,6,7]]{0,0,1,1,0,0,0},
@@ -239,5 +237,109 @@ fn binary_and_ternary_replacements_cancel_in_the_length_one_part_of_d_squared() 
         assert rvBarLength[1](rvBarD(binary)) == endpoint;
         assert rvBarD(dx) == zero[RVBar(P,0,4,6)];
         ";
-    assert!(stdout(interpret(source)).is_empty());
+
+#[test]
+fn binary_and_ternary_replacements_cancel_in_the_length_one_part_of_d_squared() {
+    assert!(stdout(interpret(FLAG_SQUARE)).is_empty());
+}
+
+#[test]
+fn the_first_staircase_page_differential_is_d_n_minus_one_on_both_actual_classes() {
+    for n in [3, 4, 6] {
+        let mut source = staircase(n);
+        for r in 0..n {
+            writeln!(source, "let e{r} = rvBarClass[{r},{n}](raw);").unwrap();
+            writeln!(
+                source,
+                "assert e{r} == rvbaregen[P,0,{n},{r},{},{n},0];",
+                2 * n
+            )
+            .unwrap();
+            writeln!(source, "assert rvBarRep(e{r}) == raw;").unwrap();
+            if r + 1 < n {
+                writeln!(
+                    source,
+                    "assert rvBarD(e{r}) == zero[RVBarE(P,0,{n},{r},{},{})];",
+                    2 * n - 1,
+                    n - r
+                )
+                .unwrap();
+            }
+            if r > 0 {
+                writeln!(source, "assert rvBarPrev(e{r}) == e{};", r - 1).unwrap();
+                writeln!(source, "assert rvBarNext(e{}) == e{r};", r - 1).unwrap();
+            }
+        }
+        writeln!(source, "let target = rvBarClass[{},1](top);", n - 1).unwrap();
+        writeln!(
+            source,
+            "assert target == rvbaregen[P,0,{n},{},{},1,0];",
+            n - 1,
+            2 * n - 1
+        )
+        .unwrap();
+        writeln!(source, "assert rvBarD(e{}) == target;", n - 1).unwrap();
+        writeln!(
+            source,
+            "assert rvBarD(target) == zero[RVBarE(P,0,{n},{},{},{})];",
+            n - 1,
+            2 * n - 2,
+            2isize - n as isize
+        )
+        .unwrap();
+        writeln!(
+            source,
+            "assert rvBarNext(target) == zero[RVBarE(P,0,{n},{n},{},1)];",
+            2 * n - 1
+        )
+        .unwrap();
+        writeln!(source, "rvbaredim[P,0,{n},{n},{},{n}];", 2 * n).unwrap();
+        writeln!(source, "rvbaredim[P,0,{n},{n},{},1];", 2 * n - 1).unwrap();
+        assert!(stdout(interpret(&source)).ends_with(&format!(
+            "rvbaredim[P, 0, {n}, {n}, {}, {n}] = 0\nrvbaredim[P, 0, {n}, {n}, {}, 1] = 0\n",
+            2 * n,
+            2 * n - 1
+        )));
+    }
+}
+
+#[test]
+fn page_projection_uses_the_lower_length_correction_and_checks_cycles() {
+    let source = format!(
+        "{FLAG_SQUARE}
+        assert rvBarClass[3,3](dx) == zero[RVBarE(P,0,4,3,7,3)];
+        assert rvBarClass[2,3](binary) == zero[RVBarE(P,0,4,2,7,3)];
+        "
+    );
+    assert!(stdout(interpret(&source)).is_empty());
+    let error = diagnostic(interpret(&format!(
+        "{FLAG_SQUARE} show rvBarClass[3,3](binary);"
+    )));
+    assert!(error.contains("page cycle condition"), "{error}");
+    let error = diagnostic(interpret(&format!(
+        "{FLAG_SQUARE} show rvBarClass[1,2](dx);"
+    )));
+    assert!(error.contains("above the requested"), "{error}");
+}
+
+#[test]
+fn the_first_binary_page_checks_next_and_previous_types_and_enumerates_classes() {
+    let squares = include_str!("../examples/rank-bar.asl");
+    let error = diagnostic(interpret(&format!("{squares} show rvBarNext(e1);")));
+    assert!(error.contains("requires a cycle for d_1"), "{error}");
+    let error = diagnostic(interpret(&format!("{squares} show rvBarPrev(e0);")));
+    assert!(error.contains("positive page number"), "{error}");
+    let result = stdout(interpret(&format!(
+        r"{squares}
+        card \x:RVBarE(P,0,3,1,6,3)=>S.hi;
+        rvbaredim[P,0,3,1,6,-1];
+        rvbaredim[P,0,3,1,6,4];
+        "
+    )));
+    assert!(
+        result.ends_with(
+            "card = 2 / 2\nrvbaredim[P, 0, 3, 1, 6, -1] = 0\nrvbaredim[P, 0, 3, 1, 6, 4] = 0\n"
+        ),
+        "{result}"
+    );
 }

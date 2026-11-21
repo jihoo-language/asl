@@ -798,6 +798,20 @@ The result is the generator of `RVMTor` in homological degree 38 and multidegree
 
 For the three-square example, two distinct binary contractions of the length-three word have the same nonzero differential and cancel. The staircase generator also supports `-v bar=1`, which checks that the full word maps to the singleton top class. [Bar differential example](examples/rank-bar.asl) · [Staircase generator](examples/staircase-transfer.awk)
 
+#### Length spectral sequence
+
+`RVBarE(P,i,j,r,b,l)` is the $(b,l)$ group on page $r$ of the increasing filtration $F_l$ by words of length at most $l$. The associated graded is $E_0$. A representative on page $r>0$ lies in $F_l C_b$ and has differential in $F_{l-r}C_{b-1}$. The calculation quotients by lower-filtration cycles and the incoming boundaries of the appropriate filtration.
+
+`rvbaredim[P,i,j,r,b,l];` prints the dimension and `rvbaregen[P,i,j,r,b,l,k]` selects a basis class. The operation `rvBarClass[r,l](x)` checks the representative condition and `rvBarRep` returns a corrected raw lift. On page classes `rvBarD` evaluates $d_r$ in bidegree $(b-1,l-r)$. Filtration lengths outside the range of word lengths have zero page groups. Use `rvBarPrev` for the chosen preceding-page lift and `rvBarNext` for a $d_r$-cycle. A class hit by an incoming differential maps to zero on the next page.
+
+The full staircase interval has two bar basis words. The adjacent input word lies in $(2n,n)$ and the singleton top lies in $(2n-1,1)$. The first nonzero differential is $d_{n-1}$ between them, and both vanish on $E_n$.
+
+```sh
+awk -v pages=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+This checks the preceding differentials, the nonzero $d_{19}$ and the two zero groups on $E_{20}$ using the standard computation limits.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

@@ -44,6 +44,7 @@ use crate::restriction_transfer;
 use crate::rv_arithmetic;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
+use crate::rv_bar_page;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
 use crate::rv_field;
@@ -70,7 +71,7 @@ use crate::syntax::{
     JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp,
     RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
-use crate::syntax::{RvBarSpec, RvDegree, RvGradeSpec};
+use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
@@ -111,6 +112,10 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvBarClass,
+    RvBarRep,
+    RvBarNext,
+    RvBarPrev,
     RvBarD,
     RvMForget,
     RvKoszulDifferential,
@@ -150,6 +155,9 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvBarRep" => Some(Self::RvBarRep),
+            "rvBarNext" => Some(Self::RvBarNext),
+            "rvBarPrev" => Some(Self::RvBarPrev),
             "rvBarD" => Some(Self::RvBarD),
             "rvMForget" => Some(Self::RvMForget),
             "rvkD" => Some(Self::RvKoszulDifferential),
@@ -766,6 +774,20 @@ impl Engine {
             StatementForm::RvBarPath(name, ideal, steps) => {
                 self.model.define_rv_bar_path(name, ideal, steps)?;
                 return Ok(None);
+            }
+            StatementForm::RvBarPageDimension(spec) => {
+                let grade = self.checker().rv_bar_page_grade(spec)?;
+                let ty = self.model.rv_bar_page_type(grade)?;
+                let rank = self.model.rv_bar_page(ty)?.rank();
+                format!(
+                    "rvbaredim[{}, {}, {}, {}, {}, {}] = {rank}",
+                    self.model.rv_bar_path_name(grade.chain.path),
+                    grade.chain.start,
+                    grade.chain.end,
+                    grade.r,
+                    grade.chain.b,
+                    grade.length
+                )
             }
             StatementForm::RvBarDimension(spec, length) => {
                 let grade = self.checker().rv_bar_grade(spec)?;
@@ -1465,6 +1487,21 @@ impl Engine {
                     let terms =
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
+                }
+                (CobarOp::RvBarD, Value::Class(class)) => {
+                    rv_bar_page::differential(&mut self.model, input.ty, expr.ty, &class)
+                }
+                (CobarOp::RvBarClass, Value::RVBar(terms)) => {
+                    rv_bar_page::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::RvBarRep, Value::Class(class)) => Ok(Value::RVBar(
+                    rv_bar_page::representative(&mut self.model, input.ty, &class)?,
+                )),
+                (CobarOp::RvBarNext, Value::Class(class)) => {
+                    page_transition::next(&mut self.model, input.ty, &class)
+                }
+                (CobarOp::RvBarPrev, Value::Class(class)) => {
+                    rv_bar_page::previous(&mut self.model, input.ty, expr.ty, &class)
                 }
                 (CobarOp::RvBarD, Value::RVBar(terms)) => {
                     let Kind::RVBar(grade) = *self.model.kind(input.ty) else {
@@ -2648,6 +2685,10 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
+            TypeForm::RVBarE(spec) => {
+                let grade = self.rv_bar_page_grade(spec)?;
+                self.model.rv_bar_page_type(grade)
+            }
             TypeForm::RVBar(spec) => {
                 let grade = self.rv_bar_grade(spec)?;
                 self.model.rv_bar_type(grade)
@@ -2760,6 +2801,7 @@ impl Checker<'_> {
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::JetPage(..) => jet_page::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
+                    Kind::RVBarE(..) => cohomology::zero(),
                     Kind::RVBar(..) => Value::RVBar([].into()),
                     Kind::RVKoszul(..) => Value::RVKoszul([].into()),
                     Kind::RVTor(..) => cohomology::zero(),
@@ -3552,6 +3594,26 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvBarEGenerator(spec, index, at) => {
+                let grade = self.rv_bar_page_grade(spec)?;
+                let ty = self.model.rv_bar_page_type(grade)?;
+                let rank = self.model.rv_bar_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RvBarClass(r, length, argument) => {
+                let argument = self.expr(*argument)?;
+                let Kind::RVBar(chain) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(&argument, "rvBarClass", "an RVBar chain"));
+                };
+                let ty = self
+                    .model
+                    .rv_bar_page_type(rv_bar_page::Grade { chain, r, length })?;
+                Ok((
+                    ty,
+                    TypedForm::Cobar(CobarOp::RvBarClass, Box::new(argument)),
+                ))
             }
             ExprForm::RvBarWord(path, cuts, inputs) => {
                 let path = self.model.rv_bar_path_id(&path)?;
@@ -4649,6 +4711,15 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_bar_page_grade(&self, spec: RvBarPageSpec) -> Result<rv_bar_page::Grade> {
+        let chain = self.rv_bar_grade(spec.chain)?;
+        Ok(rv_bar_page::Grade {
+            chain,
+            r: spec.r,
+            length: spec.length,
+        })
+    }
+
     fn rv_bar_grade(&self, spec: RvBarSpec) -> Result<rv_bar::Grade> {
         let path = self.model.rv_bar_path_id(&spec.path)?;
         self.model
@@ -4894,12 +4965,26 @@ impl Checker<'_> {
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
             }
-            CobarOp::RvBarD => {
-                let Kind::RVBar(grade) = *self.model.kind(argument.ty) else {
-                    return Err(self.invalid_operand(argument, name, "an RVBar chain"));
+            CobarOp::RvBarNext | CobarOp::RvBarPrev | CobarOp::RvBarRep => {
+                let Kind::RVBarE(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVBarE class"));
                 };
-                return self.model.rv_bar_type(grade.differential()?);
+                return match op {
+                    CobarOp::RvBarNext => self.model.rv_bar_page_type(grade.next()?),
+                    CobarOp::RvBarPrev => self.model.rv_bar_page_type(grade.previous()?),
+                    _ => self.model.rv_bar_type(grade.chain),
+                };
             }
+            CobarOp::RvBarD => {
+                return match *self.model.kind(argument.ty) {
+                    Kind::RVBar(grade) => self.model.rv_bar_type(grade.differential()?),
+                    Kind::RVBarE(grade) => self.model.rv_bar_page_type(grade.differential()?),
+                    _ => {
+                        Err(self.invalid_operand(argument, name, "an RVBar chain or RVBarE class"))
+                    }
+                };
+            }
+
             CobarOp::RvMForget => {
                 let (mut grade, homology) = self.rv_complex_family(argument, name)?;
                 if grade.multidegree.take().is_none() {
@@ -5130,6 +5215,7 @@ impl Checker<'_> {
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
+                        | Kind::RVBarE(..)
                         | Kind::RVBar(..)
                         | Kind::RVKoszul(..)
                         | Kind::RVTor(..)

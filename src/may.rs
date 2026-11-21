@@ -18,6 +18,7 @@ const MAX_BASIS_WORDS: usize = 32_768;
 pub(crate) trait FilteredComplex {
     type Term: Clone + Hash + Ord;
     const NAME: &'static str = "May";
+    const ELEMENT_NAME: &'static str = "cobar";
 
     fn basis(&mut self, model: &mut Model, s: usize, f: usize) -> Result<Vec<Self::Term>>;
     fn differential(&mut self, model: &mut Model, term: &Self::Term) -> Result<Vec<Self::Term>>;
@@ -181,7 +182,8 @@ impl<C: FilteredComplex> FilteredPage<C> {
         model.spend(C::cells(term) * (1 + leading.len().max(1).ilog2() as usize))?;
         leading.binary_search(term).map_err(|_| {
             Error::plain(format!(
-                "cobar term is missing from the {} filtration slice",
+                "{} term is missing from the {} filtration slice",
+                C::ELEMENT_NAME,
                 C::NAME
             ))
         })
@@ -208,7 +210,8 @@ impl<C: FilteredComplex> FilteredPage<C> {
             match term_filtration.cmp(&self.f) {
                 Ordering::Less => {
                     return Err(Error::plain(format!(
-                        "cobar chain lies below the requested {} filtration",
+                        "{} chain lies below the requested {} filtration",
+                        C::ELEMENT_NAME,
                         C::NAME,
                     )));
                 }
@@ -224,7 +227,8 @@ impl<C: FilteredComplex> FilteredPage<C> {
                 model.spend(C::cells(&term))?;
                 if (complex.filtration(&term)? as u128) < self.cutoff {
                     return Err(Error::plain(format!(
-                        "cobar chain does not satisfy the {} page cycle condition",
+                        "{} chain does not satisfy the {} page cycle condition",
+                        C::ELEMENT_NAME,
                         C::NAME,
                     )));
                 }
@@ -235,7 +239,8 @@ impl<C: FilteredComplex> FilteredPage<C> {
                     .reduce_with_witness(model, leading, Vec::new())?;
             if !remainder.is_empty() {
                 return Err(Error::plain(format!(
-                    "cobar cycle is missing from the {} page basis",
+                    "{} cycle is missing from the {} page basis",
+                    C::ELEMENT_NAME,
                     C::NAME,
                 )));
             }

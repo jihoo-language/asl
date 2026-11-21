@@ -30,6 +30,7 @@ use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
+use crate::rv_bar_page;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -86,6 +87,7 @@ pub(crate) enum Kind {
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
+    RVBarE(rv_bar_page::Grade),
     RVBar(rv_bar::Grade),
     RVKoszul(RvGrade),
     RVTor(RvGrade),
@@ -261,6 +263,7 @@ pub(crate) struct Model {
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
+    rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
     rv_bar_ids: HashMap<String, rv_bar::PathId>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
@@ -282,6 +285,7 @@ impl Model {
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
+            rv_bar_pages: HashMap::new(),
             rv_bar_ids: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
@@ -460,7 +464,7 @@ impl Model {
             {
                 1
             }
-            Kind::RVBar(..) => usize::MAX,
+            Kind::RVBar(..) | Kind::RVBarE(..) => usize::MAX,
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
@@ -553,6 +557,7 @@ impl Model {
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
+                | Kind::RVBarE(..)
                 | Kind::RVBar(..)
                 | Kind::RVKoszul(..)
                 | Kind::RVTor(..)
@@ -891,6 +896,24 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_bar_page_type(&mut self, grade: rv_bar_page::Grade) -> Result<TypeId> {
+        self.rv_bar_path(grade.chain.path)
+            .check_interval(grade.chain.start, grade.chain.end)?;
+        self.inhabited_type(Kind::RVBarE(grade), 0)
+    }
+
+    pub(crate) fn rv_bar_page(&mut self, ty: TypeId) -> Result<Rc<rv_bar_page::Page>> {
+        if let Some(page) = self.rv_bar_pages.get(&ty) {
+            return Ok(page.clone());
+        }
+        let Kind::RVBarE(grade) = *self.kind(ty) else {
+            unreachable!();
+        };
+        let page = Rc::new(rv_bar_page::Page::build(self, grade)?);
+        self.rv_bar_pages.insert(ty, page.clone());
+        Ok(page)
     }
 
     pub(crate) fn define_jet_path(&mut self, name: Label, path: Path) -> Result<()> {
@@ -1591,6 +1614,7 @@ impl Model {
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
+            | Kind::RVBarE(..)
             | Kind::RVBar(..)
             | Kind::RVKoszul(..)
             | Kind::RVTor(..)
@@ -1747,6 +1771,15 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
+            Kind::RVBarE(grade) => out.push(&format!(
+                "RVBarE({}, {}, {}, {}, {}, {})",
+                self.rv_bar_path_name(grade.chain.path),
+                grade.chain.start,
+                grade.chain.end,
+                grade.r,
+                grade.chain.b,
+                grade.length,
+            )),
             Kind::RVBar(grade) => out.push(&format!(
                 "RVBar({}, {}, {}, {})",
                 self.rv_bar_path_name(grade.path),
@@ -2272,6 +2305,10 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RVBarE(..) => {
+                    let rank = self.rv_bar_page(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::RVBar(grade) => {
                     let basis = rv_bar::basis(

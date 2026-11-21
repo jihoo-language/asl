@@ -5,6 +5,11 @@ BEGIN {
         print "n must be an integer between 3 and 31 (primitive labels are 1 through 2n)" > "/dev/stderr"
         exit 2
     }
+    if (pages == "") pages = 0
+    if (pages !~ /^[01]$/) {
+        print "pages must be 0 or 1" > "/dev/stderr"
+        exit 2
+    }
     if (bar == "") bar = 0
     if (bar !~ /^[01]$/) {
         print "bar must be 0 or 1" > "/dev/stderr"
@@ -15,6 +20,7 @@ BEGIN {
         print "local must be 0 (total grading) or 1 (multigrading)" > "/dev/stderr"
         exit 2
     }
+    if (pages) bar = 1
     if (bar) local = 1
     constructor = local ? "rvmkterm" : "rvkterm"
     for (k = 1; k <= 2*n; k++) selection = append(selection, k)
@@ -62,6 +68,26 @@ BEGIN {
         emit(sprintf("rvbardim[StairBar, 0, %d, %d, %d];", n, 2*n, n))
         emit(sprintf("rvbardim[StairBar, 0, %d, %d, 1];", n, 2*n-1))
         emit("show top;")
+    }
+
+    if (pages) {
+        for (r = 0; r <= n-1; r++) {
+            emit(sprintf("let e%d = rvBarClass[%d,%d](word);", r,r,n))
+            emit(sprintf("assert e%d == rvbaregen[StairBar,0,%d,%d,%d,%d,0];", r,n,r,2*n,n))
+            if (r < n-1)
+                emit(sprintf("assert rvBarD(e%d) == zero[RVBarE(StairBar,0,%d,%d,%d,%d)];", r,n,r,2*n-1,n-r))
+            if (r > 0) {
+                emit(sprintf("assert rvBarPrev(e%d) == e%d;", r,r-1))
+                emit(sprintf("assert rvBarNext(e%d) == e%d;", r-1,r))
+            }
+        }
+        emit(sprintf("let targetPage = rvBarClass[%d,1](top);", n-1))
+        emit(sprintf("assert rvBarD(e%d) == targetPage;", n-1))
+        emit(sprintf("assert targetPage == rvbaregen[StairBar,0,%d,%d,%d,1,0];", n,n-1,2*n-1))
+        emit(sprintf("assert rvBarNext(targetPage) == zero[RVBarE(StairBar,0,%d,%d,%d,1)];", n,n,2*n-1))
+        emit(sprintf("rvbaredim[StairBar,0,%d,%d,%d,%d];", n,n,2*n,n))
+        emit(sprintf("rvbaredim[StairBar,0,%d,%d,%d,1];", n,n,2*n-1))
+        emit(sprintf("show rvBarD(e%d);", n-1))
     }
 
     for (i = 1; i <= line_count; i++) print lines[i]

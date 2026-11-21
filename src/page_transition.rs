@@ -3,6 +3,7 @@ use crate::linear::Basis;
 use crate::map_ext;
 use crate::model::{Kind, Model, TypeId, Value};
 use crate::profile::Profile;
+use crate::rv_bar_page;
 use crate::vbock;
 
 #[derive(Clone, Copy)]
@@ -233,6 +234,9 @@ impl Transition {
     pub(crate) fn build(model: &mut Model, current: TypeId) -> Result<Self> {
         if matches!(model.kind(current), Kind::VBock(..)) {
             return vbock::transition(model, current);
+        }
+        if matches!(model.kind(current), Kind::RVBarE(..)) {
+            return rv_bar_page::transition(model, current);
         }
         let grade = Grade::from_type(model, current).unwrap();
         let name = grade.family.page_family().name(Direction::Next);

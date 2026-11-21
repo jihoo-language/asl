@@ -62,6 +62,7 @@ pub(crate) enum TypeForm {
     VExt(QSpec<i64>),
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
+    RVBarE(RvBarPageSpec),
     RVBar(RvBarSpec),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
@@ -122,6 +123,12 @@ pub(crate) struct RvBarSpec {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) b: usize,
+}
+
+pub(crate) struct RvBarPageSpec {
+    pub(crate) chain: RvBarSpec,
+    pub(crate) r: usize,
+    pub(crate) length: i64,
 }
 
 pub(crate) struct RvGradeSpec {
@@ -412,6 +419,8 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvBarEGenerator(RvBarPageSpec, usize, Span),
+    RvBarClass(usize, i64, Box<ParsedExpr>),
     RvBarWord(Label, Vec<usize>, Vec<ParsedExpr>),
     RvBarLength(usize, Box<ParsedExpr>),
     RvHFace(Label, Vec<usize>, Vec<usize>),
@@ -517,6 +526,7 @@ pub(crate) enum StatementForm {
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
     RvBarPath(Label, Label, Vec<Vec<usize>>),
+    RvBarPageDimension(RvBarPageSpec),
     RvBarDimension(RvBarSpec, Option<usize>),
     RvHochster(Label, Vec<usize>, i64),
     RvBetti(RvGradeSpec),
@@ -1310,6 +1320,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBrace)?;
                 StatementForm::RvBarPath(name, ideal, steps)
             }
+            Token::Word("rvbaredim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_bar_page_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvBarPageDimension(spec)
+            }
             Token::Word("rvbardim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -1974,6 +1991,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
+        if name.text == "RVBarE" && self.eat(Token::LParen)? {
+            let grade = self.rv_bar_page_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVBarE(grade), 0);
+        }
         if name.text == "RVBar" && self.eat(Token::LParen)? {
             let grade = self.rv_bar_spec()?;
             self.expect(Token::RParen)?;
@@ -2365,6 +2387,26 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvbaregen" && self.eat(Token::LBracket)? {
+                    let spec = self.rv_bar_page_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvBarEGenerator(spec, index, at), 0);
+                }
+                if name.text == "rvBarClass" && self.eat(Token::LBracket)? {
+                    let (r, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let length = self.signed_degree()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvBarClass(r, length, Box::new(input)),
+                        depth,
+                    );
+                }
                 if name.text == "rvBarWord" && self.eat(Token::LBracket)? {
                     let path = self.label()?;
                     self.expect(Token::Comma)?;
@@ -3422,6 +3464,30 @@ impl<'src> Parser<'src> {
             }
             _ => Err(self.expected("an expression")),
         }
+    }
+
+    fn rv_bar_page_spec(&mut self) -> Result<RvBarPageSpec> {
+        let path = self.label()?;
+        self.expect(Token::Comma)?;
+        let (start, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (end, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (r, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (b, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_degree()?;
+        Ok(RvBarPageSpec {
+            chain: RvBarSpec {
+                path,
+                start,
+                end,
+                b,
+            },
+            r,
+            length,
+        })
     }
 
     fn rv_bar_spec(&mut self) -> Result<RvBarSpec> {
