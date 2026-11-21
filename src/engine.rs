@@ -62,7 +62,7 @@ use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock;
-use crate::{bp, bp_polynomial::Polynomial as BpPolynomial};
+use crate::{bp, bp_ext, bp_polynomial::Polynomial as BpPolynomial};
 
 pub(crate) struct Engine {
     model: Model,
@@ -358,6 +358,25 @@ impl Engine {
                 let ty = self.checker().ty(ty)?;
                 let ranks = betti(&mut self.model, ty)?;
                 format!("betti({}) = {ranks:?}", self.model.type_name(ty))
+            }
+            StatementForm::BpExt(crate::syntax::BpSpec(p, n, a), t) => {
+                let shape = bp::Shape::new(&mut self.model, p, n, a)?;
+                let group = bp_ext::group(&mut self.model, shape, t)?;
+                format!(
+                    "bpext[{p}, {n}, {a}, {t}] = free {}, torsion {:?}",
+                    group.free, group.torsion,
+                )
+            }
+            StatementForm::BpOrder(t, input) => {
+                let input = self.checker().expr(input)?;
+                let shape = self.checker().bp_shape(&input, "bporder")?;
+                let Value::BP(cycle) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match bp_ext::order(&mut self.model, shape, t, &cycle)? {
+                    Some(order) => format!("bporder[{t}] = {order}"),
+                    None => format!("bporder[{t}] = infinite"),
+                }
             }
             StatementForm::PExtDimension(p, s, t) => {
                 let prime = Prime::new(&mut self.model, p)?;

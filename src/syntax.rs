@@ -412,6 +412,8 @@ pub(crate) enum StatementForm {
     Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
+    BpExt(BpSpec, usize),
+    BpOrder(usize, ParsedExpr),
     ExtDimension(usize, usize),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
@@ -862,6 +864,22 @@ impl<'src> Parser<'src> {
             Token::Word("betti") => {
                 self.advance()?;
                 StatementForm::Betti(self.ty(0)?)
+            }
+            Token::Word("bpext") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (prime, height, arrows) = self.prime_bidegree()?;
+                self.expect(Token::Comma)?;
+                let (t, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpExt(BpSpec(prime, height, arrows), t)
+            }
+            Token::Word("bporder") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (t, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpOrder(t, self.paren_expr(0)?)
             }
             Token::Word("pextdim") => {
                 self.advance()?;
@@ -2009,7 +2027,7 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "bpPow" | "bpCoface" | "bpReduce" | "bpBockP" | "bpDegeneracy"
+                    "bpPow" | "bpCoface" | "bpNull" | "bpReduce" | "bpBockP" | "bpDegeneracy"
                 ) && self.eat(Token::LBracket)?
                 {
                     let (index, _) = self.number()?;
@@ -2020,6 +2038,7 @@ impl<'src> Parser<'src> {
                         "bpReduce" => BpOperation::Reduce(index),
                         "bpBockP" => BpOperation::BockP(index),
                         "bpDegeneracy" => BpOperation::Degeneracy(index),
+                        "bpNull" => BpOperation::Null(index),
                         _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;

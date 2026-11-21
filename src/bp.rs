@@ -78,6 +78,15 @@ impl Shape {
         Ok(())
     }
 
+    pub(crate) fn require_integral(self, operation: &str) -> Result<()> {
+        if self.depth != 0 {
+            return Err(Error::plain(format!(
+                "{operation} requires an integral BP cochain"
+            )));
+        }
+        Ok(())
+    }
+
     fn require_quotient(self, operation: &str) -> Result<()> {
         if self.depth == 0 {
             return Err(Error::plain(format!("{operation} requires a BPI cochain")));
@@ -309,6 +318,63 @@ fn composition(
         result.push(sum.integral(model, prime)?);
     }
     Ok(result)
+}
+
+pub(crate) fn contracting_numerator(
+    model: &mut Model,
+    shape: Shape,
+    input: &Polynomial,
+) -> Result<(Polynomial, u32)> {
+    // Insert the origin before the first vertex of the simplex. The arrow
+    // from the origin to v has coordinates t_i = L_i(v). Pullback along
+    // this insertion contracts the normalized pair-groupoid cochains.
+    let height = input.max_used_index(model, shape.height, 1)?;
+    let logarithms = logs(model, shape.prime, &shape.variables(0, height))?;
+    let mut output = Log {
+        numerator: Polynomial::default(),
+        denominator: 0,
+    };
+    for (monomial, coefficient) in input.terms() {
+        model.spend(1 + monomial.len())?;
+        if monomial
+            .first()
+            .is_some_and(|&(variable, _)| variable < shape.height)
+        {
+            continue;
+        }
+        let mut term = Log {
+            numerator: Polynomial::integer(coefficient),
+            denominator: 0,
+        };
+        for &(variable, exponent) in monomial {
+            let shifted = variable - shape.height;
+            if shifted < shape.height {
+                let logarithm = &logarithms[shifted + 1];
+                let power = logarithm.numerator.power(model, exponent)?;
+                term.numerator = term.numerator.multiply(model, &power)?;
+                if logarithm.denominator != 0 {
+                    let exponent = u32::try_from(exponent).map_err(|_| contraction_overflow())?;
+                    let denominator = logarithm
+                        .denominator
+                        .checked_mul(exponent)
+                        .ok_or_else(contraction_overflow)?;
+                    term.denominator = term
+                        .denominator
+                        .checked_add(denominator)
+                        .ok_or_else(contraction_overflow)?;
+                }
+            } else {
+                let power = Polynomial::variable(shifted).power(model, exponent)?;
+                term.numerator = term.numerator.multiply(model, &power)?;
+            }
+        }
+        output.add(model, shape.prime, &term, &Polynomial::integer(1), false)?;
+    }
+    Ok((output.numerator, output.denominator))
+}
+
+fn contraction_overflow() -> Error {
+    Error::plain("BP rational contraction denominator exponent is out of range")
 }
 
 pub(crate) fn check_face(shape: Shape, face: usize) -> Result<()> {
@@ -585,6 +651,7 @@ pub(crate) enum Operation {
     BockP(usize),
     Degeneracy(usize),
     Normalize,
+    Null(usize),
 }
 
 impl Operation {
@@ -600,6 +667,7 @@ impl Operation {
             Self::BockP(_) => "bpBockP",
             Self::Degeneracy(_) => "bpDegeneracy",
             Self::Normalize => "bpNormalize",
+            Self::Null(_) => "bpNull",
         }
     }
 
@@ -610,6 +678,10 @@ impl Operation {
                 shape.next()
             }
             Self::Differential => shape.next(),
+            Self::Null(_) => {
+                shape.require_integral(self.name())?;
+                crate::bp_ext::previous_shape(shape)
+            }
             Self::Negate | Self::Power(_) | Self::Normalize => Ok(shape),
             Self::Degeneracy(index) => degeneracy_target(shape, index),
             Self::Reduce(depth) => shape.quotient(depth),
@@ -625,9 +697,7 @@ impl Operation {
                 })
             }
             Self::BockP(_) => {
-                if shape.depth != 0 {
-                    return Err(Error::plain("bpBockP requires an integral BP cochain"));
-                }
+                shape.require_integral(self.name())?;
                 shape.next()
             }
         }
@@ -661,6 +731,7 @@ impl Operation {
             Self::BockP(exponent) => p_bockstein(model, shape, input, exponent),
             Self::Degeneracy(index) => degeneracy(model, shape, index, input),
             Self::Normalize => normalized(model, shape, input),
+            Self::Null(t) => crate::bp_ext::null(model, shape, t, input),
         }
     }
 }

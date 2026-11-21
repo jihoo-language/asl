@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 
 const MAX_POLYNOMIAL_CELLS: usize = 200_000;
-type Monomial = Box<[(usize, usize)]>;
+pub(crate) type Monomial = Box<[(usize, usize)]>;
 
 #[derive(Clone, Default)]
 pub(crate) struct Polynomial {
@@ -29,6 +29,23 @@ impl Polynomial {
             terms: [(Box::new([(index, 1usize)]) as Monomial, 1)].into(),
             cells: 5,
         }
+    }
+
+    pub(crate) fn from_terms<'a>(
+        model: &mut Model,
+        terms: impl IntoIterator<Item = (&'a Monomial, i128)>,
+    ) -> Result<Self> {
+        let mut result = Self::default();
+        for (monomial, coefficient) in terms {
+            result.insert(model, monomial.clone(), coefficient, false)?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn terms(&self) -> impl Iterator<Item = (&Monomial, i128)> {
+        self.terms
+            .iter()
+            .map(|(monomial, &coefficient)| (monomial, coefficient))
     }
 
     pub(crate) fn cells(&self) -> usize {

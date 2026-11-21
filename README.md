@@ -327,6 +327,14 @@ At $p=2$ the analogous canonical iterated lifts of $v_2$ and $v_3$ vanish. At $p
 
 At $p=3$, take $a=t$ and $w=v_1t+t^2$. Then $dw=a\smile a$ and the chosen triple value is $M=2v_1tu+4t^2u+tu^2$. The equality $M+\beta=d(v_1^2t)$ identifies its class with $-\beta$, of order three. [Brown–Peterson Massey cocycle example](examples/bp-massey.asl)
 
+### Integral normalized BP Ext
+
+`bpext[p, n, a, t];` computes the integral cohomology of the normalized finite-height BP cobar complex in arity `a` and internal topological degree `t`. It reports the free rank and the positive torsion invariant factors in divisibility order. Every monomial of a normalized cochain uses at least one coordinate from each arrow slot. The generators $v_i$ and $t_{j,i}$ both have degree $2(p^i-1)$. The differential is `bpD`.
+
+`bporder[t](f);` takes a homogeneous closed normalized cochain and reports its exact additive class order, including one for a boundary and `infinite` for a class of infinite order. In positive arity, `bpNull[t](f)` returns a normalized cochain whose differential is the minimal positive multiple of `f` that is a boundary. After inverting $p$ the Hazewinkel coordinates identify the complex with that of a pair groupoid. Inserting the origin contracts it in positive internal degree. This certifies the rational ranks and makes the integral torsion $p$-primary. Smith reduction uses enough modular precision to find every pivot of the certified rank. The null cochain uses the origin contraction and an exact integral correction, and ASL verifies its differential with `bpD`. The calculation describes a fixed finite-height integral cobar complex.
+
+At $p=2$ the arity-one group in degree eight is cyclic of order eight at height one and of order sixteen at height two. The height-two class $d(v_1^4+8v_1v_2)/16$ generates the latter group. At $p=3$ and height two in degree twelve, the arity-one and arity-two groups have orders nine and three. [Integral BP Ext example](examples/bp-ext.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.
