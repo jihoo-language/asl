@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::adams;
-use crate::binary_field::BinaryField;
+use crate::binary_field::{BinaryField, Embedding};
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
@@ -40,6 +40,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -182,6 +183,9 @@ enum TypedForm {
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVSpecialize(Box<TypedExpr>),
     RVField(rv_field::Map, Box<TypedExpr>),
+    RVInverse(Box<TypedExpr>),
+    RVHilbert90(Embedding, Box<TypedExpr>),
+    RVTwisted(rv_descent::Twist, Embedding, Box<[TypedExpr; 3]>),
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
@@ -1249,6 +1253,33 @@ impl Engine {
                     unreachable!()
                 };
                 map.apply(&mut self.model, &value)
+            }
+            TypedForm::RVInverse(input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_descent::inverse(&mut self.model, input.ty, &value)
+            }
+            TypedForm::RVHilbert90(embedding, input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_descent::hilbert(&mut self.model, embedding, input.ty, &value)
+            }
+            TypedForm::RVTwisted(operation, embedding, arguments) => {
+                let [left, input, right] = arguments.as_ref();
+                let types = [left.ty, input.ty, right.ty];
+                let values = [self.eval(left)?, self.eval(input)?, self.eval(right)?];
+                let [Value::RVHom(left), Value::RVHom(input), Value::RVHom(right)] = values else {
+                    unreachable!()
+                };
+                rv_descent::twisted(
+                    &mut self.model,
+                    *operation,
+                    embedding,
+                    types,
+                    [&left, &input, &right],
+                )
             }
             TypedForm::RVSpecialize(input) => {
                 let value = self.eval(input)?;
@@ -2362,6 +2393,29 @@ impl Checker<'_> {
                 };
                 let (ty, map) = rv_field::plan(self.model, grade.clone(), operation)?;
                 Ok((ty, TypedForm::RVField(map, Box::new(input))))
+            }
+            ExprForm::RVInverse(input) => {
+                let input = self.expr(*input)?;
+                let ty = rv_descent::inverse_type(self.model, input.ty)?;
+                Ok((ty, TypedForm::RVInverse(Box::new(input))))
+            }
+            ExprForm::RVHilbert90(modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let embedding = rv_descent::hilbert_embedding(self.model, input.ty, modulus, root)?;
+                Ok((input.ty, TypedForm::RVHilbert90(embedding, Box::new(input))))
+            }
+            ExprForm::RVTwisted(operation, modulus, root, arguments) => {
+                let [left, input, right] = *arguments;
+                let left = self.expr(left)?;
+                let input = self.expr(input)?;
+                let right = self.expr(right)?;
+                let types = [left.ty, input.ty, right.ty];
+                let (ty, embedding) =
+                    rv_descent::twist_plan(self.model, operation, types, modulus, root)?;
+                Ok((
+                    ty,
+                    TypedForm::RVTwisted(operation, embedding, Box::new([left, input, right])),
+                ))
             }
             ExprForm::RVSpecialize(modulus, point, input) => {
                 let input = self.expr(*input)?;

@@ -342,6 +342,9 @@ pub(crate) enum ExprForm {
     RVIdentity(ParsedType, Vec<usize>, usize, Vec<usize>),
     RVSpecialize(usize, Vec<usize>, Box<ParsedExpr>),
     RVField(crate::rv_field::Operation, Box<ParsedExpr>),
+    RVInverse(Box<ParsedExpr>),
+    RVHilbert90(usize, usize, Box<ParsedExpr>),
+    RVTwisted(crate::rv_descent::Twist, usize, usize, Box<[ParsedExpr; 3]>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
@@ -2351,6 +2354,53 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RVField(operation, Box::new(input)), depth);
+                }
+                if name.text == "rvInverse" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RVInverse(Box::new(input)), depth);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvHilbert90" | "rvTwistedDescend" | "rvTwistedExtend"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (root, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    if name.text == "rvHilbert90" {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::RVHilbert90(modulus, root, Box::new(input)),
+                            depth,
+                        );
+                    }
+                    let operation = if name.text == "rvTwistedDescend" {
+                        crate::rv_descent::Twist::Descend
+                    } else {
+                        crate::rv_descent::Twist::Extend
+                    };
+                    self.expect(Token::LParen)?;
+                    let left = self.expr(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let input = self.expr(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let right = self.expr(nest + 1)?;
+                    self.expect(Token::RParen)?;
+                    let depth = 1 + left.depth.max(input.depth).max(right.depth);
+                    return expr(
+                        span,
+                        ExprForm::RVTwisted(
+                            operation,
+                            modulus,
+                            root,
+                            Box::new([left, input, right]),
+                        ),
+                        depth,
+                    );
                 }
                 if name.text == "rvSpec" && self.eat(Token::LBracket)? {
                     let (modulus, _) = self.number()?;

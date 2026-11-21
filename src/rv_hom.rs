@@ -126,6 +126,10 @@ impl Hom {
     pub(crate) fn rank(&self) -> usize {
         self.rank
     }
+
+    pub(crate) fn dimensions(&self) -> (usize, usize) {
+        (self.source.rank(), self.target.rank())
+    }
 }
 
 pub(crate) fn zero() -> Value {

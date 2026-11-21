@@ -533,6 +533,18 @@ Over $\mathbb F_4$ at $(1,3,1)$, the Cusp generators give $[b_2]=3[b_1]$ and $[b
 
 For modulus 7 embedded in modulus 19 using root 6, the cusp point $(1,3,1)$ becomes $(1,7,1)$. The trace of the encoded scalar 2 from modulus 19 to modulus 7 is 1, and the trace of the identity is zero because the extension has degree two. [Field descent example](examples/rv-descent.asl)
 
+### Constructive Hilbert 90 and twisted descent
+
+`rvInverse(f)` inverts an isomorphism of Margolis homology spaces and exchanges its endpoints. The unique endomorphism of the zero-dimensional space is its identity and its own inverse.
+
+For an endomorphism $A$ defined over $L$ at an affine point in $K$, set $\sigma(x)=x^{|K|}$ and $d=[L:K]$. The operation `rvHilbert90[modulus, root](A)` specifies the inclusion of $K$ into $L$ as in `rvDescend`. It checks the ordered cocycle norm $A\sigma(A)\cdots\sigma^{d-1}(A)=I$ and returns an invertible frame $B$ with $A\sigma(B)=B$.
+
+The interpreter applies $T=A\sigma$ to standard basis vectors to verify $T^d=I$. It tests the fixed vectors $\sum_{i=0}^{d-1}T^i(\alpha^k e_j)$ for the ambient polynomial generator $\alpha$ and $0\le k<d$. Independence of the field automorphisms makes the matrix $(\sigma^i(\alpha^k))_{i,k}$ invertible, so these vectors span over $L$. Keeping the first independent vectors gives a deterministic frame by elimination.
+
+`rvTwistedDescend[modulus, root](A_Y, F, A_X)` takes a map between the two descent data. Both data use the same affine field point in $L$. The operation tests $A_Y\sigma(F)=F A_X$ by expressing $F$ as $B_Y^{-1}FB_X$ in the fixed frames and checking its coordinates lie in $K$. It returns the map with those coordinates over $K$. The inverse operation `rvTwistedExtend[modulus, root](A_Y, f, A_X)` takes a map at the corresponding point over $K$ and returns $B_Y\iota(f)B_X^{-1}$. The formulas allow rectangular maps and preserve identities and composition.
+
+The example computes a frame for the unipotent two-by-two datum over $\mathbb F_4/\mathbb F_2$, which requires a power of the extension generator to obtain the second independent column. It also descends rectangular maps and verifies a degree-three norm whose first two factors have different products in the two orders. [Hilbert 90 example](examples/rv-hilbert90.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.
