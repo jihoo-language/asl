@@ -44,7 +44,9 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     PCobar(Prime, usize, usize),
+    PCobarAn(Prime, usize, usize, usize),
     PExt(Prime, usize, usize),
+    PExtAn(Prime, usize, usize, usize),
     PMay(Prime, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
@@ -65,6 +67,22 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn pcobar_grade(&self) -> Option<(Prime, Profile, usize, usize)> {
+        match *self {
+            Self::PCobar(p, s, t) => Some((p, Profile::Full, s, t)),
+            Self::PCobarAn(p, n, s, t) => Some((p, Profile::An(n), s, t)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pext_grade(&self) -> Option<(Prime, Profile, usize, usize)> {
+        match *self {
+            Self::PExt(p, s, t) => Some((p, Profile::Full, s, t)),
+            Self::PExtAn(p, n, s, t) => Some((p, Profile::An(n), s, t)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn may_grade(&self) -> Option<(Profile, usize, usize, usize, usize)> {
         match *self {
             Self::May(r, s, t, f) => Some((Profile::Full, r, s, t, f)),
@@ -239,11 +257,29 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
-            Kind::PCobar(_, s, t) | Kind::PExt(_, s, t) if s > t || (s == 0 && t != 0) => 1,
-            Kind::PCobar(prime, s, t) | Kind::PExt(prime, s, t) if s == t => prime.get() as usize,
+            Kind::PCobar(_, s, t)
+            | Kind::PCobarAn(_, _, s, t)
+            | Kind::PExt(_, s, t)
+            | Kind::PExtAn(_, _, s, t)
+                if s > t || (s == 0 && t != 0) =>
+            {
+                1
+            }
+            Kind::PCobar(p, s, t)
+            | Kind::PCobarAn(p, _, s, t)
+            | Kind::PExt(p, s, t)
+            | Kind::PExtAn(p, _, s, t)
+                if s == t =>
+            {
+                p.get() as usize
+            }
             Kind::PMay(_, _, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
             Kind::PMay(prime, _, s, t, _) if s == t => prime.get() as usize,
-            Kind::PCobar(..) | Kind::PExt(..) | Kind::PMay(..) => usize::MAX,
+            Kind::PCobar(..)
+            | Kind::PCobarAn(..)
+            | Kind::PExt(..)
+            | Kind::PExtAn(..)
+            | Kind::PMay(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -352,7 +388,9 @@ impl Model {
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::PCobar(..)
+                | Kind::PCobarAn(..)
                 | Kind::PExt(..)
+                | Kind::PExtAn(..)
                 | Kind::PMay(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
@@ -481,7 +519,21 @@ impl Model {
     }
 
     pub(crate) fn odd_ext_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
-        self.inhabited_type(Kind::PExt(p, s, t), 0)
+        self.profile_odd_ext_type(p, Profile::Full, s, t)
+    }
+
+    pub(crate) fn profile_odd_ext_type(
+        &mut self,
+        p: Prime,
+        profile: Profile,
+        s: usize,
+        t: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::PExt(p, s, t),
+            Profile::An(n) => Kind::PExtAn(p, n, s, t),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn pmay_type(
@@ -496,7 +548,21 @@ impl Model {
     }
 
     pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
-        self.inhabited_type(Kind::PCobar(p, s, t), 0)
+        self.profile_pcobar_type(p, Profile::Full, s, t)
+    }
+
+    pub(crate) fn profile_pcobar_type(
+        &mut self,
+        p: Prime,
+        profile: Profile,
+        s: usize,
+        t: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::PCobar(p, s, t),
+            Profile::An(n) => Kind::PCobarAn(p, n, s, t),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn profile_cobar_type(
@@ -666,10 +732,8 @@ impl Model {
         if let Some(data) = &self.types[ty.0].odd_ext {
             return Ok(data.clone());
         }
-        let Kind::PExt(prime, s, t) = *self.kind(ty) else {
-            unreachable!()
-        };
-        let data = Rc::new(OddExt::build(self, prime, s, t)?);
+        let (prime, profile, s, t) = self.kind(ty).pext_grade().unwrap();
+        let data = Rc::new(OddExt::build(self, prime, profile, s, t)?);
         self.types[ty.0].odd_ext = Some(data.clone());
         Ok(data)
     }
@@ -848,7 +912,9 @@ impl Model {
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
+            | Kind::PCobarAn(..)
             | Kind::PExt(..)
+            | Kind::PExtAn(..)
             | Kind::PMay(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
@@ -976,7 +1042,11 @@ impl Model {
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
+            &Kind::PCobarAn(p, n, s, t) => {
+                out.push(&format!("PCobarAn({}, {n}, {s}, {t})", p.get()))
+            }
             &Kind::PExt(p, s, t) => out.push(&format!("PExt({}, {s}, {t})", p.get())),
+            &Kind::PExtAn(p, n, s, t) => out.push(&format!("PExtAn({}, {n}, {s}, {t})", p.get())),
             &Kind::PMay(p, r, s, t, f) => {
                 out.push(&format!("PMay({}, {r}, {s}, {t}, {f})", p.get()))
             }
@@ -1342,8 +1412,11 @@ impl Model {
                         Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
                     })?
                 }
-                Kind::PCobar(p, s, t) => odd_cobar::elements(self, p, s, t, MAX_ELEMENTS)?,
-                Kind::PExt(p, ..) => {
+                Kind::PCobar(..) | Kind::PCobarAn(..) => {
+                    let (p, profile, s, t) = self.kind(ty).pcobar_grade().unwrap();
+                    odd_cobar::elements(self, p, profile, s, t, MAX_ELEMENTS)?
+                }
+                Kind::PExt(p, ..) | Kind::PExtAn(p, ..) => {
                     let rank = self.odd_ext(ty)?.rank();
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }
@@ -1616,9 +1689,7 @@ impl Model {
                 out.push("}")
             }
             Value::PCobar(terms) => {
-                let Kind::PCobar(p, ..) = *self.kind(ty) else {
-                    unreachable!()
-                };
+                let (p, _, _, _) = self.kind(ty).pcobar_grade().unwrap();
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if terms.is_empty() {

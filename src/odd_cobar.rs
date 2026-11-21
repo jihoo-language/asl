@@ -4,6 +4,8 @@ use std::rc::Rc;
 
 use crate::error::{Error, Result, Span};
 use crate::model::{Model, Value};
+use crate::odd_profile;
+use crate::profile::Profile;
 
 const MAX_WORD_CELLS: usize = 300_000;
 
@@ -65,7 +67,7 @@ impl Prime {
 pub(crate) struct Monomial {
     pub(crate) exponents: Box<[usize]>,
     pub(crate) taus: Box<[usize]>,
-    degree: usize,
+    pub(crate) degree: usize,
 }
 
 pub(crate) type Factor = Rc<Monomial>;
@@ -76,7 +78,7 @@ pub(crate) type FactorLiteral = (Vec<usize>, Vec<usize>, Span);
 type Tensor = (Factor, Factor);
 
 impl Monomial {
-    fn cells(&self) -> usize {
+    pub(crate) fn cells(&self) -> usize {
         1 + self.exponents.len() + self.taus.len()
     }
 
@@ -85,7 +87,7 @@ impl Monomial {
     }
 }
 
-fn factor(mut exponents: Vec<usize>, taus: Vec<usize>, degree: usize) -> Factor {
+pub(crate) fn factor(mut exponents: Vec<usize>, taus: Vec<usize>, degree: usize) -> Factor {
     let width = exponents
         .iter()
         .rposition(|&exponent| exponent != 0)
@@ -106,7 +108,7 @@ fn degree_overflow() -> Error {
     Error::plain("odd-prime cobar internal degree is out of range")
 }
 
-fn power(prime: Prime, index: usize) -> Result<usize> {
+pub(crate) fn power(prime: Prime, index: usize) -> Result<usize> {
     if index >= usize::BITS as usize {
         return Err(degree_overflow());
     }
@@ -115,7 +117,7 @@ fn power(prime: Prime, index: usize) -> Result<usize> {
         .ok_or_else(degree_overflow)
 }
 
-fn xi_degree(prime: Prime, index: usize) -> Result<usize> {
+pub(crate) fn xi_degree(prime: Prime, index: usize) -> Result<usize> {
     (power(prime, index)? - 1)
         .checked_mul(2)
         .ok_or_else(degree_overflow)
@@ -347,11 +349,13 @@ pub(crate) fn concat_support(
     Ok(terms)
 }
 
-pub(crate) fn differential(model: &mut Model, prime: Prime, input: &[Term]) -> Result<Value> {
-    let terms = match input {
-        [(word, 1)] => differential_word(model, prime, word)?,
-        _ => differential_support(model, prime, input)?,
-    };
+pub(crate) fn differential(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    input: &[Term],
+) -> Result<Value> {
+    let terms = differential_profile_support(model, prime, profile, input)?;
     persist(model, terms)
 }
 
@@ -359,9 +363,27 @@ pub(crate) fn differential_word(model: &mut Model, prime: Prime, word: &Word) ->
     differential_support(model, prime, &[(word.clone(), 1)])
 }
 
+pub(crate) fn differential_profile_word(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    word: &Word,
+) -> Result<Vec<Term>> {
+    differential_profile_support(model, prime, profile, &[(word.clone(), 1)])
+}
+
 pub(crate) fn differential_support(
     model: &mut Model,
     prime: Prime,
+    input: &[Term],
+) -> Result<Vec<Term>> {
+    differential_profile_support(model, prime, Profile::Full, input)
+}
+
+pub(crate) fn differential_profile_support(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
     input: &[Term],
 ) -> Result<Vec<Term>> {
     let mut result = Accumulator::new(prime);
@@ -370,7 +392,8 @@ pub(crate) fn differential_support(
         model.spend(cells)?;
         let mut prefix_odd = false;
         for (position, current) in word.iter().enumerate() {
-            for ((left, right), coproduct_coefficient) in reduced_coproduct(model, prime, current)?
+            for ((left, right), coproduct_coefficient) in
+                reduced_coproduct(model, prime, profile, current)?
             {
                 let size = 1 + cells + left.cells() + right.cells() - current.cells();
                 check_storage(size)?;
@@ -394,6 +417,7 @@ pub(crate) fn differential_support(
 fn reduced_coproduct(
     model: &mut Model,
     prime: Prime,
+    profile: Profile,
     monomial: &Monomial,
 ) -> Result<Vec<(Tensor, u32)>> {
     let mut terms = vec![((unit(), unit()), 1)];
@@ -420,7 +444,7 @@ fn reduced_coproduct(
                     ));
                 }
                 for _ in 0..digit {
-                    terms = multiply_tensor(model, prime, &terms, &column)?;
+                    terms = multiply_tensor(model, prime, profile, &terms, &column)?;
                 }
             }
             exponent /= p;
@@ -435,7 +459,7 @@ fn reduced_coproduct(
             let left_exponent = if i == generator { 0 } else { power(prime, i)? };
             column.push((xi(prime, generator - i, left_exponent)?, tau(prime, i)?));
         }
-        terms = multiply_tensor(model, prime, &terms, &column)?;
+        terms = multiply_tensor(model, prime, profile, &terms, &column)?;
     }
     terms.retain(|((left, right), _)| left.degree != 0 && right.degree != 0);
     Ok(terms)
@@ -444,6 +468,7 @@ fn reduced_coproduct(
 fn multiply_tensor(
     model: &mut Model,
     prime: Prime,
+    profile: Profile,
     terms: &[(Tensor, u32)],
     column: &[Tensor],
 ) -> Result<Vec<(Tensor, u32)>> {
@@ -451,24 +476,31 @@ fn multiply_tensor(
     for ((a, b), coefficient) in terms {
         for (c, d) in column {
             model.spend(a.cells() + b.cells() + c.cells() + d.cells())?;
-            if let (Some((left, left_sign)), Some((right, right_sign))) =
-                (multiply_monomials(a, c)?, multiply_monomials(b, d)?)
-            {
-                let size = 1 + left.cells() + right.cells();
-                let negative = (b.odd() && c.odd()) ^ left_sign ^ right_sign;
-                result.insert(
-                    model,
-                    (left, right),
-                    prime.signed(*coefficient, negative),
-                    size,
-                )?;
-            }
+            let Some((left, left_sign)) = multiply_monomials(prime, profile, a, c)? else {
+                continue;
+            };
+            let Some((right, right_sign)) = multiply_monomials(prime, profile, b, d)? else {
+                continue;
+            };
+            let size = 1 + left.cells() + right.cells();
+            let negative = (b.odd() && c.odd()) ^ left_sign ^ right_sign;
+            result.insert(
+                model,
+                (left, right),
+                prime.signed(*coefficient, negative),
+                size,
+            )?;
         }
     }
     Ok(result.into_terms())
 }
 
-fn multiply_monomials(a: &Factor, b: &Factor) -> Result<Option<(Factor, bool)>> {
+fn multiply_monomials(
+    prime: Prime,
+    profile: Profile,
+    a: &Factor,
+    b: &Factor,
+) -> Result<Option<(Factor, bool)>> {
     if a.degree == 0 {
         return Ok(Some((b.clone(), false)));
     }
@@ -499,8 +531,12 @@ fn multiply_monomials(a: &Factor, b: &Factor) -> Result<Option<(Factor, bool)>> 
     taus.extend_from_slice(right);
     let mut exponents = a.exponents.to_vec();
     exponents.resize(exponents.len().max(b.exponents.len()), 0);
-    for (exponent, &other) in exponents.iter_mut().zip(&b.exponents) {
+    for (index, (exponent, &other)) in exponents.iter_mut().zip(&b.exponents).enumerate() {
         *exponent = exponent.checked_add(other).ok_or_else(degree_overflow)?;
+        // Further products cannot reduce an exponent that leaves the profile.
+        if !odd_profile::allows_power(prime, profile, index, *exponent) {
+            return Ok(None);
+        }
     }
     let degree = a.degree.checked_add(b.degree).ok_or_else(degree_overflow)?;
     Ok(Some((factor(exponents, taus, degree), odd)))
@@ -548,6 +584,22 @@ impl<K: Ord> Accumulator<K> {
     fn into_terms(self) -> Vec<(K, u32)> {
         self.terms.into_iter().collect()
     }
+}
+
+pub(crate) fn basis_profile(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    s: usize,
+    t: usize,
+    limit: usize,
+) -> Result<Vec<Word>> {
+    if let Profile::An(n) = profile {
+        if s != 0 && t >= s && odd_profile::changes_basis(prime, n, t - s + 1) {
+            return odd_profile::basis(model, prime, n, s, t, limit);
+        }
+    }
+    basis(model, prime, s, t, limit)
 }
 
 pub(crate) fn basis(
@@ -635,7 +687,7 @@ pub(crate) fn basis(
     Ok(words)
 }
 
-fn basis_limit(limit: usize) -> Error {
+pub(crate) fn basis_limit(limit: usize) -> Error {
     Error::plain(format!(
         "odd-prime cobar basis exceeds the limit of {limit} words"
     ))
@@ -774,6 +826,7 @@ impl Monomials<'_> {
 pub(crate) fn elements(
     model: &mut Model,
     prime: Prime,
+    profile: Profile,
     s: usize,
     t: usize,
     limit: usize,
@@ -790,7 +843,7 @@ pub(crate) fn elements(
         size *= p;
         rank_limit += 1;
     }
-    let words = basis(model, prime, s, t, rank_limit)?;
+    let words = basis_profile(model, prime, profile, s, t, rank_limit)?;
     let size = (0..words.len()).fold(1usize, |size, _| size * p);
     model.allocate(size)?;
     model.spend(size.saturating_mul(1 + words.len()))?;

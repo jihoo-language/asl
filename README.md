@@ -49,8 +49,10 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `PCobar(p, s, t)` | The corresponding discrete space of normalized cobar cochains over an odd prime field $\mathbb F_p$. |
+| `PCobarAn(p, n, s, t)` | The odd-prime cobar cochains for the finite Steenrod subalgebra $\mathcal A_p(n)$. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `PExt(p, s, t)` | The discrete space of odd-prime Adams $E_2$ classes over $\mathbb F_p$. |
+| `PExtAn(p, n, s, t)` | The discrete space of Ext classes over $\mathcal A_p(n)$. |
 | `PMay(p, r, s, t, f)` | The discrete space of odd-prime algebraic May classes on page `r` in filtration `f`. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
@@ -194,6 +196,14 @@ The corrected full-algebra May lift `mayRep(maygen[7, 4, 12, 0, 0])` becomes a c
 `PExt(p, s, t)` computes the cohomology of the signed `PCobar(p, s, t)` complex. The statement `pextdim[p, s, t];` prints the dimension over $\mathbb F_p$, and `pextgen[p, s, t, i]` selects basis generator `i` starting at zero. A component of rank $r$ has $p^r$ points, including zero.
 
 The operators `extClass(c)`, `extRep(x)`, and `extPrimitive(c)` work on odd-prime cochains and classes. They project closed cochains, choose deterministic lifts, and solve the cobar boundary equation over $\mathbb F_p$. The operators `pscale[k](x)` and `add(x, y)` act on field coefficients. The Yoneda product `yoneda(x, y)` concatenates lifts at a common prime. Its graded commutation sign uses the stem $t-s$.
+
+### Restriction to finite subalgebras at odd primes
+
+The dual of $\mathcal A_p(n)$ is $\mathbb F_p[\xi_1,\ldots,\xi_n]/(\xi_i^{p^{n+1-i}})\otimes\Lambda(\tau_0,\ldots,\tau_n)$. `PCobarAn(p, n, s, t)` uses words in the quotient monomials, and `PExtAn(p, n, s, t)` computes their signed cobar cohomology. The case $n=0$ has only the exterior generator $\tau_0$. Use `pextandim[p, n, s, t];` to find the rank and `pextangen[p, n, s, t, i]` to select generator `i`.
+
+`resA[n]` preserves the odd prime and projects full cochains or cochains from a larger finite profile by keeping the words whose factors all survive. On classes it performs the same operation on a chosen representative. The cochain, Ext, and field operations preserve the profile. Binary products require the same prime and profile on both inputs.
+
+At $p=3$, the full `PMay(3, 5, 3, 15, 6)` lift supports a nonzero $d_5$. Over $\mathcal A_3(1)$ its projection becomes a closed representative of $v_1^3$ in `PExtAn(3, 1, 3, 15)`. The full Ext group and its further restriction to $\mathcal A_3(0)$ both have rank zero. [Odd-primary restriction example](examples/odd-profile-restriction.asl)
 
 The example computes powers of $a_0=[\tau_0]$ and the divided binomial class $b_{1,0}$ at $p=3$ and $p=5$. Its cobar coefficient on $[\xi_1^i\mid\xi_1^{p-i}]$ is the integer $\binom{p}{i}/p$ reduced modulo $p$. It also checks the nonzero anticommuting products of $[\xi_1]$ and $[\xi_1^9]$ at $p=3$. [Odd-prime Adams E₂ example](examples/odd-adams.asl)
 
@@ -498,6 +508,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `pextdim[p, s, t];` | Print the dimension of `PExt(p, s, t)` over 𝔽ₚ. |
+| `pextandim[p, n, s, t];` | Print the dimension of `PExtAn(p, n, s, t)` over 𝔽ₚ. |
 | `pmaydim[p, r, s, t, f];` | Print the dimension of `PMay(p, r, s, t, f)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |

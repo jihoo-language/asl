@@ -6,12 +6,15 @@ use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, TypeId, Value};
 use crate::odd_cobar::{self, word_cells, Prime, Term, Word};
+use crate::odd_profile;
 use crate::prime_linear::{add_scaled, Basis, Coordinate, QuotientBasis};
+use crate::profile::Profile;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
 pub(crate) struct OddExt {
     prime: Prime,
+    profile: Profile,
     s: usize,
     t: usize,
     words: Vec<Word>,
@@ -25,24 +28,32 @@ struct BoundaryPreimages {
 }
 
 impl OddExt {
-    pub(crate) fn build(model: &mut Model, prime: Prime, s: usize, t: usize) -> Result<Self> {
-        let words = odd_cobar::basis(model, prime, s, t, MAX_BASIS_WORDS)?;
+    pub(crate) fn build(
+        model: &mut Model,
+        prime: Prime,
+        profile: Profile,
+        s: usize,
+        t: usize,
+    ) -> Result<Self> {
+        let words = odd_cobar::basis_profile(model, prime, profile, s, t, MAX_BASIS_WORDS)?;
         let quotient = if words.is_empty() {
             QuotientBasis::default()
         } else {
             let mut boundaries = Basis::default();
-            boundary_columns(model, prime, s, t, &words, |model, _, column| {
+            boundary_columns(model, prime, profile, s, t, &words, |model, _, column| {
                 boundaries.insert(model, prime, column)
             })?;
 
             let mut rows = WordRows::default();
             QuotientBasis::build(model, prime, boundaries, words.len(), |model, index| {
-                let image = odd_cobar::differential_word(model, prime, &words[index])?;
+                let image =
+                    odd_cobar::differential_profile_word(model, prime, profile, &words[index])?;
                 rows.encode(model, image)
             })?
         };
         Ok(Self {
             prime,
+            profile,
             s,
             t,
             words,
@@ -89,6 +100,7 @@ impl OddExt {
             let words = boundary_columns(
                 model,
                 self.prime,
+                self.profile,
                 self.s,
                 self.t,
                 &self.words,
@@ -117,6 +129,7 @@ impl OddExt {
 fn boundary_columns(
     model: &mut Model,
     prime: Prime,
+    profile: Profile,
     s: usize,
     t: usize,
     target: &[Word],
@@ -125,9 +138,9 @@ fn boundary_columns(
     let Some(previous) = s.checked_sub(1) else {
         return Ok(Vec::new());
     };
-    let source = odd_cobar::basis(model, prime, previous, t, MAX_BASIS_WORDS)?;
+    let source = odd_cobar::basis_profile(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
     for (index, word) in source.iter().enumerate() {
-        let terms = odd_cobar::differential_word(model, prime, word)?;
+        let terms = odd_cobar::differential_profile_word(model, prime, profile, word)?;
         let column = word_indices(model, target, &terms)?;
         process(model, index, column)?;
     }
@@ -212,6 +225,25 @@ pub(crate) fn class(model: &mut Model, ty: TypeId, terms: &[Term]) -> Result<Val
     }
     let coordinates = model.odd_ext(ty)?.project(model, terms)?;
     persist(model, coordinates)
+}
+
+pub(crate) fn restrict(
+    model: &mut Model,
+    source_ty: TypeId,
+    coordinates: &[Coordinate],
+    target_ty: TypeId,
+) -> Result<Value> {
+    if coordinates.is_empty() {
+        return Ok(zero());
+    }
+    let (p, Profile::An(n), _, _) = model.kind(target_ty).pext_grade().unwrap() else {
+        unreachable!()
+    };
+    let representative = model
+        .odd_ext(source_ty)?
+        .representative(model, coordinates)?;
+    let projected = odd_profile::restrict(model, p, n, &representative)?;
+    class(model, target_ty, &projected)
 }
 
 pub(crate) fn add(
