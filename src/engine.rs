@@ -41,6 +41,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_curve::Curve as RvCurve;
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
@@ -484,6 +485,26 @@ impl Engine {
                 let selected = q_koszul::indices(&mut self.model, selected)?;
                 let generators = self.rv_generator_values(expressions, &selected, "rvideal")?;
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvCurve(name, variables, expressions) => {
+                self.model.check_new_rv_curve(&name)?;
+                let selected = q_koszul::indices(&mut self.model, variables)?;
+                let forms = self.rv_generator_values(expressions, &selected, "rvcurve")?;
+                let curve = RvCurve::build(&mut self.model, selected, forms)?;
+                self.model.define_rv_curve(name.text, curve);
+                return Ok(None);
+            }
+            StatementForm::RvOrders(name) => {
+                let curve = self.model.rv_curve(&name)?;
+                format!("rvorders[{}] = {:?}", name.text, curve.orders)
+            }
+            StatementForm::RvOsculating(name, curve, k, variables) => {
+                check_new_ideal(&self.model, &name)?;
+                let curve = self.model.rv_curve(&curve)?;
+                let selected = q_koszul::indices(&mut self.model, variables)?;
+                let ideal = curve.image(&mut self.model, k, selected)?;
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
@@ -2973,6 +2994,13 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
+            }
+            ExprForm::RvOscMinor(name, k, columns) => {
+                let curve = self.model.rv_curve(&name)?;
+                let (degree, polynomial) = curve.minor(self.model, k, columns)?;
+                let polynomial = rv_poly::persist(self.model, polynomial)?;
+                let ty = self.model.rv_poly_type(curve.selected.clone(), degree)?;
+                Ok((ty, TypedForm::Constant(Value::RVPoly(polynomial))))
             }
             ExprForm::RvGenerator(name, index, at) => {
                 let ideal = self.model.rv_ideal(&name)?;

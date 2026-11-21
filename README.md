@@ -649,6 +649,14 @@ For the cuspidal cubic and $H=(x,y)$, the normal cone in the chart $z\ne0$ has e
 
 `rvGenerator[J, j]` is the polynomial at index `j`, starting at zero, in the reduced Gröbner basis printed by `rvgroebner[J]`. It can be used directly in another declaration. For the cusp $y^3+x^2z=0$, the Gauss map on its normalization is $[s:t]\mapsto[0:t^2:s^2]$. Its dual is the line $U=0$ and its bidual is the point $[1:0:0]$. For the smooth conic $xz+y^2=0$, the dual is the pencil of lines through the nucleus $[0:1:0]$. The smooth Fermat cubic has Frobenius Gauss map $[x:y:z]\mapsto[x^2:y^2:z^2]$ and dual equation $U^3+V^3+W^3=0$. [Gauss graph and duality example](examples/rank-duality.asl)
 
+#### Hasse orders and osculating curves
+
+`rvcurve C[[s_idx,t_idx]] { f0, ... };` declares a map from the projective line by binary forms of a common positive degree $d$. The forms must have no common projective basepoint over the algebraic closure. ASL checks the gcd in the affine chart $s=1$ and the values at $[0:1]$.
+
+`rvorders[C];` prints the least increasing orders $\epsilon_j$ for which the Hasse derivative rows of $f_i(1,T)$ are independent over $\mathbb F_2(T)$. The length of the sequence is the coordinate rank. Lucas parity restricts the search to submasks of the exponents present in the forms. `rvOscMinor[C, k, [i0,...,ik]]` takes the determinant in the chosen coordinate positions for the rows $\epsilon_0,\ldots,\epsilon_k$. It returns the binary form of degree $(k+1)d-2\sum_{j=0}^k\epsilon_j$, including its ramification factors. Coordinate positions start at zero.
+
+`rvosculating Image[C,k,[u0,...]];` gives the homogeneous ideal of the projective image of those Plücker coordinates. Supply one fresh index per increasing $(k+1)$-tuple of coordinate positions, in lexicographic order of the tuples. Exact substitution and elimination compute the relations, followed by projective saturation. For $q=2^e$ and forms $[s^{q+1},s^qt,st^q,t^{q+1}]$, the order sequence is $[0,1,q,q+1]$. The tangent coordinates are $[s^{2q},0,s^qt^q,s^qt^q,0,t^{2q}]$ and their image is a conic. The four plane coordinates give the original parametrization. [Hasse orders and osculating images example](examples/rank-osculation.asl)
+
 
 ### Koszul syzygies and their products
 

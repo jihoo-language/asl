@@ -405,6 +405,33 @@ fn determinant(
     multiply(model, &monomial(forced), &determinant)
 }
 
+pub(crate) fn determinant_polynomials(
+    model: &mut Model,
+    matrix: Vec<Vec<Polynomial>>,
+) -> Result<Polynomial> {
+    let storage = matrix.len() + matrix.iter().flatten().map(|p| cells(p)).sum::<usize>();
+    check_storage(storage)?;
+    model.spend(storage)?;
+    bareiss(model, matrix, storage)
+}
+
+pub(crate) fn bareiss_update(
+    model: &mut Model,
+    pivot: &[Monomial],
+    current: &[Monomial],
+    factor: &[Monomial],
+    other: &[Monomial],
+    previous: Option<&[Monomial]>,
+) -> Result<Polynomial> {
+    let diagonal = multiply(model, pivot, current)?;
+    let cross = multiply(model, factor, other)?;
+    let numerator = add(model, &diagonal, &cross)?;
+    match previous {
+        Some(previous) => exact_divide(model, &numerator, previous),
+        None => Ok(numerator),
+    }
+}
+
 fn bareiss(
     model: &mut Model,
     mut matrix: Vec<Vec<Polynomial>>,
@@ -424,13 +451,14 @@ fn bareiss(
             for column in i + 1..size {
                 model.spend(1)?;
                 let current = &matrix[row][column];
-                let diagonal = multiply(model, &pivot, current)?;
-                let cross = multiply(model, &factor, &matrix[i][column])?;
-                let numerator = add(model, &diagonal, &cross)?;
-                let value = match &previous {
-                    Some(previous) => exact_divide(model, &numerator, previous)?,
-                    None => numerator,
-                };
+                let value = bareiss_update(
+                    model,
+                    &pivot,
+                    current,
+                    &factor,
+                    &matrix[i][column],
+                    previous.as_deref(),
+                )?;
                 storage = storage - cells(current) + cells(&value);
                 check_storage(storage)?;
                 matrix[row][column] = value;

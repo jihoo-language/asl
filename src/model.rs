@@ -26,6 +26,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
@@ -244,6 +245,7 @@ pub(crate) struct Model {
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
+    rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     jet_paths: Vec<(String, Rc<Path>)>,
@@ -261,6 +263,7 @@ impl Model {
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
             rv_ideals: HashMap::new(),
+            rv_curves: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             jet_paths: Vec::new(),
@@ -963,6 +966,27 @@ impl Model {
     pub(crate) fn rv_ideal(&self, name: &Label) -> Result<Rc<RvIdeal>> {
         self.rv_ideal_named(&name.text)
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
+    }
+
+    pub(crate) fn rv_curve(&self, name: &Label) -> Result<Rc<RvCurve>> {
+        self.rv_curves
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown rational curve '{}'", name.text)))
+    }
+
+    pub(crate) fn check_new_rv_curve(&self, name: &Label) -> Result<()> {
+        if self.rv_curves.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("rational curve '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_rv_curve(&mut self, name: String, curve: RvCurve) {
+        self.rv_curves.insert(name, Rc::new(curve));
     }
 
     pub(crate) fn define_rv_ideal(&mut self, name: String, ideal: RvIdeal) {

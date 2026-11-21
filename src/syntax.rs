@@ -388,6 +388,7 @@ pub(crate) enum ExprForm {
     RvInMinors(RvMatrixSpec, usize, Box<ParsedExpr>),
     RvIdeal(RvIdealOp, Label, Box<ParsedExpr>),
     RvGenerator(Label, usize, Span),
+    RvOscMinor(Label, usize, Vec<usize>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -459,6 +460,9 @@ pub(crate) enum StatementForm {
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
     RvRees(ReesOp, Label, Label, Vec<usize>, Vec<ParsedExpr>),
     RvGauss(GaussOp, Label, Vec<usize>, ParsedExpr),
+    RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvOrders(Label),
+    RvOsculating(Label, Label, usize, Vec<usize>),
     RvFitting(Label, RvMatrixSpec, usize),
     RvGroebner(Label),
     RvIntersect(Label, Label, Label),
@@ -984,6 +988,33 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvIdeal(name, selected, self.rv_generators()?)
+            }
+            Token::Word("rvcurve") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvCurve(name, variables, self.rv_generators()?)
+            }
+            Token::Word("rvorders") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvOrders(name)
+            }
+            Token::Word("rvosculating") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let curve = self.label()?;
+                self.expect(Token::Comma)?;
+                let (k, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvOsculating(name, curve, k, variables)
             }
             Token::Word("rvgauss" | "rvdual") => {
                 let operation = if self.token() == Token::Word("rvgauss") {
@@ -2281,6 +2312,15 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvOscMinor" && self.eat(Token::LBracket)? {
+                    let curve = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (k, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let columns = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvOscMinor(curve, k, columns), 0);
                 }
                 if name.text == "rvGenerator" && self.eat(Token::LBracket)? {
                     let ideal = self.label()?;
