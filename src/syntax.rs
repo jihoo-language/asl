@@ -1,0 +1,528 @@
+use crate::error::{Error, Result, Span};
+
+const MAX_NESTING: usize = 64;
+const MAX_IDENTIFIER_BYTES: usize = 128;
+
+#[derive(Clone)]
+pub(crate) struct Label {
+    pub(crate) text: String,
+    pub(crate) span: Span,
+}
+
+pub(crate) struct ParsedType {
+    pub(crate) span: Span,
+    pub(crate) kind: TypeForm,
+    depth: usize,
+}
+
+pub(crate) enum TypeForm {
+    Name(Label),
+    Star(Box<ParsedType>, Label),
+    Product(Box<ParsedType>, Box<ParsedType>),
+    Arrow(Box<ParsedType>, Box<ParsedType>),
+}
+
+pub(crate) struct ParsedExpr {
+    pub(crate) span: Span,
+    pub(crate) kind: ExprForm,
+    depth: usize,
+}
+
+pub(crate) type Entries = Vec<(Label, ParsedExpr)>;
+
+pub(crate) enum ExprForm {
+    Name(Label),
+    Point(ParsedType, Label),
+    Lambda(Label, ParsedType, Box<ParsedExpr>),
+    Call(Box<ParsedExpr>, Box<ParsedExpr>),
+    Pair(Box<ParsedExpr>, Box<ParsedExpr>),
+    Fst(Box<ParsedExpr>),
+    Snd(Box<ParsedExpr>),
+    Table(ParsedType, ParsedType, Entries),
+    Restrict(Label, Box<ParsedExpr>),
+    Sew(ParsedType, ParsedType, Entries),
+}
+
+pub(crate) struct Statement {
+    pub(crate) span: Span,
+    pub(crate) kind: StatementForm,
+}
+
+pub(crate) enum StatementForm {
+    Space(Label, Vec<Vec<Label>>),
+    Let(Label, ParsedExpr),
+    Show(ParsedExpr),
+    Assert(ParsedExpr, ParsedExpr),
+    Betti(ParsedType),
+    Homotopy(ParsedExpr, ParsedExpr),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Token<'src> {
+    Word(&'src str),
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    Colon,
+    Semi,
+    Comma,
+    Dot,
+    Less,
+    Star,
+    Slash,
+    Equal,
+    EqualEqual,
+    Arrow,
+    FatArrow,
+    Tilde,
+    Eof,
+}
+
+impl Token<'_> {
+    fn description(self) -> String {
+        match self {
+            Self::Word(word) => format!("'{word}'"),
+            Self::Eof => "end of input".into(),
+            symbol => {
+                let spelling = match symbol {
+                    Self::LBrace => "{",
+                    Self::RBrace => "}",
+                    Self::LParen => "(",
+                    Self::RParen => ")",
+                    Self::LBracket => "[",
+                    Self::RBracket => "]",
+                    Self::Colon => ":",
+                    Self::Semi => ";",
+                    Self::Comma => ",",
+                    Self::Dot => ".",
+                    Self::Less => "<",
+                    Self::Star => "*",
+                    Self::Slash => "\\",
+                    Self::Equal => "=",
+                    Self::EqualEqual => "==",
+                    Self::Arrow => "->",
+                    Self::FatArrow => "=>",
+                    Self::Tilde => "~",
+                    Self::Word(_) | Self::Eof => unreachable!(),
+                };
+                format!("'{spelling}'")
+            }
+        }
+    }
+}
+
+struct Lexer<'src> {
+    source: &'src str,
+    offset: usize,
+    span: Span,
+}
+
+impl<'src> Lexer<'src> {
+    fn new(source: &'src str) -> Self {
+        Self {
+            source,
+            offset: 0,
+            span: Span { line: 1, column: 1 },
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.source.as_bytes().get(self.offset).copied()
+    }
+
+    fn step(&mut self) {
+        if self.peek() == Some(b'\n') {
+            self.span.line += 1;
+            self.span.column = 1;
+        } else {
+            self.span.column += 1;
+        }
+        self.offset += 1;
+    }
+
+    fn eat(&mut self, byte: u8) -> bool {
+        if self.peek() == Some(byte) {
+            self.step();
+            return true;
+        }
+        false
+    }
+
+    fn next(&mut self) -> Result<(Token<'src>, Span)> {
+        loop {
+            match self.peek() {
+                Some(byte) if byte.is_ascii_whitespace() => self.step(),
+                Some(b'/') if self.source.as_bytes().get(self.offset + 1) == Some(&b'/') => {
+                    while self.peek().is_some_and(|byte| byte != b'\n') {
+                        self.step();
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let span = self.span;
+        let Some(byte) = self.peek() else {
+            return Ok((Token::Eof, span));
+        };
+        let start = self.offset;
+        self.step();
+        let token = match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                while self
+                    .peek()
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                {
+                    self.step();
+                }
+                if self.offset - start > MAX_IDENTIFIER_BYTES {
+                    return Err(Error::new(span, "identifier exceeds 128 bytes"));
+                }
+                Token::Word(&self.source[start..self.offset])
+            }
+            b'{' => Token::LBrace,
+            b'}' => Token::RBrace,
+            b'(' => Token::LParen,
+            b')' => Token::RParen,
+            b'[' => Token::LBracket,
+            b']' => Token::RBracket,
+            b':' => Token::Colon,
+            b';' => Token::Semi,
+            b',' => Token::Comma,
+            b'.' => Token::Dot,
+            b'<' => Token::Less,
+            b'*' => Token::Star,
+            b'\\' => Token::Slash,
+            b'=' if self.eat(b'=') => Token::EqualEqual,
+            b'=' if self.eat(b'>') => Token::FatArrow,
+            b'=' => Token::Equal,
+            b'-' if self.eat(b'>') => Token::Arrow,
+            b'~' => Token::Tilde,
+            _ => {
+                let character = self.source[start..].chars().next().unwrap();
+                return Err(Error::new(
+                    span,
+                    format!("unexpected character {character:?}"),
+                ));
+            }
+        };
+        Ok((token, span))
+    }
+}
+
+pub(crate) struct Parser<'src> {
+    lexer: Lexer<'src>,
+    lookahead: (Token<'src>, Span),
+}
+
+impl<'src> Parser<'src> {
+    pub(crate) fn new(source: &'src str) -> Result<Self> {
+        let mut lexer = Lexer::new(source);
+        let lookahead = lexer.next()?;
+        Ok(Self { lexer, lookahead })
+    }
+
+    fn token(&self) -> Token<'src> {
+        self.lookahead.0
+    }
+
+    fn span(&self) -> Span {
+        self.lookahead.1
+    }
+
+    fn advance(&mut self) -> Result<()> {
+        self.lookahead = self.lexer.next()?;
+        Ok(())
+    }
+
+    fn eat(&mut self, token: Token<'src>) -> Result<bool> {
+        if self.token() == token {
+            self.advance()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn expect(&mut self, token: Token<'src>) -> Result<()> {
+        if !self.eat(token)? {
+            return Err(self.expected(&token.description()));
+        }
+        Ok(())
+    }
+
+    fn expected(&self, expected: &str) -> Error {
+        Error::new(
+            self.span(),
+            format!("expected {expected}, found {}", self.token().description()),
+        )
+    }
+
+    fn label(&mut self) -> Result<Label> {
+        let Token::Word(text) = self.token() else {
+            return Err(self.expected("an identifier"));
+        };
+        if matches!(
+            text,
+            "space"
+                | "let"
+                | "show"
+                | "assert"
+                | "betti"
+                | "homotopy"
+                | "Star"
+                | "fst"
+                | "snd"
+                | "tab"
+                | "res"
+                | "sew"
+        ) {
+            return Err(self.expected("an identifier"));
+        }
+        let label = Label {
+            text: text.into(),
+            span: self.span(),
+        };
+        self.advance()?;
+        Ok(label)
+    }
+
+    pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
+        let span = self.span();
+        let kind = match self.token() {
+            Token::Eof => return Ok(None),
+            Token::Word("space") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBrace)?;
+                let mut chains = Vec::new();
+                while self.token() != Token::RBrace {
+                    let mut chain = vec![self.label()?];
+                    while self.eat(Token::Less)? {
+                        chain.push(self.label()?);
+                    }
+                    chains.push(chain);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::Space(name, chains)
+            }
+            Token::Word("let") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::Equal)?;
+                StatementForm::Let(name, self.expr(0)?)
+            }
+            Token::Word("show") => {
+                self.advance()?;
+                StatementForm::Show(self.expr(0)?)
+            }
+            Token::Word("assert") => {
+                self.advance()?;
+                let left = self.expr(0)?;
+                self.expect(Token::EqualEqual)?;
+                StatementForm::Assert(left, self.expr(0)?)
+            }
+            Token::Word("betti") => {
+                self.advance()?;
+                StatementForm::Betti(self.ty(0)?)
+            }
+            Token::Word("homotopy") => {
+                self.advance()?;
+                let left = self.expr(0)?;
+                self.expect(Token::Tilde)?;
+                StatementForm::Homotopy(left, self.expr(0)?)
+            }
+            _ => return Err(self.expected("a statement")),
+        };
+        self.expect(Token::Semi)?;
+        Ok(Some(Statement { span, kind }))
+    }
+
+    fn ty(&mut self, nest: usize) -> Result<ParsedType> {
+        check_nesting(nest, self.span())?;
+        let mut head = self.type_atom(nest)?;
+        while self.eat(Token::Star)? {
+            let right = self.type_atom(nest)?;
+            let span = head.span;
+            let depth = head.depth.max(right.depth) + 1;
+            head = ty(
+                span,
+                TypeForm::Product(Box::new(head), Box::new(right)),
+                depth,
+            )?;
+        }
+        if self.eat(Token::Arrow)? {
+            let right = self.ty(nest + 1)?;
+            let span = head.span;
+            let depth = head.depth.max(right.depth) + 1;
+            head = ty(
+                span,
+                TypeForm::Arrow(Box::new(head), Box::new(right)),
+                depth,
+            )?;
+        }
+        Ok(head)
+    }
+
+    fn type_atom(&mut self, nest: usize) -> Result<ParsedType> {
+        let span = self.span();
+        if self.eat(Token::LParen)? {
+            let ty = self.ty(nest + 1)?;
+            self.expect(Token::RParen)?;
+            return Ok(ty);
+        }
+        if self.eat(Token::Word("Star"))? {
+            self.expect(Token::LParen)?;
+            let base = self.ty(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let point = self.label()?;
+            self.expect(Token::RParen)?;
+            let depth = base.depth + 1;
+            return ty(span, TypeForm::Star(Box::new(base), point), depth);
+        }
+        ty(span, TypeForm::Name(self.label()?), 0)
+    }
+
+    fn expr(&mut self, nest: usize) -> Result<ParsedExpr> {
+        check_nesting(nest, self.span())?;
+        let mut head = self.expr_atom(nest)?;
+        while self.eat(Token::LParen)? {
+            let arg = self.expr(nest + 1)?;
+            self.expect(Token::RParen)?;
+            let span = head.span;
+            let depth = head.depth.max(arg.depth) + 1;
+            head = expr(span, ExprForm::Call(Box::new(head), Box::new(arg)), depth)?;
+        }
+        Ok(head)
+    }
+
+    fn expr_atom(&mut self, nest: usize) -> Result<ParsedExpr> {
+        let span = self.span();
+        match self.token() {
+            Token::Slash => {
+                self.advance()?;
+                let parameter = self.label()?;
+                self.expect(Token::Colon)?;
+                let domain = self.ty(nest + 1)?;
+                self.expect(Token::FatArrow)?;
+                let body = self.expr(nest + 1)?;
+                let depth = body.depth + 1;
+                expr(
+                    span,
+                    ExprForm::Lambda(parameter, domain, Box::new(body)),
+                    depth,
+                )
+            }
+            Token::LParen => {
+                self.advance()?;
+                let left = self.expr(nest + 1)?;
+                if !self.eat(Token::Comma)? {
+                    self.expect(Token::RParen)?;
+                    return Ok(left);
+                }
+                let right = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let depth = left.depth.max(right.depth) + 1;
+                expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
+            }
+            Token::Word("fst") | Token::Word("snd") => {
+                let first = self.token() == Token::Word("fst");
+                self.advance()?;
+                let value = self.paren_expr(nest)?;
+                let depth = value.depth + 1;
+                let kind = if first {
+                    ExprForm::Fst(Box::new(value))
+                } else {
+                    ExprForm::Snd(Box::new(value))
+                };
+                expr(span, kind, depth)
+            }
+            Token::Word("res") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let point = self.label()?;
+                self.expect(Token::RBracket)?;
+                let base = self.paren_expr(nest)?;
+                let depth = base.depth + 1;
+                expr(span, ExprForm::Restrict(point, Box::new(base)), depth)
+            }
+            Token::Word("tab") | Token::Word("sew") => {
+                let is_table = self.token() == Token::Word("tab");
+                let keyword = self.token().description();
+                self.advance()?;
+                let ty = self.ty(nest + 1)?;
+                let TypeForm::Arrow(domain, codomain) = ty.kind else {
+                    return Err(Error::new(
+                        ty.span,
+                        format!("{keyword} requires a type of the form X -> Y"),
+                    ));
+                };
+                self.expect(Token::LBrace)?;
+                let mut entries = Vec::new();
+                while self.token() != Token::RBrace {
+                    let label = self.label()?;
+                    self.expect(Token::FatArrow)?;
+                    entries.push((label, self.expr(nest + 1)?));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                let depth = entries
+                    .iter()
+                    .map(|(_, value)| value.depth + 1)
+                    .max()
+                    .unwrap_or(0);
+                let kind = if is_table {
+                    ExprForm::Table(*domain, *codomain, entries)
+                } else {
+                    ExprForm::Sew(*domain, *codomain, entries)
+                };
+                expr(span, kind, depth)
+            }
+            Token::Word("Star") => {
+                let ty = self.type_atom(nest)?;
+                self.expect(Token::Dot)?;
+                expr(span, ExprForm::Point(ty, self.label()?), 0)
+            }
+            Token::Word(_) => {
+                let name = self.label()?;
+                if self.eat(Token::Dot)? {
+                    let ty = ty(span, TypeForm::Name(name), 0)?;
+                    return expr(span, ExprForm::Point(ty, self.label()?), 0);
+                }
+                expr(span, ExprForm::Name(name), 0)
+            }
+            _ => Err(self.expected("an expression")),
+        }
+    }
+
+    fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {
+        self.expect(Token::LParen)?;
+        let value = self.expr(nest + 1)?;
+        self.expect(Token::RParen)?;
+        Ok(value)
+    }
+}
+
+fn check_nesting(depth: usize, span: Span) -> Result<()> {
+    if depth > MAX_NESTING {
+        return Err(Error::new(span, "syntax nesting exceeds 64 levels"));
+    }
+    Ok(())
+}
+
+fn ty(span: Span, kind: TypeForm, depth: usize) -> Result<ParsedType> {
+    check_nesting(depth, span)?;
+    Ok(ParsedType { span, kind, depth })
+}
+
+fn expr(span: Span, kind: ExprForm, depth: usize) -> Result<ParsedExpr> {
+    check_nesting(depth, span)?;
+    Ok(ParsedExpr { span, kind, depth })
+}
