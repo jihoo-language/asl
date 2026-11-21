@@ -48,6 +48,7 @@ use crate::rv_koszul;
 use crate::rv_poly;
 use crate::rv_rees;
 use crate::rv_scheme;
+use crate::rv_shintani;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::steenrod;
@@ -187,6 +188,7 @@ enum TypedForm {
     RVField(rv_field::Map, Box<TypedExpr>),
     RVInverse(Box<TypedExpr>),
     RVHilbert90(Embedding, Box<TypedExpr>),
+    RVShintani(rv_shintani::Operation, Embedding, Box<TypedExpr>),
     RVTwisted(rv_descent::Twist, Embedding, Box<[TypedExpr; 3]>),
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
@@ -290,6 +292,26 @@ impl Engine {
                 );
                 self.values.push(value);
                 return Ok(None);
+            }
+            StatementForm::RVInvariantFactors(modulus, root, input) => {
+                let input = self.checker().expr(input)?;
+                let (_, embedding) = rv_shintani::plan(
+                    &mut self.model,
+                    input.ty,
+                    modulus,
+                    root,
+                    rv_shintani::Operation::Factors,
+                )?;
+                let Value::RVHom(support) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let factors = rv_shintani::invariant_factors(
+                    &mut self.model,
+                    input.ty,
+                    &embedding,
+                    &support,
+                )?;
+                format!("rvInvariantFactors[{modulus}, {root}] = {factors:?}")
             }
             StatementForm::Show(expr) => {
                 let expr = self.checker().expr(expr)?;
@@ -1313,6 +1335,12 @@ impl Engine {
                     types,
                     [&left, &input, &right],
                 )
+            }
+            TypedForm::RVShintani(operation, embedding, input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_shintani::evaluate(&mut self.model, input.ty, embedding, &value, *operation)
             }
             TypedForm::RVSpecialize(input) => {
                 let value = self.eval(input)?;
@@ -2478,6 +2506,15 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::RVTwisted(operation, embedding, Box::new([left, input, right])),
+                ))
+            }
+            ExprForm::RVShintani(operation, modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let (ty, embedding) =
+                    rv_shintani::plan(self.model, input.ty, modulus, root, operation)?;
+                Ok((
+                    ty,
+                    TypedForm::RVShintani(operation, embedding, Box::new(input)),
                 ))
             }
             ExprForm::RVSpecialize(modulus, point, input) => {

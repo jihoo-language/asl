@@ -348,6 +348,7 @@ pub(crate) enum ExprForm {
     RVField(crate::rv_field::Operation, Box<ParsedExpr>),
     RVInverse(Box<ParsedExpr>),
     RVHilbert90(usize, usize, Box<ParsedExpr>),
+    RVShintani(crate::rv_shintani::Operation, usize, usize, Box<ParsedExpr>),
     RVTwisted(crate::rv_descent::Twist, usize, usize, Box<[ParsedExpr; 3]>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
@@ -407,6 +408,7 @@ pub(crate) enum StatementForm {
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
+    RVInvariantFactors(usize, usize, ParsedExpr),
     Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
@@ -836,6 +838,12 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 self.expect(Token::Equal)?;
                 StatementForm::Let(name, self.expr(0)?)
+            }
+            Token::Word("rvInvariantFactors") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, root) = self.embedding_parameters()?;
+                StatementForm::RVInvariantFactors(modulus, root, self.paren_expr(0)?)
             }
             Token::Word("show") => {
                 self.advance()?;
@@ -2455,6 +2463,27 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrobNorm" | "rvShintani" | "rvShintaniFrame"
+                ) && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_shintani::Operation;
+                    let operation = match name.text.as_str() {
+                        "rvFrobNorm" => Operation::Norm,
+                        "rvShintani" => Operation::Companion,
+                        "rvShintaniFrame" => Operation::Frame,
+                        _ => unreachable!(),
+                    };
+                    let (modulus, root) = self.embedding_parameters()?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RVShintani(operation, modulus, root, Box::new(input)),
+                        depth,
+                    );
+                }
                 if name.text == "rvSpec" && self.eat(Token::LBracket)? {
                     let (modulus, _) = self.number()?;
                     self.expect(Token::Comma)?;
@@ -2710,6 +2739,14 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (t, _) = self.number()?;
         Ok(RvGradeSpec { ideal, s, t })
+    }
+
+    fn embedding_parameters(&mut self) -> Result<(usize, usize)> {
+        let (modulus, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (root, _) = self.number()?;
+        self.expect(Token::RBracket)?;
+        Ok((modulus, root))
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {

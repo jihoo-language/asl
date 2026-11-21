@@ -555,6 +555,16 @@ The interpreter applies $T=A\sigma$ to standard basis vectors to verify $T^d=I$.
 
 The example computes a frame for the unipotent two-by-two datum over $\mathbb F_4/\mathbb F_2$, which requires a power of the extension generator to obtain the second independent column. It also descends rectangular maps and verifies a degree-three norm whose first two factors have different products in the two orders. [Hilbert 90 example](examples/rv-hilbert90.asl)
 
+### Shintani descent of Frobenius norms
+
+For an invertible `RVHom` endomorphism $A$ over $L$ at an affine point in $K$, `rvFrobNorm[modulus, root](A)` returns the ordered norm $N=A\sigma(A)\cdots\sigma^{d-1}(A)$ over $L$, with $\sigma(x)=x^{|K|}$ and $d=[L:K]$. The modulus and root specify the inclusion of $K$ into $L$ as in `rvDescend`. Applying $A\sigma$ a total of $d$ times to each standard basis vector computes the norm columns.
+
+The relation $A\sigma(N)A^{-1}=N$ makes the monic invariant factors of $N$ fixed by $\sigma$. The interpreter computes these factors by polynomial Smith reduction of $TI-N$ over $L$ and expresses their coefficients over $K$. `rvInvariantFactors[modulus, root](A);` prints the nonunit factors in divisibility order, with coefficients in ascending powers. `rvShintani[modulus, root](A)` returns their block companion matrix $C$ over $K$ in the same order. Each block has ones on the subdiagonal and the lower coefficients of its invariant factor in its final column in characteristic two.
+
+`rvShintaniFrame[modulus, root](A)` constructs an invertible matrix $B$ over $L$ with $NB=B\iota(C)$. The reduction tracks the inverse Smith row operations on the cyclic generators by evaluating the polynomial operations at $N$. Their Krylov bases give the columns of $B$. Under $A\mapsto S^{-1}A\sigma(S)$ the norm becomes $S^{-1}NS$, so the canonical descended matrix stays the same.
+
+Over $\mathbb F_4/\mathbb F_2$ the example descends a norm with distinct eigenvalues $\omega$ and $\omega^2$ to the companion matrix of $T^2+T+1$. The identity norm and a unipotent norm both have characteristic polynomial $T^2+1$, while their invariant factors are $(T+1,T+1)$ and $(T^2+1)$, respectively. [Shintani example](examples/rv-shintani.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

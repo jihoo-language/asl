@@ -74,9 +74,20 @@ pub(crate) fn hilbert_embedding(
     modulus: usize,
     root: usize,
 ) -> Result<Embedding> {
-    let grade = grade(model, ty, "rvHilbert90")?;
-    endomorphism(&grade, "rvHilbert90")?;
-    Ok(rational_point(model, &grade, modulus, root, "rvHilbert90")?.0)
+    Ok(endomorphism_point(model, ty, modulus, root, "rvHilbert90")?.1)
+}
+
+pub(crate) fn endomorphism_point(
+    model: &mut Model,
+    ty: TypeId,
+    modulus: usize,
+    root: usize,
+    name: &str,
+) -> Result<(Grade, Embedding, Vec<usize>)> {
+    let grade = grade(model, ty, name)?;
+    endomorphism(&grade, name)?;
+    let (embedding, point) = rational_point(model, &grade, modulus, root, name)?;
+    Ok((grade, embedding, point))
 }
 
 pub(crate) fn twist_plan(
@@ -122,14 +133,14 @@ pub(crate) fn twist_plan(
     Ok((model.rv_hom_type(output)?, embedding))
 }
 
-struct Matrix {
+pub(crate) struct Matrix {
     rows: usize,
     columns: Vec<Vector>,
     cells: usize,
 }
 
 impl Matrix {
-    fn new(rows: usize, columns: usize) -> Result<Self> {
+    pub(crate) fn new(rows: usize, columns: usize) -> Result<Self> {
         check_storage(columns)?;
         Ok(Self {
             rows,
@@ -138,7 +149,7 @@ impl Matrix {
         })
     }
 
-    fn read(
+    pub(crate) fn read(
         model: &mut Model,
         rows: usize,
         columns: usize,
@@ -156,14 +167,19 @@ impl Matrix {
         Ok(matrix)
     }
 
-    fn push(&mut self, column: Vector) -> Result<()> {
+    pub(crate) fn push(&mut self, column: Vector) -> Result<()> {
         self.cells += 2 * column.len();
         check_storage(self.cells)?;
         self.columns.push(column);
         Ok(())
     }
 
-    fn apply(&self, model: &mut Model, field: BinaryField, vector: &[Entry]) -> Result<Vector> {
+    pub(crate) fn apply(
+        &self,
+        model: &mut Model,
+        field: BinaryField,
+        vector: &[Entry],
+    ) -> Result<Vector> {
         model.spend(vector.len())?;
         let mut image = Vec::new();
         for &(column, coefficient) in vector {
@@ -172,7 +188,26 @@ impl Matrix {
         Ok(image)
     }
 
-    fn value(self, model: &mut Model) -> Result<Value> {
+    pub(crate) fn columns(&self) -> &[Vector] {
+        &self.columns
+    }
+
+    pub(crate) fn semilinear_step(
+        &self,
+        model: &mut Model,
+        field: BinaryField,
+        step: usize,
+        vector: &[Entry],
+    ) -> Result<Vector> {
+        model.spend(1 + vector.len())?;
+        let mut conjugate = Vec::with_capacity(vector.len());
+        for &(row, coefficient) in vector {
+            conjugate.push((row, field.frobenius(model, coefficient, step)?));
+        }
+        self.apply(model, field, &conjugate)
+    }
+
+    pub(crate) fn value(self, model: &mut Model) -> Result<Value> {
         model.spend(self.cells)?;
         let mut support = Vec::new();
         for (column, entries) in self.columns.into_iter().enumerate() {
@@ -289,13 +324,9 @@ fn fixed_frame(
         for _ in 0..extension {
             cells += 2 * image.len();
             check_storage(cells)?;
-            let mut conjugate = Vec::with_capacity(image.len());
-            model.spend(image.len() + 1)?;
-            for &(row, coefficient) in &image {
-                conjugate.push((row, field.frobenius(model, coefficient, step)?));
-            }
+            let next = matrix.semilinear_step(model, field, step, &image)?;
             orbit.push(image);
-            image = matrix.apply(model, field, &conjugate)?;
+            image = next;
         }
         // (A sigma)^[L:K] is linear and equals the cocycle norm.
         if image != unit {
