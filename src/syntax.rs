@@ -381,6 +381,13 @@ pub(crate) enum ExprForm {
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
+    RVIwAdlv(
+        crate::rv_iwahori::Boundary,
+        usize,
+        usize,
+        Vec<i128>,
+        Box<[ParsedExpr; 2]>,
+    ),
     RVNewton(crate::rv_newton::Operation, usize, usize, Box<ParsedExpr>),
     RVAdlv(
         crate::rv_hodge::Boundary,
@@ -498,6 +505,9 @@ pub(crate) enum StatementForm {
     RVInvariantFactors(usize, usize, ParsedExpr),
     RVNewton(usize, usize, ParsedExpr),
     RVHodge(ParsedExpr),
+    RVIw(bool, ParsedExpr),
+    RVIwPosition(Box<[ParsedExpr; 2]>),
+    RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
     RVTree(crate::rv_tree::Report, usize, usize, usize, ParsedExpr),
     RVPosition(Box<[ParsedExpr; 2]>),
     RVMuAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -848,12 +858,16 @@ impl<'src> Parser<'src> {
     }
 
     fn bp_coefficient(&mut self) -> Result<i128> {
+        self.signed_wide("a signed BP integer", "BP coefficient")
+    }
+
+    fn signed_wide(&mut self, expected: &str, label: &str) -> Result<i128> {
         let span = self.span();
         let negative = self.eat(Token::Minus)?;
         let Token::Number(text) = self.token() else {
-            return Err(self.expected("a signed BP integer"));
+            return Err(self.expected(expected));
         };
-        let overflow = || Error::new(span, "BP coefficient exceeds the signed i128 range");
+        let overflow = || Error::new(span, format!("{label} exceeds the signed i128 range"));
         let magnitude = text.parse::<u128>().map_err(|_| overflow())?;
         let value = if negative && magnitude == i128::MIN.unsigned_abs() {
             i128::MIN
@@ -996,6 +1010,21 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvIw" | "rvIwLength") => {
+                let length = self.token() == Token::Word("rvIwLength");
+                self.advance()?;
+                StatementForm::RVIw(length, self.paren_expr(0)?)
+            }
+            Token::Word("rvIwPosition") => {
+                self.advance()?;
+                StatementForm::RVIwPosition(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word("rvIwAt") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, root) = self.embedding_parameters()?;
+                StatementForm::RVIwAt(modulus, root, Box::new(self.paren_pair(0)?))
             }
             Token::Word("rvHodge") => {
                 self.advance()?;
@@ -3160,6 +3189,41 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::RVShintani(operation, modulus, root, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvInIwADLV" | "rvInIwADLVClosure")
+                    && self.eat(Token::LBracket)?
+                {
+                    let boundary = if name.text == "rvInIwADLV" {
+                        crate::rv_iwahori::Boundary::Exact
+                    } else {
+                        crate::rv_iwahori::Boundary::Closure
+                    };
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (root, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    self.expect(Token::LBracket)?;
+                    let mut window = Vec::new();
+                    while self.token() != Token::RBracket {
+                        window.push(
+                            self.signed_wide(
+                                "a signed affine window entry",
+                                "affine window entry",
+                            )?,
+                        );
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::RBracket)?;
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(
+                        span,
+                        ExprForm::RVIwAdlv(boundary, modulus, root, window, Box::new(arguments)),
                         depth,
                     );
                 }

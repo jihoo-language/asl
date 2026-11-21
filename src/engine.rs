@@ -53,6 +53,7 @@ use crate::rv_hochster;
 use crate::rv_hodge;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
+use crate::rv_iwahori;
 use crate::rv_koszul;
 use crate::rv_laurent;
 use crate::rv_newton;
@@ -213,6 +214,7 @@ enum TypedForm {
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
     RVAdlv(rv_hodge::Boundary, usize, Vec<i64>, Box<[TypedExpr; 2]>),
+    RVIwAdlv(rv_iwahori::Boundary, usize, Vec<i128>, Box<[TypedExpr; 2]>),
     RVSpecialize(Box<TypedExpr>),
     RVField(rv_field::Map, Box<TypedExpr>),
     RVInverse(Box<TypedExpr>),
@@ -349,6 +351,47 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::RVIw(length, input) => {
+                let name = if length { "rvIwLength" } else { "rvIw" };
+                let input = self.checker().expr(input)?;
+                rv_hodge::square(&self.model, input.ty, name)?;
+                let Value::RVLaurent(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let window = rv_iwahori::standard(&mut self.model, input.ty, &value, name)?;
+                if length {
+                    let length = rv_iwahori::length(&mut self.model, &window)?;
+                    format!("{name} = {length}")
+                } else {
+                    format!("{name} = {window:?}")
+                }
+            }
+            StatementForm::RVIwPosition(arguments) => {
+                let [x, y] = *arguments;
+                let x = self.checker().expr(x)?;
+                let y = self.checker().expr(y)?;
+                rv_hodge::compatible(&self.model, x.ty, y.ty, "rvIwPosition")?;
+                let values = [self.eval(&x)?, self.eval(&y)?];
+                let [Value::RVLaurent(frame), Value::RVLaurent(other)] = values else {
+                    unreachable!()
+                };
+                let window = rv_iwahori::position(&mut self.model, x.ty, &frame, &other)?;
+                format!("rvIwPosition = {window:?}")
+            }
+            StatementForm::RVIwAt(modulus, root, arguments) => {
+                let [a, x] = *arguments;
+                let a = self.checker().expr(a)?;
+                let x = self.checker().expr(x)?;
+                let step =
+                    rv_hodge::relative_step(&mut self.model, a.ty, x.ty, modulus, root, "rvIwAt")?;
+                let values = [self.eval(&a)?, self.eval(&x)?];
+                let [Value::RVLaurent(action), Value::RVLaurent(frame)] = values else {
+                    unreachable!()
+                };
+                let window =
+                    rv_iwahori::at(&mut self.model, a.ty, &action, &frame, step, "rvIwAt")?;
+                format!("rvIwAt[{modulus}, {root}] = {window:?}")
             }
             StatementForm::RVHodge(input) => {
                 let input = self.checker().expr(input)?;
@@ -1718,6 +1761,23 @@ impl Engine {
                 };
                 let image = rv_laurent::frobenius(&mut self.model, *field, &value, *powers)?;
                 rv_laurent::persist(&mut self.model, image)
+            }
+            TypedForm::RVIwAdlv(boundary, step, target, arguments) => {
+                let [a, x] = arguments.as_ref();
+                let values = [self.eval(a)?, self.eval(x)?];
+                let [Value::RVLaurent(action), Value::RVLaurent(frame)] = values else {
+                    unreachable!()
+                };
+                let actual = rv_iwahori::at(
+                    &mut self.model,
+                    a.ty,
+                    &action,
+                    &frame,
+                    *step,
+                    boundary.name(),
+                )?;
+                let contains = boundary.contains(&mut self.model, &actual, target)?;
+                Ok(Value::Point(usize::from(contains)))
             }
             TypedForm::RVAdlv(boundary, step, mu, arguments) => {
                 let [a, x] = arguments.as_ref();
@@ -3177,6 +3237,25 @@ impl Checker<'_> {
                 };
                 let ty = self.model.rv_laurent_type(grade.clone())?;
                 Ok((ty, TypedForm::RVLaurentMonomial(power, Box::new(input))))
+            }
+            ExprForm::RVIwAdlv(boundary, modulus, root, window, arguments) => {
+                let [a, x] = *arguments;
+                let a = self.expr(a)?;
+                let x = self.expr(x)?;
+                let step = rv_hodge::relative_step(
+                    self.model,
+                    a.ty,
+                    x.ty,
+                    modulus,
+                    root,
+                    boundary.name(),
+                )?;
+                rv_iwahori::check_window(self.model, a.ty, &window)?;
+                let ty = self.model.named("S").unwrap();
+                Ok((
+                    ty,
+                    TypedForm::RVIwAdlv(boundary, step, window, Box::new([a, x])),
+                ))
             }
             ExprForm::RVAdlv(boundary, modulus, root, mu, arguments) => {
                 let [a, x] = *arguments;

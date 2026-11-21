@@ -654,6 +654,18 @@ Every vertex at radius $r>0$ has a unique normalized lattice with elementary div
 
 For $L=\mathbb F_4$ over $\mathbb F_2$ at radius three, relative Frobenius fixes 12 vertices. The other displacements $2$, $4$, and $6$ occur at 12, 24, and 32 vertices, respectively. The supersingular two-cycle exchanges the endpoints of the standard edge and gives positions $(-2,3)$ and $(-3,4)$ at 16 and 64 vertices. The example also checks invariance under a change of basis fixing the standard lattice and the effect of a negative Tate twist. [Bruhat–Tits tree example](examples/rv-tree.asl)
 
+### Affine flags and Iwahori relative position
+
+For rank $n$, the standard descending lattice chain has its first $i$ basis vectors multiplied by $u$ in $\Lambda_i$, for $0\le i<n$. It continues by $\Lambda_{i+n}=u\Lambda_i$. A lattice frame acts on the entire chain. The stabilizer is lower triangular modulo $u$.
+
+`rvIw(A);` reports the Iwahori position of the standard chain and its image by an invertible `RVLaurent` endomorphism $A$. It uses the affine permutation window $[w(0),\ldots,w(n-1)]$ with distinct residues modulo $n$. If $A e_j=u^k e_i$ in the monomial representative, then $w(j)=i+nk$. In the Schur complement the pivot minimizes $n\nu_u(a_{ij})+i-j$ in the original row and column indices. This choice permits row and column elimination in the two lower-triangular Iwahori stabilizers. Fraction-free Laurent elimination obtains the pivot valuations exactly. `rvIwLength(A);` reports $\sum_{i<j}|\lfloor(w(j)-w(i))/n\rfloor|$.
+
+`rvIwPosition(X, Y);` takes the window of $X^{-1}Y$, and `rvIwAt[modulus, root](A, X);` takes the window of $X^{-1}A\sigma(X)$. Both frames use the same Margolis endpoint and affine point. For the semilinear position this point must lie in the specified subfield. The adjugate calculation accounts for the scalar determinant of $X$ by translating the entire window.
+
+`rvInIwADLV[modulus, root, window](A, X)` returns `S.hi` when the computed semilinear position equals the supplied window. `rvInIwADLVClosure` checks extended affine Bruhat order. The components $\sum_j(w(j)-j)/n$ must agree and $R_w(i,j)=\#\{a<j:w(a)\ge i\}$ must be at most the same rank for the supplied window at every $i,j$. For fixed residues of $i$ and $j$, these ranks are sums of truncated affine functions. The calculation compares their finitely many breakpoints.
+
+The identity and the finite simple reflection both preserve the standard lattice. Their affine windows are $(0,1)$ and $(1,0)$. The affine simple reflection has window $(-1,2)$, and both reflections have length one. A coefficient Frobenius over $\mathbb F_4/\mathbb F_2$ changes the flag of an upper-triangular unit frame. [Affine flag example](examples/rv-iwahori.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.
