@@ -995,11 +995,7 @@ impl Model {
 
     pub(crate) fn rv_grade(&self, name: Label, s: usize, t: usize) -> Result<RvGrade> {
         self.rv_ideal(&name)?;
-        Ok(RvGrade {
-            ideal: name.text.into(),
-            s,
-            t,
-        })
+        Ok(RvGrade::total(name.text.into(), s, t))
     }
 
     pub(crate) fn rv_complex_type(&mut self, grade: RvGrade, homology: bool) -> Result<TypeId> {
@@ -1644,10 +1640,22 @@ impl Model {
                 } else {
                     "RVTor"
                 };
-                out.push(&format!(
-                    "{family}({}, {}, {})",
-                    grade.ideal, grade.s, grade.t
-                ))
+                if let Some(multidegree) = &grade.multidegree {
+                    let family = if matches!(self.kind(ty), Kind::RVKoszul(_)) {
+                        "RVMKoszul"
+                    } else {
+                        "RVMTor"
+                    };
+                    out.push(&format!(
+                        "{family}({}, {}, {multidegree:?})",
+                        grade.ideal, grade.s
+                    ))
+                } else {
+                    out.push(&format!(
+                        "{family}({}, {}, {})",
+                        grade.ideal, grade.s, grade.t
+                    ))
+                }
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
@@ -2099,17 +2107,22 @@ impl Model {
                 Kind::RVKoszul(ref grade) => {
                     let grade = grade.clone();
                     let ideal = self.rv_ideals[&grade.ideal].clone();
-                    let basis = rv_koszul::Slice::build(
+                    let basis = rv_koszul::Slice::build_grade(
                         self,
                         &ideal,
-                        grade.s,
-                        grade.t,
+                        &grade,
                         MAX_ELEMENTS.ilog2() as usize,
                     )?;
                     let rank = basis.len();
-                    self.allocate(basis.cells() + 2 * (support_space_size(rank) / 2) * rank)?;
+                    let terms: Vec<_> = (0..rank).map(|index| basis.term(index)).collect();
+                    let retained = if grade.multidegree.is_some() {
+                        rv_koszul::cells(&terms)
+                    } else {
+                        basis.cells()
+                    };
+                    self.allocate(retained + 2 * (support_space_size(rank) / 2) * rank)?;
                     self.enumerate_supports(0, rank, |support| {
-                        Value::RVKoszul(support.iter().map(|&index| basis.term(index)).collect())
+                        Value::RVKoszul(support.iter().map(|&index| terms[index].clone()).collect())
                     })?
                 }
                 Kind::RVTor(..) => {

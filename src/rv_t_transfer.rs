@@ -78,6 +78,9 @@ pub(crate) fn result_type(
                 model.type_name(input)
             )));
         };
+        if grade.multidegree.is_some() {
+            return Err(Error::plain(format!("{name} requires total RVTor classes")));
+        }
         if ideal.get_or_insert_with(|| grade.ideal.clone()) != &grade.ideal {
             return Err(Error::plain(format!("{name} requires the same rank ideal")));
         }
@@ -85,11 +88,7 @@ pub(crate) fn result_type(
         t = t.checked_add(grade.t).ok_or_else(degree_limit)?;
     }
     let s = usize::try_from(s).map_err(|_| degree_limit())?;
-    let grade = Grade {
-        ideal: ideal.unwrap(),
-        s,
-        t,
-    };
+    let grade = Grade::total(ideal.unwrap(), s, t);
     model.rv_complex_type(grade, matches!(operation, Operation::Higher))
 }
 
@@ -195,11 +194,7 @@ impl Intervals {
         let (after_s, after_t) = self.prefixes[end];
         let s = usize::try_from(after_s - before_s + (end - start - 2) as u128)
             .map_err(|_| degree_limit())?;
-        Ok(Grade {
-            ideal: name.clone(),
-            s,
-            t: after_t - before_t,
-        })
+        Ok(Grade::total(name.clone(), s, after_t - before_t))
     }
 
     fn obstruction(
@@ -464,11 +459,7 @@ mod tests {
             let contraction = Contraction::new(&mut model, &ideal)?;
             for s in 0..=indices.len() {
                 for t in s..=s + 3 {
-                    let grade = Grade {
-                        ideal: name.into(),
-                        s,
-                        t,
-                    };
+                    let grade = Grade::total(name.into(), s, t);
                     let slice = Slice::build(&mut model, &ideal, s, t, 128)?;
                     let ty = model.rv_complex_type(grade.clone(), true)?;
                     let tor = model.rv_tor(ty)?;

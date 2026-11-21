@@ -70,6 +70,12 @@ impl Signature {
                     ))
                 }
             };
+            if grade.multidegree.is_some() {
+                return Err(Error::new(
+                    location,
+                    format!("{name} requires total Koszul chains or Tor classes"),
+                ));
+            }
             if ideal.get_or_insert_with(|| grade.ideal.clone()) != &grade.ideal {
                 return Err(Error::new(
                     location,
@@ -117,11 +123,7 @@ impl Signature {
         };
         let s = usize::try_from(s1 - s0 + (to - from - shift) as u128).map_err(|_| overflow())?;
         let t = usize::try_from(t1 - t0).map_err(|_| overflow())?;
-        Ok(Grade {
-            ideal: self.ideal.clone(),
-            s,
-            t,
-        })
+        Ok(Grade::total(self.ideal.clone(), s, t))
     }
 }
 

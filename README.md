@@ -668,6 +668,14 @@ For a declared rank ideal $J\subset S=\mathbb F_2[x_i:i\in I]$, `RVKoszul(J, s, 
 
 For the complete intersection $(xy+z^2,x^2+yz)$, the two classes in $(1,2)$ multiply to the generator at $(2,4)$. The example also multiplies a cycle by a nonzero chain boundary and verifies that the product is a boundary. For $(x^2,xy,y^2)$ the ranks in $(1,2)$ and $(2,3)$ are three and two, and all products of positive homological degree vanish. [Syzygies example](examples/rank-syzygies.asl)
 
+#### Multigraded Koszul slices
+
+For a monomial ideal, `RVMKoszul(J,s,[mu])` fixes the full multidegree $\mu$, the sum of the coefficient exponents and the exterior indicators in primitive order. Its homology is `RVMTor(J,s,[mu])`. The interpreter enumerates only wedge subsets of the support of $\mu$ and takes the standard coefficient $x^{\mu-1_W}$ for each surviving wedge $W$.
+
+`rvmkterm[J,[wedge]](rvmon[I]{powers})` uses a literal monomial so its multidegree can be inferred. `rvmbetti[J,s,[mu]];` reports the local rank, and `rvmtorgen[J,s,[mu],i]` selects a local basis class by zero-based index. The Koszul differential, primitive, products and class operations also work in these types. Products add multidegrees.
+
+`rvMComponent[[mu]](x)` projects a total chain or class of internal degree $|\mu|$ to one multidegree. `rvMForget(x)` includes a multigraded chain or class in the total group. Including a class requires the total Tor slice to fit the computation limits. For example, over $\mathbb F_2[x]/(x^2)$ the cycle $x e_x$ generates `RVMTor(J,1,[2])`.
+
 ### Triple Massey products in Tor
 
 `rvTBracket(a,b,c)` returns the predicate for the triple Massey product of three `RVTor` classes over the same ideal. If either adjacent product is nonzero in Tor, the predicate is empty. Otherwise the interpreter chooses cycle representatives $A,B,C$ and solves $dU=AB$, $dV=BC$. The class of $AV+UC$ lies in homological degree $s_a+s_b+s_c+1$ and internal degree $t_a+t_b+t_c$. All possible values form its coset modulo $a\operatorname{Tor}_{s_b+s_c+1,t_b+t_c}+\operatorname{Tor}_{s_a+s_b+1,t_a+t_b}c$.

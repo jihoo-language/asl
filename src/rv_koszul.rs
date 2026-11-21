@@ -17,9 +17,47 @@ pub(crate) struct Grade {
     pub(crate) ideal: Rc<str>,
     pub(crate) s: usize,
     pub(crate) t: usize,
+    pub(crate) multidegree: Option<Monomial>,
 }
 
 impl Grade {
+    pub(crate) fn total(ideal: Rc<str>, s: usize, t: usize) -> Self {
+        Self {
+            ideal,
+            s,
+            t,
+            multidegree: None,
+        }
+    }
+
+    pub(crate) fn local(
+        model: &mut Model,
+        ideal: &Ideal,
+        name: Rc<str>,
+        s: usize,
+        multidegree: Vec<usize>,
+    ) -> Result<Self> {
+        if multidegree.len() != ideal.selected.len() {
+            return Err(Error::plain(
+                "Koszul multidegree requires one exponent per selected primitive",
+            ));
+        }
+        if monomial_initial(model, ideal)?.is_none() {
+            return Err(Error::plain(
+                "Koszul multigrading requires a monomial rank ideal",
+            ));
+        }
+        model.spend(1 + multidegree.len())?;
+        let t = rv_poly::degree(&multidegree).map_err(|_| grade_limit())?;
+        model.allocate(1 + multidegree.len())?;
+        Ok(Self {
+            ideal: name,
+            s,
+            t,
+            multidegree: Some(multidegree.into()),
+        })
+    }
+
     pub(crate) fn differential(&self) -> Result<Self> {
         let s = self
             .s
@@ -41,10 +79,20 @@ impl Grade {
         }
         let s = self.s.checked_add(other.s).ok_or_else(grade_limit)?;
         let t = self.t.checked_add(other.t).ok_or_else(grade_limit)?;
+        let multidegree = match (&self.multidegree, &other.multidegree) {
+            (None, None) => None,
+            (Some(a), Some(b)) => Some(rv_poly::product_term(a, b)?),
+            _ => {
+                return Err(Error::plain(
+                    "Koszul multiplication requires two total grades or two multidegrees",
+                ))
+            }
+        };
         Ok(Self {
+            ideal: self.ideal.clone(),
             s,
             t,
-            ..self.clone()
+            multidegree,
         })
     }
 }
@@ -77,6 +125,85 @@ pub(crate) fn mask(ideal: &Ideal, primitives: &[usize]) -> Result<usize> {
         mask |= 1usize << index;
     }
     Ok(mask)
+}
+
+pub(crate) fn monomial_initial<'a>(
+    model: &mut Model,
+    ideal: &'a Ideal,
+) -> Result<Option<Vec<&'a [usize]>>> {
+    let mut initial = Vec::new();
+    for polynomial in ideal.polynomials() {
+        model.spend(1)?;
+        let [powers] = polynomial.as_ref() else {
+            return Ok(None);
+        };
+        initial.push(powers.as_ref());
+    }
+    Ok(Some(initial))
+}
+
+pub(crate) fn is_standard(
+    model: &mut Model,
+    initial: &[&[usize]],
+    powers: &[usize],
+) -> Result<bool> {
+    for &leading in initial {
+        model.spend(1 + powers.len())?;
+        if leading.iter().zip(powers).all(|(&a, &b)| a <= b) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) fn add_wedge(powers: &[usize], wedge: usize) -> Result<Vec<usize>> {
+    powers
+        .iter()
+        .enumerate()
+        .map(|(index, &e)| e.checked_add((wedge >> index) & 1).ok_or_else(grade_limit))
+        .collect()
+}
+
+pub(crate) fn coefficient_powers(multidegree: &[usize], wedge: usize) -> Vec<usize> {
+    multidegree
+        .iter()
+        .enumerate()
+        .map(|(index, &e)| e - ((wedge >> index) & 1))
+        .collect()
+}
+
+pub(crate) fn matches_multidegree(term: &Term, multidegree: &[usize]) -> bool {
+    term.powers
+        .iter()
+        .zip(multidegree)
+        .enumerate()
+        .all(|(index, (&power, &degree))| {
+            power.checked_add((term.wedge >> index) & 1) == Some(degree)
+        })
+}
+
+pub(crate) fn visit_wedges(
+    model: &mut Model,
+    active: &[usize],
+    remaining: usize,
+    wedge: usize,
+    visit: &mut impl FnMut(&mut Model, usize) -> Result<()>,
+) -> Result<()> {
+    model.spend(1)?;
+    if remaining == 0 {
+        visit(model, wedge)
+    } else {
+        for index in remaining - 1..active.len() {
+            visit_wedges(
+                model,
+                &active[..index],
+                remaining - 1,
+                wedge | active[index],
+                visit,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn term(
@@ -237,9 +364,57 @@ fn basis_limit() -> Error {
 pub(crate) struct Slice {
     wedges: Vec<usize>,
     monomials: Vec<Monomial>,
+    multidegree: Option<Monomial>,
 }
 
 impl Slice {
+    pub(crate) fn build_grade(
+        model: &mut Model,
+        ideal: &Ideal,
+        grade: &Grade,
+        limit: usize,
+    ) -> Result<Self> {
+        if let Some(multidegree) = &grade.multidegree {
+            return Self::local(model, ideal, grade.s, multidegree.clone(), limit);
+        }
+        Self::build(model, ideal, grade.s, grade.t, limit)
+    }
+
+    fn local(
+        model: &mut Model,
+        ideal: &Ideal,
+        s: usize,
+        multidegree: Monomial,
+        limit: usize,
+    ) -> Result<Self> {
+        let active: Vec<_> = multidegree
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &e)| (e != 0).then_some(1usize << index))
+            .collect();
+        let mut wedges = Vec::new();
+        if s <= active.len() {
+            let initial = monomial_initial(model, ideal)?.unwrap();
+            visit_wedges(model, &active, s, 0, &mut |model, wedge| {
+                model.spend(1 + multidegree.len())?;
+                let powers = coefficient_powers(&multidegree, wedge);
+                if is_standard(model, &initial, &powers)? {
+                    if wedges.len() == limit {
+                        return Err(basis_limit());
+                    }
+                    check_storage(2 + multidegree.len() + wedges.len())?;
+                    wedges.push(wedge);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(Self {
+            wedges,
+            monomials: Vec::new(),
+            multidegree: Some(multidegree),
+        })
+    }
+
     pub(crate) fn build(
         model: &mut Model,
         ideal: &Ideal,
@@ -259,18 +434,37 @@ impl Slice {
         check_storage(wedge_count + rv_poly::cells(&monomials))?;
         let mut wedges = Vec::with_capacity(wedge_count);
         wedge_masks(model, width, s, 0, &mut wedges)?;
-        Ok(Self { wedges, monomials })
+        Ok(Self {
+            wedges,
+            monomials,
+            multidegree: None,
+        })
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.wedges.len() * self.monomials.len()
+        if self.multidegree.is_some() {
+            self.wedges.len()
+        } else {
+            self.wedges.len() * self.monomials.len()
+        }
     }
 
     pub(crate) fn cells(&self) -> usize {
-        self.wedges.len() + rv_poly::cells(&self.monomials)
+        self.wedges.len()
+            + self.multidegree.as_ref().map_or_else(
+                || rv_poly::cells(&self.monomials),
+                |degree| 1 + degree.len(),
+            )
     }
 
     pub(crate) fn term(&self, index: usize) -> Term {
+        if let Some(multidegree) = &self.multidegree {
+            let wedge = self.wedges[index];
+            return Term {
+                wedge,
+                powers: coefficient_powers(multidegree, wedge).into(),
+            };
+        }
         let width = self.monomials.len();
         Term {
             wedge: self.wedges[index / width],
@@ -279,6 +473,22 @@ impl Slice {
     }
 
     fn encode(&self, model: &mut Model, support: &[Term]) -> Result<Vec<usize>> {
+        if let Some(multidegree) = &self.multidegree {
+            model.spend(
+                support.len() * (2 + multidegree.len() + self.wedges.len().max(1).ilog2() as usize),
+            )?;
+            return support
+                .iter()
+                .map(|term| {
+                    if !matches_multidegree(term, multidegree) {
+                        return Err(Error::plain("rank Koszul term has a different multidegree"));
+                    }
+                    self.wedges.binary_search(&term.wedge).map_err(|_| {
+                        Error::plain("rank Koszul term is outside its multigraded basis")
+                    })
+                })
+                .collect();
+        }
         let width = self.monomials.len();
         model.spend(
             support.len()
@@ -511,11 +721,11 @@ impl Tor {
             // The Koszul resolution of the ground field is exact here.
             return Ok(Self::default());
         }
-        let slice = Slice::build(model, ideal, s, t, MAX_BASIS)?;
+        let slice = Slice::build_grade(model, ideal, grade, MAX_BASIS)?;
         if slice.len() == 0 {
             return Ok(Self::default());
         }
-        let incoming = Slice::build(model, ideal, s + 1, t, MAX_BASIS)?;
+        let incoming = Slice::build_grade(model, ideal, &grade.primitive()?, MAX_BASIS)?;
         check_storage(slice.cells() + incoming.cells())?;
         let boundaries = boundary_basis(model, ideal, &incoming, &slice, false)?;
         let mut rows = OutgoingRows::default();
@@ -596,7 +806,7 @@ impl Tor {
                 return Ok(None);
             }
             let source_grade = grade.primitive()?;
-            let source = Slice::build(model, ideal, source_grade.s, source_grade.t, MAX_BASIS)?;
+            let source = Slice::build_grade(model, ideal, &source_grade, MAX_BASIS)?;
             let images = boundary_basis(model, ideal, &source, &self.slice, true)?;
             model.allocate(source.cells() + images.cells())?;
             self.preimages

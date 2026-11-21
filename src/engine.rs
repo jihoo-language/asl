@@ -64,6 +64,7 @@ use crate::syntax::{
     JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp, RvSchemeOp, Statement,
     StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
+use crate::syntax::{RvDegree, RvGradeSpec};
 use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
@@ -104,6 +105,7 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvMForget,
     RvKoszulDifferential,
     RvKoszulPrimitive,
     RvTorClass,
@@ -141,6 +143,7 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvMForget" => Some(Self::RvMForget),
             "rvkD" => Some(Self::RvKoszulDifferential),
             "rvkPrimitive" => Some(Self::RvKoszulPrimitive),
             "rvTorClass" => Some(Self::RvTorClass),
@@ -206,6 +209,7 @@ enum TypedForm {
     BpMassey(bp::Massey, Vec<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
+    RvMComponent(Box<TypedExpr>),
     RvKoszulTerm(usize, Rc<RvIdeal>, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
@@ -602,13 +606,20 @@ impl Engine {
                 format!("rvhilbert[{}, {degree}] = {count}", name.text)
             }
             StatementForm::RvBetti(spec) => {
-                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                let grade = self.checker().rv_koszul_grade(spec)?;
                 let ty = self.model.rv_complex_type(grade.clone(), true)?;
                 let rank = self.model.rv_tor(ty)?.rank();
-                format!(
-                    "rvbetti[{}, {}, {}] = {rank}",
-                    grade.ideal, grade.s, grade.t
-                )
+                if let Some(multidegree) = grade.multidegree {
+                    format!(
+                        "rvmbetti[{}, {}, {multidegree:?}] = {rank}",
+                        grade.ideal, grade.s
+                    )
+                } else {
+                    format!(
+                        "rvbetti[{}, {}, {}] = {rank}",
+                        grade.ideal, grade.s, grade.t
+                    )
+                }
             }
             StatementForm::RvMinors(spec, size) => {
                 let base = self.checker().q_endpoint(*spec.base)?;
@@ -848,6 +859,48 @@ impl Engine {
             }
         };
         Ok(Some(line))
+    }
+
+    fn rv_koszul_regrade(&mut self, source: TypeId, target: TypeId, value: Value) -> Result<Value> {
+        let (Kind::RVKoszul(grade) | Kind::RVTor(grade)) = self.model.kind(target) else {
+            unreachable!();
+        };
+        let grade = grade.clone();
+        let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+        let filter = |model: &mut Model, terms: &[rv_koszul::Term], mu: &[usize]| {
+            model.spend(rv_koszul::cells(terms))?;
+            Ok::<_, Error>(
+                terms
+                    .iter()
+                    .filter(|term| rv_koszul::matches_multidegree(term, mu))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        match value {
+            Value::RVKoszul(terms) => match &grade.multidegree {
+                None => Ok(Value::RVKoszul(terms)),
+                Some(mu) => {
+                    let selected = filter(&mut self.model, &terms, mu)?;
+                    Ok(Value::RVKoszul(rv_koszul::persist(
+                        &mut self.model,
+                        selected,
+                    )?))
+                }
+            },
+            Value::Class(class) if class.is_empty() => Ok(cohomology::zero()),
+            Value::Class(class) => {
+                let mut representative = self
+                    .model
+                    .rv_tor(source)?
+                    .representative_terms(&mut self.model, &class)?;
+                if let Some(mu) = &grade.multidegree {
+                    representative = filter(&mut self.model, &representative, mu)?;
+                }
+                self.rv_tor_class(target, &ideal, &representative)
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn rv_tor_class(
@@ -1204,6 +1257,7 @@ impl Engine {
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
                 }
+                (CobarOp::RvMForget, value) => self.rv_koszul_regrade(input.ty, expr.ty, value),
                 (CobarOp::RvKoszulDifferential, Value::RVKoszul(terms)) => {
                     let Kind::RVKoszul(grade) = self.model.kind(input.ty) else {
                         unreachable!();
@@ -1568,6 +1622,10 @@ impl Engine {
                 };
                 let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
                 Ok(Value::Point(usize::from(vanishes)))
+            }
+            TypedForm::RvMComponent(input) => {
+                let value = self.eval(input)?;
+                self.rv_koszul_regrade(input.ty, expr.ty, value)
             }
             TypedForm::RvKoszulTerm(wedge, ideal, input) => {
                 let Value::RVPoly(coefficient) = self.eval(input)? else {
@@ -2195,7 +2253,7 @@ impl Checker<'_> {
                 self.model.bp_type(shape)
             }
             TypeForm::RVComplex(spec, homology) => {
-                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                let grade = self.rv_koszul_grade(spec)?;
                 self.model.rv_complex_type(grade, homology)
             }
             TypeForm::RVPoly(selected, degree) => {
@@ -2942,6 +3000,62 @@ impl Checker<'_> {
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
             }
+            ExprForm::RvMTerm(name, indices, input) => {
+                let ExprForm::RvMonomial(selected, powers) = input.kind else {
+                    return Err(Error::new(
+                        input.span,
+                        "rvmkterm requires an rvmon literal to infer its multidegree",
+                    ));
+                };
+                let ideal = self.model.rv_ideal(&name)?;
+                if selected.as_slice() != ideal.selected.as_ref() {
+                    return Err(Error::new(
+                        input.span,
+                        "rvmkterm coefficient uses a different primitive selection",
+                    ));
+                }
+                if selected.len() != powers.len() {
+                    return Err(Error::new(
+                        input.span,
+                        "rvmon requires one exponent per selected primitive",
+                    ));
+                }
+                let wedge = rv_koszul::mask(&ideal, &indices)?;
+                let multidegree = rv_koszul::add_wedge(&powers, wedge)?;
+                let grade = rv_koszul::Grade::local(
+                    self.model,
+                    &ideal,
+                    name.text.into(),
+                    indices.len(),
+                    multidegree,
+                )?;
+                let ty = self.model.rv_complex_type(grade, false)?;
+                let coefficient = rv_poly::monomial(powers);
+                let terms = rv_koszul::term(self.model, &ideal, wedge, coefficient)?;
+                Ok((ty, TypedForm::Constant(Value::RVKoszul(terms))))
+            }
+            ExprForm::RvMComponent(multidegree, input) => {
+                let input = self.expr(*input)?;
+                let (mut grade, homology) = self.rv_complex_family(&input, "rvMComponent")?;
+                if grade.multidegree.is_some() {
+                    return Err(Error::new(
+                        input.span,
+                        "rvMComponent requires a total Koszul chain or Tor class",
+                    ));
+                }
+                let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                let internal = grade.t;
+                grade =
+                    rv_koszul::Grade::local(self.model, &ideal, grade.ideal, grade.s, multidegree)?;
+                if grade.t != internal {
+                    return Err(Error::new(
+                        input.span,
+                        "rvMComponent multidegree must have the same total internal degree",
+                    ));
+                }
+                let ty = self.model.rv_complex_type(grade, homology)?;
+                Ok((ty, TypedForm::RvMComponent(Box::new(input))))
+            }
             ExprForm::RvKoszulTerm(name, indices, input) => {
                 let ideal = self.model.rv_ideal(&name)?;
                 let input = self.expr(*input)?;
@@ -2955,16 +3069,12 @@ impl Checker<'_> {
                 let wedge = rv_koszul::mask(&ideal, &indices)?;
                 let s = indices.len();
                 let t = checked_degree(degree, s, "rvkterm", span)?;
-                let grade = rv_koszul::Grade {
-                    ideal: name.text.into(),
-                    s,
-                    t,
-                };
+                let grade = rv_koszul::Grade::total(name.text.into(), s, t);
                 let ty = self.model.rv_complex_type(grade, false)?;
                 Ok((ty, TypedForm::RvKoszulTerm(wedge, ideal, Box::new(input))))
             }
             ExprForm::RvTorGenerator(spec, index, at) => {
-                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                let grade = self.rv_koszul_grade(spec)?;
                 let ty = self.model.rv_complex_type(grade, true)?;
                 let rank = self.model.rv_tor(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
@@ -3923,6 +4033,30 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_koszul_grade(&mut self, spec: RvGradeSpec) -> Result<rv_koszul::Grade> {
+        match spec.degree {
+            RvDegree::Total(t) => self.model.rv_grade(spec.ideal, spec.s, t),
+            RvDegree::Multi(multidegree) => {
+                let ideal = self.model.rv_ideal(&spec.ideal)?;
+                rv_koszul::Grade::local(
+                    self.model,
+                    &ideal,
+                    spec.ideal.text.into(),
+                    spec.s,
+                    multidegree,
+                )
+            }
+        }
+    }
+
+    fn rv_complex_family(&self, value: &TypedExpr, name: &str) -> Result<(rv_koszul::Grade, bool)> {
+        match self.model.kind(value.ty) {
+            Kind::RVKoszul(grade) => Ok((grade.clone(), false)),
+            Kind::RVTor(grade) => Ok((grade.clone(), true)),
+            _ => Err(self.invalid_operand(value, name, "a rank Koszul chain or Tor class")),
+        }
+    }
+
     fn rv_complex_grade(
         &self,
         value: &TypedExpr,
@@ -4130,6 +4264,16 @@ impl Checker<'_> {
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
+            }
+            CobarOp::RvMForget => {
+                let (mut grade, homology) = self.rv_complex_family(argument, name)?;
+                if grade.multidegree.take().is_none() {
+                    return Err(Error::new(
+                        argument.span,
+                        "rvMForget requires a multigraded Koszul chain or Tor class",
+                    ));
+                }
+                return self.model.rv_complex_type(grade, homology);
             }
             CobarOp::RvKoszulDifferential
             | CobarOp::RvKoszulPrimitive
