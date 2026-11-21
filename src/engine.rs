@@ -8,6 +8,7 @@ use crate::cohomology;
 use crate::comodule;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
+use crate::map_ext;
 use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
@@ -70,6 +71,7 @@ enum TypedForm {
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Cobar(CobarOp, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
+    MapExtInduced(Box<TypedExpr>),
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
@@ -197,6 +199,17 @@ impl Engine {
                 let rank = self.model.xext(ty)?.rank();
                 format!("xextdim[{}, {s}, {t}] = {rank}", self.model.type_name(base))
             }
+            StatementForm::MapExtDimension(source, target, s, t) => {
+                let source = self.checker().ty(source)?;
+                let target = self.checker().ty(target)?;
+                let ty = self.model.map_ext_type(source, target, s, t)?;
+                let rank = self.model.map_ext(ty)?.rank();
+                format!(
+                    "mapextdim[{}, {}, {s}, {t}] = {rank}",
+                    self.model.type_name(source),
+                    self.model.type_name(target),
+                )
+            }
             StatementForm::MayDimension(r, s, t, f) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -273,6 +286,9 @@ impl Engine {
                     }
                     (BinaryOp::XMap, Value::Map(f), Value::Class(b)) => {
                         comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::MapExtCompose, Value::Class(g), Value::Class(f)) => {
+                        map_ext::compose(&mut self.model, (left.ty, &g), (right.ty, &f), expr.ty)
                     }
                     (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
                         may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
@@ -370,6 +386,12 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::MapExtInduced(function) => {
+                let Value::Map(table) = self.eval(function)? else {
+                    unreachable!()
+                };
+                map_ext::induced(&mut self.model, function.ty, &table, expr.ty)
+            }
             TypedForm::Equator => {
                 let Kind::Arrow(base, _) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -588,6 +610,11 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::MapExt(source, target, s, t) => {
+                let source = self.ty(*source)?;
+                let target = self.ty(*target)?;
+                self.model.map_ext_type(source, target, s, t)
+            }
             TypeForm::May(r, s, t, f) => self.model.may_type(r, s, t, f),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
@@ -667,7 +694,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::May(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -676,7 +703,7 @@ impl Checker<'_> {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, XExt, May, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, XExt, MapExt, May, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -718,6 +745,20 @@ impl Checker<'_> {
                 let ty = self.model.xext_type(base, s, t)?;
                 let rank = self.model.xext(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MapExtGenerator(source, target, s, t, index, at) => {
+                let source = self.ty(source)?;
+                let target = self.ty(target)?;
+                let ty = self.model.map_ext_type(source, target, s, t)?;
+                let rank = self.model.map_ext(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MapExtIdentity(base) => {
+                let base = self.ty(base)?;
+                let ty = self.model.map_ext_type(base, base, 0, 0)?;
+                let value = map_ext::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
@@ -808,6 +849,14 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = transfer::Operation::from_name(&name.text) {
                             return self.transfer(operation, vec![*argument]);
+                        }
+                        if name.text == "emap" {
+                            let argument = self.expr(*argument)?;
+                            let Kind::Arrow(source, target) = *self.model.kind(argument.ty) else {
+                                return Err(self.invalid_operand(&argument, "emap", "a function"));
+                            };
+                            let ty = self.model.map_ext_type(source, target, 0, 0)?;
+                            return Ok((ty, TypedForm::MapExtInduced(Box::new(argument))));
                         }
                     }
                 }
@@ -1157,6 +1206,17 @@ impl Checker<'_> {
         Ok(Value::Class([index].into()))
     }
 
+    fn map_ext_bidegree(
+        &self,
+        value: &TypedExpr,
+        op: &str,
+    ) -> Result<(TypeId, TypeId, usize, i64)> {
+        match *self.model.kind(value.ty) {
+            Kind::MapExt(source, target, s, t) => Ok((source, target, s, t)),
+            _ => Err(self.invalid_operand(value, op, "a MapExt class")),
+        }
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -1184,6 +1244,7 @@ impl Checker<'_> {
                         | Kind::Cobar(..)
                         | Kind::Ext(..)
                         | Kind::XExt(..)
+                        | Kind::MapExt(..)
                         | Kind::May(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
@@ -1191,7 +1252,7 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, XExt class, May class, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, XExt class, MapExt class, May class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -1254,6 +1315,25 @@ impl Checker<'_> {
                     self.require_type(expected, right, "xmap")?;
                 }
                 self.model.xext_type(range, s, t)
+            }
+            BinaryOp::MapExtCompose => {
+                let (middle, target, gs, gt) = self.map_ext_bidegree(left, "ecomp")?;
+                let (source, inner_target, fs, ft) = self.map_ext_bidegree(right, "ecomp")?;
+                if inner_target != middle {
+                    return Err(Error::new(
+                        right.span,
+                        format!(
+                            "ecomp requires the inner target {} to match the outer source {}",
+                            self.model.type_name(inner_target),
+                            self.model.type_name(middle),
+                        ),
+                    ));
+                }
+                let s = checked_degree(fs, gs, "ecomp", span)?;
+                let t = ft.checked_add(gt).ok_or_else(|| {
+                    Error::new(span, "ecomp signed internal degree is out of range")
+                })?;
+                self.model.map_ext_type(source, target, s, t)
             }
             BinaryOp::MayMul => {
                 let (r, s, t, f) = self.may_degree(left, "mayMul")?;

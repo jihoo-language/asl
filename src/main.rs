@@ -8,6 +8,7 @@ mod cyclic;
 mod engine;
 mod error;
 mod linear;
+mod map_ext;
 mod may;
 mod milnor;
 mod model;
@@ -36,7 +37,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, extdim, xextdim, maydim, and homotopy statements print to standard output.
+The show, card, betti, extdim, xextdim, mapextdim, maydim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 

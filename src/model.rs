@@ -7,6 +7,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::error::{Error, Result};
+use crate::map_ext::MapAdams;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::steenrod::{self, Word};
@@ -34,6 +35,7 @@ pub(crate) enum Kind {
     Cobar(usize, usize),
     Ext(usize, usize),
     XExt(TypeId, usize, usize),
+    MapExt(TypeId, TypeId, usize, i64),
     May(usize, usize, usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
@@ -90,6 +92,7 @@ struct TypeInfo {
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
     xext: Option<Rc<comodule::Adams>>,
+    map_ext: Option<Rc<MapAdams>>,
     may_page: Option<Rc<MayPage>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
@@ -184,7 +187,14 @@ impl Model {
             Kind::May(_, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
             Kind::May(_, s, t, _) if s == t => 2,
             Kind::XExt(base, s, t) if s > t || !self.types[base.0].inhabited => 1,
-            Kind::Cobar(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::May(..) => usize::MAX,
+            Kind::MapExt(source, target, ..)
+                if !self.types[source.0].inhabited || !self.types[target.0].inhabited =>
+            {
+                1
+            }
+            Kind::Cobar(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) => {
+                usize::MAX
+            }
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -198,6 +208,7 @@ impl Model {
             cohomology: None,
             adams: None,
             xext: None,
+            map_ext: None,
             may_page: None,
             cardinality_bound,
             heights: [None; 2],
@@ -233,6 +244,7 @@ impl Model {
                 | Kind::Cobar(..)
                 | Kind::Ext(..)
                 | Kind::XExt(..)
+                | Kind::MapExt(..)
                 | Kind::May(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
@@ -356,6 +368,17 @@ impl Model {
         self.inhabited_type(Kind::XExt(base, s, t), self.types[base.0].depth + 1)
     }
 
+    pub(crate) fn map_ext_type(
+        &mut self,
+        source: TypeId,
+        target: TypeId,
+        s: usize,
+        t: i64,
+    ) -> Result<TypeId> {
+        let depth = self.types[source.0].depth.max(self.types[target.0].depth) + 1;
+        self.inhabited_type(Kind::MapExt(source, target, s, t), depth)
+    }
+
     pub(crate) fn may_type(&mut self, r: usize, s: usize, t: usize, f: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::May(r, s, t, f), 0)
     }
@@ -429,6 +452,18 @@ impl Model {
         };
         let data = Rc::new(comodule::Adams::build(self, base, s, t)?);
         self.types[ty.0].xext = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn map_ext(&mut self, ty: TypeId) -> Result<Rc<MapAdams>> {
+        if let Some(data) = &self.types[ty.0].map_ext {
+            return Ok(data.clone());
+        }
+        let Kind::MapExt(source, target, s, t) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(MapAdams::build(self, source, target, s, t)?);
+        self.types[ty.0].map_ext = Some(data.clone());
         Ok(data)
     }
 
@@ -510,6 +545,7 @@ impl Model {
             | Kind::Cobar(..)
             | Kind::Ext(..)
             | Kind::XExt(..)
+            | Kind::MapExt(..)
             | Kind::May(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
@@ -628,6 +664,13 @@ impl Model {
             &Kind::XExt(base, s, t) => {
                 out.push("XExt(")?;
                 self.write_type(out, base, 0)?;
+                out.push(&format!(", {s}, {t})"))
+            }
+            &Kind::MapExt(source, target, s, t) => {
+                out.push("MapExt(")?;
+                self.write_type(out, source, 0)?;
+                out.push(", ")?;
+                self.write_type(out, target, 0)?;
                 out.push(&format!(", {s}, {t})"))
             }
             &Kind::May(r, s, t, f) => out.push(&format!("May({r}, {s}, {t}, {f})")),
@@ -863,6 +906,10 @@ impl Model {
                 }
                 Kind::XExt(..) => {
                     let rank = self.xext(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::MapExt(..) => {
+                    let rank = self.map_ext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::May(..) => {

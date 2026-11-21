@@ -24,6 +24,7 @@ pub(crate) enum TypeForm {
     Cobar(usize, usize),
     Ext(usize, usize),
     XExt(Box<ParsedType>, usize, usize),
+    MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
     May(usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
@@ -51,6 +52,7 @@ pub(crate) enum BinaryOp {
     Concat,
     Yoneda,
     XAction,
+    MapExtCompose,
     XMap,
     MayMul,
     MilnorPair,
@@ -67,6 +69,7 @@ impl BinaryOp {
             "concat" => Some(Self::Concat),
             "yoneda" => Some(Self::Yoneda),
             "xaction" => Some(Self::XAction),
+            "ecomp" => Some(Self::MapExtCompose),
             "xmap" => Some(Self::XMap),
             "mayMul" => Some(Self::MayMul),
             "milnorPair" => Some(Self::MilnorPair),
@@ -111,6 +114,8 @@ pub(crate) enum ExprForm {
     CobarWord(Vec<(Vec<usize>, Span)>),
     ExtGenerator(usize, usize, usize, Span),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
+    MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
+    MapExtIdentity(ParsedType),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
     Suspension(ParsedType, SuspensionForm),
@@ -145,6 +150,7 @@ pub(crate) enum StatementForm {
     Betti(ParsedType),
     ExtDimension(usize, usize),
     XExtDimension(ParsedType, usize, usize),
+    MapExtDimension(ParsedType, ParsedType, usize, i64),
     MayDimension(usize, usize, usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
@@ -168,6 +174,7 @@ enum Token<'src> {
     Slash,
     Equal,
     EqualEqual,
+    Minus,
     Arrow,
     FatArrow,
     Tilde,
@@ -197,6 +204,7 @@ impl Token<'_> {
                     Self::Slash => "\\",
                     Self::Equal => "=",
                     Self::EqualEqual => "==",
+                    Self::Minus => "-",
                     Self::Arrow => "->",
                     Self::FatArrow => "=>",
                     Self::Tilde => "~",
@@ -300,6 +308,7 @@ impl<'src> Lexer<'src> {
             b'=' if self.eat(b'>') => Token::FatArrow,
             b'=' => Token::Equal,
             b'-' if self.eat(b'>') => Token::Arrow,
+            b'-' => Token::Minus,
             b'~' => Token::Tilde,
             _ => {
                 let character = self.source[start..].chars().next().unwrap();
@@ -401,6 +410,20 @@ impl<'src> Parser<'src> {
         Ok((number, span))
     }
 
+    fn signed_degree(&mut self) -> Result<i64> {
+        let span = self.span();
+        let negative = self.eat(Token::Minus)?;
+        let Token::Number(text) = self.token() else {
+            return Err(self.expected("a signed internal degree"));
+        };
+        let out_of_range = || Error::new(span, "signed internal degree is out of range");
+        let magnitude = i128::from(text.parse::<u64>().map_err(|_| out_of_range())?);
+        let degree = i64::try_from(if negative { -magnitude } else { magnitude })
+            .map_err(|_| out_of_range())?;
+        self.advance()?;
+        Ok(degree)
+    }
+
     fn exponents(&mut self) -> Result<Vec<usize>> {
         self.expect(Token::LBracket)?;
         let mut exponents = Vec::new();
@@ -478,6 +501,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::XExtDimension(base, s, t)
             }
+            Token::Word("mapextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (source, target, s, t) = self.map_bidegree(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MapExtDimension(source, target, s, t)
+            }
             Token::Word("maydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -509,6 +539,17 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (s, t) = self.bidegree()?;
         Ok((base, s, t))
+    }
+
+    fn map_bidegree(&mut self, nest: usize) -> Result<(ParsedType, ParsedType, usize, i64)> {
+        let source = self.ty(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let target = self.ty(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let t = self.signed_degree()?;
+        Ok((source, target, s, t))
     }
 
     fn may_degree(&mut self) -> Result<(usize, usize, usize, usize)> {
@@ -568,6 +609,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = base.depth + 1;
             return ty(span, TypeForm::XExt(Box::new(base), s, t), depth);
+        }
+        if name.text == "MapExt" && self.eat(Token::LParen)? {
+            let (source, target, s, t) = self.map_bidegree(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = source.depth.max(target.depth) + 1;
+            return ty(
+                span,
+                TypeForm::MapExt(Box::new(source), Box::new(target), s, t),
+                depth,
+            );
         }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
@@ -840,6 +891,22 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::XExtGenerator(base, s, t, index, at), 0);
+                }
+                if name.text == "mapextgen" && self.eat(Token::LBracket)? {
+                    let (source, target, s, t) = self.map_bidegree(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::MapExtGenerator(source, target, s, t, index, at),
+                        0,
+                    );
+                }
+                if name.text == "eid" && self.eat(Token::LBracket)? {
+                    let base = self.ty(nest + 1)?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MapExtIdentity(base), 0);
                 }
                 if name.text == "maygen" && self.eat(Token::LBracket)? {
                     let (r, s, t, f) = self.may_degree()?;

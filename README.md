@@ -50,6 +50,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
+| `MapExt(X, Y, s, t)` | The discrete space of mod-two Adams $E_2$ classes for stable maps from `X` to `Y`, with disjoint basepoints. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
@@ -209,6 +210,20 @@ A cochain basis term $[a_1\mid\cdots\mid a_s]\otimes z$ has internal degree $t=|
 
 `zero[XExt(X, s, t)]`, `add(x, y)`, and equality use the vector space structure in a fixed bidegree. The example computes the two sphere summands of a discrete two-point space and checks that the collapse commutes with scalar action. [Finite-space Adams E₂ example](examples/space-adams.asl)
 
+## Adams E₂ for stable maps
+
+`MapExt(X, Y, s, t)` computes $\operatorname{Ext}_{\mathcal A}^{s,t}(H^*(Y;\mathbb F_2),H^*(X;\mathbb F_2))$ for maps from $\Sigma^\infty X_+$ to $\Sigma^\infty Y_+$. The Adams filtration is `s`, the internal degree `t` accepts signed integers, and the stem is $t-s$. A length-`s` cochain term sends a homology generator of `X` in degree `q` to a cobar word of internal degree `w` tensored with a generator of `Y` in degree `p`, where $p+w=q+t$. The differential combines the cobar differential and the Steenrod coactions at both endpoints. `MapExt(One, Y, s, t)` for nonnegative `t` recovers the groups computed by `XExt(Y, s, t)`.
+
+| Expression or statement | Result |
+| --- | --- |
+| `mapextdim[X, Y, s, t];` | Print the rank of `MapExt(X, Y, s, t)`. |
+| `mapextgen[X, Y, s, t, i]` | Select generator `i` in the computed basis, starting from zero. |
+| `emap(f)` | Take the class of the map induced by `f : X -> Y` on homology, in `MapExt(X, Y, 0, 0)`. |
+| `eid[X]` | Take the identity class in `MapExt(X, X, 0, 0)`. |
+| `ecomp(g, f)` | Compose classes from `X` to `Y` and from `Y` to `Z`, applying `f` first and adding both bidegrees. |
+
+`zero[MapExt(X, Y, s, t)]`, `add`, and equality act in a fixed type. The example composes maps of a two-point space and uses degree $-1$ to send the circle's degree-one homology generator to `One`. [Stable-map Adams E₂ example](examples/map-ext.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
@@ -319,6 +334,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
+| `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
 | `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 
 A homotopy step uses a single direction across the whole domain, so it requires `f(x) ≤ g(x)` for every `x`, or the reverse inequality for every `x`. In the triangle example, any endomorphism above the identity must fix all three maximal edges. Each vertex is the unique common lower bound of its two incident edges, so it too is fixed. The dual argument handles endomorphisms below the identity. This isolates the identity in `Circle -> Circle` and explains the `no` printed for the rotation. [Stong, *Finite Topological Spaces*, §3–4](https://webhomes.maths.ed.ac.uk/~v1ranick/papers/stong2.pdf)

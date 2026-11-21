@@ -127,6 +127,12 @@ pub(crate) fn join(left: &Word, right: &Word) -> Word {
 }
 
 pub(crate) fn concat_words(model: &mut Model, left: &Word, right: &Word) -> Result<Word> {
+    let word = concat_word_support(model, left, right)?;
+    model.allocate(word_cells(&word))?;
+    Ok(word)
+}
+
+pub(crate) fn concat_word_support(model: &mut Model, left: &Word, right: &Word) -> Result<Word> {
     let cells = word_cells(left) + word_cells(right) - 1;
     check_storage(cells)?;
     model.spend(cells)?;
@@ -135,7 +141,6 @@ pub(crate) fn concat_words(model: &mut Model, left: &Word, right: &Word) -> Resu
     left_degree
         .checked_add(right_degree)
         .ok_or_else(degree_overflow)?;
-    model.allocate(cells)?;
     Ok(join(left, right))
 }
 
