@@ -19,6 +19,7 @@ use crate::odd_may::OddMay;
 use crate::page_transition::Transition;
 use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
+use crate::q_koszul::{self, Grade, QExt};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 
@@ -51,6 +52,8 @@ pub(crate) enum Kind {
     XExt(TypeId, usize, usize),
     MapCobar(TypeId, TypeId, usize, i64),
     MapExt(TypeId, TypeId, usize, i64),
+    QKoszul(Grade),
+    QExt(Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -98,6 +101,7 @@ pub(crate) enum Value {
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
     MapCobar(map_cochain::Support),
+    QKoszul(q_koszul::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -142,6 +146,7 @@ struct TypeInfo {
     pmay: Option<Rc<OddMay>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
+    q_ext: Option<Rc<QExt>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
     ce_page: Option<Rc<CePage>>,
@@ -285,6 +290,14 @@ impl Model {
             | Kind::May(..)
             | Kind::MayAn(..)
             | Kind::CeAn(..) => usize::MAX,
+            Kind::QKoszul(ref grade) | Kind::QExt(ref grade)
+                if !self.types[grade.source.0].inhabited
+                    || !self.types[grade.target.0].inhabited
+                    || (grade.selected.is_empty() && grade.s != 0) =>
+            {
+                1
+            }
+            Kind::QKoszul(..) | Kind::QExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -301,6 +314,7 @@ impl Model {
             pmay: None,
             xext: None,
             map_ext: None,
+            q_ext: None,
             map_may: None,
             may_page: None,
             ce_page: None,
@@ -346,6 +360,8 @@ impl Model {
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
                 | Kind::MapExt(..)
+                | Kind::QKoszul(..)
+                | Kind::QExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -530,6 +546,22 @@ impl Model {
         self.inhabited_type(Kind::MapMay(source, target, r, s, t, f), depth)
     }
 
+    pub(crate) fn q_koszul_type(&mut self, grade: Grade) -> Result<TypeId> {
+        let depth = self.types[grade.source.0]
+            .depth
+            .max(self.types[grade.target.0].depth)
+            + 1;
+        self.inhabited_type(Kind::QKoszul(grade), depth)
+    }
+
+    pub(crate) fn q_ext_type(&mut self, grade: Grade) -> Result<TypeId> {
+        let depth = self.types[grade.source.0]
+            .depth
+            .max(self.types[grade.target.0].depth)
+            + 1;
+        self.inhabited_type(Kind::QExt(grade), depth)
+    }
+
     pub(crate) fn map_ext_type(
         &mut self,
         source: TypeId,
@@ -688,6 +720,26 @@ impl Model {
         Ok(page)
     }
 
+    pub(crate) fn q_ext(&mut self, ty: TypeId) -> Result<Rc<QExt>> {
+        if let Some(group) = &self.types[ty.0].q_ext {
+            return Ok(group.clone());
+        }
+        let Kind::QExt(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let group = Rc::new(QExt::build(
+            self,
+            grade.source,
+            grade.target,
+            &grade.selected,
+            grade.s,
+            grade.t,
+        )?);
+        self.types[ty.0].q_ext = Some(group.clone());
+        Ok(group)
+    }
+
     pub(crate) fn map_ext(&mut self, ty: TypeId) -> Result<Rc<MapAdams>> {
         if let Some(data) = &self.types[ty.0].map_ext {
             return Ok(data.clone());
@@ -804,6 +856,8 @@ impl Model {
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
+            | Kind::QKoszul(..)
+            | Kind::QExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -941,6 +995,20 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
+            Kind::QKoszul(grade) | Kind::QExt(grade) => {
+                out.push(if matches!(self.kind(ty), Kind::QKoszul(..)) {
+                    "QKoszul("
+                } else {
+                    "QExt("
+                })?;
+                self.write_type(out, grade.source, 0)?;
+                out.push(", ")?;
+                self.write_type(out, grade.target, 0)?;
+                out.push(&format!(
+                    ", {:?}, {}, {})",
+                    grade.selected, grade.s, grade.t
+                ))
+            }
             &Kind::MapExt(source, target, s, t) | &Kind::MapCobar(source, target, s, t) => {
                 out.push(if matches!(self.kind(ty), Kind::MapCobar(..)) {
                     "MapCobar("
@@ -1026,6 +1094,10 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::QKoszul(left), Value::QKoszul(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || q_koszul::compare(self, left, right)? == Ordering::Equal)
+            }
             (Value::MapCobar(left), Value::MapCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || map_cochain::compare(self, left, right)? == Ordering::Equal),
             (Value::Suspension(left), Value::Suspension(right)) => {
@@ -1103,6 +1175,12 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::QKoszul(left), Value::QKoszul(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                q_koszul::compare(self, left, right)
             }
             (Value::MapCobar(left), Value::MapCobar(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1219,6 +1297,30 @@ impl Model {
                 Kind::MapMay(..) => {
                     let rank = self.map_may(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::QExt(..) => {
+                    let rank = self.q_ext(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::QKoszul(ref grade) => {
+                    let grade = grade.clone();
+                    let basis = q_koszul::basis(
+                        self,
+                        grade.source,
+                        grade.target,
+                        &grade.selected,
+                        grade.s,
+                        grade.t,
+                        MAX_ELEMENTS.ilog2() as usize,
+                    )?;
+                    let rank = basis.len();
+                    self.allocate(
+                        basis.iter().map(q_koszul::Term::cells).sum::<usize>()
+                            + 4 * (support_space_size(rank) / 2) * rank,
+                    )?;
+                    self.enumerate_supports(0, rank, |support| {
+                        Value::QKoszul(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
                 }
                 Kind::MapExt(..) => {
                     let rank = self.map_ext(ty)?.rank();
@@ -1530,6 +1632,36 @@ impl Model {
                         out.push(&format!("{coefficient} "))?;
                     }
                     write_odd_word(out, p, word)?;
+                }
+                out.push("}")
+            }
+            Value::QKoszul(terms) => {
+                let Kind::QKoszul(grade) = self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push(&format!(
+                        "[{}, {} -> {}, {}]",
+                        term.source.degree,
+                        term.source.index,
+                        term.target.degree,
+                        term.target.index
+                    ))?;
+                    for (&primitive, &power) in grade.selected.iter().zip(term.powers.iter()) {
+                        match power {
+                            0 => {}
+                            1 => out.push(&format!(" v{primitive}"))?,
+                            _ => out.push(&format!(" v{primitive}^{power}"))?,
+                        }
+                    }
                 }
                 out.push("}")
             }

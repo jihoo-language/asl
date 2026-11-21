@@ -37,6 +37,8 @@ pub(crate) enum TypeForm {
     MapCobar(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapMay(MapMaySpec),
+    QKoszul(QSpec),
+    QExt(QSpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -46,6 +48,14 @@ pub(crate) enum TypeForm {
     CyclicH2(usize),
     Product(Box<ParsedType>, Box<ParsedType>),
     Arrow(Box<ParsedType>, Box<ParsedType>),
+}
+
+pub(crate) struct QSpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) selected: Vec<usize>,
+    pub(crate) s: usize,
+    pub(crate) t: i64,
 }
 
 pub(crate) struct MapMaySpec {
@@ -185,6 +195,8 @@ pub(crate) enum ExprForm {
     MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
     MapExtIdentity(ParsedType),
     MapMayGenerator(MapMaySpec, usize, Span),
+    QExtGenerator(QSpec, usize, Span),
+    QRestrict(Vec<usize>, Box<ParsedExpr>),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
     MayAnGenerator(usize, usize, usize, usize, usize, usize, Span),
@@ -231,6 +243,7 @@ pub(crate) enum StatementForm {
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
     MapMayDimension(MapMaySpec),
+    QExtDimension(QSpec),
     MayDimension(usize, usize, usize, usize),
     MayAnDimension(usize, usize, usize, usize, usize),
     CeDimension(usize, usize, usize, usize, usize),
@@ -604,6 +617,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::MapExtDimension(source, target, s, t)
             }
+            Token::Word("qextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.q_spec(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::QExtDimension(spec)
+            }
             Token::Word("mapmaydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -690,6 +710,22 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let t = self.signed_degree()?;
         Ok((source, target, s, t))
+    }
+
+    fn q_spec(&mut self, nest: usize) -> Result<QSpec> {
+        let (source, target) = self.map_endpoints(nest)?;
+        let selected = self.exponents()?;
+        self.expect(Token::Comma)?;
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let t = self.signed_degree()?;
+        Ok(QSpec {
+            source: Box::new(source),
+            target: Box::new(target),
+            selected,
+            s,
+            t,
+        })
     }
 
     fn map_may_spec(&mut self, nest: usize) -> Result<MapMaySpec> {
@@ -827,6 +863,17 @@ impl<'src> Parser<'src> {
                 TypeForm::MapCobar(source, target, s, t)
             } else {
                 TypeForm::MapExt(source, target, s, t)
+            };
+            return ty(span, kind, depth);
+        }
+        if matches!(name.text.as_str(), "QKoszul" | "QExt") && self.eat(Token::LParen)? {
+            let spec = self.q_spec(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = spec.source.depth.max(spec.target.depth) + 1;
+            let kind = if name.text == "QKoszul" {
+                TypeForm::QKoszul(spec)
+            } else {
+                TypeForm::QExt(spec)
             };
             return ty(span, kind, depth);
         }
@@ -1291,6 +1338,19 @@ impl<'src> Parser<'src> {
                     let base = self.ty(nest + 1)?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapExtIdentity(base), 0);
+                }
+                if name.text == "qextgen" && self.eat(Token::LBracket)? {
+                    let spec = self.q_spec(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::QExtGenerator(spec, index, at), 0);
+                }
+                if name.text == "qRes" && self.token() == Token::LBracket {
+                    let selected = self.exponents()?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::QRestrict(selected, Box::new(input)), depth);
                 }
                 if name.text == "mapmaygen" && self.eat(Token::LBracket)? {
                     let spec = self.map_may_spec(nest)?;

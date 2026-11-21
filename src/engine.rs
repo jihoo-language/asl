@@ -28,10 +28,11 @@ use crate::odd_massey;
 use crate::odd_may;
 use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
+use crate::q_koszul::{self, Grade};
 use crate::restriction_transfer;
 use crate::steenrod;
 use crate::syntax::{
-    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType,
+    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType, QSpec,
     Statement, StatementForm, SuspensionForm, TypeForm, Witness,
 };
 use crate::transfer;
@@ -70,6 +71,9 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    QDifferential,
+    QClass,
+    QRepresentative,
 }
 
 impl CobarOp {
@@ -96,6 +100,9 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "qD" => Some(Self::QDifferential),
+            "qClass" => Some(Self::QClass),
+            "qRep" => Some(Self::QRepresentative),
             _ => None,
         }
     }
@@ -116,6 +123,7 @@ enum TypedForm {
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Cobar(CobarOp, Box<TypedExpr>),
     RestrictAlgebra(Profile, Box<TypedExpr>),
+    QRestrict(Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
     Nakamura(usize, Box<TypedExpr>),
@@ -288,6 +296,19 @@ impl Engine {
                     self.model.type_name(target),
                 )
             }
+            StatementForm::QExtDimension(spec) => {
+                let grade = self.checker().q_grade(spec)?;
+                let ty = self.model.q_ext_type(grade.clone())?;
+                let rank = self.model.q_ext(ty)?.rank();
+                format!(
+                    "qextdim[{}, {}, {:?}, {}, {}] = {rank}",
+                    self.model.type_name(grade.source),
+                    self.model.type_name(grade.target),
+                    grade.selected,
+                    grade.s,
+                    grade.t
+                )
+            }
             StatementForm::MapMayDimension(spec) => {
                 let ty = self.checker().map_may_type(spec)?;
                 let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(ty) else {
@@ -388,6 +409,9 @@ impl Engine {
                         };
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::QKoszul(a), Value::QKoszul(b)) => {
+                        Ok(Value::QKoszul(q_koszul::add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Add, Value::MapCobar(a), Value::MapCobar(b)) => {
                         Ok(Value::MapCobar(map_cochain::add(&mut self.model, &a, &b)?))
                     }
@@ -412,7 +436,18 @@ impl Engine {
                     (BinaryOp::XMap, Value::Map(f), Value::Class(b)) => {
                         comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
                     }
+                    (BinaryOp::MapExtCompose, Value::QKoszul(g), Value::QKoszul(f)) => {
+                        Ok(Value::QKoszul(q_koszul::compose(&mut self.model, &g, &f)?))
+                    }
                     (BinaryOp::MapExtCompose, Value::Class(g), Value::Class(f)) => {
+                        if matches!(self.model.kind(expr.ty), Kind::QExt(..)) {
+                            return q_koszul::compose_classes(
+                                &mut self.model,
+                                (left.ty, &g),
+                                (right.ty, &f),
+                                expr.ty,
+                            );
+                        }
                         let compose = if matches!(self.model.kind(expr.ty), Kind::MapMay(..)) {
                             map_may::compose
                         } else {
@@ -493,6 +528,27 @@ impl Engine {
                 }
                 (CobarOp::Class, Value::Cobar(words)) => {
                     adams::class(&mut self.model, expr.ty, &words)
+                }
+                (CobarOp::QDifferential, Value::QKoszul(terms)) => {
+                    let Kind::QKoszul(grade) = self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let grade = grade.clone();
+                    let terms = q_koszul::differential(
+                        &mut self.model,
+                        grade.source,
+                        grade.target,
+                        &grade.selected,
+                        &terms,
+                    )?;
+                    Ok(Value::QKoszul(terms))
+                }
+                (CobarOp::QClass, Value::QKoszul(terms)) => {
+                    q_koszul::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::QRepresentative, Value::Class(class)) => {
+                    let terms = q_koszul::representative(&mut self.model, input.ty, &class)?;
+                    Ok(Value::QKoszul(terms))
                 }
                 (CobarOp::MapDifferential, Value::MapCobar(terms)) => {
                     let Kind::MapCobar(source, target, ..) = *self.model.kind(input.ty) else {
@@ -623,6 +679,10 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::QRestrict(input) => {
+                let value = self.eval(input)?;
+                q_koszul::restrict(&mut self.model, input.ty, value, expr.ty)
+            }
             TypedForm::RestrictAlgebra(profile, input) => {
                 let value = self.eval(input)?;
                 if input.ty == expr.ty {
@@ -997,6 +1057,14 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::QKoszul(spec) => {
+                let grade = self.q_grade(spec)?;
+                self.model.q_koszul_type(grade)
+            }
+            TypeForm::QExt(spec) => {
+                let grade = self.q_grade(spec)?;
+                self.model.q_ext_type(grade)
+            }
             TypeForm::MapMay(spec) => self.map_may_type(spec),
             TypeForm::MapExt(source, target, s, t) => {
                 let source = self.ty(*source)?;
@@ -1094,6 +1162,8 @@ impl Checker<'_> {
                     Kind::PCobar(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PMay(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
+                    Kind::QKoszul(..) => Value::QKoszul([].into()),
+                    Kind::QExt(..) => cohomology::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
@@ -1280,6 +1350,19 @@ impl Checker<'_> {
                         .map_err(|error| error.at(target.span))?;
                 let ty = self.model.map_cobar_type(source_ty, target_ty, s, t)?;
                 Ok((ty, TypedForm::MapWord(source, target, Box::new(input))))
+            }
+            ExprForm::QExtGenerator(spec, index, at) => {
+                let grade = self.q_grade(spec)?;
+                let ty = self.model.q_ext_type(grade)?;
+                let rank = self.model.q_ext(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QRestrict(selected, input) => {
+                let input = self.expr(*input)?;
+                let selected = q_koszul::indices(self.model, selected)?;
+                let ty = q_koszul::restriction_type(self.model, input.ty, selected)?;
+                Ok((ty, TypedForm::QRestrict(Box::new(input))))
             }
             ExprForm::MapMayGenerator(spec, index, at) => {
                 let ty = self.map_may_type(spec)?;
@@ -1928,6 +2011,19 @@ impl Checker<'_> {
         }
     }
 
+    fn q_grade(&mut self, spec: QSpec) -> Result<Grade> {
+        let source = self.ty(*spec.source)?;
+        let target = self.ty(*spec.target)?;
+        let selected = q_koszul::indices(self.model, spec.selected)?;
+        Ok(Grade {
+            source,
+            target,
+            selected,
+            s: spec.s,
+            t: spec.t,
+        })
+    }
+
     fn map_may_type(&mut self, spec: MapMaySpec) -> Result<TypeId> {
         let source = self.ty(*spec.source)?;
         let target = self.ty(*spec.target)?;
@@ -1995,6 +2091,23 @@ impl Checker<'_> {
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
+            }
+            CobarOp::QDifferential | CobarOp::QClass => {
+                let Kind::QKoszul(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a QKoszul cochain"));
+                };
+                let mut grade = grade.clone();
+                if matches!(op, CobarOp::QClass) {
+                    return self.model.q_ext_type(grade);
+                }
+                grade.s = checked_degree(grade.s, 1, name, span)?;
+                return self.model.q_koszul_type(grade);
+            }
+            CobarOp::QRepresentative => {
+                let Kind::QExt(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a QExt class"));
+                };
+                return self.model.q_koszul_type(grade.clone());
             }
             CobarOp::MapDifferential => {
                 let (source, target, s, t) = self.map_cobar_bidegree(argument, name)?;
@@ -2158,6 +2271,8 @@ impl Checker<'_> {
                         | Kind::PMay(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
+                        | Kind::QKoszul(..)
+                        | Kind::QExt(..)
                         | Kind::Ext(..)
                         | Kind::ExtAn(..)
                         | Kind::XExt(..)
@@ -2272,6 +2387,15 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
+                if matches!(self.model.kind(left.ty), Kind::QKoszul(..) | Kind::QExt(..))
+                    || matches!(
+                        self.model.kind(right.ty),
+                        Kind::QKoszul(..) | Kind::QExt(..)
+                    )
+                {
+                    return q_koszul::composition_type(self.model, left.ty, right.ty)
+                        .map_err(|error| error.at(right.span));
+                }
                 if let Kind::MapMay(middle, target, r, gs, gt, gf) = *self.model.kind(left.ty) {
                     let Kind::MapMay(source, inner_target, page, fs, ft, ff) =
                         *self.model.kind(right.ty)
