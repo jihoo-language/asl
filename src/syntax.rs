@@ -1,4 +1,5 @@
 use crate::error::{Error, Result, Span};
+use crate::map_bracket::Operation as MapBracketOp;
 use crate::transfer::Operation as TransferOp;
 
 const MAX_NESTING: usize = 64;
@@ -134,6 +135,7 @@ pub(crate) enum ExprForm {
     PowerDef(Vec<ParsedExpr>),
     Bracket(Vec<ParsedExpr>),
     Transfer(TransferOp, Vec<ParsedExpr>),
+    MapBracket(MapBracketOp, Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
     Call(Box<ParsedExpr>, Box<ParsedExpr>),
@@ -702,6 +704,7 @@ impl<'src> Parser<'src> {
             if let ExprForm::Name(name) = &head.kind {
                 if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket")
                     || TransferOp::from_name(&name.text).is_some()
+                    || MapBracketOp::from_name(&name.text).is_some()
                 {
                     head = self.variadic(head, nest)?;
                     continue;
@@ -765,6 +768,9 @@ impl<'src> Parser<'src> {
         }
         if let Some(operation) = TransferOp::from_name(&name.text) {
             return expr(span, ExprForm::Transfer(operation, arguments), depth);
+        }
+        if let Some(operation) = MapBracketOp::from_name(&name.text) {
+            return expr(span, ExprForm::MapBracket(operation, arguments), depth);
         }
         if name.text == "bracket" {
             return expr(span, ExprForm::Bracket(arguments), depth);

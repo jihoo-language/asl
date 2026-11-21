@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::RangeInclusive;
@@ -34,6 +35,13 @@ impl Term {
 pub(crate) struct MapAdams {
     terms: Vec<Term>,
     quotient: QuotientBasis,
+    bidegree: Option<(TypeId, TypeId, usize, i64)>,
+    preimages: OnceCell<BoundaryPreimages>,
+}
+
+struct BoundaryPreimages {
+    terms: Vec<Term>,
+    images: Basis,
 }
 
 impl MapAdams {
@@ -79,7 +87,12 @@ impl MapAdams {
             column.sort_unstable();
             Ok(column)
         })?;
-        Ok(Self { terms, quotient })
+        Ok(Self {
+            terms,
+            quotient,
+            bidegree: Some((source, target, s, t)),
+            preimages: OnceCell::new(),
+        })
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -98,6 +111,46 @@ impl MapAdams {
     pub(crate) fn project(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<usize>> {
         let column = term_indices(model, &self.terms, terms)?;
         self.project_indices(model, column)
+    }
+
+    pub(crate) fn is_boundary(&self, model: &mut Model, terms: &[Term]) -> Result<bool> {
+        let column = term_indices(model, &self.terms, terms)?;
+        self.quotient.is_boundary(model, column)
+    }
+
+    pub(crate) fn primitive(&self, model: &mut Model, terms: &[Term]) -> Result<Option<Vec<Term>>> {
+        if terms.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let column = term_indices(model, &self.terms, terms)?;
+        let preimages = if let Some(preimages) = self.preimages.get() {
+            preimages
+        } else {
+            if !self.quotient.is_boundary(model, column.clone())? {
+                return Ok(None);
+            }
+            let (source, target, s, t) = self.bidegree.unwrap();
+            let mut complex = MapCochains::new(model, source, target, t)?.unwrap();
+            let mut images = Basis::default();
+            let terms =
+                complex.for_each_boundary(model, s, &self.terms, |model, index, image| {
+                    images.insert_with_witness(model, image, vec![index])?;
+                    Ok(())
+                })?;
+            model.allocate(images.cells())?;
+            self.preimages
+                .get_or_init(|| BoundaryPreimages { terms, images })
+        };
+        let (remainder, support) =
+            preimages
+                .images
+                .reduce_with_witness(model, column, Vec::new())?;
+        Ok(remainder.is_empty().then(|| {
+            support
+                .into_iter()
+                .map(|index| preimages.terms[index].clone())
+                .collect()
+        }))
     }
 
     fn project_indices(&self, model: &mut Model, column: Vec<usize>) -> Result<Vec<usize>> {

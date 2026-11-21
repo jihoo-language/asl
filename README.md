@@ -233,6 +233,14 @@ A cochain basis term $[a_1\mid\cdots\mid a_s]\otimes z$ has internal degree $t=|
 
 `eClass(c)` takes a closed cochain to its class in `MapExt` of the same endpoints and bidegree. `eRep(x)` gives the deterministic closed representative of a `MapExt` class, so `eClass(eRep(x)) == x`. The example checks the differential of the projective-plane identity term by term. [Bivariant cobar example](examples/map-cobar.asl)
 
+## Algebraic triple Massey products of Adams maps
+
+`eBracket(h, g, f)` takes composable classes `f : X0 -> X1`, `g : X1 -> X2`, and `h : X2 -> X3` in `MapExt`. It returns a membership predicate on `MapExt(X0, X3, sum s - 1, sum t)`, where the input filtrations are summed and decreased by one and the signed internal degrees are summed. A negative result filtration gives an error. `eInBracket(h, g, f, x)` checks the same membership for one class `x` without enumerating the target group.
+
+For the chosen cobar representatives $F,G,H$, the interpreter finds primitives $U,V$ with $dU=GF$ and $dV=HG$ by sparse elimination. If either adjacent composition has no primitive, the predicate is empty. Otherwise the possible classes form the affine coset of $[HU+VF]$ by the sum of the spaces of composites $h\circ u$ and $v\circ f$. Here $u$ and $v$ range over the `MapExt` groups in the endpoints and bidegrees of $U$ and $V$. Computing those images on basis classes gives the complete indeterminacy. A negative primitive filtration allows only the zero cochain.
+
+On `One` the algebraic triple Massey product $\langle h_0,h_1,h_0\rangle$ consists of the nonzero class $h_1^2$. The construction uses Adams $E_2$ classes and cobar primitives. A topological Toda bracket uses stable maps and their nullhomotopies. [Algebraic triple Massey example](examples/map-massey.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.

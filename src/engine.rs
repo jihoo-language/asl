@@ -8,6 +8,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
+use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
 use crate::may;
@@ -85,6 +86,11 @@ enum TypedForm {
     Shift(Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
     Transfer(transfer::Operation, Vec<TypedExpr>),
+    MapBracket {
+        target: TypeId,
+        inputs: Box<[TypedExpr; 3]>,
+        query: Option<Box<TypedExpr>>,
+    },
     DefiningSystem {
         arity: usize,
         layout: Layout,
@@ -479,6 +485,26 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 transfer::evaluate(&mut self.model, &inputs, *operation)
             }
+            TypedForm::MapBracket {
+                target,
+                inputs,
+                query,
+            } => {
+                let mut eval_class = |term: &TypedExpr| -> Result<_> {
+                    let Value::Class(coordinates) = self.eval(term)? else {
+                        unreachable!()
+                    };
+                    Ok((term.ty, coordinates))
+                };
+                let [h, g, f] = inputs.as_ref();
+                let inputs = [eval_class(h)?, eval_class(g)?, eval_class(f)?];
+                if let Some(query) = query {
+                    let (_, coordinates) = eval_class(query)?;
+                    map_bracket::member(&mut self.model, *target, &inputs, &coordinates)
+                } else {
+                    map_bracket::predicate(&mut self.model, *target, &inputs)
+                }
+            }
             TypedForm::DefiningSystem {
                 arity,
                 layout,
@@ -851,6 +877,7 @@ impl Checker<'_> {
             ExprForm::PowerDef(inputs) => self.defining_system(inputs, None, span),
             ExprForm::Bracket(inputs) => self.bracket(inputs, span),
             ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
+            ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -905,6 +932,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = transfer::Operation::from_name(&name.text) {
                             return self.transfer(operation, vec![*argument]);
+                        }
+                        if let Some(operation) = map_bracket::Operation::from_name(&name.text) {
+                            return self.map_bracket(operation, vec![*argument]);
                         }
                         if name.text == "emap" {
                             let argument = self.expr(*argument)?;
@@ -1008,6 +1038,36 @@ impl Checker<'_> {
 
     fn unbound(&self, name: &str) -> bool {
         !self.bindings.contains_key(name) && !self.locals.iter().any(|(local, _)| local == name)
+    }
+
+    fn map_bracket(
+        &mut self,
+        operation: map_bracket::Operation,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        operation.require_arity(inputs.len())?;
+        let mut inputs = inputs.into_iter();
+        let h = self.expr(inputs.next().unwrap())?;
+        let g = self.expr(inputs.next().unwrap())?;
+        let f = self.expr(inputs.next().unwrap())?;
+        let target = map_bracket::result_type(self.model, [h.ty, g.ty, f.ty], operation.name())?;
+        let range = self.model.named("S").unwrap();
+        let (ty, query) = match operation {
+            map_bracket::Operation::Predicate => (self.model.arrow(target, range)?, None),
+            map_bracket::Operation::Membership => {
+                let query = self.expr(inputs.next().unwrap())?;
+                self.require_type(target, &query, operation.name())?;
+                (range, Some(Box::new(query)))
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::MapBracket {
+                target,
+                inputs: Box::new([h, g, f]),
+                query,
+            },
+        ))
     }
 
     fn transfer(
