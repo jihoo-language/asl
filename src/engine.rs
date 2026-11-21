@@ -96,6 +96,7 @@ use crate::sheaf_page::{
 };
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
+use crate::syntax::MixedSpec;
 use crate::syntax::RvHHSpec;
 use crate::syntax::RvNCSpec;
 use crate::syntax::{
@@ -110,6 +111,7 @@ use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock;
 use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial, bp_rel};
+use crate::{mixed, mixed_page};
 
 pub(crate) struct Engine {
     model: Model,
@@ -153,6 +155,13 @@ enum CobarOp {
     RvNCd,
     RvNCClass,
     RvNCRep,
+    MixDown,
+    MixUp,
+    MixD,
+    MixClass,
+    MixRep,
+    MixNext,
+    MixPrev,
     RvHHClass,
     RvHHRep,
     RvHHd,
@@ -216,6 +225,12 @@ impl CobarOp {
             "rvNCd" => Some(Self::RvNCd),
             "rvNCClass" => Some(Self::RvNCClass),
             "rvNCRep" => Some(Self::RvNCRep),
+            "mixb" => Some(Self::MixDown),
+            "mixB" => Some(Self::MixUp),
+            "mixD" => Some(Self::MixD),
+            "mixPageRep" => Some(Self::MixRep),
+            "mixNext" => Some(Self::MixNext),
+            "mixPrev" => Some(Self::MixPrev),
             "rvHHClass" => Some(Self::RvHHClass),
             "rvHHRep" => Some(Self::RvHHRep),
             "rvHHd" => Some(Self::RvHHd),
@@ -382,6 +397,7 @@ enum TypedForm {
         SheafPageGrade,
         Box<TypedExpr>,
     ),
+    MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
@@ -446,6 +462,24 @@ impl Engine {
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
                 return Ok(None);
+            }
+            StatementForm::MixedComplex(name, prime, generators, b, big_b) => {
+                self.model.check_new_mixed(&name)?;
+                let complex = mixed::Complex::build(&mut self.model, prime, generators, b, big_b)?;
+                self.model.define_mixed(name.text, complex);
+                return Ok(None);
+            }
+            StatementForm::MixedDimension(spec) => {
+                let grade = self.checker().mixed_grade(spec)?;
+                let ty = self.model.mixed_page_type(grade)?;
+                let rank = self.model.mixed_page(ty)?.rank();
+                format!(
+                    "mixdim[{}, {}, {}, {}] = {rank}",
+                    self.model.mixed_name(grade.chain.complex),
+                    grade.r,
+                    grade.chain.b,
+                    grade.f
+                )
             }
             StatementForm::Sheaf(name, base, prime, presentation) => {
                 self.model.check_new_sheaf(&name)?;
@@ -1912,6 +1946,12 @@ impl Engine {
                             Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) => {
                                 self.sheaf_prime(expr.ty)
                             }
+                            Kind::MixedChain(grade, _) => {
+                                self.model.mixed_complex(grade.complex).prime
+                            }
+                            Kind::MixedPage(grade) => {
+                                self.model.mixed_complex(grade.chain.complex).prime
+                            }
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                             Kind::BPVPage(grade) => grade.prime(),
                             Kind::BPModExt(grade) => grade.prime(),
@@ -2276,6 +2316,36 @@ impl Engine {
                 (CobarOp::RvNCRep, Value::Class(class)) => Ok(Value::RVNCChain(
                     rv_negative::representative(&mut self.model, input.ty, &class)?,
                 )),
+                (CobarOp::MixDown | CobarOp::MixUp | CobarOp::MixD, Value::OddClass(terms)) => {
+                    match *self.model.kind(input.ty) {
+                        Kind::MixedChain(grade, _) => {
+                            let complex = self.model.mixed_complex(grade.complex);
+                            let differential = match op {
+                                CobarOp::MixDown => mixed::Differential::Down,
+                                CobarOp::MixUp => mixed::Differential::Up,
+                                _ => mixed::Differential::Total,
+                            };
+                            let image = complex.apply(&mut self.model, differential, &terms)?;
+                            odd_ext::persist(&mut self.model, image)
+                        }
+                        Kind::MixedPage(_) => {
+                            mixed_page::differential(&mut self.model, input.ty, expr.ty, &terms)
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                (CobarOp::MixClass, Value::OddClass(terms)) => {
+                    mixed_page::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::MixRep, Value::OddClass(terms)) => {
+                    mixed_page::representative(&mut self.model, input.ty, &terms)
+                }
+                (CobarOp::MixNext, Value::OddClass(terms)) => {
+                    mixed_page::next(&mut self.model, input.ty, expr.ty, &terms)
+                }
+                (CobarOp::MixPrev, Value::OddClass(terms)) => {
+                    mixed_page::previous(&mut self.model, input.ty, expr.ty, &terms)
+                }
                 (CobarOp::RvHHClass, Value::RVHHChain(terms)) => {
                     rv_hh_homology::class(&mut self.model, expr.ty, &terms)
                 }
@@ -3389,6 +3459,7 @@ impl Engine {
                     }
                 }
             }
+            TypedForm::MixedEmbed(input) => self.eval(input),
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
                 let (cochains, cohomology) = data.data();
@@ -3789,6 +3860,15 @@ impl Checker<'_> {
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
             }
+            TypeForm::MixedChain(name, b, total) => {
+                let complex = self.model.mixed_id(&name)?;
+                self.model
+                    .mixed_chain_type(mixed::Grade { complex, b }, total)
+            }
+            TypeForm::MixedPage(spec) => {
+                let grade = self.mixed_grade(spec)?;
+                self.model.mixed_page_type(grade)
+            }
             TypeForm::Sheaf(form, name, degree) => self.model.sheaf_type(form, &name, degree),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
@@ -4063,6 +4143,7 @@ impl Checker<'_> {
                     Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
                     Kind::SheafPage(..) => odd_ext::zero(),
+                    Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) =>
                         odd_ext::zero(),
                     Kind::RhoBock(..) => cohomology::zero(),
@@ -4310,6 +4391,45 @@ impl Checker<'_> {
                 let ty = self.model.pcobar_type(prime, s, t)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MixedLiteral(name, b, terms) => {
+                let complex = self.model.mixed_id(&name)?;
+                let terms =
+                    self.model
+                        .mixed_complex(complex)
+                        .literal(self.model, b.into(), terms)?;
+                let ty = self
+                    .model
+                    .mixed_chain_type(mixed::Grade { complex, b }, false)?;
+                let value = odd_ext::persist(self.model, terms)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedGenerator(spec, index, at) => {
+                let grade = self.mixed_grade(spec)?;
+                let ty = self.model.mixed_page_type(grade)?;
+                let rank = self.model.mixed_page(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedEmbed(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::MixedChain(grade, false) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "mixU", "a MixedChain"));
+                };
+                let ty = self
+                    .model
+                    .mixed_chain_type(grade.shift(-2 * power as i128)?, true)?;
+                Ok((ty, TypedForm::MixedEmbed(Box::new(input))))
+            }
+            ExprForm::MixedClass(r, f, input) => {
+                let input = self.expr(*input)?;
+                let Kind::MixedChain(chain, true) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "mixPageClass", "a MixedU chain"));
+                };
+                let ty = self
+                    .model
+                    .mixed_page_type(mixed_page::Grade { chain, r, f })?;
+                Ok((ty, TypedForm::Cobar(CobarOp::MixClass, Box::new(input))))
+            }
             ExprForm::SheafTerm(name, chain, index, coefficient) => {
                 let data = self.model.sheaf(&name)?;
                 let value = data.term(self.model, &chain, index, coefficient)?;
@@ -4539,13 +4659,15 @@ impl Checker<'_> {
                     | Kind::PMay(p, ..)
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..) => p,
+                    Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
+                    Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                     Kind::BPVPage(grade) => grade.prime(),
                     Kind::BPModExt(grade) => grade.prime(),
                     _ => return Err(self.invalid_operand(
                         &value,
                         "pscale",
-                        "a PCobar cochain, PExt class, PMay class, PCEAn class, BP page class, or mod-p BP Ext class",
+                        "a PCobar cochain, PExt class, PMay class, PCEAn class, BP page class, mod-p BP Ext class, or mixed complex chain or page class",
                     )),
                 };
                 Ok((value.ty, TypedForm::PScale(p, scalar, Box::new(value))))
@@ -6983,6 +7105,15 @@ impl Checker<'_> {
         rv_negative::Grade::new(self.rv_hh_grade((ideal, b, weight))?, length)
     }
 
+    fn mixed_grade(&self, (name, r, b, f): MixedSpec) -> Result<mixed_page::Grade> {
+        let complex = self.model.mixed_id(&name)?;
+        Ok(mixed_page::Grade {
+            chain: mixed::Grade { complex, b },
+            r,
+            f,
+        })
+    }
+
     fn rv_hh_grade(&mut self, (ideal, b, weight): RvHHSpec) -> Result<rv_hh::Grade> {
         let basis = self.model.rv_ideal(&ideal)?;
         let koszul = rv_koszul::Grade::local(self.model, &basis, ideal.text.into(), 0, weight)?;
@@ -7328,6 +7459,32 @@ impl Checker<'_> {
                 };
                 return self.model.rv_negative_type(grade.clone(), false);
             }
+            CobarOp::MixDown | CobarOp::MixUp => {
+                let Kind::MixedChain(grade, false) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a MixedChain"));
+                };
+                let offset = if matches!(op, CobarOp::MixUp) { 1 } else { -1 };
+                return self.model.mixed_chain_type(grade.shift(offset)?, false);
+            }
+            CobarOp::MixD => {
+                return match *self.model.kind(argument.ty) {
+                    Kind::MixedChain(grade, true) => {
+                        self.model.mixed_chain_type(grade.shift(-1)?, true)
+                    }
+                    Kind::MixedPage(grade) => self.model.mixed_page_type(grade.differential()?),
+                    _ => Err(self.invalid_operand(argument, name, "a MixedU or MixedE value")),
+                };
+            }
+            CobarOp::MixRep | CobarOp::MixNext | CobarOp::MixPrev => {
+                let Kind::MixedPage(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a MixedE class"));
+                };
+                return match op {
+                    CobarOp::MixRep => self.model.mixed_chain_type(grade.chain, true),
+                    CobarOp::MixNext => self.model.mixed_page_type(grade.next()?),
+                    _ => self.model.mixed_page_type(grade.previous()?),
+                };
+            }
             CobarOp::RvHHd | CobarOp::RvConnesB | CobarOp::RvHHClass | CobarOp::RvHHRep => {
                 return match (op, self.model.kind(argument.ty)) {
                     (CobarOp::RvHHd, Kind::RVHHChain(grade)) => {
@@ -7639,6 +7796,8 @@ impl Checker<'_> {
                         | Kind::RhoBock(..)
                         | Kind::RhoLoc(..)
                         | Kind::MExt(..)
+                        | Kind::MixedChain(..)
+                        | Kind::MixedPage(..)
                         | Kind::Sheaf(..)
                         | Kind::SheafComplex(..)
                         | Kind::SheafPage(..)

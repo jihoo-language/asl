@@ -67,6 +67,7 @@ use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock::{self, BocksteinPage};
 use crate::{bp, bp_polynomial};
+use crate::{mixed, mixed_page};
 
 const MAX_SPACE_POINTS: usize = 512;
 const MAX_TYPES: usize = 4096;
@@ -119,6 +120,8 @@ impl DiffFamily {
 pub(crate) enum Kind {
     Space(String),
     QModule(String),
+    MixedChain(mixed::Grade, bool),
+    MixedPage(mixed_page::Grade),
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
@@ -361,6 +364,9 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
+    mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
+    mixed_indices: HashMap<String, mixed::Id>,
+    mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
     sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
@@ -393,6 +399,9 @@ impl Model {
     pub(crate) fn new() -> Self {
         let mut model = Self {
             types: Vec::new(),
+            mixed_complexes: Vec::new(),
+            mixed_indices: HashMap::new(),
+            mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
             sheaf_maps: HashMap::new(),
             sheaf_complexes: HashMap::new(),
@@ -471,6 +480,7 @@ impl Model {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::QModule(_) => 1,
+            Kind::MixedChain(..) | Kind::MixedPage(..) => usize::MAX,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
             Kind::SheafComplex(_, ref name, k)
                 if k >= self.sheaf_complexes[name.as_ref()].height =>
@@ -710,6 +720,8 @@ impl Model {
         matches!(
             self.kind(ty),
             Kind::Cohomology(..)
+                | Kind::MixedChain(..)
+                | Kind::MixedPage(..)
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
                 | Kind::SheafPage(..)
@@ -790,6 +802,54 @@ impl Model {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn check_new_mixed(&self, name: &Label) -> Result<()> {
+        if self.mixed_indices.contains_key(&name.text) {
+            return Err(Error::new(name.span, "mixed complex is already defined"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_mixed(&mut self, name: String, complex: mixed::Complex) {
+        self.mixed_indices
+            .insert(name.clone(), mixed::Id(self.mixed_complexes.len()));
+        self.mixed_complexes.push((name, Rc::new(complex)));
+    }
+
+    pub(crate) fn mixed_id(&self, name: &Label) -> Result<mixed::Id> {
+        self.mixed_indices
+            .get(&name.text)
+            .copied()
+            .ok_or_else(|| Error::new(name.span, format!("unknown mixed complex '{}'", name.text)))
+    }
+
+    pub(crate) fn mixed_complex(&self, id: mixed::Id) -> Rc<mixed::Complex> {
+        self.mixed_complexes[id.0].1.clone()
+    }
+
+    pub(crate) fn mixed_name(&self, id: mixed::Id) -> &str {
+        &self.mixed_complexes[id.0].0
+    }
+
+    pub(crate) fn mixed_chain_type(&mut self, grade: mixed::Grade, total: bool) -> Result<TypeId> {
+        self.inhabited_type(Kind::MixedChain(grade, total), 0)
+    }
+
+    pub(crate) fn mixed_page_type(&mut self, grade: mixed_page::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MixedPage(grade), 0)
+    }
+
+    pub(crate) fn mixed_page(&mut self, ty: TypeId) -> Result<Rc<mixed_page::Page>> {
+        if let Some(page) = self.mixed_pages.get(&ty) {
+            return Ok(page.clone());
+        }
+        let Kind::MixedPage(grade) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let page = Rc::new(mixed_page::Page::build(self, grade)?);
+        self.mixed_pages.insert(ty, page.clone());
+        Ok(page)
     }
 
     pub(crate) fn define_sheaf(&mut self, name: String, sheaf: Sheaf) {
@@ -2233,6 +2293,8 @@ impl Model {
             }
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
+            | Kind::MixedChain(..)
+            | Kind::MixedPage(..)
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
             | Kind::SheafPage(..)
@@ -2398,6 +2460,21 @@ impl Model {
     fn write_type(&self, out: &mut Text, ty: TypeId, precedence: u8) -> Result<()> {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
+            Kind::MixedChain(grade, total) => {
+                let name = if *total { "MixedU" } else { "MixedChain" };
+                out.push(&format!(
+                    "{name}({}, {})",
+                    self.mixed_name(grade.complex),
+                    grade.b
+                ))
+            }
+            Kind::MixedPage(grade) => out.push(&format!(
+                "MixedE({}, {}, {}, {})",
+                self.mixed_name(grade.chain.complex),
+                grade.r,
+                grade.chain.b,
+                grade.f
+            )),
             Kind::Sheaf(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.name()))
             }
@@ -3345,6 +3422,19 @@ impl Model {
                     let rank = self.ce_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
+                Kind::MixedChain(grade, total) => {
+                    self.mixed_complex(grade.complex)
+                        .elements(self, grade, total, MAX_ELEMENTS)?
+                }
+                Kind::MixedPage(grade) => {
+                    let rank = self.mixed_page(ty)?.rank();
+                    odd_ext::elements(
+                        self,
+                        self.mixed_complex(grade.chain.complex).prime,
+                        rank,
+                        MAX_ELEMENTS,
+                    )?
+                }
                 Kind::Sheaf(form, ref name, degree) => {
                     let data = self.sheaf_named(name).expect("registered sheaf");
                     match form {
@@ -3776,6 +3866,11 @@ impl Model {
                 out.push("}")
             }
             Value::OddClass(support) => {
+                let mixed = if let Kind::MixedChain(grade, total) = *self.kind(ty) {
+                    Some((self.mixed_complex(grade.complex), grade.b, total))
+                } else {
+                    None
+                };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
@@ -3788,7 +3883,15 @@ impl Model {
                     if coefficient != 1 {
                         out.push(&format!("{coefficient}*"))?;
                     }
-                    out.push(&format!("g{generator}"))?;
+                    if let Some((complex, b, total)) = &mixed {
+                        if *total {
+                            let exponent = complex.filtration(generator, (*b).into()).unwrap();
+                            out.push(&format!("u^{exponent}*"))?;
+                        }
+                        out.push(complex.name(generator))?;
+                    } else {
+                        out.push(&format!("g{generator}"))?;
+                    }
                 }
                 out.push("}")
             }

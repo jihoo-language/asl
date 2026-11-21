@@ -45,6 +45,8 @@ pub(crate) enum TypeForm {
     Name(Label),
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
+    MixedChain(Label, i64, bool),
+    MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
     SheafComplex(SheafForm, Label, usize),
     SheafPage(Label, SheafPageGrade),
@@ -127,6 +129,8 @@ pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type HiveSpec = [Vec<i128>; 3];
 
 pub(crate) type RvHHSpec = (Label, i64, Vec<usize>);
+
+pub(crate) type MixedSpec = (Label, usize, i64, usize);
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
 
@@ -513,6 +517,10 @@ pub(crate) enum ExprForm {
     PMayGenerator(usize, usize, usize, usize, usize, usize, Span),
     PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
+    MixedLiteral(Label, i64, crate::mixed::Terms),
+    MixedEmbed(usize, Box<ParsedExpr>),
+    MixedGenerator(MixedSpec, usize, Span),
+    MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
     SheafGenerator(Label, usize, usize),
     SheafApply(Label, Box<ParsedExpr>),
@@ -686,6 +694,14 @@ pub(crate) struct Statement {
 
 pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
+    MixedComplex(
+        Label,
+        usize,
+        Vec<(Label, i64)>,
+        crate::mixed::Rules,
+        crate::mixed::Rules,
+    ),
+    MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
     SheafComplex(Label, Vec<Label>),
@@ -1247,6 +1263,51 @@ impl<'src> Parser<'src> {
         Ok(entries)
     }
 
+    fn mixed_terms(&mut self) -> Result<crate::mixed::Terms> {
+        self.expect(Token::LBracket)?;
+        let mut terms = Vec::new();
+        while self.token() != Token::RBracket {
+            self.expect(Token::LParen)?;
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let coefficient = self.signed_number("mixed complex coefficient")?;
+            self.expect(Token::RParen)?;
+            terms.push((name, coefficient));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(terms)
+    }
+
+    fn mixed_rules(&mut self) -> Result<crate::mixed::Rules> {
+        self.expect(Token::LBrace)?;
+        let mut rules = Vec::new();
+        while self.token() != Token::RBrace {
+            let generator = self.label()?;
+            self.expect(Token::FatArrow)?;
+            let terms = self.mixed_terms()?;
+            rules.push((generator, terms));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rules)
+    }
+
+    fn mixed_spec(&mut self) -> Result<MixedSpec> {
+        let complex = self.label()?;
+        self.expect(Token::Comma)?;
+        let r = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let degree = self.signed_degree()?;
+        self.expect(Token::Comma)?;
+        let filtration = self.number()?.0;
+        Ok((complex, r, degree, filtration))
+    }
+
     fn sheaf_body(&mut self) -> Result<sheaf::Presentation> {
         self.expect(Token::LBrace)?;
         let mut stalks = Vec::new();
@@ -1307,6 +1368,34 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 let presentation = self.q_module_body()?;
                 StatementForm::QModule(name, selected, presentation)
+            }
+            Token::Word("mixedcomplex") => {
+                self.advance()?;
+                let complex = self.label()?;
+                self.expect(Token::LBracket)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut generators = Vec::new();
+                while self.token() != Token::RBrace {
+                    let label = self.label()?;
+                    self.expect(Token::Colon)?;
+                    generators.push((label, self.signed_degree()?));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                let b = self.mixed_rules()?;
+                let big_b = self.mixed_rules()?;
+                StatementForm::MixedComplex(complex, prime, generators, b, big_b)
+            }
+            Token::Word("mixdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.mixed_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedDimension(spec)
             }
             Token::Word("sheaf") => {
                 self.advance()?;
@@ -2750,6 +2839,22 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVHochschild(spec, name.text == "RVHH"), 0);
         }
+        if matches!(name.text.as_str(), "MixedChain" | "MixedU") && self.eat(Token::LParen)? {
+            let complex = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_degree()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::MixedChain(complex, degree, name.text == "MixedU"),
+                0,
+            );
+        }
+        if name.text == "MixedE" && self.eat(Token::LParen)? {
+            let spec = self.mixed_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MixedPage(spec), 0);
+        }
         if name.text == "RVBarCobar" && self.eat(Token::LParen)? {
             let grade = self.rv_bar_spec()?;
             self.expect(Token::RParen)?;
@@ -3352,6 +3457,37 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::RvPathGenerator(spec, index, at), 0);
+                }
+                if name.text == "mixchain" && self.eat(Token::LBracket)? {
+                    let name = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let b = self.signed_degree()?;
+                    self.expect(Token::RBracket)?;
+                    let terms = self.mixed_terms()?;
+                    return expr(span, ExprForm::MixedLiteral(name, b, terms), 0);
+                }
+                if name.text == "mixgen" && self.eat(Token::LBracket)? {
+                    let spec = self.mixed_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MixedGenerator(spec, index, at), 0);
+                }
+                if name.text == "mixU" && self.eat(Token::LBracket)? {
+                    let exponent = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::MixedEmbed(exponent, Box::new(input)), depth);
+                }
+                if name.text == "mixPageClass" && self.eat(Token::LBracket)? {
+                    let r = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let f = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::MixedClass(r, f, Box::new(input)), depth);
                 }
                 if name.text == "rvbaregen" && self.eat(Token::LBracket)? {
                     let spec = self.rv_bar_page_spec()?;
