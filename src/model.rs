@@ -27,6 +27,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::rv_bar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -83,6 +84,7 @@ pub(crate) enum Kind {
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
+    RVBar(rv_bar::Grade),
     RVKoszul(RvGrade),
     RVTor(RvGrade),
     RVPoly(q_koszul::Indices, usize),
@@ -172,6 +174,7 @@ pub(crate) enum Value {
     RVHom(rv_hom::Support),
     RVLaurent(rv_laurent::Support),
     JetHom(jet_hom::Support),
+    RVBar(rv_bar::Support),
     RVKoszul(rv_koszul::Support),
     JetClass(jet_page::Coordinates),
     RVPoly(Polynomial),
@@ -251,6 +254,8 @@ pub(crate) struct Model {
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
+    rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
+    rv_bar_ids: HashMap<String, rv_bar::PathId>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
     jet_complexes: HashMap<jet_hom::Diagram, Rc<jet_hom::Complex>>,
@@ -269,6 +274,8 @@ impl Model {
             rv_curves: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
+            rv_bar_paths: Vec::new(),
+            rv_bar_ids: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
             jet_complexes: HashMap::new(),
@@ -446,6 +453,7 @@ impl Model {
             {
                 1
             }
+            Kind::RVBar(..) => usize::MAX,
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
@@ -533,6 +541,7 @@ impl Model {
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
+                | Kind::RVBar(..)
                 | Kind::RVKoszul(..)
                 | Kind::RVTor(..)
                 | Kind::RVPoly(..)
@@ -827,6 +836,47 @@ impl Model {
     ) -> Result<TypeId> {
         let depth = self.types[source.0].depth.max(self.types[target.0].depth) + 1;
         self.inhabited_type(Kind::MapMay(source, target, r, s, t, f), depth)
+    }
+
+    pub(crate) fn define_rv_bar_path(
+        &mut self,
+        name: Label,
+        ideal: Label,
+        steps: Vec<Vec<usize>>,
+    ) -> Result<()> {
+        if self.rv_bar_ids.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("bar path '{}' is already defined", name.text),
+            ));
+        }
+        let path = rv_bar::Path::build(self, ideal, steps)?;
+        self.allocate(2 + 2 * name.text.len())?;
+        let id = rv_bar::PathId(self.rv_bar_paths.len());
+        self.rv_bar_ids.insert(name.text.clone(), id);
+        self.rv_bar_paths.push((name.text, Rc::new(path)));
+        Ok(())
+    }
+
+    pub(crate) fn rv_bar_path_id(&self, name: &Label) -> Result<rv_bar::PathId> {
+        self.rv_bar_ids
+            .get(&name.text)
+            .copied()
+            .ok_or_else(|| Error::new(name.span, format!("unknown bar path '{}'", name.text)))
+    }
+
+    pub(crate) fn rv_bar_path(&self, id: rv_bar::PathId) -> Rc<rv_bar::Path> {
+        self.rv_bar_paths[id.0].1.clone()
+    }
+
+    pub(crate) fn rv_bar_path_name(&self, id: rv_bar::PathId) -> &str {
+        &self.rv_bar_paths[id.0].0
+    }
+
+    pub(crate) fn rv_bar_type(&mut self, grade: rv_bar::Grade) -> Result<TypeId> {
+        self.rv_bar_path(grade.path)
+            .check_interval(grade.start, grade.end)?;
+        self.inhabited_type(Kind::RVBar(grade), 0)
     }
 
     pub(crate) fn define_jet_path(&mut self, name: Label, path: Path) -> Result<()> {
@@ -1490,6 +1540,7 @@ impl Model {
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
+            | Kind::RVBar(..)
             | Kind::RVKoszul(..)
             | Kind::RVTor(..)
             | Kind::RVPoly(..)
@@ -1643,6 +1694,13 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
+            Kind::RVBar(grade) => out.push(&format!(
+                "RVBar({}, {}, {}, {})",
+                self.rv_bar_path_name(grade.path),
+                grade.start,
+                grade.end,
+                grade.b,
+            )),
             Kind::RVKoszul(grade) | Kind::RVTor(grade) => {
                 let family = if matches!(self.kind(ty), Kind::RVKoszul(_)) {
                     "RVKoszul"
@@ -1817,6 +1875,10 @@ impl Model {
             (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
+            (Value::RVBar(left), Value::RVBar(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || rv_bar::compare(self, left, right)? == Ordering::Equal)
+            }
             (Value::RVKoszul(left), Value::RVKoszul(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_koszul::compare(self, left, right)? == Ordering::Equal),
             (Value::RVPoly(left), Value::RVPoly(right)) => {
@@ -1931,6 +1993,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     left.compare(self, right)
+                }
+            }
+            (Value::RVBar(left), Value::RVBar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_bar::compare(self, left, right)
                 }
             }
             (Value::RVKoszul(left), Value::RVKoszul(right)) => {
@@ -2122,6 +2191,18 @@ impl Model {
                     ))
                 }
                 Kind::BPExt(..) => self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?,
+                Kind::RVBar(grade) => {
+                    let basis = rv_bar::basis(
+                        self,
+                        grade,
+                        grade.max_length(),
+                        MAX_ELEMENTS.ilog2() as usize,
+                    )?;
+                    self.allocate(basis.iter().map(|word| rv_bar::word_cells(word)).sum())?;
+                    self.enumerate_supports(0, basis.len(), |class| {
+                        Value::RVBar(class.iter().map(|&item| basis[item].clone()).collect())
+                    })?
+                }
                 Kind::RVKoszul(ref grade) => {
                     let grade = grade.clone();
                     let ideal = self.rv_ideals[&grade.ideal].clone();
@@ -2575,6 +2656,35 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 polynomial.write(|piece| out.push(piece), shape.height)?;
+                out.push("}")
+            }
+            Value::RVBar(words) => {
+                let Kind::RVBar(grade) = self.kind(ty) else {
+                    unreachable!();
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if words.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, word) in words.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push("[")?;
+                    let mut start = grade.start;
+                    for (position, factor) in word.iter().enumerate() {
+                        if position != 0 {
+                            out.push(" | ")?;
+                        }
+                        out.push(&format!(
+                            "({}, {}, {}):g{}",
+                            start, factor.end, factor.s, factor.generator
+                        ))?;
+                        start = factor.end;
+                    }
+                    out.push("]")?;
+                }
                 out.push("}")
             }
             Value::RVKoszul(terms) => {

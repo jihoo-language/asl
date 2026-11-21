@@ -762,6 +762,16 @@ awk -v local=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
 
 The result is the generator of `RVMTor` in homological degree 38 and multidegree $(1,\ldots,1)$ on forty variables. This program checks all 189 proper contiguous products and the nonzero twentieth product within the same computation limits.
 
+### The directed Koszul bar complex
+
+`rvbarpath P[J] { [mu1], ..., [mun] };` takes nonzero multidegrees in the primitive order of a monomial ideal $J$. It defines an ordered directed $A_\infty$ category with vertices $0,\ldots,n$. From $i$ to $j$ with $i<j$, the morphisms are the multigraded Tor groups at $\mu_{i+1}+\cdots+\mu_j$. Composition and all higher operations use the transferred product on those groups. Each vertex has a formal identity. The reduced bar complex uses only the positive intervals.
+
+`RVBar(P,i,j,b)` sums the ordered tensors over all cuts $i=i_0<\cdots<i_k=j$, using suspended homological degree $b=\sum_{v=1}^k(s_v+1)$. Build a tensor with `rvBarWord[P,[i0,...,ik]](c1,...,ck)`. Each class must have the multidegree of its interval, and the constructor expands multilinearly. Printed factors show the interval, unsuspended degree and Tor basis index.
+
+`rvBarD(x)` replaces each consecutive block of $m\ge2$ factors by its $m_m$ product. Every replacement lowers $b$ by one and tensor length by $m-1$. The Stasheff identities give $d^2=0$. Use `rvBarLength[k](x)` for the length-$k$ part and `rvbardim[P,i,j,b];` for the basis dimension, with an optional final length to count just that part. The basis calculation counts feasible cuts using cached interval homology. For squarefree flag ideals, dominated vertices can be removed when finding homology dimensions. The actual morphisms and products use the original Koszul slices.
+
+For the three-square example, two distinct binary contractions of the length-three word have the same nonzero differential and cancel. The staircase generator also supports `-v bar=1`, which checks that the full word maps to the singleton top class. [Bar differential example](examples/rank-bar.asl) · [Staircase generator](examples/staircase-transfer.awk)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

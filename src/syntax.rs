@@ -61,6 +61,7 @@ pub(crate) enum TypeForm {
     VExt(QSpec<i64>),
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
+    RVBar(RvBarSpec),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPRel(BpRelSpec),
@@ -108,6 +109,13 @@ pub(crate) enum BpExtOp {
     Class(usize),
     Representative,
     Scale(i128),
+}
+
+pub(crate) struct RvBarSpec {
+    pub(crate) path: Label,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) b: usize,
 }
 
 pub(crate) struct RvGradeSpec {
@@ -398,6 +406,8 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvBarWord(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvBarLength(usize, Box<ParsedExpr>),
     RvHFace(Label, Vec<usize>, Vec<usize>),
     RvMTerm(Label, Vec<usize>, Box<ParsedExpr>),
     RvMComponent(Vec<usize>, Box<ParsedExpr>),
@@ -494,6 +504,8 @@ pub(crate) enum StatementForm {
     RankVariety(RankVarietySpec),
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
+    RvBarPath(Label, Label, Vec<Vec<usize>>),
+    RvBarDimension(RvBarSpec, Option<usize>),
     RvHochster(Label, Vec<usize>, i64),
     RvBetti(RvGradeSpec),
     RvMinors(RvMatrixSpec, usize),
@@ -1217,6 +1229,35 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 form
             }
+            Token::Word("rvbarpath") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let ideal = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut steps = Vec::new();
+                while self.token() != Token::RBrace {
+                    steps.push(self.exponents()?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::RvBarPath(name, ideal, steps)
+            }
+            Token::Word("rvbardim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.rv_bar_spec()?;
+                let length = if self.eat(Token::Comma)? {
+                    Some(self.number()?.0)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvBarDimension(grade, length)
+            }
             Token::Word("rvhochster") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -1857,6 +1898,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
+        if name.text == "RVBar" && self.eat(Token::LParen)? {
+            let grade = self.rv_bar_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVBar(grade), 0);
+        }
         if matches!(
             name.text.as_str(),
             "RVKoszul" | "RVTor" | "RVMKoszul" | "RVMTor"
@@ -2230,6 +2276,27 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvBarWord" && self.eat(Token::LBracket)? {
+                    let path = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let cuts = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let inputs = self.arguments(nest)?;
+                    let depth = inputs
+                        .iter()
+                        .map(|value| value.depth + 1)
+                        .max()
+                        .unwrap_or(0);
+                    return expr(span, ExprForm::RvBarWord(path, cuts, inputs), depth);
+                }
+                if name.text == "rvBarLength" && self.eat(Token::LBracket)? {
+                    let (length, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvBarLength(length, Box::new(input)), depth);
+                }
                 if name.text == "rvhface" && self.eat(Token::LBracket)? {
                     let ideal = self.label()?;
                     self.expect(Token::Comma)?;
@@ -3220,6 +3287,22 @@ impl<'src> Parser<'src> {
             }
             _ => Err(self.expected("an expression")),
         }
+    }
+
+    fn rv_bar_spec(&mut self) -> Result<RvBarSpec> {
+        let path = self.label()?;
+        self.expect(Token::Comma)?;
+        let (start, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (end, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (b, _) = self.number()?;
+        Ok(RvBarSpec {
+            path,
+            start,
+            end,
+            b,
+        })
     }
 
     fn rv_grade(&mut self, multigraded: bool) -> Result<RvGradeSpec> {

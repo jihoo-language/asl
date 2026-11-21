@@ -41,6 +41,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_bar;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
 use crate::rv_field;
@@ -67,7 +68,7 @@ use crate::syntax::{
     JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp,
     RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
-use crate::syntax::{RvDegree, RvGradeSpec};
+use crate::syntax::{RvBarSpec, RvDegree, RvGradeSpec};
 use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
@@ -108,6 +109,7 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvBarD,
     RvMForget,
     RvKoszulDifferential,
     RvKoszulPrimitive,
@@ -146,6 +148,7 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvBarD" => Some(Self::RvBarD),
             "rvMForget" => Some(Self::RvMForget),
             "rvkD" => Some(Self::RvKoszulDifferential),
             "rvkPrimitive" => Some(Self::RvKoszulPrimitive),
@@ -215,6 +218,8 @@ enum TypedForm {
     BpRaise(Box<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
+    RvBarWord(Vec<usize>, Vec<usize>, Vec<TypedExpr>),
+    RvBarLength(usize, Box<TypedExpr>),
     RvMComponent(Box<TypedExpr>),
     RvKoszulTerm(usize, Rc<RvIdeal>, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
@@ -707,6 +712,21 @@ impl Engine {
                 let count = ideal.hilbert(&mut self.model, degree)?;
                 format!("rvhilbert[{}, {degree}] = {count}", name.text)
             }
+            StatementForm::RvBarPath(name, ideal, steps) => {
+                self.model.define_rv_bar_path(name, ideal, steps)?;
+                return Ok(None);
+            }
+            StatementForm::RvBarDimension(spec, length) => {
+                let grade = self.checker().rv_bar_grade(spec)?;
+                let rank = rv_bar::dimension(&mut self.model, grade, length)?;
+                let name = self.model.rv_bar_path_name(grade.path);
+                let rv_bar::Grade { start, end, b, .. } = grade;
+                if let Some(length) = length {
+                    format!("rvbardim[{name}, {start}, {end}, {b}, {length}] = {rank}")
+                } else {
+                    format!("rvbardim[{name}, {start}, {end}, {b}] = {rank}")
+                }
+            }
             StatementForm::RvHochster(name, vertices, degree) => {
                 let rank = rv_hochster::rank(&mut self.model, &name, &vertices, degree)?;
                 format!("rvhochster[{}, {vertices:?}, {degree}] = {rank}", name.text)
@@ -1140,6 +1160,9 @@ impl Engine {
                             polynomial,
                         )?))
                     }
+                    (BinaryOp::Add, Value::RVBar(a), Value::RVBar(b)) => {
+                        Ok(Value::RVBar(rv_bar::add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Add, Value::RVKoszul(a), Value::RVKoszul(b)) => {
                         Ok(Value::RVKoszul(rv_koszul::add(&mut self.model, &a, &b)?))
                     }
@@ -1378,6 +1401,13 @@ impl Engine {
                     let terms =
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
+                }
+                (CobarOp::RvBarD, Value::RVBar(terms)) => {
+                    let Kind::RVBar(grade) = *self.model.kind(input.ty) else {
+                        unreachable!();
+                    };
+                    let terms = rv_bar::differential(&mut self.model, grade, &terms)?;
+                    Ok(Value::RVBar(rv_bar::persist(&mut self.model, terms)?))
                 }
                 (CobarOp::RvMForget, value) => self.rv_koszul_regrade(input.ty, expr.ty, value),
                 (CobarOp::RvKoszulDifferential, Value::RVKoszul(terms)) => {
@@ -1839,6 +1869,33 @@ impl Engine {
                 };
                 let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
                 Ok(Value::Point(usize::from(vanishes)))
+            }
+            TypedForm::RvBarWord(ends, degrees, inputs) => {
+                let classes = inputs
+                    .iter()
+                    .map(|input| {
+                        let Value::Class(class) = self.eval(input)? else {
+                            unreachable!();
+                        };
+                        Ok(class)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Value::RVBar(rv_bar::word(
+                    &mut self.model,
+                    ends,
+                    degrees,
+                    &classes,
+                )?))
+            }
+            TypedForm::RvBarLength(length, input) => {
+                let Value::RVBar(terms) = self.eval(input)? else {
+                    unreachable!();
+                };
+                Ok(Value::RVBar(rv_bar::length_part(
+                    &mut self.model,
+                    *length,
+                    &terms,
+                )?))
             }
             TypedForm::RvMComponent(input) => {
                 let value = self.eval(input)?;
@@ -2473,6 +2530,10 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
+            TypeForm::RVBar(spec) => {
+                let grade = self.rv_bar_grade(spec)?;
+                self.model.rv_bar_type(grade)
+            }
             TypeForm::RVComplex(spec, homology) => {
                 let grade = self.rv_koszul_grade(spec)?;
                 self.model.rv_complex_type(grade, homology)
@@ -2581,6 +2642,7 @@ impl Checker<'_> {
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::JetPage(..) => jet_page::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
+                    Kind::RVBar(..) => Value::RVBar([].into()),
                     Kind::RVKoszul(..) => Value::RVKoszul([].into()),
                     Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
@@ -3309,6 +3371,31 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvBarWord(path, cuts, inputs) => {
+                let path = self.model.rv_bar_path_id(&path)?;
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let (grade, degrees) = rv_bar::word_type(
+                    self.model,
+                    path,
+                    &cuts,
+                    inputs.iter().map(|input| input.ty),
+                )?;
+                let ty = self.model.rv_bar_type(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::RvBarWord(cuts.into_iter().skip(1).collect(), degrees, inputs),
+                ))
+            }
+            ExprForm::RvBarLength(length, input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVBar(_)) {
+                    return Err(self.invalid_operand(&input, "rvBarLength", "an RVBar chain"));
+                }
+                Ok((input.ty, TypedForm::RvBarLength(length, Box::new(input))))
             }
             ExprForm::RvHFace(name, vertices, face) => {
                 let (grade, terms) = rv_hochster::face(self.model, name, &vertices, &face)?;
@@ -4359,6 +4446,19 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_bar_grade(&self, spec: RvBarSpec) -> Result<rv_bar::Grade> {
+        let path = self.model.rv_bar_path_id(&spec.path)?;
+        self.model
+            .rv_bar_path(path)
+            .check_interval(spec.start, spec.end)?;
+        Ok(rv_bar::Grade {
+            path,
+            start: spec.start,
+            end: spec.end,
+            b: spec.b,
+        })
+    }
+
     fn rv_koszul_grade(&mut self, spec: RvGradeSpec) -> Result<rv_koszul::Grade> {
         match spec.degree {
             RvDegree::Total(t) => self.model.rv_grade(spec.ideal, spec.s, t),
@@ -4591,6 +4691,12 @@ impl Checker<'_> {
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
             }
+            CobarOp::RvBarD => {
+                let Kind::RVBar(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVBar chain"));
+                };
+                return self.model.rv_bar_type(grade.differential()?);
+            }
             CobarOp::RvMForget => {
                 let (mut grade, homology) = self.rv_complex_family(argument, name)?;
                 if grade.multidegree.take().is_none() {
@@ -4821,6 +4927,7 @@ impl Checker<'_> {
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
+                        | Kind::RVBar(..)
                         | Kind::RVKoszul(..)
                         | Kind::RVTor(..)
                         | Kind::JetPage(..)

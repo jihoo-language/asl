@@ -5,11 +5,17 @@ BEGIN {
         print "n must be an integer between 3 and 31 (primitive labels are 1 through 2n)" > "/dev/stderr"
         exit 2
     }
+    if (bar == "") bar = 0
+    if (bar !~ /^[01]$/) {
+        print "bar must be 0 or 1" > "/dev/stderr"
+        exit 2
+    }
     if (local == "") local = 0
     if (local !~ /^[01]$/) {
         print "local must be 0 (total grading) or 1 (multigrading)" > "/dev/stderr"
         exit 2
     }
+    if (bar) local = 1
     constructor = local ? "rvmkterm" : "rvkterm"
     for (k = 1; k <= 2*n; k++) selection = append(selection, k)
 
@@ -42,6 +48,21 @@ BEGIN {
     else
         emit(sprintf("assert result == rvtorgen[Stair, %d, %d, 0];", 2*n-2, 2*n))
     emit("show result;")
+
+    if (bar) {
+        emit("rvbarpath StairBar[Stair] {")
+        for (j = 1; j <= n; j++)
+            emit("    [" multidegree(j, 1) "]" (j == n ? "" : ","))
+        emit("};")
+        for (j = 0; j <= n; j++) cuts = append(cuts, j)
+        emit("let word = rvBarWord[StairBar, [" cuts "]](" arguments(1, n) ");")
+        emit("let top = rvBarWord[StairBar, [0, " n "]](result);")
+        emit("assert rvBarD(word) == top;")
+        emit(sprintf("assert rvBarD(top) == zero[RVBar(StairBar, 0, %d, %d)];", n, 2*n-2))
+        emit(sprintf("rvbardim[StairBar, 0, %d, %d, %d];", n, 2*n, n))
+        emit(sprintf("rvbardim[StairBar, 0, %d, %d, 1];", n, 2*n-1))
+        emit("show top;")
+    }
 
     for (i = 1; i <= line_count; i++) print lines[i]
 }
