@@ -59,6 +59,7 @@ use crate::rv_hodge;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwahori;
+use crate::rv_iwkl;
 use crate::rv_koszul;
 use crate::rv_laurent;
 use crate::rv_newton;
@@ -367,6 +368,22 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::RVIwKL(lower, upper) => {
+                let polynomial = rv_iwkl::polynomial(&mut self.model, &lower, &upper)?;
+                format!("rvIwKL = {polynomial:?}")
+            }
+            StatementForm::RVIwSchubertKL(upper, input) => {
+                let input = self.checker().expr(input)?;
+                let name = "rvIwSchubertKL";
+                rv_hodge::square(&self.model, input.ty, name)?;
+                rv_iwahori::check_window(&mut self.model, input.ty, &upper)?;
+                let Value::RVLaurent(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let lower = rv_iwahori::standard(&mut self.model, input.ty, &value, name)?;
+                let polynomial = rv_iwkl::polynomial(&mut self.model, &lower, &upper)?;
+                format!("{name} = {polynomial:?}")
             }
             StatementForm::RVIw(length, input) => {
                 let name = if length { "rvIwLength" } else { "rvIw" };

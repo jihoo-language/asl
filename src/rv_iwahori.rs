@@ -26,6 +26,11 @@ pub(crate) fn check_window(model: &mut Model, ty: TypeId, target: &[i128]) -> Re
             "the affine window must have one entry per Margolis dimension",
         ));
     }
+    validate_window(model, target)
+}
+
+pub(crate) fn validate_window(model: &mut Model, target: &[i128]) -> Result<()> {
+    let size = target.len();
     model.spend(size)?;
     let mut seen = vec![false; size];
     for &value in target {
@@ -150,7 +155,7 @@ fn checked_sum(terms: impl IntoIterator<Item = i128>) -> Result<i128> {
     })
 }
 
-fn component(window: &[i128]) -> Result<i128> {
+pub(crate) fn component(window: &[i128]) -> Result<i128> {
     checked_sum(
         window
             .iter()

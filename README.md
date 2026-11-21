@@ -682,6 +682,14 @@ For rank $n$, the standard descending lattice chain has its first $i$ basis vect
 
 The identity and the finite simple reflection both preserve the standard lattice. Their affine windows are $(0,1)$ and $(1,0)$. The affine simple reflection has window $(-1,2)$, and both reflections have length one. A coefficient Frobenius over $\mathbb F_4/\mathbb F_2$ changes the flag of an upper-triangular unit frame. [Affine flag example](examples/rv-iwahori.asl)
 
+### Affine Kazhdan–Lusztig polynomials
+
+`rvIwKL[[x0,...],[w0,...]];` computes the affine type-$A$ Kazhdan–Lusztig polynomial $P_{x,w}(q)$ for the supplied windows. The output lists coefficients in ascending powers of $q$, with `[0]` for zero. Equal windows give one. The Bruhat order and determinant component decide whether distinct windows are comparable. A common length-zero translation is removed before the calculation.
+
+The interpreter constructs the normalized Hecke expansion $B_w=\sum_x h_{x,w}(v)H_x$. For $w=ys$ with a right ascent from $y$, it multiplies $B_y$ by $B_s=H_s+v$ and subtracts the lower canonical-basis terms $[v]h_{z,y}\,B_z$ for which $zs<z$. The desired coefficient is read from $h_{x,w}(v)=v^{\ell(w)-\ell(x)}P_{x,w}(v^{-2})$. The calculation uses exact signed integers and checks its storage and arithmetic bounds.
+
+`rvIwSchubertKL[[w0,...]](A);` first takes the affine flag position $x$ of the supplied Laurent endomorphism $A$, then reports the affine Schubert intersection-cohomology polynomial $P_{x,w}$. The finite permutation $3412$ gives $P_{e,w}=1+q$. The affine rank-three window $(-4,3,4)$ also gives $1+q$ and has a reduced expression using all three affine simple reflections. [Affine Schubert example](examples/rv-iwkl.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

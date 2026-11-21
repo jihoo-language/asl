@@ -518,6 +518,8 @@ pub(crate) enum StatementForm {
     RVNewton(usize, usize, ParsedExpr),
     RVHodge(ParsedExpr),
     RVIw(bool, ParsedExpr),
+    RVIwKL(Vec<i128>, Vec<i128>),
+    RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
     RVTree(crate::rv_tree::Report, usize, usize, usize, ParsedExpr),
@@ -1024,6 +1026,22 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvIwKL") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let lower = self.affine_window()?;
+                self.expect(Token::Comma)?;
+                let upper = self.affine_window()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RVIwKL(lower, upper)
+            }
+            Token::Word("rvIwSchubertKL") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let upper = self.affine_window()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RVIwSchubertKL(upper, self.paren_expr(0)?)
             }
             Token::Word("rvIw" | "rvIwLength") => {
                 let length = self.token() == Token::Word("rvIwLength");
@@ -3306,20 +3324,7 @@ impl<'src> Parser<'src> {
                     self.expect(Token::Comma)?;
                     let (root, _) = self.number()?;
                     self.expect(Token::Comma)?;
-                    self.expect(Token::LBracket)?;
-                    let mut window = Vec::new();
-                    while self.token() != Token::RBracket {
-                        window.push(
-                            self.signed_wide(
-                                "a signed affine window entry",
-                                "affine window entry",
-                            )?,
-                        );
-                        if !self.eat(Token::Comma)? {
-                            break;
-                        }
-                    }
-                    self.expect(Token::RBracket)?;
+                    let window = self.affine_window()?;
                     self.expect(Token::RBracket)?;
                     let arguments = self.paren_pair(nest)?;
                     let depth = 1 + arguments[0].depth.max(arguments[1].depth);
@@ -3683,6 +3688,19 @@ impl<'src> Parser<'src> {
             RvDegree::Total(self.number()?.0)
         };
         Ok(RvGradeSpec { ideal, s, degree })
+    }
+
+    fn affine_window(&mut self) -> Result<Vec<i128>> {
+        self.expect(Token::LBracket)?;
+        let mut window = Vec::new();
+        while self.token() != Token::RBracket {
+            window.push(self.signed_wide("a signed affine window entry", "affine window entry")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(window)
     }
 
     fn coweight(&mut self) -> Result<Vec<i64>> {
