@@ -114,7 +114,7 @@ pub(crate) fn basis(
     Ok(basis)
 }
 
-fn product_term(left: &[usize], right: &[usize]) -> Result<Monomial> {
+pub(crate) fn product_term(left: &[usize], right: &[usize]) -> Result<Monomial> {
     left.iter()
         .zip(right)
         .map(|(&a, &b)| a.checked_add(b).ok_or_else(degree_error))

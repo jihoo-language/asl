@@ -62,6 +62,13 @@ pub(crate) enum TypeForm {
     Arrow(Box<ParsedType>, Box<ParsedType>),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum RvIdealOp {
+    Normal,
+    Contains,
+    Witness(usize),
+}
+
 pub(crate) struct RvMatrixSpec {
     pub(crate) base: Box<ParsedType>,
     pub(crate) selected: Vec<usize>,
@@ -275,6 +282,7 @@ pub(crate) enum ExprForm {
     RvHasse(Vec<usize>, Box<ParsedExpr>),
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
     RvInMinors(RvMatrixSpec, usize, Box<ParsedExpr>),
+    RvIdeal(RvIdealOp, Label, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -334,6 +342,10 @@ pub(crate) enum StatementForm {
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
     RvMinors(RvMatrixSpec, usize),
+    RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvFitting(Label, RvMatrixSpec, usize),
+    RvGroebner(Label),
+    RvHilbert(Label, usize),
     RankJet(RankJetSpec),
     VExtDimension(QSpec<i64>),
     VBars(BarFamilySpec),
@@ -772,6 +784,46 @@ impl<'src> Parser<'src> {
                 let (source, target, s, t) = self.map_bidegree(0)?;
                 self.expect(Token::RBracket)?;
                 StatementForm::MapExtDimension(source, target, s, t)
+            }
+            Token::Word("rvideal") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let selected = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut generators = Vec::new();
+                while self.token() != Token::RBrace {
+                    generators.push(self.expr(0)?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::RvIdeal(name, selected, generators)
+            }
+            Token::Word("rvfitting") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_matrix(0)?;
+                let (size, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvFitting(name, spec, size)
+            }
+            Token::Word("rvgroebner" | "rvhilbert") => {
+                let hilbert = self.token() == Token::Word("rvhilbert");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let form = if hilbert {
+                    self.expect(Token::Comma)?;
+                    StatementForm::RvHilbert(name, self.number()?.0)
+                } else {
+                    StatementForm::RvGroebner(name)
+                };
+                self.expect(Token::RBracket)?;
+                form
             }
             Token::Word("rvminors") => {
                 self.advance()?;
@@ -1648,6 +1700,24 @@ impl<'src> Parser<'src> {
                         ExprForm::RvVanish(modulus, point, Box::new(input)),
                         depth,
                     );
+                }
+                if matches!(name.text.as_str(), "rvNormal" | "rvInIdeal" | "rvWitness")
+                    && self.eat(Token::LBracket)?
+                {
+                    let ideal = self.label()?;
+                    let op = match name.text.as_str() {
+                        "rvNormal" => RvIdealOp::Normal,
+                        "rvInIdeal" => RvIdealOp::Contains,
+                        "rvWitness" => {
+                            self.expect(Token::Comma)?;
+                            RvIdealOp::Witness(self.number()?.0)
+                        }
+                        _ => unreachable!(),
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
                 }
                 if name.text == "rvInMinors" && self.eat(Token::LBracket)? {
                     let spec = self.rv_matrix(nest)?;

@@ -39,12 +39,13 @@ use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
 use crate::rv_hom;
+use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
-    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType, QSpec,
-    Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
+    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, Label, MapMaySpec, ParsedExpr, ParsedType,
+    QSpec, RvIdealOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::transfer;
 use crate::v_bars;
@@ -56,6 +57,7 @@ pub(crate) struct Engine {
     bindings: HashMap<String, Binding>,
     values: Vec<Value>,
     locals: Vec<Value>,
+    ideals: HashMap<String, Rc<RvIdeal>>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +165,7 @@ enum TypedForm {
     RvHasse(Vec<usize>, Box<TypedExpr>),
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
     RvInMinors(TypeId, q_koszul::Indices, usize, Box<TypedExpr>),
+    RvIdeal(RvIdealOp, Rc<RvIdeal>, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
     Nakamura(usize, Box<TypedExpr>),
@@ -207,6 +210,7 @@ impl Engine {
             bindings: HashMap::new(),
             values: Vec::new(),
             locals: Vec::new(),
+            ideals: HashMap::new(),
         }
     }
 
@@ -215,6 +219,7 @@ impl Engine {
             model: &mut self.model,
             bindings: &self.bindings,
             locals: Vec::new(),
+            ideals: &self.ideals,
         }
     }
 
@@ -360,6 +365,49 @@ impl Engine {
                     self.model.type_name(source),
                     self.model.type_name(target),
                 )
+            }
+            StatementForm::RvIdeal(name, selected, expressions) => {
+                check_new_ideal(&self.ideals, &name)?;
+                let selected = q_koszul::indices(&mut self.model, selected)?;
+                let mut generators = Vec::with_capacity(expressions.len());
+                for expression in expressions {
+                    let input = self.checker().expr(expression)?;
+                    let (variables, degree) = self.checker().rv_poly_grade(&input, "rvideal")?;
+                    if variables != selected {
+                        return Err(Error::new(
+                            input.span,
+                            "rvideal generator uses a different primitive selection",
+                        ));
+                    }
+                    let Value::RVPoly(polynomial) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    generators.push((degree, polynomial));
+                }
+                let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.ideals.insert(name.text, Rc::new(ideal));
+                return Ok(None);
+            }
+            StatementForm::RvFitting(name, spec, size) => {
+                check_new_ideal(&self.ideals, &name)?;
+                let base = self.checker().q_endpoint(*spec.base)?;
+                let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                let minors = self.model.rv_minors(base, selected.clone(), size)?;
+                let generators = minors.polynomials().map(|p| (size, p.clone())).collect();
+                let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.ideals.insert(name.text, Rc::new(ideal));
+                return Ok(None);
+            }
+            StatementForm::RvGroebner(name) => {
+                let ideal = find_ideal(&self.ideals, &name)?;
+                let prefix = format!("rvgroebner[{}]", name.text);
+                self.model
+                    .show_rv_polynomials(&prefix, &ideal.selected, ideal.polynomials())?
+            }
+            StatementForm::RvHilbert(name, degree) => {
+                let ideal = find_ideal(&self.ideals, &name)?;
+                let count = ideal.hilbert(&mut self.model, degree)?;
+                format!("rvhilbert[{}, {degree}] = {count}", name.text)
             }
             StatementForm::RvMinors(spec, size) => {
                 let base = self.checker().q_endpoint(*spec.base)?;
@@ -955,6 +1003,25 @@ impl Engine {
                 let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
                 Ok(Value::Point(usize::from(vanishes)))
             }
+            TypedForm::RvIdeal(op, ideal, input) => {
+                let Value::RVPoly(original) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let polynomial = match op {
+                    RvIdealOp::Normal => ideal.normal(&mut self.model, original)?,
+                    RvIdealOp::Contains => {
+                        let contains = ideal.normal(&mut self.model, original)?.is_empty();
+                        return Ok(Value::Point(usize::from(contains)));
+                    }
+                    RvIdealOp::Witness(index) => {
+                        ideal.witness(&mut self.model, *index, original)?
+                    }
+                };
+                Ok(Value::RVPoly(rv_poly::persist(
+                    &mut self.model,
+                    polynomial,
+                )?))
+            }
             TypedForm::RvInMinors(base, selected, size, input) => {
                 let Value::RVPoly(polynomial) = self.eval(input)? else {
                     unreachable!()
@@ -1352,10 +1419,28 @@ impl Engine {
     }
 }
 
+fn check_new_ideal(ideals: &HashMap<String, Rc<RvIdeal>>, name: &Label) -> Result<()> {
+    if ideals.contains_key(&name.text) {
+        return Err(Error::new(
+            name.span,
+            format!("rank ideal '{}' is already defined", name.text),
+        ));
+    }
+    Ok(())
+}
+
+fn find_ideal(ideals: &HashMap<String, Rc<RvIdeal>>, name: &Label) -> Result<Rc<RvIdeal>> {
+    ideals
+        .get(&name.text)
+        .cloned()
+        .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
+}
+
 struct Checker<'a> {
     model: &'a mut Model,
     bindings: &'a HashMap<String, Binding>,
     locals: Vec<(String, TypeId)>,
+    ideals: &'a HashMap<String, Rc<RvIdeal>>,
 }
 
 impl Checker<'_> {
@@ -1915,6 +2000,31 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvIdeal(op, name, input) => {
+                let ideal = find_ideal(self.ideals, &name)?;
+                let input = self.expr(*input)?;
+                let operation = match op {
+                    RvIdealOp::Normal => "rvNormal",
+                    RvIdealOp::Contains => "rvInIdeal",
+                    RvIdealOp::Witness(_) => "rvWitness",
+                };
+                let (selected, degree) = self.rv_poly_grade(&input, operation)?;
+                if selected != ideal.selected {
+                    return Err(Error::new(
+                        span,
+                        format!("{operation} polynomial uses a different primitive selection"),
+                    ));
+                }
+                let ty = match op {
+                    RvIdealOp::Normal => input.ty,
+                    RvIdealOp::Contains => self.model.named("S").unwrap(),
+                    RvIdealOp::Witness(index) => {
+                        let degree = ideal.witness_degree(index, degree)?;
+                        self.model.rv_poly_type(selected, degree)?
+                    }
+                };
+                Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
             }
             ExprForm::RvInMinors(spec, size, input) => {
                 let base = self.q_endpoint(*spec.base)?;

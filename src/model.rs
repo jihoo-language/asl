@@ -828,17 +828,25 @@ impl Model {
         size: usize,
     ) -> Result<String> {
         let basis = self.rv_minors(base, selected.clone(), size)?;
+        let prefix = format!("rvminors[{}, {selected:?}, {size}]", self.type_name(base));
+        self.show_rv_polynomials(&prefix, &selected, basis.polynomials())
+    }
+
+    pub(crate) fn show_rv_polynomials<'a>(
+        &mut self,
+        prefix: &str,
+        selected: &[usize],
+        polynomials: impl Iterator<Item = &'a Polynomial>,
+    ) -> Result<String> {
         let mut out = Text::new(MAX_SHOWN_BYTES);
-        out.push(&format!(
-            "rvminors[{}, {selected:?}, {size}] = [",
-            self.type_name(base)
-        ))?;
-        for (i, polynomial) in basis.polynomials().enumerate() {
+        out.push(prefix)?;
+        out.push(" = [")?;
+        for (i, polynomial) in polynomials.enumerate() {
             if i != 0 {
                 out.push(", ")?;
             }
             self.spend(rv_poly::cells(polynomial))?;
-            write_rv_polynomial(&mut out, &selected, polynomial)?;
+            write_rv_polynomial(&mut out, selected, polynomial)?;
         }
         out.push("]")?;
         Ok(out.string)
