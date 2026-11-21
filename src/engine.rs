@@ -17,6 +17,7 @@ use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
+use crate::profile::Profile;
 use crate::steenrod;
 use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType,
@@ -80,6 +81,7 @@ enum TypedForm {
     Constant(Value),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Cobar(CobarOp, Box<TypedExpr>),
+    RestrictAlgebra(Profile, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
@@ -209,6 +211,11 @@ impl Engine {
                 let ty = self.model.ext_type(s, t)?;
                 let rank = self.model.adams(ty)?.rank();
                 format!("extdim[{s}, {t}] = {rank}")
+            }
+            StatementForm::ExtAnDimension(n, s, t) => {
+                let ty = self.model.profile_ext_type(Profile::An(n), s, t)?;
+                let rank = self.model.adams(ty)?.rank();
+                format!("extandim[{n}, {s}, {t}] = {rank}")
             }
             StatementForm::XExtDimension(base, s, t) => {
                 let base = self.checker().ty(base)?;
@@ -380,7 +387,8 @@ impl Engine {
             }
             TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
                 (CobarOp::Differential, Value::Cobar(words)) => {
-                    cobar::differential(&mut self.model, &words)
+                    let (profile, _, _) = self.model.kind(input.ty).cobar_grade().unwrap();
+                    cobar::differential(&mut self.model, profile, &words)
                 }
                 (CobarOp::Class, Value::Cobar(words)) => {
                     adams::class(&mut self.model, expr.ty, &words)
@@ -438,10 +446,8 @@ impl Engine {
                     if words.is_empty() {
                         return Ok(cobar::zero());
                     }
-                    let Kind::Cobar(s, t) = *self.model.kind(input.ty) else {
-                        unreachable!()
-                    };
-                    let ty = self.model.ext_type(s, t)?;
+                    let (profile, s, t) = self.model.kind(input.ty).cobar_grade().unwrap();
+                    let ty = self.model.profile_ext_type(profile, s, t)?;
                     let adams = self.model.adams(ty)?;
                     let primitive = adams
                         .primitive(&mut self.model, &words)?
@@ -451,6 +457,29 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::RestrictAlgebra(profile, input) => {
+                let value = self.eval(input)?;
+                if input.ty == expr.ty {
+                    return Ok(value);
+                }
+                match value {
+                    Value::Cobar(words) => {
+                        let words = profile.restrict(&mut self.model, &words)?;
+                        self.model.allocate(words.len())?;
+                        Ok(Value::Cobar(words.into()))
+                    }
+                    Value::Class(class) => {
+                        if class.is_empty() {
+                            return Ok(cohomology::zero());
+                        }
+                        let adams = self.model.adams(input.ty)?;
+                        let representative = adams.representative(&mut self.model, &class)?;
+                        let words = profile.restrict(&mut self.model, &representative)?;
+                        adams::class(&mut self.model, expr.ty, &words)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::MapExtInduced(function) => {
                 let Value::Map(table) = self.eval(function)? else {
                     unreachable!()
@@ -709,7 +738,9 @@ impl Checker<'_> {
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
+            TypeForm::CobarAn(n, s, t) => self.model.profile_cobar_type(Profile::An(n), s, t),
             TypeForm::Ext(s, t) => self.model.ext_type(s, t),
+            TypeForm::ExtAn(n, s, t) => self.model.profile_ext_type(Profile::An(n), s, t),
             TypeForm::XExt(base, s, t) => {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
@@ -803,9 +834,9 @@ impl Checker<'_> {
                 let ty = self.ty(ty)?;
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
-                    Kind::Cobar(..) => cobar::zero(),
+                    Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MapMay(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MapMay(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -850,6 +881,35 @@ impl Checker<'_> {
                 let rank = self.model.adams(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::ExtAnGenerator(n, s, t, index, at) => {
+                let ty = self.model.profile_ext_type(Profile::An(n), s, t)?;
+                let rank = self.model.adams(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RestrictAlgebra(n, value) => {
+                let value = self.expr(*value)?;
+                let kind = self.model.kind(value.ty);
+                let target = Profile::An(n);
+                let (source, s, t) =
+                    kind.cobar_grade()
+                        .or_else(|| kind.ext_grade())
+                        .ok_or_else(|| {
+                            self.invalid_operand(&value, "resA", "a cobar cochain or Ext class")
+                        })?;
+                if !source.can_restrict_to(target) {
+                    return Err(Error::new(
+                        span,
+                        "resA cannot restrict from a smaller Steenrod algebra",
+                    ));
+                }
+                let ty = if kind.cobar_grade().is_some() {
+                    self.model.profile_cobar_type(target, s, t)?
+                } else {
+                    self.model.profile_ext_type(target, s, t)?
+                };
+                Ok((ty, TypedForm::RestrictAlgebra(target, Box::new(value))))
             }
             ExprForm::XExtGenerator(base, s, t, index, at) => {
                 let base = self.ty(base)?;
@@ -1372,8 +1432,12 @@ impl Checker<'_> {
                 return self.model.map_cobar_type(source, target, s, t);
             }
             CobarOp::Representative => {
-                let (s, t) = self.ext_bidegree(argument, name)?;
-                return self.model.cobar_type(s, t);
+                let (profile, s, t) = self
+                    .model
+                    .kind(argument.ty)
+                    .ext_grade()
+                    .ok_or_else(|| self.invalid_operand(argument, name, "an Ext class"))?;
+                return self.model.profile_cobar_type(profile, s, t);
             }
             CobarOp::MayRepresentative => {
                 if let Kind::MapMay(source, target, _, s, t, _) = *self.model.kind(argument.ty) {
@@ -1395,18 +1459,32 @@ impl Checker<'_> {
             }
             _ => {}
         }
-        let (s, t) = self.cobar_bidegree(argument, name)?;
+        let (profile, s, t) = self.profile_cobar_bidegree(argument, name)?;
         match op {
-            CobarOp::Differential => self.model.cobar_type(checked_degree(s, 1, name, span)?, t),
-            CobarOp::Class => self.model.ext_type(s, t),
+            CobarOp::Differential => {
+                self.model
+                    .profile_cobar_type(profile, checked_degree(s, 1, name, span)?, t)
+            }
+            CobarOp::Class => self.model.profile_ext_type(profile, s, t),
             CobarOp::Primitive => {
                 let previous = s.checked_sub(1).ok_or_else(|| {
                     Error::new(span, "extPrimitive requires positive cobar length")
                 })?;
-                self.model.cobar_type(previous, t)
+                self.model.profile_cobar_type(profile, previous, t)
             }
             _ => unreachable!(),
         }
+    }
+
+    fn profile_cobar_bidegree(
+        &self,
+        value: &TypedExpr,
+        op: &str,
+    ) -> Result<(Profile, usize, usize)> {
+        self.model
+            .kind(value.ty)
+            .cobar_grade()
+            .ok_or_else(|| self.invalid_operand(value, op, "a cobar cochain"))
     }
 
     fn generator(&mut self, ty: TypeId, rank: usize, index: usize, at: Span) -> Result<Value> {
@@ -1470,8 +1548,10 @@ impl Checker<'_> {
                         | Kind::Stable(..)
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
+                        | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::Ext(..)
+                        | Kind::ExtAn(..)
                         | Kind::XExt(..)
                         | Kind::MapExt(..)
                         | Kind::MapMay(..)
@@ -1511,18 +1591,28 @@ impl Checker<'_> {
                 Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
-                let (s, t) = self.cobar_bidegree(left, "concat")?;
-                let (u, v) = self.cobar_bidegree(right, "concat")?;
+                let (profile, s, t) = self.profile_cobar_bidegree(left, "concat")?;
+                let (other, u, v) = self.profile_cobar_bidegree(right, "concat")?;
+                require_profile(profile, other, "concat", right.span)?;
                 let length = checked_degree(s, u, "concat", span)?;
                 let degree = checked_degree(t, v, "concat", span)?;
-                self.model.cobar_type(length, degree)
+                self.model.profile_cobar_type(profile, length, degree)
             }
             BinaryOp::Yoneda => {
-                let (s, t) = self.ext_bidegree(left, "yoneda")?;
-                let (u, v) = self.ext_bidegree(right, "yoneda")?;
+                let (profile, s, t) = self
+                    .model
+                    .kind(left.ty)
+                    .ext_grade()
+                    .ok_or_else(|| self.invalid_operand(left, "yoneda", "an Ext class"))?;
+                let (other, u, v) = self
+                    .model
+                    .kind(right.ty)
+                    .ext_grade()
+                    .ok_or_else(|| self.invalid_operand(right, "yoneda", "an Ext class"))?;
+                require_profile(profile, other, "yoneda", right.span)?;
                 let length = checked_degree(s, u, "yoneda", span)?;
                 let degree = checked_degree(t, v, "yoneda", span)?;
-                self.model.ext_type(length, degree)
+                self.model.profile_ext_type(profile, length, degree)
             }
             BinaryOp::XAction => {
                 let (s, t) = self.ext_bidegree(left, "xaction")?;
@@ -1793,4 +1883,14 @@ impl Checker<'_> {
 fn checked_degree(left: usize, right: usize, op: &str, span: Span) -> Result<usize> {
     left.checked_add(right)
         .ok_or_else(|| Error::new(span, format!("{op} degree is out of range")))
+}
+
+fn require_profile(left: Profile, right: Profile, op: &str, span: Span) -> Result<()> {
+    if left == right {
+        return Ok(());
+    }
+    Err(Error::new(
+        span,
+        format!("{op} requires the same Steenrod algebra profile"),
+    ))
 }

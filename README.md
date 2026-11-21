@@ -49,6 +49,8 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
+| `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
+| `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
 | `MapExt(X, Y, s, t)` | The discrete space of mod-two Adams $E_2$ classes for stable maps from `X` to `Y`, with disjoint basepoints. |
 | `MapMay(X, Y, r, s, t, f)` | The discrete space of algebraic May page classes of bivariant cobar morphisms. |
@@ -161,6 +163,14 @@ Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates 
 `extClass(c)` takes a closed cobar cochain in bidegree `(s, t)` to its class in `Ext(s, t)`. `extRep(x)` returns a deterministic closed representative of `x`. For a cobar boundary of positive length, `extPrimitive(c)` returns a deterministic `p` with `cobarD(p) == c`. `yoneda(x, y)` multiplies classes by concatenating their representatives and taking the result's class. Classes of the same bidegree support `add` and `zero[Ext(s, t)]`.
 
 Run `nix run path:. -- examples/adams-e2.asl` to compute $h_0h_1=0$ and $h_1^3=h_0^2h_2\ne0$. [Adams E₂ example](examples/adams-e2.asl)
+
+### Restriction to finite Steenrod subalgebras
+
+For $n\geq 0$, the dual of $\mathcal A(n)$ is $\mathbb F_2[\xi_1,\ldots,\xi_{n+1}]/(\xi_i^{2^{n+2-i}})$. `CobarAn(n, s, t)` uses words in the surviving positive-degree monomials. `ExtAn(n, s, t)` is the cohomology in length `s` and internal degree `t`. `extandim[n, s, t];` prints the rank, and `extangen[n, s, t, i]` selects generator `i`, starting from zero.
+
+`resA[n](c)` takes a full cobar cochain or a cochain over $\mathcal A(m)$ with $m\geq n$ to `CobarAn(n, s, t)`. It kills any word with a factor outside the quotient monomial basis. On an Ext class, it restricts a closed representative and takes its class in `ExtAn(n, s, t)`. Use `resA[n](cword{...})` to construct cochains. The operations `cobarD`, `concat`, `extClass`, `extRep`, `extPrimitive`, and `yoneda` preserve the input algebra profile, and `concat` and `yoneda` require both inputs to use the same profile.
+
+The corrected full-algebra May lift `mayRep(maygen[7, 4, 12, 0, 0])` becomes a cocycle over $\mathcal A(1)$ because each term of its differential is killed by restriction. Its class generates `ExtAn(1, 4, 12)` and represents $v_1^4$. The full group `Ext(4, 12)` and the restricted group `ExtAn(0, 4, 12)` both have rank zero. [Chromatic restriction example](examples/chromatic-restriction.asl)
 
 ## The algebraic May spectral sequence
 
@@ -369,6 +379,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
+| `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
 | `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
 | `mapmaydim[X, Y, r, s, t, f];` | Print the dimension of a bivariant May page component over 𝔽₂. |

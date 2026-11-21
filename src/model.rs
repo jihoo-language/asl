@@ -12,6 +12,7 @@ use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
+use crate::profile::Profile;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 
@@ -35,7 +36,9 @@ pub(crate) enum Kind {
     Cohomology(TypeId, usize),
     Operations(usize),
     Cobar(usize, usize),
+    CobarAn(usize, usize, usize),
     Ext(usize, usize),
+    ExtAn(usize, usize, usize),
     XExt(TypeId, usize, usize),
     MapCobar(TypeId, TypeId, usize, i64),
     MapExt(TypeId, TypeId, usize, i64),
@@ -45,6 +48,24 @@ pub(crate) enum Kind {
     Stable(TypeId, usize, usize),
     Bar(usize),
     CyclicH2(usize),
+}
+
+impl Kind {
+    pub(crate) fn cobar_grade(&self) -> Option<(Profile, usize, usize)> {
+        match *self {
+            Self::Cobar(s, t) => Some((Profile::Full, s, t)),
+            Self::CobarAn(n, s, t) => Some((Profile::An(n), s, t)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn ext_grade(&self) -> Option<(Profile, usize, usize)> {
+        match *self {
+            Self::Ext(s, t) => Some((Profile::Full, s, t)),
+            Self::ExtAn(n, s, t) => Some((Profile::An(n), s, t)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -188,8 +209,16 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
-            Kind::Cobar(s, t) | Kind::Ext(s, t) if s > t || (s == 0 && t != 0) => 1,
-            Kind::Cobar(s, t) | Kind::Ext(s, t) if s == t => 2,
+            Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
+                if s > t || (s == 0 && t != 0) =>
+            {
+                1
+            }
+            Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
+                if s == t =>
+            {
+                2
+            }
             Kind::MapMay(source, target, _, s, _, f)
                 if !self.types[source.0].inhabited
                     || !self.types[target.0].inhabited
@@ -207,7 +236,9 @@ impl Model {
                 1
             }
             Kind::Cobar(..)
+            | Kind::CobarAn(..)
             | Kind::Ext(..)
+            | Kind::ExtAn(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -260,7 +291,9 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
+                | Kind::CobarAn(..)
                 | Kind::Ext(..)
+                | Kind::ExtAn(..)
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
                 | Kind::MapExt(..)
@@ -377,11 +410,37 @@ impl Model {
     }
 
     pub(crate) fn cobar_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
-        self.inhabited_type(Kind::Cobar(s, t), 0)
+        self.profile_cobar_type(Profile::Full, s, t)
+    }
+
+    pub(crate) fn profile_cobar_type(
+        &mut self,
+        profile: Profile,
+        s: usize,
+        t: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::Cobar(s, t),
+            Profile::An(n) => Kind::CobarAn(n, s, t),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn ext_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
-        self.inhabited_type(Kind::Ext(s, t), 0)
+        self.profile_ext_type(Profile::Full, s, t)
+    }
+
+    pub(crate) fn profile_ext_type(
+        &mut self,
+        profile: Profile,
+        s: usize,
+        t: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::Ext(s, t),
+            Profile::An(n) => Kind::ExtAn(n, s, t),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn xext_type(&mut self, base: TypeId, s: usize, t: usize) -> Result<TypeId> {
@@ -479,10 +538,8 @@ impl Model {
         if let Some(data) = &self.types[ty.0].adams {
             return Ok(data.clone());
         }
-        let Kind::Ext(s, t) = *self.kind(ty) else {
-            unreachable!()
-        };
-        let data = Rc::new(Adams::build(self, s, t)?);
+        let (profile, s, t) = self.kind(ty).ext_grade().unwrap();
+        let data = Rc::new(Adams::build(self, profile, s, t)?);
         self.types[ty.0].adams = Some(data.clone());
         Ok(data)
     }
@@ -599,7 +656,9 @@ impl Model {
             Kind::Cohomology(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
+            | Kind::CobarAn(..)
             | Kind::Ext(..)
+            | Kind::ExtAn(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -718,7 +777,9 @@ impl Model {
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
+            &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
+            &Kind::ExtAn(n, s, t) => out.push(&format!("ExtAn({n}, {s}, {t})")),
             &Kind::XExt(base, s, t) => {
                 out.push("XExt(")?;
                 self.write_type(out, base, 0)?;
@@ -978,7 +1039,7 @@ impl Model {
                     let rank = self.cohomology(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
-                Kind::Ext(..) => {
+                Kind::Ext(..) | Kind::ExtAn(..) => {
                     let rank = self.adams(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
@@ -999,8 +1060,9 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
-                Kind::Cobar(s, t) => {
-                    let basis = cobar::basis(self, s, t, MAX_ELEMENTS.ilog2() as usize)?;
+                Kind::Cobar(..) | Kind::CobarAn(..) => {
+                    let (profile, s, t) = self.kind(ty).cobar_grade().unwrap();
+                    let basis = profile.basis(self, s, t, MAX_ELEMENTS.ilog2() as usize)?;
                     self.enumerate_supports(0, basis.len(), |support| {
                         Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
                     })?

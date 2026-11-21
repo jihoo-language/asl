@@ -24,7 +24,9 @@ pub(crate) enum TypeForm {
     Cohomology(Box<ParsedType>, usize),
     Operations(usize),
     Cobar(usize, usize),
+    CobarAn(usize, usize, usize),
     Ext(usize, usize),
+    ExtAn(usize, usize, usize),
     XExt(Box<ParsedType>, usize, usize),
     MapCobar(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
@@ -133,6 +135,8 @@ pub(crate) enum ExprForm {
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
     ExtGenerator(usize, usize, usize, Span),
+    ExtAnGenerator(usize, usize, usize, usize, Span),
+    RestrictAlgebra(usize, Box<ParsedExpr>),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
     MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
     MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
@@ -173,6 +177,7 @@ pub(crate) enum StatementForm {
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
     ExtDimension(usize, usize),
+    ExtAnDimension(usize, usize, usize),
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
     MapMayDimension(MapMaySpec),
@@ -519,6 +524,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::ExtDimension(s, t)
             }
+            Token::Word("extandim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (n, s, t) = self.profile_bidegree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::ExtAnDimension(n, s, t)
+            }
             Token::Word("xextdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -564,6 +576,13 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (t, _) = self.number()?;
         Ok((s, t))
+    }
+
+    fn profile_bidegree(&mut self) -> Result<(usize, usize, usize)> {
+        let (n, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (s, t) = self.bidegree()?;
+        Ok((n, s, t))
     }
 
     fn space_bidegree(&mut self, nest: usize) -> Result<(ParsedType, usize, usize)> {
@@ -674,6 +693,16 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
+        if matches!(name.text.as_str(), "CobarAn" | "ExtAn") && self.eat(Token::LParen)? {
+            let (n, s, t) = self.profile_bidegree()?;
+            self.expect(Token::RParen)?;
+            let kind = if name.text == "CobarAn" {
+                TypeForm::CobarAn(n, s, t)
+            } else {
+                TypeForm::ExtAn(n, s, t)
+            };
+            return ty(span, kind, 0);
+        }
         if name.text == "XExt" && self.eat(Token::LParen)? {
             let (base, s, t) = self.space_bidegree(nest)?;
             self.expect(Token::RParen)?;
@@ -971,6 +1000,20 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::ExtGenerator(s, t, index, at), 0);
+                }
+                if name.text == "extangen" && self.eat(Token::LBracket)? {
+                    let (n, s, t) = self.profile_bidegree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::ExtAnGenerator(n, s, t, index, at), 0);
+                }
+                if name.text == "resA" && self.eat(Token::LBracket)? {
+                    let (n, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::RestrictAlgebra(n, Box::new(value)), depth);
                 }
                 if name.text == "xextgen" && self.eat(Token::LBracket)? {
                     let (base, s, t) = self.space_bidegree(nest)?;

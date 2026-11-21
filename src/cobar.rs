@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::complex::xor_sorted;
 use crate::error::{Error, Result, Span};
 use crate::model::{Model, Value};
+use crate::profile::Profile;
 
 const MAX_WORD_CELLS: usize = 300_000;
 
@@ -174,8 +175,8 @@ pub(crate) fn differential_word(model: &mut Model, word: &Word) -> Result<Vec<Wo
     differential_support(model, std::slice::from_ref(word))
 }
 
-pub(crate) fn differential(model: &mut Model, words: &[Word]) -> Result<Value> {
-    let support = differentiate(model, words)?;
+pub(crate) fn differential(model: &mut Model, profile: Profile, words: &[Word]) -> Result<Value> {
+    let support = differentiate(model, profile, words)?;
     model.allocate(support.cells)?;
     Ok(Value::Cobar(support.into_vec().into()))
 }
@@ -183,22 +184,35 @@ pub(crate) fn differential(model: &mut Model, words: &[Word]) -> Result<Value> {
 // Reduction columns have a local storage bound. A caller that retains the
 // resulting words in a value or a cache accounts for that storage separately.
 pub(crate) fn differential_support(model: &mut Model, words: &[Word]) -> Result<Vec<Word>> {
-    Ok(differentiate(model, words)?.into_vec())
+    differential_profile(model, Profile::Full, words)
 }
 
-fn differentiate(model: &mut Model, words: &[Word]) -> Result<Support<Word>> {
+pub(crate) fn differential_profile(
+    model: &mut Model,
+    profile: Profile,
+    words: &[Word],
+) -> Result<Vec<Word>> {
+    Ok(differentiate(model, profile, words)?.into_vec())
+}
+
+fn differentiate(model: &mut Model, profile: Profile, words: &[Word]) -> Result<Support<Word>> {
     let mut support = Support::new();
     for word in words {
-        differentiate_into(model, word, &mut support)?;
+        differentiate_into(model, profile, word, &mut support)?;
     }
     Ok(support)
 }
 
-fn differentiate_into(model: &mut Model, word: &Word, support: &mut Support<Word>) -> Result<()> {
+fn differentiate_into(
+    model: &mut Model,
+    profile: Profile,
+    word: &Word,
+    support: &mut Support<Word>,
+) -> Result<()> {
     let cells = word_cells(word);
     model.spend(cells)?;
     for (position, factor) in word.iter().enumerate() {
-        for (left, right) in reduced_coproduct(model, factor)? {
+        for (left, right) in reduced_coproduct(model, profile, factor)? {
             let new_cells = cells + 1 + left.len() + right.len() - factor.len();
             check_storage(new_cells)?;
             model.spend(new_cells)?;
@@ -212,7 +226,11 @@ fn differentiate_into(model: &mut Model, word: &Word, support: &mut Support<Word
     Ok(())
 }
 
-fn reduced_coproduct(model: &mut Model, factor: &Monomial) -> Result<Vec<CoproductTerm>> {
+fn reduced_coproduct(
+    model: &mut Model,
+    profile: Profile,
+    factor: &Monomial,
+) -> Result<Vec<CoproductTerm>> {
     let unit: Monomial = [].into();
     let mut terms = Support::new();
     terms.toggle(model, (unit.clone(), unit), 1)?;
@@ -236,8 +254,12 @@ fn reduced_coproduct(model: &mut Model, factor: &Monomial) -> Result<Vec<Coprodu
                         power.checked_mul(1usize << i).ok_or_else(degree_overflow)?
                     };
                     model.spend(1 + left.len().max(left_index) + right.len().max(i))?;
-                    let a = with_power(&left, left_index, left_power)?;
-                    let b = with_power(&right, i, power)?;
+                    let Some(a) = with_power(profile, &left, left_index, left_power)? else {
+                        continue;
+                    };
+                    let Some(b) = with_power(profile, &right, i, power)? else {
+                        continue;
+                    };
                     let cells = 1 + a.len() + b.len();
                     next.toggle(model, (a, b), cells)?;
                 }
@@ -252,19 +274,33 @@ fn reduced_coproduct(model: &mut Model, factor: &Monomial) -> Result<Vec<Coprodu
         .collect())
 }
 
-fn with_power(monomial: &Monomial, index: usize, power: usize) -> Result<Monomial> {
+fn with_power(
+    profile: Profile,
+    monomial: &Monomial,
+    index: usize,
+    power: usize,
+) -> Result<Option<Monomial>> {
     if index == 0 {
-        return Ok(monomial.clone());
+        return Ok(Some(monomial.clone()));
+    }
+    let power = monomial
+        .get(index - 1)
+        .copied()
+        .unwrap_or(0)
+        .checked_add(power)
+        .ok_or_else(degree_overflow)?;
+    // Exponents only increase during coproduct multiplication, so a term
+    // outside the quotient's bounds can be dropped immediately.
+    if !profile.allows_power(index - 1, power) {
+        return Ok(None);
     }
     let mut exponents = monomial.to_vec();
     exponents.resize(exponents.len().max(index), 0);
-    exponents[index - 1] = exponents[index - 1]
-        .checked_add(power)
-        .ok_or_else(degree_overflow)?;
-    Ok(exponents.into())
+    exponents[index - 1] = power;
+    Ok(Some(exponents.into()))
 }
 
-fn check_storage(cells: usize) -> Result<()> {
+pub(crate) fn check_storage(cells: usize) -> Result<()> {
     if cells > MAX_WORD_CELLS {
         return Err(Error::plain(
             "cobar calculation exceeds the word storage limit",
@@ -304,6 +340,16 @@ impl<T: Ord> Support<T> {
 }
 
 pub(crate) fn basis(model: &mut Model, s: usize, t: usize, limit: usize) -> Result<Vec<Word>> {
+    basis_profile(model, Profile::Full, s, t, limit)
+}
+
+pub(crate) fn basis_profile(
+    model: &mut Model,
+    profile: Profile,
+    s: usize,
+    t: usize,
+    limit: usize,
+) -> Result<Vec<Word>> {
     model.spend(1)?;
     if s == 0 {
         return if t == 0 {
@@ -319,15 +365,26 @@ pub(crate) fn basis(model: &mut Model, s: usize, t: usize, limit: usize) -> Resu
     let Some(excess) = t.checked_sub(s) else {
         return Ok(Vec::new());
     };
-    // Each place for the excess gives a word. Putting it all in one factor
-    // also gives at least floor((excess + 1) / 3) + 1 powers of xi_1 and xi_2.
-    if (excess != 0 && s > limit) || (excess + 1) / 3 >= limit {
-        return Err(basis_limit(limit));
+    let bounds = profile.bounds(excess + 1);
+    if let Some(bounds) = &bounds {
+        if t > s.saturating_mul(bounds.max_degree) {
+            return Ok(Vec::new());
+        }
+    } else {
+        // Each place for the excess gives a word. Putting it all in one factor
+        // also gives at least floor((excess + 1) / 3) + 1 powers of xi_1 and xi_2.
+        if (excess != 0 && s > limit) || (excess + 1) / 3 >= limit {
+            return Err(basis_limit(limit));
+        }
     }
     check_storage(s.saturating_mul(2).saturating_add(1))?;
 
     let mut degrees = vec![1; s];
-    degrees[s - 1] += excess;
+    if let Some(bounds) = &bounds {
+        bounds.distribute(&mut degrees, excess);
+    } else {
+        degrees[s - 1] += excess;
+    }
     let mut catalogue = HashMap::new();
     let mut catalogue_cells = 0;
     let mut words = Vec::new();
@@ -336,7 +393,12 @@ pub(crate) fn basis(model: &mut Model, s: usize, t: usize, limit: usize) -> Resu
         model.spend(s)?;
         for &degree in &degrees {
             if let std::collections::hash_map::Entry::Vacant(entry) = catalogue.entry(degree) {
-                entry.insert(monomials(model, degree, limit, &mut catalogue_cells)?);
+                let monomials = if let Some(bounds) = &bounds {
+                    bounds.monomials(model, degree, limit, &mut catalogue_cells)?
+                } else {
+                    monomials(model, degree, limit, &mut catalogue_cells)?
+                };
+                entry.insert(monomials);
             }
         }
         let factors: Vec<_> = degrees
@@ -362,7 +424,11 @@ pub(crate) fn basis(model: &mut Model, s: usize, t: usize, limit: usize) -> Resu
                 break;
             }
         }
-        if !next_degrees(&mut degrees) {
+        let more = match &bounds {
+            Some(bounds) => bounds.next_degrees(&mut degrees),
+            None => next_degrees(&mut degrees),
+        };
+        if !more {
             break;
         }
     }
@@ -372,7 +438,7 @@ pub(crate) fn basis(model: &mut Model, s: usize, t: usize, limit: usize) -> Resu
     Ok(words)
 }
 
-fn basis_limit(limit: usize) -> Error {
+pub(crate) fn basis_limit(limit: usize) -> Error {
     Error::plain(format!(
         "cobar basis exceeds the enumeration limit of {limit} words"
     ))

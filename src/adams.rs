@@ -2,13 +2,14 @@ use crate::cobar::{self, Word, WordRows};
 use crate::error::{Error, Result};
 use crate::linear::{Basis, QuotientBasis};
 use crate::model::{Model, TypeId, Value};
+use crate::profile::Profile;
 use std::cell::OnceCell;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
 #[derive(Default)]
 pub(crate) struct Adams {
-    bidegree: (usize, usize),
+    bidegree: (Profile, usize, usize),
     words: Vec<Word>,
     quotient: QuotientBasis,
     boundary_preimages: OnceCell<BoundaryPreimages>,
@@ -20,24 +21,25 @@ struct BoundaryPreimages {
 }
 
 impl Adams {
-    pub(crate) fn build(model: &mut Model, s: usize, t: usize) -> Result<Self> {
-        let words = cobar::basis(model, s, t, MAX_BASIS_WORDS)?;
+    pub(crate) fn build(model: &mut Model, profile: Profile, s: usize, t: usize) -> Result<Self> {
+        let words = profile.basis(model, s, t, MAX_BASIS_WORDS)?;
         if words.is_empty() {
             return Ok(Self {
-                bidegree: (s, t),
+                bidegree: (profile, s, t),
                 ..Self::default()
             });
         }
 
         let mut boundaries = Basis::default();
-        for_each_boundary(model, s, t, &words, |model, _, column| {
+        for_each_boundary(model, profile, s, t, &words, |model, _, column| {
             boundaries.insert(model, column)?;
             Ok(())
         })?;
 
         let mut rows = WordRows::default();
         let quotient = QuotientBasis::build(model, boundaries, words.len(), |model, index| {
-            let mut column = cobar::differential_word(model, &words[index])?
+            let mut column = profile
+                .differential_word(model, &words[index])?
                 .into_iter()
                 .map(|term| rows.coordinate(model, term))
                 .collect::<Result<Vec<_>>>()?;
@@ -46,7 +48,7 @@ impl Adams {
             Ok(column)
         })?;
         Ok(Self {
-            bidegree: (s, t),
+            bidegree: (profile, s, t),
             words,
             quotient,
             boundary_preimages: OnceCell::new(),
@@ -84,13 +86,19 @@ impl Adams {
         let preimages = if let Some(preimages) = self.boundary_preimages.get() {
             preimages
         } else {
-            let (s, t) = self.bidegree;
+            let (profile, s, t) = self.bidegree;
             let mut images = Basis::default();
-            let words =
-                for_each_boundary(model, s, t, &self.words, |model, index, differential| {
+            let words = for_each_boundary(
+                model,
+                profile,
+                s,
+                t,
+                &self.words,
+                |model, index, differential| {
                     let _ = images.insert_with_witness(model, differential, vec![index])?;
                     Ok(())
-                })?;
+                },
+            )?;
             model.allocate(images.cells())?;
             self.boundary_preimages
                 .get_or_init(|| BoundaryPreimages { words, images })
@@ -111,6 +119,7 @@ impl Adams {
 
 fn for_each_boundary(
     model: &mut Model,
+    profile: Profile,
     s: usize,
     t: usize,
     target: &[Word],
@@ -119,9 +128,9 @@ fn for_each_boundary(
     let Some(previous) = s.checked_sub(1) else {
         return Ok(Vec::new());
     };
-    let source = cobar::basis(model, previous, t, MAX_BASIS_WORDS)?;
+    let source = profile.basis(model, previous, t, MAX_BASIS_WORDS)?;
     for (index, word) in source.iter().enumerate() {
-        let differential = cobar::differential_word(model, word)?;
+        let differential = profile.differential_word(model, word)?;
         let column = word_indices(model, target, &differential)?;
         use_column(model, index, column)?;
     }
