@@ -57,6 +57,7 @@ mod rv_arithmetic;
 mod rv_as_cartier;
 mod rv_as_cover;
 mod rv_bar;
+mod rv_bar_dual;
 mod rv_bar_page;
 mod rv_curve;
 mod rv_descent;
@@ -105,7 +106,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvpathextdim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 

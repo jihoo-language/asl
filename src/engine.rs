@@ -48,6 +48,7 @@ use crate::rv_arithmetic;
 use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
+use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
@@ -117,6 +118,10 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvBarDualize,
+    RvBarDualD,
+    RvPathClass,
+    RvPathRep,
     RvBarClass,
     RvBarRep,
     RvBarNext,
@@ -160,6 +165,10 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvBarDualize" => Some(Self::RvBarDualize),
+            "rvBarDualD" => Some(Self::RvBarDualD),
+            "rvPathClass" => Some(Self::RvPathClass),
+            "rvPathRep" => Some(Self::RvPathRep),
             "rvBarRep" => Some(Self::RvBarRep),
             "rvBarNext" => Some(Self::RvBarNext),
             "rvBarPrev" => Some(Self::RvBarPrev),
@@ -844,6 +853,18 @@ impl Engine {
                 self.model.define_rv_bar_path(name, ideal, steps)?;
                 return Ok(None);
             }
+            StatementForm::RvPathDimension(spec) => {
+                let grade = self.checker().rv_bar_grade(spec)?;
+                let ty = self.model.rv_path_type(grade, true)?;
+                let rank = self.model.rv_path_ext(ty)?.rank();
+                format!(
+                    "rvpathextdim[{}, {}, {}, {}] = {rank}",
+                    self.model.rv_bar_path_name(grade.path),
+                    grade.start,
+                    grade.end,
+                    grade.b
+                )
+            }
             StatementForm::RvBarPageDimension(spec) => {
                 let grade = self.checker().rv_bar_page_grade(spec)?;
                 let ty = self.model.rv_bar_page_type(grade)?;
@@ -1315,6 +1336,20 @@ impl Engine {
                             polynomial,
                         )?))
                     }
+                    (BinaryOp::RvBarPair, Value::RVBar(dual), Value::RVBar(raw)) => {
+                        Ok(Value::Point(usize::from(rv_bar_dual::pair(
+                            &mut self.model,
+                            &dual,
+                            &raw,
+                        )?)))
+                    }
+                    (BinaryOp::RvPathCup, Value::RVBar(a), Value::RVBar(b)) => {
+                        let terms = rv_bar_dual::cup_terms(&mut self.model, &a, &b)?;
+                        Ok(Value::RVBar(rv_bar::persist(&mut self.model, terms)?))
+                    }
+                    (BinaryOp::RvPathCup, Value::Class(a), Value::Class(b)) => {
+                        rv_bar_dual::cup(&mut self.model, (left.ty, &a), (right.ty, &b), expr.ty)
+                    }
                     (BinaryOp::Add, Value::RVBar(a), Value::RVBar(b)) => {
                         Ok(Value::RVBar(rv_bar::add(&mut self.model, &a, &b)?))
                     }
@@ -1568,6 +1603,23 @@ impl Engine {
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
                 }
+                (CobarOp::RvBarDualize, Value::RVBar(terms)) => Ok(Value::RVBar(terms)),
+                (CobarOp::RvBarDualD, Value::RVBar(terms)) => {
+                    let Kind::RVBarDual(grade) = *self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    Ok(Value::RVBar(rv_bar_dual::differential(
+                        &mut self.model,
+                        grade,
+                        &terms,
+                    )?))
+                }
+                (CobarOp::RvPathClass, Value::RVBar(terms)) => {
+                    rv_bar_dual::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::RvPathRep, Value::Class(class)) => Ok(Value::RVBar(
+                    rv_bar_dual::representative(&mut self.model, input.ty, &class)?,
+                )),
                 (CobarOp::RvBarD, Value::Class(class)) => {
                     rv_bar_page::differential(&mut self.model, input.ty, expr.ty, &class)
                 }
@@ -2824,6 +2876,14 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
+            TypeForm::RVBarDual(spec) => {
+                let grade = self.rv_bar_grade(spec)?;
+                self.model.rv_path_type(grade, false)
+            }
+            TypeForm::RVPathExt(spec) => {
+                let grade = self.rv_bar_grade(spec)?;
+                self.model.rv_path_type(grade, true)
+            }
             TypeForm::RVBarE(spec) => {
                 let grade = self.rv_bar_page_grade(spec)?;
                 self.model.rv_bar_page_type(grade)
@@ -2942,7 +3002,8 @@ impl Checker<'_> {
                     Kind::JetPage(..) => jet_page::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVBarE(..) => cohomology::zero(),
-                    Kind::RVBar(..) => Value::RVBar([].into()),
+                    Kind::RVPathExt(..) => cohomology::zero(),
+                    Kind::RVBar(..) | Kind::RVBarDual(..) => Value::RVBar([].into()),
                     Kind::RVKoszul(..) => Value::RVKoszul([].into()),
                     Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
@@ -3786,6 +3847,13 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvPathGenerator(spec, index, at) => {
+                let grade = self.rv_bar_grade(spec)?;
+                let ty = self.model.rv_path_type(grade, true)?;
+                let rank = self.model.rv_path_ext(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::RvBarEGenerator(spec, index, at) => {
                 let grade = self.rv_bar_page_grade(spec)?;
@@ -5206,6 +5274,29 @@ impl Checker<'_> {
                     _ => self.model.rv_bar_type(grade.chain),
                 };
             }
+            CobarOp::RvBarDualize => {
+                let Kind::RVBar(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVBar chain"));
+                };
+                return self.model.rv_path_type(grade, false);
+            }
+            CobarOp::RvBarDualD | CobarOp::RvPathClass => {
+                let Kind::RVBarDual(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVBarDual cochain"));
+                };
+                if matches!(op, CobarOp::RvBarDualD) {
+                    return self
+                        .model
+                        .rv_path_type(rv_bar_dual::differential_grade(grade)?, false);
+                }
+                return self.model.rv_path_type(grade, true);
+            }
+            CobarOp::RvPathRep => {
+                let Kind::RVPathExt(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVPathExt class"));
+                };
+                return self.model.rv_path_type(grade, false);
+            }
             CobarOp::RvBarD => {
                 return match *self.model.kind(argument.ty) {
                     Kind::RVBar(grade) => self.model.rv_bar_type(grade.differential()?),
@@ -5447,6 +5538,8 @@ impl Checker<'_> {
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
                         | Kind::RVBarE(..)
+                        | Kind::RVBarDual(..)
+                        | Kind::RVPathExt(..)
                         | Kind::RVBar(..)
                         | Kind::RVKoszul(..)
                         | Kind::RVTor(..)
@@ -5587,6 +5680,27 @@ impl Checker<'_> {
                 self.bp_shape(right, "bpMul")?;
                 self.require_type(left.ty, right, "bpMul")?;
                 Ok(left.ty)
+            }
+            BinaryOp::RvBarPair => {
+                let Kind::RVBarDual(grade) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(left, "rvBarPair", "an RVBarDual cochain"));
+                };
+                let raw = self.model.rv_bar_type(grade)?;
+                self.require_type(raw, right, "rvBarPair")?;
+                Ok(self.model.named("S").unwrap())
+            }
+            BinaryOp::RvPathCup => {
+                let (a, b, homology) =
+                    match (self.model.kind(left.ty), self.model.kind(right.ty)) {
+                        (Kind::RVBarDual(a), Kind::RVBarDual(b)) => (*a, *b, false),
+                        (Kind::RVPathExt(a), Kind::RVPathExt(b)) => (*a, *b, true),
+                        _ => return Err(Error::new(
+                            span,
+                            "rvPathCup requires two RVBarDual cochains or two RVPathExt classes",
+                        )),
+                    };
+                self.model
+                    .rv_path_type(rv_bar_dual::cup_grade(a, b)?, homology)
             }
             BinaryOp::RvKoszulProduct | BinaryOp::RvTorProduct => {
                 let homology = matches!(op, BinaryOp::RvTorProduct);

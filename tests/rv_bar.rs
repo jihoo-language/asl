@@ -343,3 +343,135 @@ fn the_first_binary_page_checks_next_and_previous_types_and_enumerates_classes()
         "{result}"
     );
 }
+
+#[test]
+fn dual_differential_is_the_transpose_and_the_cut_product_obeys_leibniz() {
+    assert_eq!(
+        stdout(example("rank-path-ext")),
+        concat!(
+            "rvpathextdim[P, 0, 1, 2] = 1\n",
+            "rvpathextdim[P, 0, 3, 4] = 0\n",
+            "rvpathextdim[P, 0, 3, 5] = 0\n",
+            "rvpathextdim[P, 0, 3, 6] = 0\n",
+            "RVBarDual(P, 0, 3, 5){[(0, 1, 1):g0 | (1, 3, 2):g0] + [(0, 2, 2):g0 | (2, 3, 1):g0]}\n"
+        )
+    );
+}
+
+#[test]
+fn nonzero_path_ext_products_are_associative_and_expand_class_sums() {
+    let input = format!(
+        r"{INDEPENDENT}
+        rvbarpath P[J] {{[1,1,1],[1,1,1],[1,1,1]}};
+        let u=rvmtorgen[J,2,[1,1,1],0];
+        let v=rvmtorgen[J,2,[1,1,1],1];
+        let raw_a=rvBarWord[P,[0,1]](u);
+        let a=rvPathClass(rvBarDualize(raw_a));
+        let b=rvpathextgen[P,0,1,3,1];
+        let c=rvpathextgen[P,1,2,3,0];
+        let d=rvpathextgen[P,2,3,3,0];
+        assert rvPathRep(a)==rvBarDualize(raw_a);
+        let left=rvPathCup(rvPathCup(add(a,b), c), d);
+        assert left==rvPathCup(add(a,b),rvPathCup(c,d));
+        assert left==add(rvPathCup(a,rvPathCup(c,d)),rvPathCup(b,rvPathCup(c,d)));
+        assert left==add(rvpathextgen[P,0,3,9,0],rvpathextgen[P,0,3,9,4]);
+        assert rvPathClass(rvPathRep(left))==left;
+        card \s:RVBarDual(P,0,2,6)=>S.hi;
+        rvpathextdim[P,0,3,9];
+        "
+    );
+    assert_eq!(
+        stdout(interpret(&input)),
+        "card = 16 / 16\nrvpathextdim[P, 0, 3, 9] = 8\n"
+    );
+}
+
+#[test]
+fn staircase_proper_cups_survive_and_the_full_cup_has_the_prescribed_primitive() {
+    for n in [3, 4, 6] {
+        let mut source = staircase(n);
+        for j in 1..=n {
+            writeln!(
+                source,
+                "let dc{j} = rvBarDualize(rvBarWord[P,[{},{j}]](a{j}));",
+                j - 1
+            )
+            .unwrap();
+            writeln!(source, "let ext{j}_{j} = rvPathClass(dc{j});").unwrap();
+            writeln!(
+                source,
+                "assert ext{j}_{j} == rvpathextgen[P,{},{j},2,0];",
+                j - 1
+            )
+            .unwrap();
+        }
+        writeln!(source, "let cup1 = dc1;").unwrap();
+        for j in 2..=n {
+            writeln!(source, "let cup{j} = rvPathCup(cup{},dc{j});", j - 1).unwrap();
+        }
+        for length in 2..=n {
+            for i in 1..=n - length + 1 {
+                let j = i + length - 1;
+                writeln!(
+                    source,
+                    "let ext{i}_{j}=rvPathCup(ext{i}_{},ext{j}_{j});",
+                    j - 1
+                )
+                .unwrap();
+                if length < n {
+                    writeln!(
+                        source,
+                        "assert ext{i}_{j} == rvpathextgen[P,{},{j},{},0];",
+                        i - 1,
+                        2 * length
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        writeln!(source, "let primitive = rvBarDualize(top);").unwrap();
+        writeln!(source, "assert rvBarDualD(primitive)==cup{n};").unwrap();
+        writeln!(source, "assert cup{n}==rvBarDualize(raw);").unwrap();
+        writeln!(source, "assert rvBarPair(cup{n},raw)==S.hi;").unwrap();
+        writeln!(source, "assert rvPathClass(cup{n})==ext1_{n};").unwrap();
+        writeln!(
+            source,
+            "assert ext1_{n}==zero[RVPathExt(P,0,{n},{})];",
+            2 * n
+        )
+        .unwrap();
+        writeln!(source, "rvpathextdim[P,0,{n},{}];", 2 * n).unwrap();
+        assert!(stdout(interpret(&source))
+            .ends_with(&format!("rvpathextdim[P, 0, {n}, {}] = 0\n", 2 * n)));
+        let error = diagnostic(interpret(&format!("{source} show rvPathClass(primitive);")));
+        assert!(
+            error.contains("requires a closed dual bar cochain"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn duality_products_and_cohomology_validate_compatible_variances_and_degrees() {
+    let source = include_str!("../examples/rank-path-ext.asl");
+    for (expr, expected) in [
+        ("rvBarPair(word,word)", "requires an RVBarDual"),
+        ("rvBarPair(first,left)", "RVBar(P, 0, 1, 2)"),
+        ("rvPathCup(first,first)", "sharing a cut"),
+        (
+            "rvPathCup(first,rvPathClass(first))",
+            "two RVBarDual cochains or two RVPathExt classes",
+        ),
+        ("rvPathRep(top)", "requires an RVPathExt"),
+        ("rvBarDualD(word)", "requires an RVBarDual"),
+        ("rvPathClass(f)", "requires a closed dual bar cochain"),
+    ] {
+        let error = diagnostic(interpret(&format!("{source} show {expr};")));
+        assert!(error.contains(expected), "{expr}: {error}");
+    }
+    let error = diagnostic(interpret(&format!(
+        "{source} show rvBarDualD(zero[RVBarDual(P,0,1,{})]);",
+        usize::MAX
+    )));
+    assert!(error.contains("degree is out of range"), "{error}");
+}

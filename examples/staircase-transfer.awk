@@ -5,6 +5,11 @@ BEGIN {
         print "n must be an integer between 3 and 31 (primitive labels are 1 through 2n)" > "/dev/stderr"
         exit 2
     }
+    if (dual == "") dual = 0
+    if (dual !~ /^[01]$/) {
+        print "dual must be 0 or 1" > "/dev/stderr"
+        exit 2
+    }
     if (pages == "") pages = 0
     if (pages !~ /^[01]$/) {
         print "pages must be 0 or 1" > "/dev/stderr"
@@ -20,7 +25,7 @@ BEGIN {
         print "local must be 0 (total grading) or 1 (multigrading)" > "/dev/stderr"
         exit 2
     }
-    if (pages) bar = 1
+    if (pages || dual) bar = 1
     if (bar) local = 1
     constructor = local ? "rvmkterm" : "rvkterm"
     for (k = 1; k <= 2*n; k++) selection = append(selection, k)
@@ -88,6 +93,30 @@ BEGIN {
         emit(sprintf("rvbaredim[StairBar,0,%d,%d,%d,%d];", n,n,2*n,n))
         emit(sprintf("rvbaredim[StairBar,0,%d,%d,%d,1];", n,n,2*n-1))
         emit(sprintf("show rvBarD(e%d);", n-1))
+    }
+
+    if (dual) {
+        for (j = 1; j <= n; j++) {
+            emit(sprintf("let dual%d = rvBarDualize(rvBarWord[StairBar,[%d,%d]](a%d));", j,j-1,j,j))
+            emit(sprintf("let ext%d_%d = rvPathClass(dual%d);", j,j,j))
+            emit(sprintf("assert ext%d_%d == rvpathextgen[StairBar,%d,%d,2,0];",j,j,j-1,j))
+        }
+        emit("let cup1 = dual1;")
+        for (j = 2; j <= n; j++)
+            emit(sprintf("let cup%d = rvPathCup(cup%d,dual%d);", j,j-1,j))
+        for (span = 2; span <= n; span++) {
+            for (first = 1; first+span-1 <= n; first++) {
+                last = first+span-1
+                emit(sprintf("let ext%d_%d = rvPathCup(ext%d_%d,ext%d_%d);",first,last,first,last-1,last,last))
+                if (span < n)
+                    emit(sprintf("assert ext%d_%d == rvpathextgen[StairBar,%d,%d,%d,0];",first,last,first-1,last,2*span))
+            }
+        }
+        emit(sprintf("assert cup%d == rvBarDualize(word);",n))
+        emit(sprintf("assert rvBarDualD(rvBarDualize(top)) == cup%d;",n))
+        emit(sprintf("assert rvPathClass(cup%d) == ext1_%d;",n,n))
+        emit(sprintf("assert ext1_%d == zero[RVPathExt(StairBar,0,%d,%d)];",n,n,2*n))
+        emit(sprintf("show ext1_%d;",n))
     }
 
     for (i = 1; i <= line_count; i++) print lines[i]

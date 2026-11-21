@@ -171,7 +171,7 @@ impl Path {
         Ok(result)
     }
 
-    fn multiply(
+    pub(crate) fn multiply(
         &self,
         model: &mut Model,
         start: usize,
@@ -561,23 +561,26 @@ impl BasisPlan {
         })
     }
 
-    fn count(&self, length: Option<usize>) -> Result<u128> {
+    fn count(&self, keep: impl Fn(usize) -> bool) -> Result<u128> {
         self.starts()
-            .filter(|&(k, _)| length.is_none_or(|len| k == len))
+            .filter(|&(k, _)| keep(k))
             .try_fold(0u128, |sum, (_, count)| {
                 sum.checked_add(count.ok_or_else(count_limit)?)
                     .ok_or_else(count_limit)
             })
     }
 
-    fn words(&self, model: &mut Model, limit: usize) -> Result<Vec<Word>> {
-        let count = self.count(None)?;
+    fn words(&self, model: &mut Model, minimum_length: usize, limit: usize) -> Result<Vec<Word>> {
+        let count = self.count(|length| length >= minimum_length)?;
         if count > limit as u128 {
             return Err(Error::plain("rank bar basis exceeds the enumeration limit"));
         }
         let grade = self.grade;
         let mut stack = Vec::new();
-        for (length, _) in self.starts() {
+        for (length, _) in self
+            .starts()
+            .filter(|&(length, _)| length >= minimum_length)
+        {
             stack.push(PartialWord {
                 position: grade.start,
                 b: grade.b,
@@ -651,7 +654,7 @@ fn count_limit() -> Error {
 
 pub(crate) fn dimension(model: &mut Model, grade: Grade, length: Option<usize>) -> Result<u128> {
     let max = length.unwrap_or_else(|| grade.max_length());
-    BasisPlan::build(model, grade, max)?.count(length)
+    BasisPlan::build(model, grade, max)?.count(|k| length.is_none_or(|length| length == k))
 }
 
 pub(crate) fn basis(
@@ -660,5 +663,9 @@ pub(crate) fn basis(
     max_length: usize,
     limit: usize,
 ) -> Result<Vec<Word>> {
-    BasisPlan::build(model, grade, max_length)?.words(model, limit)
+    BasisPlan::build(model, grade, max_length)?.words(model, 1, limit)
+}
+
+pub(crate) fn replacements(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Word>> {
+    BasisPlan::build(model, grade, grade.max_length())?.words(model, 2, limit)
 }

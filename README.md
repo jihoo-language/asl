@@ -848,6 +848,20 @@ awk -v pages=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
 
 This checks the preceding differentials, the nonzero $d_{19}$ and the two zero groups on $E_{20}$ using the standard computation limits.
 
+#### Dual bar cochains and path Ext
+
+`RVBarDual(P,i,j,b)` is the finite dual of `RVBar(P,i,j,b)`. The operation `rvBarDualize(x)` uses the ordered bar basis to convert a chain support to its coordinate functional. `rvBarPair(f,x)` evaluates that functional, returning `S.hi` for one. The transposed differential `rvBarDualD` raises $b$ by one and satisfies $\langle D^*f,x\rangle=\langle f,Dx\rangle$.
+
+`RVPathExt(P,i,j,b)` is the cohomology of the dual bar complex of the directed path category. Use `rvPathClass` on a closed dual cochain and `rvPathRep` for a chosen representative. `rvpathextdim[P,i,j,b];` prints the dimension and `rvpathextgen[P,i,j,b,k]` selects a basis class. The vertex units are formal and the types describe positive intervals.
+
+For consecutive intervals $i<k<j$, `rvPathCup(f,g)` concatenates dual words at $k$ and adds cohomological degrees. It is dual to splitting the raw word at that cut. Terms contracting across the cut have zero pairing, which gives the cochain Leibniz formula. The induced product on `RVPathExt` is associative. The Squares example computes the dual differential of a singleton as a sum of two different cuts. [Dual bar example](examples/rank-path-ext.asl)
+
+```sh
+awk -v dual=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+Every proper consecutive product of the adjacent classes is nonzero. The full raw cup is the dual of the long bar word, and the dual of the singleton top has exactly that coboundary. The full path product therefore prints `RVPathExt(StairBar, 0, 20, 40){0}`.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

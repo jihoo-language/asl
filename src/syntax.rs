@@ -63,6 +63,8 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
+    RVBarDual(RvBarSpec),
+    RVPathExt(RvBarSpec),
     RVBar(RvBarSpec),
     ASDiff(Label, usize),
     RVComplex(RvGradeSpec, bool),
@@ -269,6 +271,8 @@ pub(crate) enum BinaryOp {
     CeMul,
     MilnorPair,
     RvMultiply,
+    RvBarPair,
+    RvPathCup,
     RvKoszulProduct,
     RvTorProduct,
     BpMultiply,
@@ -292,6 +296,8 @@ impl BinaryOp {
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
+            "rvBarPair" => Some(Self::RvBarPair),
+            "rvPathCup" => Some(Self::RvPathCup),
             "rvkProd" => Some(Self::RvKoszulProduct),
             "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
@@ -427,6 +433,7 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvPathGenerator(RvBarSpec, usize, Span),
     RvBarEGenerator(RvBarPageSpec, usize, Span),
     RvBarClass(usize, i64, Box<ParsedExpr>),
     RvBarWord(Label, Vec<usize>, Vec<ParsedExpr>),
@@ -542,6 +549,7 @@ pub(crate) enum StatementForm {
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
     RvBarPath(Label, Label, Vec<Vec<usize>>),
+    RvPathDimension(RvBarSpec),
     RvBarPageDimension(RvBarPageSpec),
     RvBarDimension(RvBarSpec, Option<usize>),
     RvHochster(Label, Vec<usize>, i64),
@@ -1369,6 +1377,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBrace)?;
                 StatementForm::RvBarPath(name, ideal, steps)
             }
+            Token::Word("rvpathextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_bar_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvPathDimension(spec)
+            }
             Token::Word("rvbaredim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -2045,6 +2060,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVBarE(grade), 0);
         }
+        if matches!(name.text.as_str(), "RVBarDual" | "RVPathExt") && self.eat(Token::LParen)? {
+            let spec = self.rv_bar_spec()?;
+            self.expect(Token::RParen)?;
+            let kind = if name.text == "RVBarDual" {
+                TypeForm::RVBarDual(spec)
+            } else {
+                TypeForm::RVPathExt(spec)
+            };
+            return ty(span, kind, 0);
+        }
         if name.text == "RVBar" && self.eat(Token::LParen)? {
             let grade = self.rv_bar_spec()?;
             self.expect(Token::RParen)?;
@@ -2443,6 +2468,13 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvpathextgen" && self.eat(Token::LBracket)? {
+                    let spec = self.rv_bar_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvPathGenerator(spec, index, at), 0);
+                }
                 if name.text == "rvbaregen" && self.eat(Token::LBracket)? {
                     let spec = self.rv_bar_page_spec()?;
                     self.expect(Token::Comma)?;
