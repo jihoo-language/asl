@@ -574,6 +574,14 @@ The polynomial `f` must be homogeneous in the variables of `J`. Zero gives the u
 
 Projective saturation sends $(x^2,xy,xz,y^2)$ to $(x,y^2)$, a doubled point with Hilbert function two in positive degrees. The singular scheme of the cuspidal cubic $y^3+x^2z$ has ideal $(x^2,y^2)$ and eventual Hilbert function four. Both nilpotent coordinates survive as classes at the single projective point $[0:0:1]$. [Intersection and saturation example](examples/rank-schemes.asl)
 
+#### Rees algebras and normal cones
+
+`rvrees Blow[J, [u0,...]] { h0, ... };` presents the Rees algebra $R[HT]\subset R[T]$ for $R=\mathbb F_2[x_i]/J$ and $H=(h_j)\subset R$. Each new index names a coordinate $U_j$ for $h_jT$. Use one new index per listed generator, in strictly increasing order above the indices of `J`. The generators are `RVPoly` values in the original variables of one common positive degree $d$. An empty generator list leaves $R$, and a zero generator of that degree gives the relation $U_j=0$.
+
+The defining relations come from eliminating $T$ from $(J,U_j+Th_j)$. They are bihomogeneous for degrees $(1,0)$ on $x_i$ and $(d,1)$ on $U_j$. ASL uses their ordinary homogeneous grading with every coordinate of degree one. `rvnormalcone Cone[J, [u0,...]] { h0, ... };` additionally kills the images of the $h_j$ in degree zero of the Rees grading, giving $\operatorname{gr}_H(R)$. Both declarations give named ideals for operations such as `rvgroebner`, `rvWitness`, and `rvbetti`.
+
+For the cuspidal cubic and $H=(x,y)$, the normal cone in the chart $z\ne0$ has equations $(x,y,U^2)$, with $U$ nonzero. For $(x^2,xy,y^2)$ in the plane, the Rees equations include $AC+B^2$. This equation remains in the exceptional fiber after the two linear syzygies vanish at the origin. [Rees algebra and normal cone example](examples/rank-blowups.asl)
+
 
 ### Koszul syzygies and their products
 

@@ -51,6 +51,7 @@ mod rv_hom;
 mod rv_ideal;
 mod rv_koszul;
 mod rv_poly;
+mod rv_rees;
 mod rv_scheme;
 mod rv_t_bracket;
 mod steenrod;

@@ -46,6 +46,7 @@ use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
 use crate::rv_poly;
+use crate::rv_rees;
 use crate::rv_scheme;
 use crate::rv_t_bracket;
 use crate::steenrod;
@@ -397,22 +398,18 @@ impl Engine {
             StatementForm::RvIdeal(name, selected, expressions) => {
                 check_new_ideal(&self.model, &name)?;
                 let selected = q_koszul::indices(&mut self.model, selected)?;
-                let mut generators = Vec::with_capacity(expressions.len());
-                for expression in expressions {
-                    let input = self.checker().expr(expression)?;
-                    let (variables, degree) = self.checker().rv_poly_grade(&input, "rvideal")?;
-                    if variables != selected {
-                        return Err(Error::new(
-                            input.span,
-                            "rvideal generator uses a different primitive selection",
-                        ));
-                    }
-                    let Value::RVPoly(polynomial) = self.eval(&input)? else {
-                        unreachable!()
-                    };
-                    generators.push((degree, polynomial));
-                }
+                let generators = self.rv_generator_values(expressions, &selected, "rvideal")?;
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvRees(operation, name, original, variables, expressions) => {
+                check_new_ideal(&self.model, &name)?;
+                let original = self.model.rv_ideal(&original)?;
+                let generators =
+                    self.rv_generator_values(expressions, &original.selected, operation.name())?;
+                let ideal =
+                    rv_rees::build(&mut self.model, operation, &original, variables, generators)?;
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
@@ -745,6 +742,30 @@ impl Engine {
             .project(&mut self.model, ideal, terms)?;
         self.model.allocate(coordinates.len())?;
         Ok(Value::Class(coordinates.into()))
+    }
+
+    fn rv_generator_values(
+        &mut self,
+        expressions: Vec<ParsedExpr>,
+        selected: &[usize],
+        operation: &str,
+    ) -> Result<Vec<(usize, rv_poly::Polynomial)>> {
+        let mut generators = Vec::with_capacity(expressions.len());
+        for expression in expressions {
+            let input = self.checker().expr(expression)?;
+            let (variables, degree) = self.checker().rv_poly_grade(&input, operation)?;
+            if variables.as_ref() != selected {
+                return Err(Error::new(
+                    input.span,
+                    format!("{operation} generator uses a different primitive selection"),
+                ));
+            }
+            let Value::RVPoly(polynomial) = self.eval(&input)? else {
+                unreachable!()
+            };
+            generators.push((degree, polynomial));
+        }
+        Ok(generators)
     }
 
     fn comparable_exprs(

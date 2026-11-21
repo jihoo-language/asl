@@ -7,6 +7,7 @@ use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
+use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
@@ -421,6 +422,7 @@ pub(crate) enum StatementForm {
     RvBetti(RvGradeSpec),
     RvMinors(RvMatrixSpec, usize),
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvRees(ReesOp, Label, Label, Vec<usize>, Vec<ParsedExpr>),
     RvFitting(Label, RvMatrixSpec, usize),
     RvGroebner(Label),
     RvIntersect(Label, Label, Label),
@@ -896,16 +898,22 @@ impl<'src> Parser<'src> {
                 self.expect(Token::LBracket)?;
                 let selected = self.exponents()?;
                 self.expect(Token::RBracket)?;
-                self.expect(Token::LBrace)?;
-                let mut generators = Vec::new();
-                while self.token() != Token::RBrace {
-                    generators.push(self.expr(0)?);
-                    if !self.eat(Token::Comma)? {
-                        break;
-                    }
-                }
-                self.expect(Token::RBrace)?;
-                StatementForm::RvIdeal(name, selected, generators)
+                StatementForm::RvIdeal(name, selected, self.rv_generators()?)
+            }
+            Token::Word("rvrees" | "rvnormalcone") => {
+                let operation = if self.token() == Token::Word("rvrees") {
+                    ReesOp::Rees
+                } else {
+                    ReesOp::NormalCone
+                };
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvRees(operation, name, base, variables, self.rv_generators()?)
             }
             Token::Word("rvfitting") => {
                 self.advance()?;
@@ -1170,6 +1178,19 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (s, t) = self.bidegree()?;
         Ok((base, s, t))
+    }
+
+    fn rv_generators(&mut self) -> Result<Vec<ParsedExpr>> {
+        self.expect(Token::LBrace)?;
+        let mut generators = Vec::new();
+        while self.token() != Token::RBrace {
+            generators.push(self.expr(0)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(generators)
     }
 
     fn rv_matrix(&mut self, nest: usize) -> Result<RvMatrixSpec> {
