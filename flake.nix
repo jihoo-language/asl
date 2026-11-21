@@ -47,6 +47,20 @@
           packages = with pkgs; [ cargo rustc rustfmt clippy ];
         };
       });
-      checks = forSystems (pkgs: { default = package pkgs; });
+      checks = forSystems (pkgs: {
+        default = package pkgs;
+        relator-brackets = pkgs.runCommand "asl-relator-brackets" {
+          nativeBuildInputs = [ (package pkgs) pkgs.gawk ];
+        } ''
+          set -o pipefail
+          awk -f ${./examples/bracket-relator.awk} | asl - > "$out"
+          diff -u - "$out" <<'EXPECTED'
+          betti(K) = [1, 4, 1]
+          {H(K, 2){0} => S.hi, H(K, 2){g0} => S.hi}
+          {H(K, 2){0} => S.hi, H(K, 2){g0} => S.hi}
+          {H(K, 2){0} => S.lo, H(K, 2){g0} => S.lo}
+          EXPECTED
+        '';
+      });
     };
 }

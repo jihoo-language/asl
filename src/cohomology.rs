@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -16,11 +17,51 @@ pub(crate) struct Cohomology {
     coboundaries: Vec<Option<Box<[usize]>>>,
     generator_pivots: Vec<Option<usize>>,
     representatives: Vec<Box<[usize]>>,
+    primitive_images: OnceCell<ImageBasis>,
 }
 
 struct ImagePivot {
     image: Box<[usize]>,
     source: Box<[usize]>,
+}
+
+struct ImageBasis {
+    pivots: Vec<Option<ImagePivot>>,
+    cells: usize,
+}
+
+impl ImageBasis {
+    fn new(rows: usize) -> Self {
+        Self {
+            pivots: (0..rows).map(|_| None).collect(),
+            cells: 0,
+        }
+    }
+
+    fn insert_column(
+        &mut self,
+        model: &mut Model,
+        coordinate: usize,
+        cofaces: &[usize],
+    ) -> Result<Option<Vec<usize>>> {
+        model.spend(1 + cofaces.len())?;
+        let mut image = cofaces.to_vec();
+        let mut source = vec![coordinate];
+        while let Some(&leading) = image.last() {
+            if let Some(pivot) = &self.pivots[leading] {
+                image = symmetric_difference(model, &image, &pivot.image)?;
+                source = symmetric_difference(model, &source, &pivot.source)?;
+            } else {
+                store_cells(&mut self.cells, image.len() + source.len())?;
+                self.pivots[leading] = Some(ImagePivot {
+                    image: image.into_boxed_slice(),
+                    source: source.into_boxed_slice(),
+                });
+                return Ok(None);
+            }
+        }
+        Ok(Some(source))
+    }
 }
 
 impl Cohomology {
@@ -66,10 +107,9 @@ impl Cohomology {
         }
 
         let cofaces = transpose(model, &simplices, &next)?;
-        let mut images: Vec<Option<ImagePivot>> = (0..next.len()).map(|_| None).collect();
+        let mut images = ImageBasis::new(next.len());
         let mut representatives = Vec::new();
         let mut generator_pivots = vec![None; simplices.len()];
-        let mut image_cells = 0;
         for (coordinate, cofaces) in cofaces.iter().enumerate() {
             if coboundaries[coordinate].is_some() {
                 continue;
@@ -77,27 +117,10 @@ impl Cohomology {
 
             // Nonpivot coordinates complement the coboundaries. Dependencies
             // among their delta columns give cocycles modulo coboundaries.
-            model.spend(1 + cofaces.len())?;
-            let mut image = cofaces.clone();
-            let mut source = vec![coordinate];
-            loop {
-                let Some(&leading) = image.last() else {
-                    store_cells(&mut basis_cells, source.len())?;
-                    generator_pivots[coordinate] = Some(representatives.len());
-                    representatives.push(source.into_boxed_slice());
-                    break;
-                };
-                if let Some(pivot) = &images[leading] {
-                    image = symmetric_difference(model, &image, &pivot.image)?;
-                    source = symmetric_difference(model, &source, &pivot.source)?;
-                } else {
-                    store_cells(&mut image_cells, image.len() + source.len())?;
-                    images[leading] = Some(ImagePivot {
-                        image: image.into_boxed_slice(),
-                        source: source.into_boxed_slice(),
-                    });
-                    break;
-                }
+            if let Some(source) = images.insert_column(model, coordinate, cofaces)? {
+                store_cells(&mut basis_cells, source.len())?;
+                generator_pivots[coordinate] = Some(representatives.len());
+                representatives.push(source.into_boxed_slice());
             }
         }
 
@@ -120,6 +143,7 @@ impl Cohomology {
             coboundaries,
             generator_pivots,
             representatives,
+            primitive_images: OnceCell::new(),
         })
     }
 
@@ -127,7 +151,52 @@ impl Cohomology {
         self.representatives.len()
     }
 
-    fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Vec<bool>> {
+    pub(crate) fn cochain_len(&self) -> usize {
+        self.simplices.len()
+    }
+
+    pub(crate) fn generator(&self, index: usize) -> &[usize] {
+        &self.representatives[index]
+    }
+
+    pub(crate) fn primitive(
+        &self,
+        model: &mut Model,
+        mut rhs: Vec<usize>,
+    ) -> Result<Option<Vec<usize>>> {
+        if rhs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let basis = if let Some(basis) = self.primitive_images.get() {
+            basis
+        } else {
+            // The kernel basis from the original reduction records each dependent
+            // column. Only independent columns are needed to recover primitives.
+            let mut basis = ImageBasis::new(self.next.len());
+            model.spend(self.cochain_len())?;
+            for (coordinate, cofaces) in self.cofaces.iter().enumerate() {
+                if self.coboundaries[coordinate].is_none()
+                    && self.generator_pivots[coordinate].is_none()
+                {
+                    basis.insert_column(model, coordinate, cofaces)?;
+                }
+            }
+            model.allocate(basis.cells + basis.pivots.len())?;
+            self.primitive_images.get_or_init(|| basis)
+        };
+        let mut primitive = Vec::new();
+        // Consecutive degrees share the same simplex order in the order complex.
+        while let Some(&leading) = rhs.last() {
+            let Some(pivot) = &basis.pivots[leading] else {
+                return Ok(None);
+            };
+            rhs = symmetric_difference(model, &rhs, &pivot.image)?;
+            primitive = symmetric_difference(model, &primitive, &pivot.source)?;
+        }
+        Ok(Some(primitive))
+    }
+
+    pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Vec<bool>> {
         model.spend(self.simplices.len())?;
         let mut representative = vec![false; self.simplices.len()];
         for &index in class {
@@ -140,7 +209,17 @@ impl Cohomology {
         Ok(representative)
     }
 
-    fn coordinates(&self, model: &mut Model, mut support: Vec<usize>) -> Result<Value> {
+    fn coordinates(&self, model: &mut Model, support: Vec<usize>) -> Result<Value> {
+        let coordinates = self.reduce_coordinates(model, support)?;
+        model.allocate(coordinates.len())?;
+        Ok(Value::Class(coordinates.into()))
+    }
+
+    pub(crate) fn reduce_coordinates(
+        &self,
+        model: &mut Model,
+        mut support: Vec<usize>,
+    ) -> Result<Vec<usize>> {
         // Reduce every coboundary pivot, including those below free coordinates.
         let mut reduced = Vec::new();
         while let Some(&leading) = support.last() {
@@ -161,8 +240,24 @@ impl Cohomology {
             reduced = symmetric_difference(model, &reduced, &self.representatives[generator])?;
         }
         coordinates.reverse();
-        model.allocate(coordinates.len())?;
-        Ok(Value::Class(coordinates.into()))
+        Ok(coordinates)
+    }
+
+    pub(crate) fn for_cup_faces(
+        &self,
+        model: &mut Model,
+        left: &Self,
+        right: &Self,
+        left_degree: usize,
+        mut use_faces: impl FnMut(usize, usize, usize),
+    ) -> Result<()> {
+        for (coordinate, simplex) in self.simplices.iter().enumerate() {
+            model.spend(simplex.len() + 1)?;
+            let front = left.indices[&simplex[..=left_degree]];
+            let back = right.indices[&simplex[left_degree..]];
+            use_faces(coordinate, front, back);
+        }
+        Ok(())
     }
 }
 
@@ -312,12 +407,11 @@ pub(crate) fn cup(
     let front = left_group.representative(model, left)?;
     let back = right_group.representative(model, right)?;
     let mut support = Vec::new();
-    for (index, simplex) in result.simplices.iter().enumerate() {
-        model.spend(simplex.len() + 1)?;
-        if front[left_group.indices[&simplex[..=p]]] && back[right_group.indices[&simplex[p..]]] {
+    result.for_cup_faces(model, &left_group, &right_group, p, |index, left, right| {
+        if front[left] && back[right] {
             support.push(index);
         }
-    }
+    })?;
     result.coordinates(model, support)
 }
 

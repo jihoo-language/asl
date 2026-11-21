@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::bracket;
 use crate::cohomology;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
@@ -40,6 +41,7 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
+    Bracket(Vec<TypedExpr>),
     DefiningSystem {
         arity: usize,
         layout: Layout,
@@ -111,6 +113,29 @@ impl Engine {
                 self.model
                     .show(expr.ty, &value)
                     .map_err(|error| error.at(expr.span))?
+            }
+            StatementForm::Card(expr) => {
+                let expr = self.checker().expr(expr)?;
+                let sierpinski = self.model.named("S").unwrap();
+                if !matches!(self.model.kind(expr.ty), Kind::Arrow(_, range) if *range == sierpinski)
+                {
+                    return Err(Error::new(
+                        expr.span,
+                        format!(
+                            "card requires a predicate of type X -> S, found {}",
+                            self.model.type_name(expr.ty),
+                        ),
+                    ));
+                }
+                let Value::Map(rows) = self.eval(&expr)? else {
+                    unreachable!()
+                };
+                self.model.spend(rows.len())?;
+                let count = rows
+                    .iter()
+                    .filter(|row| matches!(row, Value::Point(1)))
+                    .count();
+                format!("card = {count} / {}", rows.len())
             }
             StatementForm::Assert(left, right) => {
                 let (left_expr, right_expr) = self.comparable_exprs(left, right, "assertion")?;
@@ -238,6 +263,21 @@ impl Engine {
                 cohomology::suspend(&mut self.model, value.ty, &class, expr.ty)
             }
             TypedForm::Shift(value) => self.eval(value),
+            TypedForm::Bracket(inputs) => {
+                let Kind::Arrow(target, _) = *self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let inputs = inputs
+                    .iter()
+                    .map(|term| {
+                        let Value::Class(coordinates) = self.eval(term)? else {
+                            unreachable!()
+                        };
+                        Ok((term.ty, coordinates))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                bracket::evaluate(&mut self.model, target, &inputs)
+            }
             TypedForm::DefiningSystem {
                 arity,
                 layout,
@@ -525,6 +565,7 @@ impl Checker<'_> {
                 self.defining_system(inputs, Some(witnesses), span)
             }
             ExprForm::PowerDef(inputs) => self.defining_system(inputs, None, span),
+            ExprForm::Bracket(inputs) => self.bracket(inputs, span),
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -584,6 +625,11 @@ impl Checker<'_> {
                     && self.unbound("powerdef")
                 {
                     return self.defining_system(vec![*argument], None, span);
+                }
+                if matches!(&function.kind, ExprForm::Name(name) if name.text == "bracket")
+                    && self.unbound("bracket")
+                {
+                    return self.bracket(vec![*argument], span);
                 }
                 let function = self.expr(*function)?;
                 let Kind::Arrow(domain, range) = *self.model.kind(function.ty) else {
@@ -657,6 +703,49 @@ impl Checker<'_> {
 
     fn unbound(&self, name: &str) -> bool {
         !self.bindings.contains_key(name) && !self.locals.iter().any(|(local, _)| local == name)
+    }
+
+    fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {
+        if inputs.len() < 2 {
+            return Err(Error::new(
+                span,
+                "bracket requires at least two cohomology classes",
+            ));
+        }
+        let mut terms = Vec::with_capacity(inputs.len());
+        let mut base = None;
+        let mut degree = 2usize;
+        for expression in inputs {
+            let term = self.expr(expression)?;
+            let (space, input_degree) = self.class_type(&term, "bracket")?;
+            if let Some(expected) = base {
+                if expected != space {
+                    return Err(Error::new(
+                        term.span,
+                        format!(
+                            "bracket requires classes on the same space, found {} and {}",
+                            self.model.type_name(expected),
+                            self.model.type_name(space),
+                        ),
+                    ));
+                }
+            }
+            let reduced = input_degree.checked_sub(1).ok_or_else(|| {
+                Error::new(
+                    term.span,
+                    "bracket requires positive-degree cohomology classes",
+                )
+            })?;
+            degree = degree
+                .checked_add(reduced)
+                .ok_or_else(|| Error::new(term.span, "bracket result degree overflow"))?;
+            base = Some(space);
+            terms.push(term);
+        }
+        let domain = self.model.cohomology_type(base.unwrap(), degree)?;
+        let range = self.model.named("S").unwrap();
+        let ty = self.model.arrow(domain, range)?;
+        Ok((ty, TypedForm::Bracket(terms)))
     }
 
     fn defining_system(

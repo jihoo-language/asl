@@ -4,6 +4,8 @@ ASL is a pure functional language in which every type is a finite T₀ topologic
 
 The classifying spaces of the cyclic groups of orders 4 and 4,096 have isomorphic mod-two cohomology rings. ASL can distinguish them by how many copies of the degree-one generator it takes to produce a nonzero Massey product. [Run the higher-product experiment](#how-late-can-a-higher-product-appear)
 
+Even four zero inputs can have 344 different answers. ASL computes the entire set of outcomes as a function that tests membership. [Run the complete Massey product](#the-complete-massey-product)
+
 ## Run a program
 
 From the repository root, run the triangle example with Nix.
@@ -199,6 +201,33 @@ The generator uses a directed graph with 64 steps from its initial vertex to its
 
 **Why the first obstruction can be arbitrarily late.** The binomial witnesses in the experiment are the entries of $(I+J)^g$, where $J$ has ones on the first superdiagonal and zeros elsewhere. More generally, each defining system gives a homomorphism to the group of upper unitriangular matrices modulo its top-right entry. At arity $n$, a lift of the generator has size $n+1$ and form $U=I+N$ with ones on the first superdiagonal. Since $m$ is a power of two, $U^m=I+N^m$. For $n<m$ there is no path of $m$ strict steps, so $N^m=0$ and the lift respects the group relation. For $n=m$ exactly one such path connects $0$ to $m$. Its product is one for every choice of the higher entries. No choice of witnesses removes that obstruction. [Dwyer's lifting criterion, Theorem 2.4 in Merkurjev and Scavia](https://www.math.ucla.edu/~merkurev/papers/massey4.pdf)
 
+## The complete Massey product
+
+`bracket(u1, ..., un)` takes at least two positive-degree cohomology classes of the same finite space $X$. It computes the ordinary mod-two Massey product on the order complex. For input degrees $d_i$, the result has type `H(X, D) -> S` with $D=2+\sum_i(d_i-1)$. Applying this function to a class returns `S.hi` exactly when some defining system gives that class. Two inputs give the singleton containing their usual cup product. An empty set means there is no defining system. A singleton containing zero means there is a defining system and every choice gives zero. [May, *Matric Massey Products*, §1](https://www.sas.rochester.edu/mth/sites/doug-ravenel/otherpapers/May-matric.pdf)
+
+```sh
+nix run path:. -- examples/massey-locus.asl
+awk -f examples/bracket-relator.awk | nix run path:. -- -
+```
+
+**Four zeros and 344 answers.** Let $G$ be the graph with two vertices and four parallel edges. Its first cohomology is $V=\mathbb F_2^3$. On $G\times G$, take $z$ to be zero in degree one. In `bracket(z, z, z, z)` the three gap-two witnesses may be arbitrary cocycles, and the gap-three equations vanish. The only surviving top term is the cup product of the first and last gap-two witnesses. Thus the complete answer is the image of a bilinear map.
+
+Identify $H^2(G\times G)$ with the $3\times3$ matrices over $\mathbb F_2$. Multiplying degree-one classes $(u,v)$ and $(w,t)$ gives $ut^\mathsf T+wv^\mathsf T$. These are exactly the matrices of rank at most two. Of the 512 matrices, $(8-1)(8-2)(8-4)=168$ are invertible. The interpreter prints `card = 344 / 512`. It accepts a diagonal matrix of rank two and the matrix supported on its missing diagonal entry. It rejects their sum, the identity. Even the sum of two attainable answers can be unattainable. [Matrix program](examples/massey-locus.asl)
+
+**Two triples can vanish separately and still obstruct a fourfold product.** The second command builds the presentation complex $K$ of the group with generators $a,b,c,s$ and relator $[a,s][[a,b],c]$, using $[x,y]=xyx^{-1}y^{-1}$. Its two degree-two classes are $0$ and $y$. The program gives
+
+| Inputs, in order | Full result |
+| --- | --- |
+| $a,b,c$ | $\{0,y\}$ |
+| $b,c,a$ | $\{0,y\}$ |
+| $a,b,c,a$ | $\varnothing$ |
+
+Both triples need a witness for the middle pair $b,c$. In the upper unitriangular matrix description, write $e$ for the $(1,3)$ entry of the generator $s$, with rows indexed from zero. Evaluating the relator gives the two triple obstruction coordinates $1+e$ and $e$. Either can vanish separately. A fourfold defining system requires the same $e$ to annul both. The interpreter obtains this result from simplicial cochains. The generator attaches a cone to the source of a finite mapping cylinder and emits the corresponding poset and cocycles. [Presentation generator](examples/bracket-relator.awk) · [Barmak, §2](https://mate.dm.uba.ar/~jbarmak/thmafinal.pdf) · [Isaksen, *When is a fourfold Massey product defined?*](https://arxiv.org/abs/1309.4637)
+
+Vary the attaching word and the ordered inputs with `awk -v word=aaaa -v queries='aa aaa aaaa aaaaa' -f examples/bracket-relator.awk | nix run path:. -- -`. This attaches a 2-cell by a degree-four map of circles, giving the Moore space $M(\mathbb Z/4,1)$. The four outputs are $\{0\},\{0\},\{y\},\varnothing$. For `word=abAbaBAB` and `queries='abb bab'`, the relator $[[a,b],b]$ gives $\{y\}$ and $\{0\}$. Uppercase letters denote inverses. [Fenn and Sjerve, *Massey Products and Lower Central Series of Free Groups*](https://doi.org/10.4153/CJM-1987-015-5)
+
+**How the search is complete.** Each non-adjacent proper interval $[i,j]$ needs a cochain $a_{ij}$ of degree $1+\sum_{i\le k<j}(d_k-1)$ solving $d a_{ij}=\sum_{i<k<j}a_{ik}\smile a_{kj}$. The interpreter finds a primitive by sparse elimination and varies it by all linear combinations of cohomology representatives. A change by a coboundary $d\lambda$ is an upper unitriangular change of basis $I+\lambda E_{ij}$ on the defining system. It fixes shorter intervals and changes the terminal obstruction only by a coboundary after clearing the top entry. For four inputs ASL can solve the two proper triple conditions as a joint linear system. General searches that reach a resource limit report a diagnostic. For example, five zero degree-one inputs on the wedge of three circles and a 2-sphere reach the current per-statement work budget. A completed `bracket` contains the full answer.
+
 ## Observing a computation
 
 Observations are top-level statements. Every statement ends with `;` and `//` starts a line comment.
@@ -209,6 +238,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `assert e == f;` | Check extensional equality at a common type. Success is silent. |
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
+| `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 
 A homotopy step uses a single direction across the whole domain, so it requires `f(x) ≤ g(x)` for every `x`, or the reverse inequality for every `x`. In the triangle example, any endomorphism above the identity must fix all three maximal edges. Each vertex is the unique common lower bound of its two incident edges, so it too is fixed. The dual argument handles endomorphisms below the identity. This isolates the identity in `Circle -> Circle` and explains the `no` printed for the rotation. [Stong, *Finite Topological Spaces*, §3–4](https://webhomes.maths.ed.ac.uk/~v1ranick/papers/stong2.pdf)
 

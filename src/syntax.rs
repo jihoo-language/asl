@@ -94,6 +94,7 @@ pub(crate) enum ExprForm {
     Cyclic(usize, Span, CyclicForm),
     Massey(Vec<ParsedExpr>, Vec<Witness>),
     PowerDef(Vec<ParsedExpr>),
+    Bracket(Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
     Call(Box<ParsedExpr>, Box<ParsedExpr>),
@@ -114,6 +115,7 @@ pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
+    Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
     Homotopy(ParsedExpr, ParsedExpr),
@@ -407,6 +409,10 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::Show(self.expr(0)?)
             }
+            Token::Word("card") => {
+                self.advance()?;
+                StatementForm::Card(self.expr(0)?)
+            }
             Token::Word("assert") => {
                 self.advance()?;
                 let left = self.expr(0)?;
@@ -513,9 +519,9 @@ impl<'src> Parser<'src> {
         check_nesting(nest, self.span())?;
         let mut head = self.expr_atom(nest)?;
         while self.eat(Token::LParen)? {
-            if matches!(&head.kind, ExprForm::Name(name) if name.text == "massey" || name.text == "powerdef")
+            if matches!(&head.kind, ExprForm::Name(name) if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket"))
             {
-                head = self.defining_system(head, nest)?;
+                head = self.variadic(head, nest)?;
                 continue;
             }
             let arg = self.expr(nest + 1)?;
@@ -548,7 +554,7 @@ impl<'src> Parser<'src> {
         Ok(head)
     }
 
-    fn defining_system(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
+    fn variadic(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
         let mut arguments = Vec::new();
         while self.token() != Token::RParen {
             arguments.push(self.expr(nest + 1)?);
@@ -570,6 +576,9 @@ impl<'src> Parser<'src> {
                 ExprForm::Call(Box::new(head), Box::new(arguments.pop().unwrap())),
                 depth,
             );
+        }
+        if matches!(&head.kind, ExprForm::Name(name) if name.text == "bracket") {
+            return expr(span, ExprForm::Bracket(arguments), depth);
         }
         if !massey {
             return expr(span, ExprForm::PowerDef(arguments), depth);
