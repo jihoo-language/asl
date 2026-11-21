@@ -22,6 +22,7 @@ use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
+use crate::motivic;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
 use crate::odd_may::{Filtration, OddPage};
@@ -72,6 +73,7 @@ pub(crate) enum Kind {
     Cohomology(TypeId, usize),
     Operations(usize),
     Cobar(usize, usize),
+    MCobar(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
     PExt(Prime, usize, usize),
@@ -451,6 +453,7 @@ impl Model {
             }
             Kind::Cobar(..)
             | Kind::CobarAn(..)
+            | Kind::MCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::XExt(..)
@@ -565,6 +568,7 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
+                | Kind::MCobar(..)
                 | Kind::PCobar(..)
                 | Kind::PCobarAn(..)
                 | Kind::PExt(..)
@@ -858,6 +862,10 @@ impl Model {
             Profile::An(n) => Kind::CobarAn(n, s, t),
         };
         self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn mcobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MCobar(grade), 0)
     }
 
     pub(crate) fn ext_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
@@ -1706,6 +1714,7 @@ impl Model {
             | Kind::PCeAn(..)
             | Kind::BPPage(..)
             | Kind::CobarAn(..)
+            | Kind::MCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::XExt(..)
@@ -1853,6 +1862,9 @@ impl Model {
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
+            &Kind::MCobar(motivic::Grade { s, t, w }) => {
+                out.push(&format!("MCobar({s}, {t}, {w})"))
+            }
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
             &Kind::PCobarAn(p, n, s, t) => {
                 out.push(&format!("PCobarAn({}, {n}, {s}, {t})", p.get()))
@@ -2569,6 +2581,12 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::MCobar(grade) => {
+                    let basis = motivic::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
+                }
                 Kind::Cobar(..) | Kind::CobarAn(..) => {
                     let (profile, s, t) = self.kind(ty).cobar_grade().unwrap();
                     let basis = profile.basis(self, s, t, MAX_ELEMENTS.ilog2() as usize)?;
@@ -2909,7 +2927,12 @@ impl Model {
                     if index > 0 {
                         out.push(" + ")?;
                     }
-                    write_cobar_word(out, word)?;
+                    if let Kind::MCobar(grade) = *self.kind(ty) {
+                        self.spend(cobar::word_cells(word))?;
+                        write_motivic_word(out, grade, word)?;
+                    } else {
+                        write_cobar_word(out, word)?;
+                    }
                 }
                 out.push("}")
             }
@@ -3325,6 +3348,33 @@ fn write_cobar_word(out: &mut Text, word: &cobar::Word) -> Result<()> {
             out.push(&exponent.to_string())?;
         }
         out.push("]")?;
+    }
+    out.push("}")
+}
+
+fn write_motivic_word(out: &mut Text, grade: motivic::Grade, word: &cobar::Word) -> Result<()> {
+    out.push(&format!("mcword[{}]{{", grade.tau_power(word)))?;
+    for (index, factor) in word.iter().enumerate() {
+        if index > 0 {
+            out.push(", ")?;
+        }
+        let mut xi: Vec<_> = factor.iter().map(|power| power / 2).collect();
+        let mut tau: Vec<_> = factor.iter().map(|power| power % 2).collect();
+        xi.truncate(
+            xi.iter()
+                .rposition(|&power| power != 0)
+                .map_or(0, |i| i + 1),
+        );
+        tau.truncate(
+            tau.iter()
+                .rposition(|&power| power != 0)
+                .map_or(0, |i| i + 1),
+        );
+        out.push("(")?;
+        write_number_list(out, &xi)?;
+        out.push(", ")?;
+        write_number_list(out, &tau)?;
+        out.push(")")?;
     }
     out.push("}")
 }

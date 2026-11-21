@@ -28,6 +28,7 @@ use crate::may;
 use crate::may_lift;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
+use crate::motivic;
 use crate::nakamura;
 use crate::observations::{betti, homotopy};
 use crate::odd_cobar::{self, Prime};
@@ -276,6 +277,7 @@ enum TypedForm {
     Nakamura(usize, Box<TypedExpr>),
     MayLiftTo(usize, usize, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
+    MotivicCast(Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
     Equator,
@@ -1688,9 +1690,15 @@ impl Engine {
                 let support = milnor::coact(&mut self.model, base, *n, *index, q, class)?;
                 Ok(Value::Cobar(support.into()))
             }
+            TypedForm::MotivicCast(input) => self.eval(input),
             TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
                 (CobarOp::Differential, Value::Cobar(words)) => {
-                    let (profile, _, _) = self.model.kind(input.ty).cobar_grade().unwrap();
+                    let kind = self.model.kind(input.ty);
+                    let profile = if matches!(kind, Kind::MCobar(..)) {
+                        Profile::Full
+                    } else {
+                        kind.cobar_grade().unwrap().0
+                    };
                     cobar::differential(&mut self.model, profile, &words)
                 }
                 (CobarOp::Differential, Value::PCobar(terms)) => {
@@ -2965,6 +2973,7 @@ impl Checker<'_> {
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
+            TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.odd_ext_type(prime, s, t)
@@ -3195,7 +3204,7 @@ impl Checker<'_> {
                 let ty = self.ty(ty)?;
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
-                    Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
+                    Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -3256,6 +3265,27 @@ impl Checker<'_> {
                 let ((s, t), value) = cobar::literal(self.model, factors)?;
                 let ty = self.model.cobar_type(s, t)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MCobarWord(coefficient, factors) => {
+                let (grade, value) = motivic::literal(self.model, coefficient, factors)?;
+                let ty = self.model.mcobar_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TauShift(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::MCobar(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "tauShift", "an MCobar cochain"));
+                };
+                let ty = self.model.mcobar_type(grade.shift(power)?)?;
+                Ok((ty, TypedForm::MotivicCast(Box::new(input))))
+            }
+            ExprForm::Realize(input) => {
+                let input = self.expr(*input)?;
+                let Kind::MCobar(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "realize", "an MCobar cochain"));
+                };
+                let ty = self.model.cobar_type(grade.s, grade.t)?;
+                Ok((ty, TypedForm::MotivicCast(Box::new(input))))
             }
             ExprForm::PCobarWord(p, factors) => {
                 let prime = Prime::new(self.model, p)?;
@@ -5509,6 +5539,11 @@ impl Checker<'_> {
         name: &str,
         span: Span,
     ) -> Result<TypeId> {
+        if let Kind::MCobar(grade) = *self.model.kind(argument.ty) {
+            if matches!(op, CobarOp::Differential) {
+                return self.model.mcobar_type(grade.differential()?);
+            }
+        }
         if let Some((p, profile, s, t)) = self.model.kind(argument.ty).pcobar_grade() {
             match op {
                 CobarOp::Differential => {
@@ -5848,6 +5883,7 @@ impl Checker<'_> {
                         | Kind::Stable(..)
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
+                        | Kind::MCobar(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)
@@ -5925,6 +5961,15 @@ impl Checker<'_> {
                 Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
+                if let Kind::MCobar(a) = *self.model.kind(left.ty) {
+                    let Kind::MCobar(b) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "concat", "an MCobar cochain"));
+                    };
+                    return self.model.mcobar_type(a.product(b)?);
+                }
+                if matches!(self.model.kind(right.ty), Kind::MCobar(..)) {
+                    return Err(self.invalid_operand(left, "concat", "an MCobar cochain"));
+                }
                 if let Some((p, profile, s, t)) = self.model.kind(left.ty).pcobar_grade() {
                     let Some((q, other, u, v)) = self.model.kind(right.ty).pcobar_grade() else {
                         return Err(self.invalid_operand(right, "concat", "a PCobar cochain"));

@@ -5,6 +5,7 @@ use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
+use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
@@ -39,6 +40,7 @@ pub(crate) enum TypeForm {
     Cohomology(Box<ParsedType>, usize),
     Operations(usize),
     Cobar(usize, usize),
+    MCobar(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
     PExt(usize, usize, usize),
@@ -414,6 +416,9 @@ pub(crate) enum ExprForm {
     Milnor(Vec<usize>),
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
+    MCobarWord(usize, Vec<FactorLiteral>),
+    TauShift(usize, Box<ParsedExpr>),
+    Realize(Box<ParsedExpr>),
     PCobarWord(usize, Vec<FactorLiteral>),
     PExtGenerator(usize, usize, usize, usize, Span),
     PExtAnGenerator(usize, usize, usize, usize, usize, Span),
@@ -883,6 +888,15 @@ impl<'src> Parser<'src> {
             .map_err(|_| Error::new(span, "decimal integer is out of range"))?;
         self.advance()?;
         Ok((number, span))
+    }
+
+    fn motivic_grade(&mut self) -> Result<MotivicGrade> {
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (t, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let w = self.signed_number("motivic weight")?;
+        Ok(MotivicGrade { s, t, w })
     }
 
     fn signed_degree(&mut self) -> Result<i64> {
@@ -2047,6 +2061,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
+        if name.text == "MCobar" && self.eat(Token::LParen)? {
+            let grade = self.motivic_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MCobar(grade), 0);
+        }
         if matches!(name.text.as_str(), "PCobar" | "PExt") && self.eat(Token::LParen)? {
             let (p, s, t) = self.prime_bidegree()?;
             self.expect(Token::RParen)?;
@@ -3139,7 +3158,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::CobarWord(factors), 0);
                 }
-                if name.text == "pword" && self.eat(Token::LBracket)? {
+                if name.text == "tauShift" && self.eat(Token::LBracket)? {
+                    let (power, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::TauShift(power, Box::new(input)), depth);
+                }
+                if name.text == "realize" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::Realize(Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "pword" | "mcword") && self.eat(Token::LBracket)? {
                     let (p, _) = self.number()?;
                     self.expect(Token::RBracket)?;
                     self.expect(Token::LBrace)?;
@@ -3157,7 +3188,12 @@ impl<'src> Parser<'src> {
                         }
                     }
                     self.expect(Token::RBrace)?;
-                    return expr(span, ExprForm::PCobarWord(p, factors), 0);
+                    let form = if name.text == "mcword" {
+                        ExprForm::MCobarWord(p, factors)
+                    } else {
+                        ExprForm::PCobarWord(p, factors)
+                    };
+                    return expr(span, form, 0);
                 }
                 if name.text == "rvScale" && self.eat(Token::LBracket)? {
                     let (scalar, _) = self.number()?;

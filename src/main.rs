@@ -36,6 +36,7 @@ mod may;
 mod may_lift;
 mod milnor;
 mod model;
+mod motivic;
 mod nakamura;
 mod observations;
 mod odd_cobar;

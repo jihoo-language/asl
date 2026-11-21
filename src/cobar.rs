@@ -381,6 +381,27 @@ pub(crate) fn basis_profile(
     t: usize,
     limit: usize,
 ) -> Result<Vec<Word>> {
+    basis_selected(model, profile, s, t, limit, None)
+}
+
+pub(crate) fn basis_with_odd_bound(
+    model: &mut Model,
+    s: usize,
+    t: usize,
+    max_odd: usize,
+    limit: usize,
+) -> Result<Vec<Word>> {
+    basis_selected(model, Profile::Full, s, t, limit, Some(max_odd))
+}
+
+fn basis_selected(
+    model: &mut Model,
+    profile: Profile,
+    s: usize,
+    t: usize,
+    limit: usize,
+    max_odd: Option<usize>,
+) -> Result<Vec<Word>> {
     model.spend(1)?;
     if s == 0 {
         return if t == 0 {
@@ -401,7 +422,7 @@ pub(crate) fn basis_profile(
         if t > s.saturating_mul(bounds.max_degree) {
             return Ok(Vec::new());
         }
-    } else {
+    } else if max_odd.is_none() {
         // Each place for the excess gives a word. Putting it all in one factor
         // also gives at least floor((excess + 1) / 3) + 1 powers of xi_1 and xi_2.
         if (excess != 0 && s > limit) || (excess + 1) / 3 >= limit {
@@ -427,7 +448,7 @@ pub(crate) fn basis_profile(
                 let monomials = if let Some(bounds) = &bounds {
                     bounds.monomials(model, degree, limit, &mut catalogue_cells)?
                 } else {
-                    monomials(model, degree, limit, &mut catalogue_cells)?
+                    monomials(model, degree, limit, max_odd, &mut catalogue_cells)?
                 };
                 entry.insert(monomials);
             }
@@ -436,23 +457,40 @@ pub(crate) fn basis_profile(
             .iter()
             .map(|degree| catalogue[degree].as_slice())
             .collect();
-        let mut digits = vec![0; s];
-        loop {
-            if words.len() == limit {
-                return Err(basis_limit(limit));
-            }
-            let word: Word = factors
-                .iter()
-                .zip(&digits)
-                .map(|(choices, &digit)| choices[digit].clone())
-                .collect();
-            let size = word_cells(&word);
-            cells += size;
-            check_storage(cells + catalogue_cells)?;
-            model.spend(size + s)?;
-            words.push(word);
-            if !next_choices(&factors, &mut digits) {
-                break;
+        if !factors.iter().any(|choices| choices.is_empty()) {
+            let mut digits = vec![0; s];
+            loop {
+                let selection = factors
+                    .iter()
+                    .zip(&digits)
+                    .map(|(choices, &digit)| &choices[digit]);
+                let admitted = if let Some(max_odd) = max_odd {
+                    let mut odd = 0;
+                    for factor in selection.clone() {
+                        model.spend(1 + factor.len())?;
+                        odd += odd_exponents(factor);
+                        if odd > max_odd {
+                            break;
+                        }
+                    }
+                    odd <= max_odd
+                } else {
+                    true
+                };
+                if admitted {
+                    if words.len() == limit {
+                        return Err(basis_limit(limit));
+                    }
+                    let word: Word = selection.cloned().collect();
+                    let size = word_cells(&word);
+                    cells += size;
+                    check_storage(cells + catalogue_cells)?;
+                    model.spend(size + s)?;
+                    words.push(word);
+                }
+                if !next_choices(&factors, &mut digits) {
+                    break;
+                }
             }
         }
         let more = match &bounds {
@@ -463,7 +501,7 @@ pub(crate) fn basis_profile(
             break;
         }
     }
-    model.spend(cells * (1 + words.len().ilog2() as usize))?;
+    model.spend(cells * (1 + words.len().max(1).ilog2() as usize))?;
     model.allocate(cells)?;
     words.sort_unstable();
     Ok(words)
@@ -501,6 +539,7 @@ fn monomials(
     model: &mut Model,
     degree: usize,
     limit: usize,
+    max_odd: Option<usize>,
     cells: &mut usize,
 ) -> Result<Vec<Monomial>> {
     let width = degree.checked_add(1).map_or(usize::BITS, usize::ilog2) as usize;
@@ -508,17 +547,19 @@ fn monomials(
     exponents[0] = degree;
     let mut monomials = Vec::new();
     loop {
-        if monomials.len() == limit {
-            return Err(basis_limit(limit));
-        }
         model.spend(width)?;
-        let last = exponents
-            .iter()
-            .rposition(|&exponent| exponent != 0)
-            .unwrap();
-        *cells += last + 2;
-        check_storage(*cells)?;
-        monomials.push(Monomial::from(&exponents[..=last]));
+        if max_odd.is_none_or(|bound| odd_exponents(&exponents) <= bound) {
+            if max_odd.is_none() && monomials.len() == limit {
+                return Err(basis_limit(limit));
+            }
+            let last = exponents
+                .iter()
+                .rposition(|&exponent| exponent != 0)
+                .unwrap();
+            *cells += last + 2;
+            check_storage(*cells)?;
+            monomials.push(Monomial::from(&exponents[..=last]));
+        }
         // The exponent of xi_1 pays for each increment and is restored when
         // a digit carries. It is the unique remainder for the other digits.
         let mut index = 1;
@@ -537,4 +578,8 @@ fn monomials(
             return Ok(monomials);
         }
     }
+}
+
+pub(crate) fn odd_exponents(factor: &[usize]) -> usize {
+    factor.iter().filter(|&&power| power & 1 != 0).count()
 }

@@ -171,6 +171,14 @@ assert cobarD(d(xi2)) == zero[Cobar(3, 3)];
 
 Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates all cochains of that bidegree and is subject to the finite enumeration limit. Run `nix run path:. -- examples/cobar.asl` for coproduct, unit, and derivation checks. [Cobar example](examples/cobar.asl)
 
+## The complex-motivic cobar algebra
+
+`MCobar(s, t, w)` is the length, topological degree, and signed weight component of the normalized dual Steenrod cobar over $\mathbb C$. The coefficient ring is $\mathbb F_2[\tau]$, with $\tau$ of degree zero and weight minus one. In `mcword[k]{([xi-powers], [tau-powers]), ...}`, each pair gives the powers of the $\xi_i$ starting at one and the $\tau_i$ starting at zero. The entire word has coefficient $\tau^k$. A factor must have positive topological degree. Powers of $\tau_i$ normalize by $\tau_i^2=\tau\xi_{i+1}$, contributing to the same global coefficient.
+
+Use `cobarD`, `concat`, `add`, and `zero` on motivic cochains. The differential preserves topological degree and weight. `tauShift[k](x)` multiplies by $\tau^k$ and lowers weight by `k`. `realize(x)` sends the coefficient $\tau$ to one, $\xi_i$ to the square of the classical Milnor generator with index $i$, and $\tau_i$ to the one with index $i+1$. It commutes with products and the differential.
+
+A normalized monomial $\prod_{i\ge1}\xi_i^{b_i}\tau_{i-1}^{\epsilon_{i-1}}$ realizes to the classical exponents $2b_i+\epsilon_{i-1}$. If a word has $o$ odd exponents across its slots, its intrinsic weight is $W=(t-o)/2$, and its global coefficient exponent is $W-w$. This gives a finite basis at every tridegree. In a coproduct the number of odd exponents can drop when two $\tau_i$ factors meet. For example the reduced coproduct of $\tau_0\tau_1$ contains $\tau[\xi_1|\xi_1]$. [Complex-motivic cobar example](examples/motivic-cobar.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.
