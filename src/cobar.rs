@@ -170,19 +170,23 @@ pub(crate) fn differential_word(model: &mut Model, word: &Word) -> Result<Vec<Wo
 }
 
 pub(crate) fn differential(model: &mut Model, words: &[Word]) -> Result<Value> {
-    let support = match words {
-        [word] => differential_word(model, word)?,
-        _ => differential_support(model, words)?,
-    };
-    Ok(Value::Cobar(support.into()))
+    let support = differentiate(model, words)?;
+    model.allocate(support.cells)?;
+    Ok(Value::Cobar(support.into_vec().into()))
 }
 
+// Reduction columns have a local storage bound. A caller that retains the
+// resulting words in a value or a cache accounts for that storage separately.
 pub(crate) fn differential_support(model: &mut Model, words: &[Word]) -> Result<Vec<Word>> {
+    Ok(differentiate(model, words)?.into_vec())
+}
+
+fn differentiate(model: &mut Model, words: &[Word]) -> Result<Support<Word>> {
     let mut support = Support::new();
     for word in words {
         differentiate_into(model, word, &mut support)?;
     }
-    support.finish(model)
+    Ok(support)
 }
 
 fn differentiate_into(model: &mut Model, word: &Word, support: &mut Support<Word>) -> Result<()> {
@@ -289,9 +293,8 @@ impl<T: Ord> Support<T> {
         Ok(())
     }
 
-    fn finish(self, model: &mut Model) -> Result<Vec<T>> {
-        model.allocate(self.cells)?;
-        Ok(self.terms.into_iter().collect())
+    fn into_vec(self) -> Vec<T> {
+        self.terms.into_iter().collect()
     }
 }
 

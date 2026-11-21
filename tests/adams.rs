@@ -72,6 +72,11 @@ fn ext_ranks_cover_low_bidegrees_and_empty_cochain_groups() {
 }
 
 #[test]
+fn temporary_cobar_columns_fit_the_ext_reduction_budget() {
+    assert_eq!(stdout(interpret("extdim[5, 15];")), "extdim[5, 15] = 0\n");
+}
+
+#[test]
 fn ext_rejects_noncycles_nonboundaries_invalid_operands_and_overflow() {
     for (expression, expected) in [
         ("extClass(cword{[3]})", "closed cobar cochain"),
