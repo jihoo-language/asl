@@ -115,6 +115,14 @@ The double-cover example has a local section on each vertex star of the triangle
 
 The circle example compares constant coefficients, rank-two unipotent holonomy over $\mathbb F_3$, scalar holonomy $2$ over $\mathbb F_5$, and a sheaf supported on the three maximal points. [Finite-poset sheaf example](examples/sheaf-cohomology.asl)
 
+### Sheaf pullback and higher direct images
+
+`shpull G[f,F];` pulls a sheaf on $Y$ back along a named monotone function $f:X\to Y$. The stalk at $x$ is $F(f(x))$. A cover whose points have the same image acts by the identity. Other covers use the full restriction along the two images, including when they are separated by intermediate points.
+
+`shpush G[f,F,q];` declares the higher direct image $R^qf_*F$ of a sheaf on $X$. Its stalk at $y$ is the Roos cohomology $H^q(X_y;F)$ for $X_y=f^{-1}\{z\mid y\le z\}$. If $y\le z$, then $X_z\subseteq X_y$. The restriction takes a cocycle representative, drops all chains outside $X_z$, and projects to its class there. Empty opens give zero stalks, and equal opens use the same basis and restriction identity.
+
+For the map to a point, the stalk of $R^qf_*F$ is the global cohomology in degree $q$. The example sends two circles to different points in a chain. A restriction of $R^1f_*F$ forgets the circle lost when passing to the smaller open. [Sheaf direct-image example](examples/sheaf-direct-image.asl)
+
 ### Sheaf maps and hypercohomology
 
 `shmap f[F,G] {a:[...],b:[...]};` declares a natural transformation. The sheaves must use the same named poset and prime field. Give a row-major matrix $f_a:F(a)\to G(a)$ at every point. The checker verifies $G(a\to b)f_a=f_bF(a\to b)$ at each cover. Use `shApply[f](v)` for the induced map on Roos cochains or their cohomology.

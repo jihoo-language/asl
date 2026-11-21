@@ -104,6 +104,7 @@ mod rv_witt_cover;
 mod rv_witt_tower;
 mod sheaf;
 mod sheaf_hyper;
+mod sheaf_image;
 mod sheaf_page;
 mod steenrod;
 mod syntax;

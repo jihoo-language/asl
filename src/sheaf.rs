@@ -81,6 +81,7 @@ pub(crate) struct Sheaf {
     lower: Vec<Vec<usize>>,
     covers: Vec<Vec<usize>>,
     longest: Vec<usize>,
+    topological: Vec<usize>,
     pub(crate) height: usize,
     pub(crate) cohomology: Cohomology,
 }
@@ -122,6 +123,22 @@ impl Matrix {
                 .map(|(i, rows)| (i, rows.into()))
                 .collect(),
         ))
+    }
+
+    pub(crate) fn from_columns(columns: Vec<(usize, Box<[Coordinate]>)>) -> Result<Self> {
+        let matrix = Self(columns);
+        check_cells(matrix.cells())?;
+        Ok(matrix)
+    }
+
+    pub(crate) fn identity(model: &mut Model, rank: usize) -> Result<Self> {
+        check_cells(1usize.saturating_add(5usize.saturating_mul(rank)))?;
+        model.spend(rank)?;
+        Self::from_columns(
+            (0..rank)
+                .map(|index| (index, vec![(index, 1)].into()))
+                .collect(),
+        )
     }
 
     pub(crate) fn column(&self, index: usize) -> &[Coordinate] {
@@ -211,14 +228,11 @@ impl Sheaf {
             })
             .collect::<Result<_>>()?;
 
-        let order = PosetData::build(model, &poset)?;
-        let mut given = vec![None; size * size];
-        let empty = Rc::new(Matrix::default());
-        let mut map_cells = 1;
+        let mut table = CoverTable::new(model, poset.clone())?;
         for map in presentation.maps {
             let source = model.point(base, &map.source)?;
             let target = model.point(base, &map.target)?;
-            if order.covers[source].binary_search(&target).is_err() {
+            if table.order.covers[source].binary_search(&target).is_err() {
                 return Err(Error::new(
                     map.source.span,
                     format!(
@@ -227,8 +241,7 @@ impl Sheaf {
                     ),
                 ));
             }
-            let slot = &mut given[source * size + target];
-            if slot.is_some() {
+            if table.given[source * size + target].is_some() {
                 return Err(Error::new(
                     map.source.span,
                     format!(
@@ -250,17 +263,11 @@ impl Sheaf {
                 )));
             }
             let matrix = Matrix::literal(model, prime, dims[source], map.entries)?;
-            if matrix.0.is_empty() {
-                *slot = Some(empty.clone());
-            } else {
-                map_cells += matrix.cells();
-                check_cells(map_cells)?;
-                *slot = Some(Rc::new(matrix));
-            }
+            table.insert(source, target, Rc::new(matrix))?;
         }
-        for (source, targets) in order.covers.iter().enumerate() {
+        for (source, targets) in table.order.covers.iter().enumerate() {
             for &target in targets {
-                if given[source * size + target].is_none() {
+                if table.given[source * size + target].is_none() {
                     return Err(Error::plain(format!(
                         "missing restriction on cover '{}<{}'",
                         poset.names[source], poset.names[target]
@@ -269,7 +276,45 @@ impl Sheaf {
             }
         }
 
-        let maps = compose_paths(model, prime, &poset, &order, &given, &empty, &mut map_cells)?;
+        Self::assemble(model, base, prime, dims, table)
+    }
+
+    pub(crate) fn from_cover_maps(
+        model: &mut Model,
+        base: TypeId,
+        prime: Prime,
+        dims: Vec<usize>,
+        mut make: impl FnMut(&mut Model, usize, usize) -> Result<Rc<Matrix>>,
+    ) -> Result<Self> {
+        let poset = model.poset(base).expect("named base poset");
+        let mut table = CoverTable::new(model, poset)?;
+        debug_assert_eq!(dims.len(), table.poset.names.len());
+        for source in 0..table.order.covers.len() {
+            for edge in 0..table.order.covers[source].len() {
+                let target = table.order.covers[source][edge];
+                let matrix = make(model, source, target)?;
+                table.insert(source, target, matrix)?;
+            }
+        }
+        Self::assemble(model, base, prime, dims, table)
+    }
+
+    fn assemble(
+        model: &mut Model,
+        base: TypeId,
+        prime: Prime,
+        dims: Vec<usize>,
+        table: CoverTable,
+    ) -> Result<Self> {
+        let CoverTable {
+            poset,
+            order,
+            given,
+            empty,
+            mut cells,
+        } = table;
+        let maps = compose_paths(model, prime, &poset, &order, &given, &empty, &mut cells)?;
+        let size = poset.names.len();
         let height = dims
             .iter()
             .zip(&order.longest)
@@ -277,9 +322,9 @@ impl Sheaf {
             .max()
             .unwrap_or(0);
         model.allocate(
-            4 * size
+            5 * size
                 + maps.len()
-                + map_cells
+                + cells
                 + order
                     .lower
                     .iter()
@@ -296,6 +341,7 @@ impl Sheaf {
             lower: order.lower,
             covers: order.covers,
             longest: order.longest,
+            topological: order.order,
             height,
             cohomology: Cohomology::default(),
         })
@@ -366,6 +412,13 @@ impl Sheaf {
             .expect("comparable map")
     }
 
+    pub(crate) fn restriction_rc(&self, source: usize, target: usize) -> Rc<Matrix> {
+        self.maps[source * self.dims.len() + target]
+            .as_ref()
+            .expect("comparable map")
+            .clone()
+    }
+
     pub(crate) fn rank(&self, model: &mut Model, degree: usize) -> Result<usize> {
         if degree >= self.height {
             return Ok(0);
@@ -379,15 +432,15 @@ impl Sheaf {
         dimension: usize,
         reversed: &mut Vec<usize>,
         output: &mut Layer,
-        limit: usize,
+        bounds: Bounds<'_>,
     ) -> Result<()> {
         let point = *reversed.last().unwrap();
         if remaining == 0 {
             output.size = output
                 .size
                 .checked_add(dimension)
-                .filter(|&size| size <= limit)
-                .ok_or_else(|| layer_limit(limit))?;
+                .filter(|&size| size <= bounds.limit)
+                .ok_or_else(|| layer_limit(bounds.limit))?;
             output.cells += 4 + reversed.len();
             check_cells(output.cells)?;
             model.spend(1 + reversed.len())?;
@@ -400,9 +453,9 @@ impl Sheaf {
         }
         model.spend(1 + self.lower[point].len())?;
         for &lower in &self.lower[point] {
-            if self.longest[lower] >= remaining {
+            if bounds.longest[lower] >= remaining {
                 reversed.push(lower);
-                self.chains(model, remaining - 1, dimension, reversed, output, limit)?;
+                self.chains(model, remaining - 1, dimension, reversed, output, bounds)?;
                 reversed.pop();
             }
         }
@@ -479,15 +532,41 @@ impl Cochains for Sheaf {
     }
 
     fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer> {
-        if degree >= self.height {
+        self.layer_on(
+            model,
+            degree,
+            Bounds {
+                longest: &self.longest,
+                limit,
+            },
+            self.height,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Bounds<'a> {
+    longest: &'a [usize],
+    limit: usize,
+}
+
+impl Sheaf {
+    fn layer_on(
+        &self,
+        model: &mut Model,
+        degree: usize,
+        bounds: Bounds<'_>,
+        height: usize,
+    ) -> Result<Layer> {
+        if degree >= height {
             return Ok(Layer::default());
         }
         let mut output = Layer::default();
         let mut reversed = Vec::new();
         for (end, &dimension) in self.dims.iter().enumerate() {
-            if dimension != 0 && self.longest[end] > degree {
+            if dimension != 0 && bounds.longest[end] > degree {
                 reversed.push(end);
-                self.chains(model, degree, dimension, &mut reversed, &mut output, limit)?;
+                self.chains(model, degree, dimension, &mut reversed, &mut output, bounds)?;
                 reversed.pop();
             }
         }
@@ -501,6 +580,88 @@ impl Cochains for Sheaf {
             next += self.dims[*block.chain.last().unwrap()];
         }
         Ok(output)
+    }
+}
+
+pub(crate) struct Open<'a> {
+    sheaf: &'a Sheaf,
+    longest: Vec<usize>,
+    pub(crate) height: usize,
+}
+
+impl<'a> Open<'a> {
+    pub(crate) fn new(model: &mut Model, sheaf: &'a Sheaf, included: &[bool]) -> Result<Self> {
+        let mut longest: Vec<_> = included
+            .iter()
+            .map(|&included| usize::from(included))
+            .collect();
+        model.spend(longest.len())?;
+        for &point in &sheaf.topological {
+            if longest[point] != 0 {
+                model.spend(sheaf.covers[point].len())?;
+                for &next in &sheaf.covers[point] {
+                    // Inverse images of principal opens are upward closed.
+                    debug_assert!(included[next]);
+                    longest[next] = longest[next].max(longest[point] + 1);
+                }
+            }
+        }
+        let height = longest
+            .iter()
+            .zip(&sheaf.dims)
+            .filter_map(|(&length, &size)| (size != 0).then_some(length))
+            .max()
+            .unwrap_or(0);
+        Ok(Self {
+            sheaf,
+            longest,
+            height,
+        })
+    }
+
+    pub(crate) fn contains(&self, generator: &Generator) -> bool {
+        self.longest[generator.chain[0]] != 0
+    }
+}
+
+impl Cochains for Open<'_> {
+    fn prime(&self) -> Prime {
+        self.sheaf.prime
+    }
+
+    fn cofaces(
+        &self,
+        model: &mut Model,
+        generator: &Generator,
+        coefficient: u32,
+        emit: &mut Sink<'_>,
+    ) -> Result<()> {
+        if generator.chain.len() >= self.height {
+            return Ok(());
+        }
+        self.sheaf.cofaces(
+            model,
+            generator,
+            coefficient,
+            &mut |model, target, scalar| {
+                if self.contains(&target) {
+                    emit(model, target, scalar)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer> {
+        self.sheaf.layer_on(
+            model,
+            degree,
+            Bounds {
+                longest: &self.longest,
+                limit,
+            },
+            self.height,
+        )
     }
 }
 
@@ -582,6 +743,40 @@ pub(crate) trait Cochains {
             values.push(persist(model, support)?);
         }
         Ok(values)
+    }
+}
+
+struct CoverTable {
+    poset: Rc<Poset>,
+    order: PosetData,
+    given: Vec<Option<Rc<Matrix>>>,
+    empty: Rc<Matrix>,
+    cells: usize,
+}
+
+impl CoverTable {
+    fn new(model: &mut Model, poset: Rc<Poset>) -> Result<Self> {
+        let order = PosetData::build(model, &poset)?;
+        let size = poset.names.len();
+        Ok(Self {
+            poset,
+            order,
+            given: vec![None; size * size],
+            empty: Rc::new(Matrix::default()),
+            cells: 1,
+        })
+    }
+
+    fn insert(&mut self, source: usize, target: usize, matrix: Rc<Matrix>) -> Result<()> {
+        let slot = &mut self.given[source * self.poset.names.len() + target];
+        if matrix.is_zero() {
+            *slot = Some(self.empty.clone());
+        } else {
+            self.cells += matrix.cells();
+            check_cells(self.cells)?;
+            *slot = Some(matrix);
+        }
+        Ok(())
     }
 }
 
@@ -803,8 +998,19 @@ impl Cohomology {
         degree: usize,
         raw: &[Term],
     ) -> Result<Value> {
+        let coordinates = self.class_coordinates(model, complex, degree, raw)?;
+        odd_ext::persist(model, coordinates)
+    }
+
+    pub(crate) fn class_coordinates(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+        raw: &[Term],
+    ) -> Result<Vec<Coordinate>> {
         if raw.is_empty() {
-            return Ok(Value::OddClass([].into()));
+            return Ok(Vec::new());
         }
         let basis = self.degree(model, complex, degree)?;
         let raw = raw
@@ -817,7 +1023,7 @@ impl Cohomology {
             .classes
             .project(model, complex.prime(), raw)?
             .ok_or_else(|| Error::plain("shClass requires a closed sheaf cochain"))?;
-        odd_ext::persist(model, coordinates)
+        Ok(coordinates)
     }
 
     pub(crate) fn representative_support(

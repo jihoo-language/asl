@@ -22,6 +22,7 @@ use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
+use crate::sheaf_image::Operation as SheafImageOp;
 use crate::sheaf_page::{Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp};
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
@@ -714,6 +715,7 @@ pub(crate) enum StatementForm {
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
+    SheafImage(SheafImageOp, Label, Label, Label),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
@@ -1413,6 +1415,23 @@ impl<'src> Parser<'src> {
                 let prime = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
+            }
+            Token::Word("shpull" | "shpush") => {
+                let pull = self.token() == Token::Word("shpull");
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let function = self.label()?;
+                self.expect(Token::Comma)?;
+                let sheaf = self.label()?;
+                let operation = if pull {
+                    SheafImageOp::Pull
+                } else {
+                    self.expect(Token::Comma)?;
+                    SheafImageOp::Push(self.number()?.0)
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafImage(operation, name, function, sheaf)
             }
             Token::Word("shmap") => {
                 self.advance()?;

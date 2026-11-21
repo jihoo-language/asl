@@ -92,6 +92,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_hyper::{self, NamedSheaf};
+use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
@@ -495,6 +496,17 @@ impl Engine {
                 })?;
                 let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
                 self.model.define_sheaf(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafImage(operation, name, function, sheaf) => {
+                self.model.check_new_sheaf(&name)?;
+                let source = self.model.sheaf(&sheaf)?;
+                let site = self.sheaf_site(&function, operation.name())?;
+                let image = match operation {
+                    SheafImageOp::Pull => site.pull(&mut self.model, &source)?,
+                    SheafImageOp::Push(degree) => site.push(&mut self.model, &source, degree)?,
+                };
+                self.model.define_sheaf(name.text, image);
                 return Ok(None);
             }
             StatementForm::SheafMap(name, source, target, matrices) => {
@@ -1763,6 +1775,31 @@ impl Engine {
         };
         shape.normalize(&mut self.model, &mut value)?;
         bp::persist(&mut self.model, value)
+    }
+
+    fn sheaf_site(&mut self, name: &Label, operation: &str) -> Result<SheafSite> {
+        let binding = self
+            .bindings
+            .get(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown named map '{}'", name.text)))?;
+        let invalid = || {
+            Error::new(
+                name.span,
+                format!("{operation} requires a named monotone map between named finite spaces"),
+            )
+        };
+        let Kind::Arrow(source, target) = *self.model.kind(binding.ty) else {
+            return Err(invalid());
+        };
+        if !matches!(self.model.kind(source), Kind::Space(_))
+            || !matches!(self.model.kind(target), Kind::Space(_))
+        {
+            return Err(invalid());
+        }
+        let Value::Map(table) = &self.values[binding.index] else {
+            unreachable!()
+        };
+        SheafSite::new(&mut self.model, source, target, table)
     }
 
     fn sheaf_prime(&self, ty: TypeId) -> Prime {
