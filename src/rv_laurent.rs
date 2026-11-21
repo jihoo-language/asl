@@ -16,6 +16,8 @@ pub(crate) struct Term {
 }
 
 pub(crate) type Support = Rc<[Term]>;
+pub(crate) type Polynomial = Vec<(i64, usize)>;
+pub(crate) type PolynomialMatrix = Vec<Vec<Polynomial>>;
 
 pub(crate) fn grade(model: &Model, ty: TypeId, name: &str) -> Result<Grade> {
     match model.kind(ty) {
@@ -65,7 +67,16 @@ fn key(term: &Term) -> (usize, i64) {
     (term.coordinate, term.power)
 }
 
-pub(crate) fn add(model: &mut Model, mut lhs: &[Term], mut rhs: &[Term]) -> Result<Value> {
+pub(crate) fn add(model: &mut Model, lhs: &[Term], rhs: &[Term]) -> Result<Value> {
+    let sum = add_support(model, lhs, rhs)?;
+    persist(model, sum)
+}
+
+pub(crate) fn add_support(
+    model: &mut Model,
+    mut lhs: &[Term],
+    mut rhs: &[Term],
+) -> Result<Vec<Term>> {
     model.spend(lhs.len() + rhs.len())?;
     let mut result = Vec::new();
     while let (Some((a, rest_left)), Some((b, rest_right))) = (lhs.split_first(), rhs.split_first())
@@ -92,7 +103,7 @@ pub(crate) fn add(model: &mut Model, mut lhs: &[Term], mut rhs: &[Term]) -> Resu
     check_storage(3 * (result.len() + lhs.len() + rhs.len()))?;
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
-    persist(model, result)
+    Ok(result)
 }
 
 pub(crate) fn scale(
@@ -256,4 +267,46 @@ pub(crate) fn product(
             coefficient,
         })
         .collect())
+}
+
+pub(crate) fn add_polynomial_product(
+    model: &mut Model,
+    field: BinaryField,
+    sum: &mut BTreeMap<i64, usize>,
+    lhs: &Polynomial,
+    rhs: &Polynomial,
+) -> Result<()> {
+    for &(a, x) in lhs {
+        model.spend(1)?;
+        for &(b, y) in rhs {
+            let power = add_powers(a, b)?;
+            model.spend(field.degree())?;
+            accumulate(model, sum, power, field.multiply(x, y))?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn polynomial_matrix(
+    model: &mut Model,
+    size: usize,
+    terms: &[Term],
+) -> Result<(PolynomialMatrix, usize)> {
+    let cells = size
+        .checked_mul(size)
+        .and_then(|cells| cells.checked_add(2 * terms.len()))
+        .ok_or_else(|| Error::plain("Laurent polynomial matrix exceeds the storage limit"))?;
+    check_storage(cells)?;
+    model.spend(cells)?;
+    let mut matrix = vec![vec![Polynomial::new(); size]; size];
+    for &Term {
+        coordinate,
+        power,
+        coefficient,
+    } in terms
+    {
+        matrix[coordinate % size][coordinate / size].push((power, coefficient));
+    }
+
+    Ok((matrix, cells))
 }

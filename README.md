@@ -604,6 +604,16 @@ An invertible Laurent endomorphism over $L((u))$ gives a semilinear isocrystal o
 
 `rvNewton[modulus, root](A);` takes the lower convex hull of $(j,\nu_u(c_j))$ for the nonzero characteristic coefficients. It reports the negative edge slopes divided by $d$ in increasing order, each with its horizontal width as multiplicity. The example computes slopes $0,1$ for an ordinary diagonal matrix, $1/2,1/2$ for a quadratic Frobenius cycle, and $1/3,1/3,1/3$ for a three-cycle. It checks cancellation in the determinant of a matrix with all entries of valuation zero. Composing with $u^{-2}I$ shifts the three-cycle slopes to $-5/3$. [Newton polygon example](examples/rv-newton.asl)
 
+### Hodge exponents and framed affine Deligne–Lusztig loci
+
+An invertible `RVLaurent` endomorphism $X$ represents the lattice $X L[[u]]^n$ in $L((u))^n$. `rvHodge(A);` reports the Hodge exponents of $A$ in increasing order. The sum of its first $k$ exponents is the least $u$-valuation of a nonzero $k$-by-$k$ minor. The interpreter uses exact Laurent arithmetic and valuation-pivoted Bareiss reduction to obtain those determinantal valuations.
+
+Use `rvPosition(X, Y);` for the Hodge exponents of $X^{-1}Y$ when both frames have the same Margolis endpoint and exact affine point. The calculation applies the adjugate of $X$ by Cayley–Hamilton and subtracts $\nu_u(\det X)$ from each exponent. This allows all invertible frames over $L((u))$, including frames whose inverse has infinite power-series entries.
+
+For $\sigma$ acting on coefficients and fixing $u$, `rvMuAt[modulus, root](A, X);` reports the position of $X L[[u]]^n$ relative to its image under $A\sigma$. The affine point must lie in the specified subfield. `rvInADLV[modulus, root, [mu0,...]](A, X)` evaluates to `S.hi` when this position equals the supplied weakly increasing coweight. `rvInADLVClosure` takes the same arguments and tests whether the determinant totals agree and each ascending prefix sum of the actual position is at least the corresponding sum for the supplied coweight.
+
+For the two-cycle $A=\begin{pmatrix}0&u\\1&0\end{pmatrix}$, the Newton slopes are both $1/2$. The standard lattice has position $(0,1)$, and the lattice framed by $\operatorname{diag}(u^2,1)$ has position $(-1,2)$. The coweight $(0,1)$ accepts the standard lattice for exact membership. The closure with coweight $(-1,2)$ contains both. The example also changes the latter frame by a basis of determinant $1+u$ and computes a Hodge exponent arising from determinant cancellation. [Affine Deligne–Lusztig example](examples/rv-adlv.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

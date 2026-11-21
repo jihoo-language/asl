@@ -345,6 +345,13 @@ pub(crate) enum ExprForm {
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
     RVNewton(crate::rv_newton::Operation, usize, usize, Box<ParsedExpr>),
+    RVAdlv(
+        crate::rv_hodge::Boundary,
+        usize,
+        usize,
+        Vec<i64>,
+        Box<[ParsedExpr; 2]>,
+    ),
     JetOperation(JetOp, Box<ParsedExpr>),
     JetGenerator(JetPageSpec, usize, Span),
     JetTerm(JetTerm),
@@ -442,6 +449,9 @@ pub(crate) enum StatementForm {
     Show(ParsedExpr),
     RVInvariantFactors(usize, usize, ParsedExpr),
     RVNewton(usize, usize, ParsedExpr),
+    RVHodge(ParsedExpr),
+    RVPosition(Box<[ParsedExpr; 2]>),
+    RVMuAt(usize, usize, Box<[ParsedExpr; 2]>),
     Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
@@ -889,6 +899,20 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 self.expect(Token::Equal)?;
                 StatementForm::Let(name, self.expr(0)?)
+            }
+            Token::Word("rvHodge") => {
+                self.advance()?;
+                StatementForm::RVHodge(self.paren_expr(0)?)
+            }
+            Token::Word("rvPosition") => {
+                self.advance()?;
+                StatementForm::RVPosition(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word("rvMuAt") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, root) = self.embedding_parameters()?;
+                StatementForm::RVMuAt(modulus, root, Box::new(self.paren_pair(0)?))
             }
             Token::Word("rvNewton") => {
                 self.advance()?;
@@ -2748,6 +2772,36 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
+                if matches!(name.text.as_str(), "rvInADLV" | "rvInADLVClosure")
+                    && self.eat(Token::LBracket)?
+                {
+                    let boundary = if name.text == "rvInADLV" {
+                        crate::rv_hodge::Boundary::Exact
+                    } else {
+                        crate::rv_hodge::Boundary::Closure
+                    };
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (root, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    self.expect(Token::LBracket)?;
+                    let mut mu = Vec::new();
+                    while self.token() != Token::RBracket {
+                        mu.push(self.signed_number("ADLV coweight entry")?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::RBracket)?;
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(
+                        span,
+                        ExprForm::RVAdlv(boundary, modulus, root, mu, Box::new(arguments)),
+                        depth,
+                    );
+                }
                 if name.text == "rvU" && self.eat(Token::LBracket)? {
                     let power = self.signed_number("Laurent exponent")?;
                     self.expect(Token::RBracket)?;
@@ -3040,6 +3094,15 @@ impl<'src> Parser<'src> {
             RvDegree::Total(self.number()?.0)
         };
         Ok(RvGradeSpec { ideal, s, degree })
+    }
+
+    fn paren_pair(&mut self, nest: usize) -> Result<[ParsedExpr; 2]> {
+        self.expect(Token::LParen)?;
+        let first = self.expr(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let second = self.expr(nest + 1)?;
+        self.expect(Token::RParen)?;
+        Ok([first, second])
     }
 
     fn embedding_parameters(&mut self) -> Result<(usize, usize)> {

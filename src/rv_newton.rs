@@ -6,9 +6,7 @@ use crate::error::{Error, Result};
 use crate::model::{Model, TypeId, Value};
 use crate::rv_descent;
 use crate::rv_hom::Grade;
-use crate::rv_laurent::{self, Term};
-
-type Polynomial = Vec<(i64, usize)>;
+use crate::rv_laurent::{self, add_polynomial_product, Polynomial, Term};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -117,24 +115,6 @@ pub(crate) fn evaluate(
     }
 }
 
-fn add_product(
-    model: &mut Model,
-    field: BinaryField,
-    sum: &mut BTreeMap<i64, usize>,
-    lhs: &Polynomial,
-    rhs: &Polynomial,
-) -> Result<()> {
-    for &(a, x) in lhs {
-        model.spend(1)?;
-        for &(b, y) in rhs {
-            let power = rv_laurent::add_powers(a, b)?;
-            model.spend(field.degree())?;
-            rv_laurent::accumulate(model, sum, power, field.multiply(x, y))?;
-        }
-    }
-    Ok(())
-}
-
 fn push_polynomial(
     output: &mut Vec<Polynomial>,
     cells: &mut usize,
@@ -146,27 +126,13 @@ fn push_polynomial(
     Ok(())
 }
 
-fn characteristic(
+pub(crate) fn characteristic(
     model: &mut Model,
     field: BinaryField,
     size: usize,
     norm: &[Term],
 ) -> Result<Vec<Polynomial>> {
-    let cells = size
-        .checked_mul(size)
-        .and_then(|cells| cells.checked_add(2 * norm.len()))
-        .ok_or_else(|| Error::plain("Newton polynomial matrix exceeds the storage limit"))?;
-    check_storage(cells)?;
-    model.spend(cells)?;
-    let mut matrix = vec![vec![Polynomial::new(); size]; size];
-    for &Term {
-        coordinate,
-        power,
-        coefficient,
-    } in norm
-    {
-        matrix[coordinate % size][coordinate / size].push((power, coefficient));
-    }
+    let (matrix, _) = rv_laurent::polynomial_matrix(model, size, norm)?;
 
     // Division-free Berkowitz recurrence on trailing principal blocks.
     // For a block [a R; S M], the descending coefficient vector is the
@@ -187,7 +153,7 @@ fn characteristic(
                 let mut coefficient = BTreeMap::new();
                 model.spend(image.len())?;
                 for (a, b) in matrix[start][tail..].iter().zip(&image) {
-                    add_product(model, field, &mut coefficient, a, b)?;
+                    add_polynomial_product(model, field, &mut coefficient, a, b)?;
                 }
                 push_polynomial(&mut series, &mut cells, coefficient.into_iter().collect())?;
                 if power < degree {
@@ -197,7 +163,7 @@ fn characteristic(
                         let mut output = BTreeMap::new();
                         model.spend(image.len())?;
                         for (a, b) in row[tail..].iter().zip(&image) {
-                            add_product(model, field, &mut output, a, b)?;
+                            add_polynomial_product(model, field, &mut output, a, b)?;
                         }
                         push_polynomial(&mut next, &mut image_cells, output.into_iter().collect())?;
                     }
@@ -212,7 +178,7 @@ fn characteristic(
             let count = (i + 1).min(coefficients.len());
             model.spend(count)?;
             for (j, item) in coefficients.iter().enumerate().take(count) {
-                add_product(model, field, &mut coefficient, &series[i - j], item)?;
+                add_polynomial_product(model, field, &mut coefficient, &series[i - j], item)?;
             }
             push_polynomial(
                 &mut next,
