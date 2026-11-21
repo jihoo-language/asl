@@ -95,6 +95,7 @@ mod rv_witt_cartier;
 mod rv_witt_cover;
 mod rv_witt_tower;
 mod sheaf;
+mod sheaf_hyper;
 mod steenrod;
 mod syntax;
 mod transfer;
@@ -106,13 +107,19 @@ use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::panic;
 use std::process::ExitCode;
+use std::thread;
 
 use crate::engine::Engine;
 use crate::error::{Error, Result, Span};
 use crate::syntax::Parser;
 
 const MAX_SOURCE_BYTES: usize = 512 * 1024;
+// In debug builds the expression checker can use about 600 KiB per nested
+// level. Reserve enough stack for the 64-level syntax limit on platforms
+// whose default main-thread stack is smaller.
+const INTERPRETER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 const HELP: &str = "\
 ASL, the Alexandrov Section Lambda interpreter
@@ -122,7 +129,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, shdim, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, mextdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvIwKL, rvIwSchubertKL, rvHeckeCoeff, rvHeckeAt, rvSphCoeff, rvSphAt, rvSatakeCoeff, rvSatakeAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvWittBreaks, rvWittGenus, rvWittPoints, rvWittLPolynomial, rvWittNewton, rvWittCharacterL, rvWittGaps, rvWittBasis, rvWittCartierRank, rvWittaNumber, rvWittTowerBreaks, rvWittTowerGenus, rvWittTowerPoints, rvWittTowerCharacterL, rvWittTowerLPolynomial, rvWittTowerNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvpathextdim, rvHHdim, rvNCdim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, shdim, shhyperdim, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, mextdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvIwKL, rvIwSchubertKL, rvHeckeCoeff, rvHeckeAt, rvSphCoeff, rvSphAt, rvSatakeCoeff, rvSatakeAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvWittBreaks, rvWittGenus, rvWittPoints, rvWittLPolynomial, rvWittNewton, rvWittCharacterL, rvWittGaps, rvWittBasis, rvWittCartierRank, rvWittaNumber, rvWittTowerBreaks, rvWittTowerGenus, rvWittTowerPoints, rvWittTowerCharacterL, rvWittTowerLPolynomial, rvWittTowerNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvpathextdim, rvHHdim, rvNCdim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 
@@ -155,6 +162,20 @@ fn main() -> ExitCode {
 }
 
 fn run(path: &OsString) -> Result<()> {
+    thread::scope(|scope| {
+        let worker = thread::Builder::new()
+            .name("asl-interpreter".into())
+            .stack_size(INTERPRETER_STACK_BYTES)
+            .spawn_scoped(scope, || interpret(path))
+            .map_err(|error| Error::plain(format!("cannot start interpreter: {error}")))?;
+        match worker.join() {
+            Ok(result) => result,
+            Err(payload) => panic::resume_unwind(payload),
+        }
+    })
+}
+
+fn interpret(path: &OsString) -> Result<()> {
     let source = if path == "-" {
         read_source(io::stdin().lock())?
     } else {

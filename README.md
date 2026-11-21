@@ -115,6 +115,14 @@ The double-cover example has a local section on each vertex star of the triangle
 
 The circle example compares constant coefficients, rank-two unipotent holonomy over $\mathbb F_3$, scalar holonomy $2$ over $\mathbb F_5$, and a sheaf supported on the three maximal points. [Finite-poset sheaf example](examples/sheaf-cohomology.asl)
 
+### Sheaf maps and hypercohomology
+
+`shmap f[F,G] {a:[...],b:[...]};` declares a natural transformation. The sheaves must use the same named poset and prime field. Give a row-major matrix $f_a:F(a)\to G(a)$ at every point. The checker verifies $G(a\to b)f_a=f_bF(a\to b)$ at each cover. Use `shApply[f](v)` for the induced map on Roos cochains or their cohomology.
+
+A declaration `shcomplex K {F,d,G,e,H};` puts the listed sheaves in successive stalk degrees, starting in degree zero. Each map must have the indicated source and target, and every adjacent composite must vanish at every stalk. The total space `ShTot(K,n)` sums the Roos cochains of bidegree $(a,q)$ with $a+q=n$. Its differential is $D=\delta_{\mathrm{Roos}}+(-1)^a d_{\mathrm{stalk}}$. Use `shTotEmbed[K,q](v)` to include a cochain of the degree-$q$ sheaf and `shTotPart[q](z)` to project a total cochain to that component. Displayed total terms carry a `q` prefix for the stalk degree.
+
+`ShHyper(K,n)` is total hypercohomology. The same `shD`, `shClass`, `shRep`, and `shScale` operations apply to the total complex and its classes. `shhyperdim[K,n];` prints its rank and `shhypergen[K,n,i]` returns a canonical basis class. On the six-point model of the sphere, the example compares two complexes whose stalk cohomology sheaves are constant in degrees zero and one. The split example has hypercohomology ranks $1,1,1,1$ in total degrees zero through three. The nonsplit example has ranks $1,0,0,1$. [Sheaf hypercohomology example](examples/sheaf-hypercohomology.asl)
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

@@ -17,6 +17,13 @@ pub(crate) enum Form {
 }
 
 impl Form {
+    pub(crate) fn total_name(self) -> &'static str {
+        match self {
+            Self::Cochain => "ShTot",
+            Self::Class => "ShHyper",
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Cochain => "ShC",
@@ -57,6 +64,7 @@ pub(crate) struct Cover {
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Generator {
+    pub(crate) vertical: usize,
     pub(crate) chain: Rc<[usize]>,
     pub(crate) index: usize,
 }
@@ -71,16 +79,22 @@ pub(crate) struct Sheaf {
     dims: Vec<usize>,
     maps: Vec<Option<Rc<Matrix>>>,
     lower: Vec<Vec<usize>>,
+    covers: Vec<Vec<usize>>,
     longest: Vec<usize>,
     pub(crate) height: usize,
-    degrees: RefCell<BTreeMap<usize, Rc<Degree>>>,
+    pub(crate) cohomology: Cohomology,
 }
 
 #[derive(Default, PartialEq, Eq)]
-struct Matrix(Vec<(usize, Box<[Coordinate]>)>);
+pub(crate) struct Matrix(Vec<(usize, Box<[Coordinate]>)>);
 
 impl Matrix {
-    fn literal(model: &mut Model, prime: Prime, width: usize, values: Vec<i64>) -> Result<Self> {
+    pub(crate) fn literal(
+        model: &mut Model,
+        prime: Prime,
+        width: usize,
+        values: Vec<i64>,
+    ) -> Result<Self> {
         model.spend(values.len())?;
         let mut columns: BTreeMap<usize, Vec<Coordinate>> = BTreeMap::new();
         let mut cells = 1;
@@ -110,13 +124,13 @@ impl Matrix {
         ))
     }
 
-    fn column(&self, index: usize) -> &[Coordinate] {
+    pub(crate) fn column(&self, index: usize) -> &[Coordinate] {
         self.0
             .binary_search_by_key(&index, |&(column, _)| column)
             .map_or(&[], |column| &self.0[column].1)
     }
 
-    fn cells(&self) -> usize {
+    pub(crate) fn cells(&self) -> usize {
         1 + self
             .0
             .iter()
@@ -124,7 +138,16 @@ impl Matrix {
             .sum::<usize>()
     }
 
-    fn compose(model: &mut Model, prime: Prime, after: &Self, before: &Self) -> Result<Self> {
+    pub(crate) fn is_zero(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn compose(
+        model: &mut Model,
+        prime: Prime,
+        after: &Self,
+        before: &Self,
+    ) -> Result<Self> {
         if after.0.is_empty() || before.0.is_empty() {
             return Ok(Self::default());
         }
@@ -254,7 +277,15 @@ impl Sheaf {
             .max()
             .unwrap_or(0);
         model.allocate(
-            3 * size + maps.len() + map_cells + order.lower.iter().map(Vec::len).sum::<usize>(),
+            4 * size
+                + maps.len()
+                + map_cells
+                + order
+                    .lower
+                    .iter()
+                    .chain(&order.covers)
+                    .map(Vec::len)
+                    .sum::<usize>(),
         )?;
         Ok(Self {
             prime,
@@ -263,9 +294,10 @@ impl Sheaf {
             dims,
             maps,
             lower: order.lower,
+            covers: order.covers,
             longest: order.longest,
             height,
-            degrees: RefCell::new(BTreeMap::new()),
+            cohomology: Cohomology::default(),
         })
     }
 
@@ -307,6 +339,7 @@ impl Sheaf {
             model,
             vec![(
                 Generator {
+                    vertical: 0,
                     chain: points.into(),
                     index,
                 },
@@ -315,14 +348,71 @@ impl Sheaf {
         )
     }
 
-    pub(crate) fn differential(&self, model: &mut Model, terms: &[Term]) -> Result<Value> {
-        let mut result = Cochain::default();
-        for (point, coefficient) in terms {
-            self.cofaces(model, point, *coefficient, |model, generator, scalar| {
-                result.add(model, self.prime, generator, scalar)
-            })?;
+    pub(crate) fn base(&self) -> TypeId {
+        self.base
+    }
+
+    pub(crate) fn dims(&self) -> &[usize] {
+        &self.dims
+    }
+
+    pub(crate) fn covers(&self) -> &[Vec<usize>] {
+        &self.covers
+    }
+
+    pub(crate) fn restriction(&self, source: usize, target: usize) -> &Matrix {
+        self.maps[source * self.dims.len() + target]
+            .as_deref()
+            .expect("comparable map")
+    }
+
+    pub(crate) fn rank(&self, model: &mut Model, degree: usize) -> Result<usize> {
+        if degree >= self.height {
+            return Ok(0);
         }
-        persist(model, result.terms.into_iter().collect())
+        self.cohomology.rank(model, self, degree)
+    }
+    fn chains(
+        &self,
+        model: &mut Model,
+        remaining: usize,
+        dimension: usize,
+        reversed: &mut Vec<usize>,
+        output: &mut Layer,
+        limit: usize,
+    ) -> Result<()> {
+        let point = *reversed.last().unwrap();
+        if remaining == 0 {
+            output.size = output
+                .size
+                .checked_add(dimension)
+                .filter(|&size| size <= limit)
+                .ok_or_else(|| layer_limit(limit))?;
+            output.cells += 4 + reversed.len();
+            check_cells(output.cells)?;
+            model.spend(1 + reversed.len())?;
+            output.blocks.push(Block {
+                vertical: 0,
+                chain: reversed.iter().rev().copied().collect(),
+                start: 0,
+            });
+            return Ok(());
+        }
+        model.spend(1 + self.lower[point].len())?;
+        for &lower in &self.lower[point] {
+            if self.longest[lower] >= remaining {
+                reversed.push(lower);
+                self.chains(model, remaining - 1, dimension, reversed, output, limit)?;
+                reversed.pop();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Cochains for Sheaf {
+    fn prime(&self) -> Prime {
+        self.prime
     }
 
     fn cofaces(
@@ -330,7 +420,7 @@ impl Sheaf {
         model: &mut Model,
         generator: &Generator,
         coefficient: u32,
-        mut emit: impl FnMut(&mut Model, Generator, u32) -> Result<()>,
+        emit: &mut Sink<'_>,
     ) -> Result<()> {
         let chain = &generator.chain;
         if chain.len() >= self.height {
@@ -355,6 +445,7 @@ impl Sheaf {
                     emit(
                         model,
                         Generator {
+                            vertical: generator.vertical,
                             chain,
                             index: generator.index,
                         },
@@ -374,6 +465,7 @@ impl Sheaf {
                         emit(
                             model,
                             Generator {
+                                vertical: generator.vertical,
                                 chain: chain.clone(),
                                 index,
                             },
@@ -384,114 +476,6 @@ impl Sheaf {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn rank(&self, model: &mut Model, degree: usize) -> Result<usize> {
-        if degree >= self.height {
-            return Ok(0);
-        }
-        Ok(self.degree(model, degree)?.classes.rank())
-    }
-
-    pub(crate) fn generator(
-        &self,
-        model: &mut Model,
-        degree: usize,
-        index: usize,
-    ) -> Result<Value> {
-        let rank = self.rank(model, degree)?;
-        if index >= rank {
-            return Err(Error::plain(format!(
-                "sheaf cohomology generator {index} is out of range for rank {rank}"
-            )));
-        }
-        odd_ext::persist(model, vec![(index, 1)])
-    }
-
-    pub(crate) fn class(&self, model: &mut Model, degree: usize, raw: &[Term]) -> Result<Value> {
-        if raw.is_empty() {
-            return Ok(Value::OddClass([].into()));
-        }
-        let basis = self.degree(model, degree)?;
-        let raw = raw
-            .iter()
-            .map(|(generator, coefficient)| {
-                Ok((basis.layer.index(model, generator)?, *coefficient))
-            })
-            .collect::<Result<_>>()?;
-        let coordinates = basis
-            .classes
-            .project(model, self.prime, raw)?
-            .ok_or_else(|| Error::plain("shClass requires a closed sheaf cochain"))?;
-        odd_ext::persist(model, coordinates)
-    }
-
-    pub(crate) fn representative(
-        &self,
-        model: &mut Model,
-        degree: usize,
-        class: &[Coordinate],
-    ) -> Result<Value> {
-        if class.is_empty() {
-            return Ok(Value::SheafC([].into()));
-        }
-        let basis = self.degree(model, degree)?;
-        let raw = basis.classes.representative(model, self.prime, class)?;
-        persist(
-            model,
-            raw.into_iter()
-                .map(|(index, coefficient)| (basis.layer.generator(index), coefficient))
-                .collect(),
-        )
-    }
-
-    fn degree(&self, model: &mut Model, degree: usize) -> Result<Rc<Degree>> {
-        if let Some(layer) = self.degrees.borrow().get(&degree) {
-            return Ok(layer.clone());
-        }
-        let layer = self.layer(model, degree, MAX_PIVOT_CELLS)?;
-        let classes = if layer.size == 0 {
-            QuotientBasis::default()
-        } else {
-            let mut boundaries = Basis::default();
-            if degree > 0 {
-                let previous = self.layer(model, degree - 1, MAX_PIVOT_CELLS)?;
-                check_cells(layer.cells + previous.cells)?;
-                for index in 0..previous.size {
-                    let column = self.indexed_column(model, &previous.generator(index), &layer)?;
-                    boundaries.insert(model, self.prime, column)?;
-                }
-            }
-            let next = self.layer(model, degree + 1, MAX_PIVOT_CELLS)?;
-            check_cells(layer.cells + next.cells)?;
-            QuotientBasis::build(model, self.prime, boundaries, layer.size, |model, index| {
-                self.indexed_column(model, &layer.generator(index), &next)
-            })?
-        };
-        model.allocate(3 + layer.cells)?;
-        let result = Rc::new(Degree { layer, classes });
-        self.degrees.borrow_mut().insert(degree, result.clone());
-        Ok(result)
-    }
-
-    fn indexed_column(
-        &self,
-        model: &mut Model,
-        source: &Generator,
-        target: &Layer,
-    ) -> Result<Vec<Coordinate>> {
-        if target.size == 0 {
-            return Ok(Vec::new());
-        }
-        let mut column = Vec::new();
-        self.cofaces(model, source, 1, |model, generator, coefficient| {
-            check_cells(2 * (column.len() + 1))?;
-            column.push((target.index(model, &generator)?, coefficient));
-            Ok(())
-        })?;
-        model.spend(sort_work(column.len()))?;
-        column.sort_unstable_by_key(|&(index, _)| index);
-        Ok(column)
     }
 
     fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer> {
@@ -518,56 +502,63 @@ impl Sheaf {
         }
         Ok(output)
     }
+}
 
-    fn chains(
+pub(crate) type Sink<'a> = dyn FnMut(&mut Model, Generator, u32) -> Result<()> + 'a;
+
+pub(crate) trait Cochains {
+    fn prime(&self) -> Prime;
+
+    fn cofaces(
         &self,
         model: &mut Model,
-        remaining: usize,
-        dimension: usize,
-        reversed: &mut Vec<usize>,
-        output: &mut Layer,
-        limit: usize,
-    ) -> Result<()> {
-        let point = *reversed.last().unwrap();
-        if remaining == 0 {
-            output.size = output
-                .size
-                .checked_add(dimension)
-                .filter(|&size| size <= limit)
-                .ok_or_else(|| {
-                    if limit == MAX_PIVOT_CELLS {
-                        Error::plain("sheaf cochain rank exceeds its storage limit")
-                    } else {
-                        Error::plain("sheaf cochains exceed the finite type enumeration limit")
-                    }
-                })?;
-            output.cells += 3 + reversed.len();
-            check_cells(output.cells)?;
-            model.spend(1 + reversed.len())?;
-            output.blocks.push(Block {
-                chain: reversed.iter().rev().copied().collect(),
-                start: 0,
-            });
-            return Ok(());
+        generator: &Generator,
+        coefficient: u32,
+        emit: &mut Sink<'_>,
+    ) -> Result<()>;
+
+    fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer>;
+
+    fn differential_support(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
+        let mut result = Cochain::default();
+        for (generator, coefficient) in terms {
+            self.cofaces(
+                model,
+                generator,
+                *coefficient,
+                &mut |model, target, scalar| result.add(model, self.prime(), target, scalar),
+            )?;
         }
-        model.spend(1 + self.lower[point].len())?;
-        for &lower in &self.lower[point] {
-            if self.longest[lower] >= remaining {
-                reversed.push(lower);
-                self.chains(model, remaining - 1, dimension, reversed, output, limit)?;
-                reversed.pop();
-            }
-        }
-        Ok(())
+        Ok(result.into_terms())
     }
 
-    pub(crate) fn elements(
+    fn differential(&self, model: &mut Model, terms: &[Term]) -> Result<Value> {
+        let terms = self.differential_support(model, terms)?;
+        persist(model, terms)
+    }
+
+    fn indexed_column(
         &self,
         model: &mut Model,
-        degree: usize,
-        limit: usize,
-    ) -> Result<Vec<Value>> {
-        let order = self.prime.get() as usize;
+        source: &Generator,
+        target: &Layer,
+    ) -> Result<Vec<Coordinate>> {
+        if target.size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut column = Vec::new();
+        self.cofaces(model, source, 1, &mut |model, generator, coefficient| {
+            check_cells(2 * (column.len() + 1))?;
+            column.push((target.index(model, &generator)?, coefficient));
+            Ok(())
+        })?;
+        model.spend(sort_work(column.len()))?;
+        column.sort_unstable_by_key(|&(index, _)| index);
+        Ok(column)
+    }
+
+    fn elements(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Vec<Value>> {
+        let order = self.prime().get() as usize;
         let mut max_rank = 0;
         let mut cardinality = 1;
         while cardinality <= limit / order {
@@ -700,13 +691,14 @@ fn compose_paths(
 }
 
 #[derive(Default)]
-struct Layer {
+pub(crate) struct Layer {
     blocks: Vec<Block>,
-    size: usize,
+    pub(crate) size: usize,
     cells: usize,
 }
 
 struct Block {
+    vertical: usize,
     chain: Rc<[usize]>,
     start: usize,
 }
@@ -717,32 +709,186 @@ struct Degree {
 }
 
 impl Layer {
-    fn generator(&self, index: usize) -> Generator {
+    pub(crate) fn append_layer(
+        &mut self,
+        model: &mut Model,
+        mut layer: Layer,
+        q: usize,
+        limit: usize,
+    ) -> Result<()> {
+        let size = self
+            .size
+            .checked_add(layer.size)
+            .filter(|&size| size <= limit)
+            .ok_or_else(|| layer_limit(limit))?;
+        check_cells(self.cells + layer.cells)?;
+        model.spend(layer.blocks.len())?;
+        for block in &mut layer.blocks {
+            block.vertical = q;
+            block.start += self.size;
+        }
+        self.size = size;
+        self.cells += layer.cells;
+        self.blocks.extend(layer.blocks);
+        Ok(())
+    }
+
+    pub(crate) fn generator(&self, index: usize) -> Generator {
         let block = &self.blocks[self.blocks.partition_point(|block| block.start <= index) - 1];
         Generator {
+            vertical: block.vertical,
             chain: block.chain.clone(),
             index: index - block.start,
         }
     }
 
-    fn index(&self, model: &mut Model, generator: &Generator) -> Result<usize> {
+    pub(crate) fn index(&self, model: &mut Model, generator: &Generator) -> Result<usize> {
         model.spend(1 + generator.chain.len() * (1 + self.blocks.len().max(1).ilog2() as usize))?;
         let block = self
             .blocks
-            .binary_search_by(|block| block.chain.cmp(&generator.chain))
+            .binary_search_by(|block| {
+                (block.vertical, &block.chain).cmp(&(generator.vertical, &generator.chain))
+            })
             .map_err(|_| Error::plain("sheaf cochain chain is outside its degree"))?;
         Ok(self.blocks[block].start + generator.index)
     }
 }
 
 #[derive(Default)]
-struct Cochain {
+pub(crate) struct Cohomology {
+    degrees: RefCell<BTreeMap<usize, Rc<Degree>>>,
+}
+
+impl Cohomology {
+    pub(crate) fn rank(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+    ) -> Result<usize> {
+        Ok(self.degree(model, complex, degree)?.classes.rank())
+    }
+
+    pub(crate) fn generator(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+        index: usize,
+    ) -> Result<Value> {
+        let rank = self.rank(model, complex, degree)?;
+        if index >= rank {
+            return Err(Error::plain(format!(
+                "sheaf cohomology generator {index} is out of range for rank {rank}"
+            )));
+        }
+        odd_ext::persist(model, vec![(index, 1)])
+    }
+
+    pub(crate) fn class(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+        raw: &[Term],
+    ) -> Result<Value> {
+        if raw.is_empty() {
+            return Ok(Value::OddClass([].into()));
+        }
+        let basis = self.degree(model, complex, degree)?;
+        let raw = raw
+            .iter()
+            .map(|(generator, coefficient)| {
+                Ok((basis.layer.index(model, generator)?, *coefficient))
+            })
+            .collect::<Result<_>>()?;
+        let coordinates = basis
+            .classes
+            .project(model, complex.prime(), raw)?
+            .ok_or_else(|| Error::plain("shClass requires a closed sheaf cochain"))?;
+        odd_ext::persist(model, coordinates)
+    }
+
+    pub(crate) fn representative_support(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+        class: &[Coordinate],
+    ) -> Result<Vec<Term>> {
+        if class.is_empty() {
+            return Ok(Vec::new());
+        }
+        let basis = self.degree(model, complex, degree)?;
+        let raw = basis
+            .classes
+            .representative(model, complex.prime(), class)?;
+        Ok(raw
+            .into_iter()
+            .map(|(index, coefficient)| (basis.layer.generator(index), coefficient))
+            .collect())
+    }
+
+    pub(crate) fn representative(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+        class: &[Coordinate],
+    ) -> Result<Value> {
+        let raw = self.representative_support(model, complex, degree, class)?;
+        persist(model, raw)
+    }
+
+    fn degree(
+        &self,
+        model: &mut Model,
+        complex: &(impl Cochains + ?Sized),
+        degree: usize,
+    ) -> Result<Rc<Degree>> {
+        if let Some(layer) = self.degrees.borrow().get(&degree) {
+            return Ok(layer.clone());
+        }
+        let layer = complex.layer(model, degree, MAX_PIVOT_CELLS)?;
+        let prime = complex.prime();
+        let classes = if layer.size == 0 {
+            QuotientBasis::default()
+        } else {
+            let mut boundaries = Basis::default();
+            if degree > 0 {
+                let previous = complex.layer(model, degree - 1, MAX_PIVOT_CELLS)?;
+                check_cells(layer.cells + previous.cells)?;
+                for index in 0..previous.size {
+                    let column =
+                        complex.indexed_column(model, &previous.generator(index), &layer)?;
+                    boundaries.insert(model, prime, column)?;
+                }
+            }
+            let next = complex.layer(model, degree + 1, MAX_PIVOT_CELLS)?;
+            check_cells(layer.cells + next.cells)?;
+            QuotientBasis::build(model, prime, boundaries, layer.size, |model, index| {
+                complex.indexed_column(model, &layer.generator(index), &next)
+            })?
+        };
+        model.allocate(3 + layer.cells)?;
+        let result = Rc::new(Degree { layer, classes });
+        self.degrees.borrow_mut().insert(degree, result.clone());
+        Ok(result)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Cochain {
     terms: BTreeMap<Generator, u32>,
     cells: usize,
 }
 
 impl Cochain {
-    fn add(
+    pub(crate) fn into_terms(self) -> Vec<Term> {
+        self.terms.into_iter().collect()
+    }
+
+    pub(crate) fn add(
         &mut self,
         model: &mut Model,
         prime: Prime,
@@ -752,7 +898,7 @@ impl Cochain {
         if coefficient == 0 {
             return Ok(());
         }
-        let term_cells = 4 + generator.chain.len();
+        let term_cells = 5 + generator.chain.len();
         model.spend(term_cells * (1 + self.terms.len().max(1).ilog2() as usize))?;
         match self.terms.entry(generator) {
             Entry::Vacant(slot) => {
@@ -779,7 +925,7 @@ pub(crate) fn add(model: &mut Model, prime: Prime, left: &[Term], right: &[Term]
     for (generator, coefficient) in left.iter().chain(right) {
         result.add(model, prime, generator.clone(), *coefficient)?;
     }
-    persist(model, result.terms.into_iter().collect())
+    persist(model, result.into_terms())
 }
 
 pub(crate) fn scale(model: &mut Model, prime: Prime, scalar: u32, terms: &[Term]) -> Result<Value> {
@@ -825,17 +971,25 @@ fn inserted(model: &mut Model, chain: &[usize], slot: usize, point: usize) -> Re
     Ok(output.into())
 }
 
-fn persist(model: &mut Model, terms: Vec<Term>) -> Result<Value> {
+pub(crate) fn persist(model: &mut Model, terms: Vec<Term>) -> Result<Value> {
     let cells = terms
         .iter()
-        .map(|(generator, _)| 4 + generator.chain.len())
+        .map(|(generator, _)| 5 + generator.chain.len())
         .sum();
     check_cells(cells)?;
     model.allocate(cells)?;
     Ok(Value::SheafC(terms.into()))
 }
 
-fn check_cells(cells: usize) -> Result<()> {
+fn layer_limit(limit: usize) -> Error {
+    if limit == MAX_PIVOT_CELLS {
+        Error::plain("sheaf cochain rank exceeds its storage limit")
+    } else {
+        Error::plain("sheaf cochains exceed the finite type enumeration limit")
+    }
+}
+
+pub(crate) fn check_cells(cells: usize) -> Result<()> {
     if cells > MAX_PIVOT_CELLS {
         return Err(Error::plain("sheaf calculation exceeds the storage limit"));
     }

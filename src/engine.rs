@@ -84,7 +84,8 @@ use crate::rv_t_transfer;
 use crate::rv_tree;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
-use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp, Sheaf};
+use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
+use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::RvHHSpec;
@@ -252,6 +253,20 @@ enum ClassBracketFamily {
     Koszul,
 }
 
+enum SheafComputation {
+    Ordinary(Rc<Sheaf>),
+    Total(Rc<sheaf_hyper::Complex>),
+}
+
+impl SheafComputation {
+    fn data(&self) -> (&dyn Cochains, &sheaf::Cohomology) {
+        match self {
+            Self::Ordinary(data) => (data.as_ref(), &data.cohomology),
+            Self::Total(data) => (data.as_ref(), &data.cohomology),
+        }
+    }
+}
+
 enum TypedForm {
     Global(usize),
     Local(usize),
@@ -327,7 +342,10 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
-    SheafOperation(SheafOp, Rc<Sheaf>, usize, Box<TypedExpr>),
+    SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
+    SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
+    SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
+    SheafPart(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
     JetOperation(JetOp, Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
@@ -400,6 +418,42 @@ impl Engine {
                 let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
                 self.model.define_sheaf(name.text, data);
                 return Ok(None);
+            }
+            StatementForm::SheafMap(name, source, target, matrices) => {
+                self.model.check_new_sheaf_map(&name)?;
+                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let target = NamedSheaf::resolve(&self.model, &target)?;
+                let map = sheaf_hyper::Map::build(&mut self.model, source, target, matrices)?;
+                self.model.define_sheaf_map(name.text, map);
+                return Ok(None);
+            }
+            StatementForm::SheafComplex(name, entries) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                if entries.len() % 2 == 0 {
+                    return Err(Error::new(
+                        name.span,
+                        "shcomplex requires a sheaf followed by alternating maps and sheaves",
+                    ));
+                }
+                let components = entries
+                    .iter()
+                    .step_by(2)
+                    .map(|label| NamedSheaf::resolve(&self.model, label))
+                    .collect::<Result<_>>()?;
+                let maps = entries
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .map(|label| Ok((label.clone(), self.model.sheaf_map(label)?)))
+                    .collect::<Result<_>>()?;
+                let complex = sheaf_hyper::Complex::build(&mut self.model, components, maps)?;
+                self.model.define_sheaf_complex(name.text, complex);
+                return Ok(None);
+            }
+            StatementForm::SheafHyperDimension(name, degree) => {
+                let data = self.model.sheaf_complex(&name)?;
+                let rank = data.rank(&mut self.model, degree)?;
+                format!("shhyperdim[{}, {degree}] = {rank}", name.text)
             }
             StatementForm::SheafDimension(name, degree) => {
                 let data = self.model.sheaf(&name)?;
@@ -1550,6 +1604,23 @@ impl Engine {
         bp::persist(&mut self.model, value)
     }
 
+    fn sheaf_prime(&self, ty: TypeId) -> Prime {
+        match self.model.kind(ty) {
+            Kind::Sheaf(_, name, _) => {
+                self.model
+                    .sheaf_named(name)
+                    .expect("registered sheaf")
+                    .prime
+            }
+            Kind::SheafComplex(_, name, _) => self
+                .model
+                .sheaf_complex_named(name)
+                .expect("registered sheaf complex")
+                .prime(),
+            _ => unreachable!(),
+        }
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -1716,11 +1787,8 @@ impl Engine {
                         cobar::add(&mut self.model, &a, &b)
                     }
                     (BinaryOp::Add, Value::SheafC(a), Value::SheafC(b)) => {
-                        let Kind::Sheaf(_, name, _) = self.model.kind(expr.ty) else {
-                            unreachable!()
-                        };
-                        let data = self.model.sheaf_named(name).expect("registered sheaf");
-                        sheaf::add(&mut self.model, data.prime, &a, &b)
+                        let prime = self.sheaf_prime(expr.ty);
+                        sheaf::add(&mut self.model, prime, &a, &b)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
                         let p = match *self.model.kind(expr.ty) {
@@ -1729,12 +1797,7 @@ impl Engine {
                             | Kind::PMay(p, ..)
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
-                            Kind::Sheaf(_, ref name, _) => {
-                                self.model
-                                    .sheaf_named(name)
-                                    .expect("registered sheaf")
-                                    .prime
-                            }
+                            Kind::Sheaf(..) | Kind::SheafComplex(..) => self.sheaf_prime(expr.ty),
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                             Kind::BPVPage(grade) => grade.prime(),
                             Kind::BPModExt(grade) => grade.prime(),
@@ -3069,26 +3132,45 @@ impl Engine {
             },
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
+                let (cochains, cohomology) = data.data();
                 match (*operation, value) {
                     (SheafOp::Differential, Value::SheafC(raw)) => {
-                        data.differential(&mut self.model, &raw)
+                        cochains.differential(&mut self.model, &raw)
                     }
                     (SheafOp::Class, Value::SheafC(raw)) => {
-                        data.class(&mut self.model, *degree, &raw)
+                        cohomology.class(&mut self.model, cochains, *degree, &raw)
                     }
                     (SheafOp::Representative, Value::OddClass(class)) => {
-                        data.representative(&mut self.model, *degree, &class)
+                        cohomology.representative(&mut self.model, cochains, *degree, &class)
                     }
                     (SheafOp::Scale(scalar), Value::SheafC(raw)) => {
-                        let scalar = sheaf::residue(data.prime, scalar);
-                        sheaf::scale(&mut self.model, data.prime, scalar, &raw)
+                        let prime = cochains.prime();
+                        sheaf::scale(&mut self.model, prime, sheaf::residue(prime, scalar), &raw)
                     }
                     (SheafOp::Scale(scalar), Value::OddClass(class)) => {
-                        let scalar = sheaf::residue(data.prime, scalar);
-                        odd_ext::scale(&mut self.model, data.prime, scalar as usize, &class)
+                        let prime = cochains.prime();
+                        let scalar = sheaf::residue(prime, scalar) as usize;
+                        odd_ext::scale(&mut self.model, prime, scalar, &class)
                     }
                     _ => unreachable!(),
                 }
+            }
+            TypedForm::SheafApply(map, degree, input) => match self.eval(input)? {
+                Value::SheafC(raw) => map.apply_cochain(&mut self.model, &raw),
+                Value::OddClass(class) => map.apply_class(&mut self.model, *degree, &class),
+                _ => unreachable!(),
+            },
+            TypedForm::SheafEmbed(data, degree, input) => {
+                let Value::SheafC(raw) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.embed(&mut self.model, *degree, &raw)
+            }
+            TypedForm::SheafPart(data, degree, input) => {
+                let Value::SheafC(total) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.part(&mut self.model, *degree, &total)
             }
             TypedForm::PScale(prime, scalar, value) => match self.eval(value)? {
                 Value::PCobar(terms) => odd_cobar::scale(&mut self.model, *prime, *scalar, &terms),
@@ -3442,6 +3524,9 @@ impl Checker<'_> {
             TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
             TypeForm::RMCobar(grade) => self.model.real_cobar_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
+            TypeForm::SheafComplex(form, name, degree) => {
+                self.model.sheaf_complex_type(form, &name, degree)
+            }
             TypeForm::Sheaf(form, name, degree) => self.model.sheaf_type(form, &name, degree),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
@@ -3699,8 +3784,10 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::RMCobar(..) => real_motivic::zero(),
-                    Kind::Sheaf(SheafForm::Cochain, ..) => Value::SheafC([].into()),
-                    Kind::Sheaf(SheafForm::Class, ..) => odd_ext::zero(),
+                    Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) =>
+                        Value::SheafC([].into()),
+                    Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) =>
+                        odd_ext::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -3844,19 +3931,106 @@ impl Checker<'_> {
             }
             ExprForm::SheafGenerator(name, degree, index) => {
                 let data = self.model.sheaf(&name)?;
-                let value = data.generator(self.model, degree, index)?;
+                let value = data
+                    .cohomology
+                    .generator(self.model, data.as_ref(), degree, index)?;
                 let ty = self.model.sheaf_type(SheafForm::Class, &name, degree)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::SheafHyperGenerator(name, degree, index) => {
+                let data = self.model.sheaf_complex(&name)?;
+                let value = data
+                    .cohomology
+                    .generator(self.model, data.as_ref(), degree, index)?;
+                let ty = self
+                    .model
+                    .sheaf_complex_type(SheafForm::Class, &name, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafApply(name, input) => {
+                let map = self.model.sheaf_map(&name)?;
+                let input = self.expr(*input)?;
+                let Kind::Sheaf(form, source, degree) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "shApply",
+                        "a ShC cochain or ShH class",
+                    ));
+                };
+                if *source != map.source.name {
+                    return Err(Error::new(
+                        input.span,
+                        format!(
+                            "shApply[{}] requires source sheaf '{}', found '{}'",
+                            name.text, map.source.name, source
+                        ),
+                    ));
+                }
+                let degree = *degree;
+                let ty = self
+                    .model
+                    .known_sheaf_type(*form, map.target.name.clone(), degree)?;
+                Ok((ty, TypedForm::SheafApply(map, degree, Box::new(input))))
+            }
+            ExprForm::SheafEmbed(name, q, input) => {
+                let data = self.model.sheaf_complex(&name)?;
+                let component = data.component(q)?;
+                let input = self.expr(*input)?;
+                let Kind::Sheaf(SheafForm::Cochain, source, p) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "shTotEmbed", "a ShC cochain"));
+                };
+                if *source != component.name {
+                    return Err(Error::new(
+                        input.span,
+                        format!(
+                            "shTotEmbed[{}, {q}] requires sheaf '{}', found '{}'",
+                            name.text, component.name, source
+                        ),
+                    ));
+                }
+                let degree = p
+                    .checked_add(q)
+                    .ok_or_else(|| Error::new(input.span, "sheaf total degree is out of range"))?;
+                let ty = self
+                    .model
+                    .sheaf_complex_type(SheafForm::Cochain, &name, degree)?;
+                Ok((ty, TypedForm::SheafEmbed(data, q, Box::new(input))))
+            }
+            ExprForm::SheafPart(q, input) => {
+                let input = self.expr(*input)?;
+                let Kind::SheafComplex(SheafForm::Cochain, name, degree) =
+                    self.model.kind(input.ty)
+                else {
+                    return Err(self.invalid_operand(&input, "shTotPart", "a ShTot cochain"));
+                };
+                let data = self
+                    .model
+                    .sheaf_complex_named(name)
+                    .expect("registered sheaf complex");
+                let component = data.component(q)?;
+                let p = degree.checked_sub(q).ok_or_else(|| {
+                    Error::new(input.span, "shTotPart would have a negative Roos degree")
+                })?;
+                let ty =
+                    self.model
+                        .known_sheaf_type(SheafForm::Cochain, component.name.clone(), p)?;
+                Ok((ty, TypedForm::SheafPart(data, q, Box::new(input))))
+            }
             ExprForm::SheafOperation(operation, input) => {
                 let input = self.expr(*input)?;
-                let expected = match operation {
-                    SheafOp::Differential | SheafOp::Class => "a ShC cochain",
-                    SheafOp::Representative => "a ShH class",
-                    SheafOp::Scale(_) => "a ShC cochain or ShH class",
+                let cochain_type = match self.model.kind(input.ty) {
+                    Kind::SheafComplex(..) => "a ShTot cochain",
+                    _ => "a ShC cochain or ShTot cochain",
                 };
-                let Kind::Sheaf(form, name, degree) = self.model.kind(input.ty).clone() else {
-                    return Err(self.invalid_operand(&input, operation.name(), expected));
+                let expected = match operation {
+                    SheafOp::Differential | SheafOp::Class => cochain_type,
+                    SheafOp::Representative => "a ShH class or ShHyper class",
+                    SheafOp::Scale(_) => "a sheaf cochain or class",
+                };
+                let (form, name, degree, total) = match self.model.kind(input.ty) {
+                    Kind::Sheaf(form, name, degree) => (*form, name.clone(), *degree, false),
+                    Kind::SheafComplex(form, name, degree) => (*form, name.clone(), *degree, true),
+                    _ => return Err(self.invalid_operand(&input, operation.name(), expected)),
                 };
                 let (output, grade) = match (operation, form) {
                     (SheafOp::Differential, SheafForm::Cochain) => (
@@ -3870,8 +4044,22 @@ impl Checker<'_> {
                     (SheafOp::Scale(_), _) => (form, degree),
                     _ => return Err(self.invalid_operand(&input, operation.name(), expected)),
                 };
-                let data = self.model.sheaf_named(&name).expect("registered sheaf");
-                let ty = self.model.known_sheaf_type(output, name, grade)?;
+                let (ty, data) = if total {
+                    let data = self
+                        .model
+                        .sheaf_complex_named(&name)
+                        .expect("registered sheaf complex");
+                    (
+                        self.model.known_sheaf_complex_type(output, name, grade)?,
+                        SheafComputation::Total(data),
+                    )
+                } else {
+                    let data = self.model.sheaf_named(&name).expect("registered sheaf");
+                    (
+                        self.model.known_sheaf_type(output, name, grade)?,
+                        SheafComputation::Ordinary(data),
+                    )
+                };
                 Ok((
                     ty,
                     TypedForm::SheafOperation(operation, data, degree, Box::new(input)),
@@ -6840,6 +7028,7 @@ impl Checker<'_> {
                         | Kind::RMCobar(..)
                         | Kind::MExt(..)
                         | Kind::Sheaf(..)
+                        | Kind::SheafComplex(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)

@@ -3,6 +3,30 @@ mod common;
 use common::{diagnostic, example, interpret, stdout};
 
 #[test]
+fn cli_accepts_the_full_syntax_depth_and_reports_overflow_as_a_diagnostic() {
+    let nested_add = |depth| {
+        let mut term = "v".to_owned();
+        for _ in 0..depth {
+            term = format!("add({term}, v)");
+        }
+        format!("let v = zero[One, 0]; show {term};")
+    };
+    let grouped = |depth| format!("show {}One.pt{};", "(".repeat(depth), ")".repeat(depth));
+
+    assert_eq!(stdout(interpret(&nested_add(64))), "H(One, 0){0}\n");
+    assert_eq!(stdout(interpret(&grouped(64))), "One.pt\n");
+    for source in [nested_add(65), grouped(65)] {
+        let result = interpret(&source);
+        assert_eq!(result.status.code(), Some(1));
+        let error = diagnostic(result);
+        assert!(
+            error.contains("syntax nesting exceeds 64 levels"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn rotation_descends_and_its_finite_homotopy_class_is_rigid() {
     assert_eq!(
         stdout(example("descent")),

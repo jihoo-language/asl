@@ -54,7 +54,8 @@ use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
-use crate::sheaf::{self, Form as SheafForm, Sheaf};
+use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
+use crate::sheaf_hyper;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -114,6 +115,7 @@ pub(crate) enum Kind {
     Space(String),
     QModule(String),
     Sheaf(SheafForm, Rc<str>, usize),
+    SheafComplex(SheafForm, Rc<str>, usize),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
@@ -342,6 +344,8 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
     sheaves: HashMap<String, Rc<Sheaf>>,
+    sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
@@ -370,6 +374,8 @@ impl Model {
         let mut model = Self {
             types: Vec::new(),
             sheaves: HashMap::new(),
+            sheaf_maps: HashMap::new(),
+            sheaf_complexes: HashMap::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
@@ -444,7 +450,12 @@ impl Model {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::QModule(_) => 1,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
-            Kind::Sheaf(..) => usize::MAX,
+            Kind::SheafComplex(_, ref name, k)
+                if k >= self.sheaf_complexes[name.as_ref()].height =>
+            {
+                1
+            }
+            Kind::Sheaf(..) | Kind::SheafComplex(..) => usize::MAX,
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -655,6 +666,7 @@ impl Model {
             self.kind(ty),
             Kind::Cohomology(..)
                 | Kind::Sheaf(..)
+                | Kind::SheafComplex(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
@@ -757,6 +769,69 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::Sheaf(form, name, degree), 0)
+    }
+
+    pub(crate) fn check_new_sheaf_map(&self, name: &Label) -> Result<()> {
+        if self.sheaf_maps.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("sheaf map '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_sheaf_map(&mut self, name: String, map: sheaf_hyper::Map) {
+        self.sheaf_maps.insert(name, Rc::new(map));
+    }
+
+    pub(crate) fn sheaf_map(&self, name: &Label) -> Result<Rc<sheaf_hyper::Map>> {
+        self.sheaf_maps
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown sheaf map '{}'", name.text)))
+    }
+
+    pub(crate) fn check_new_sheaf_complex(&self, name: &Label) -> Result<()> {
+        if self.sheaf_complexes.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("sheaf complex '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_sheaf_complex(&mut self, name: String, complex: sheaf_hyper::Complex) {
+        self.sheaf_complexes.insert(name, Rc::new(complex));
+    }
+
+    pub(crate) fn sheaf_complex(&self, name: &Label) -> Result<Rc<sheaf_hyper::Complex>> {
+        self.sheaf_complex_named(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown sheaf complex '{}'", name.text)))
+    }
+
+    pub(crate) fn sheaf_complex_named(&self, name: &str) -> Option<Rc<sheaf_hyper::Complex>> {
+        self.sheaf_complexes.get(name).cloned()
+    }
+
+    pub(crate) fn sheaf_complex_type(
+        &mut self,
+        form: SheafForm,
+        name: &Label,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.sheaf_complex(name)?;
+        self.known_sheaf_complex_type(form, name.text.as_str().into(), degree)
+    }
+
+    pub(crate) fn known_sheaf_complex_type(
+        &mut self,
+        form: SheafForm,
+        name: Rc<str>,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::SheafComplex(form, name, degree), 0)
     }
 
     pub(crate) fn q_endpoint_named(&self, name: &str) -> Option<TypeId> {
@@ -1996,6 +2071,7 @@ impl Model {
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
             | Kind::Sheaf(..)
+            | Kind::SheafComplex(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
@@ -2153,6 +2229,9 @@ impl Model {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
             Kind::Sheaf(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.name()))
+            }
+            Kind::SheafComplex(form, name, degree) => {
+                out.push(&format!("{}({name}, {degree})", form.total_name()))
             }
             &Kind::Star(base, center) => {
                 out.push("Star(")?;
@@ -3018,6 +3097,18 @@ impl Model {
                         }
                     }
                 }
+                Kind::SheafComplex(form, ref name, degree) => {
+                    let data = self
+                        .sheaf_complex_named(name)
+                        .expect("registered sheaf complex");
+                    match form {
+                        SheafForm::Cochain => data.elements(self, degree, MAX_ELEMENTS)?,
+                        SheafForm::Class => {
+                            let rank = data.rank(self, degree)?;
+                            odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
+                        }
+                    }
+                }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
                 Kind::RMCobar(grade) => {
                     let basis = real_motivic::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
@@ -3370,10 +3461,23 @@ impl Model {
                 out.push(if *nonzero { "{carry}" } else { "{0}" })
             }
             Value::SheafC(terms) => {
-                let Kind::Sheaf(_, name, _) = self.kind(ty) else {
-                    unreachable!()
+                let (poset, total) = match self.kind(ty) {
+                    Kind::Sheaf(_, name, _) => (
+                        self.sheaf_named(name)
+                            .expect("registered sheaf")
+                            .poset
+                            .clone(),
+                        false,
+                    ),
+                    Kind::SheafComplex(_, name, _) => (
+                        self.sheaf_complex_named(name)
+                            .expect("registered sheaf complex")
+                            .poset()
+                            .clone(),
+                        true,
+                    ),
+                    _ => unreachable!(),
                 };
-                let data = self.sheaf_named(name).expect("registered sheaf");
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if terms.is_empty() {
@@ -3386,12 +3490,15 @@ impl Model {
                     if *coefficient != 1 {
                         out.push(&format!("{coefficient}*"))?;
                     }
+                    if total {
+                        out.push(&format!("q{}:", generator.vertical))?;
+                    }
                     out.push("[")?;
                     for (i, &point) in generator.chain.iter().enumerate() {
                         if i != 0 {
                             out.push("<")?;
                         }
-                        out.push(&data.poset.names[point])?;
+                        out.push(&poset.names[point])?;
                     }
                     out.push(&format!("]#{}", generator.index))?;
                 }

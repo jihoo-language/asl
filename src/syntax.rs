@@ -43,6 +43,7 @@ pub(crate) enum TypeForm {
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
     Sheaf(SheafForm, Label, usize),
+    SheafComplex(SheafForm, Label, usize),
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
@@ -454,6 +455,10 @@ pub(crate) enum ExprForm {
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     SheafTerm(Label, Vec<Label>, usize, i64),
     SheafGenerator(Label, usize, usize),
+    SheafApply(Label, Box<ParsedExpr>),
+    SheafEmbed(Label, usize, Box<ParsedExpr>),
+    SheafPart(usize, Box<ParsedExpr>),
+    SheafHyperGenerator(Label, usize, usize),
     SheafOperation(SheafOp, Box<ParsedExpr>),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
@@ -611,6 +616,9 @@ pub(crate) struct Statement {
 pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
+    SheafComplex(Label, Vec<Label>),
+    SheafHyperDimension(Label, usize),
     SheafDimension(Label, usize),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
@@ -1132,6 +1140,19 @@ impl<'src> Parser<'src> {
         Ok(crate::q_module::Presentation { generators, rules })
     }
 
+    fn sheaf_matrix(&mut self) -> Result<Vec<i64>> {
+        self.expect(Token::LBracket)?;
+        let mut entries = Vec::new();
+        while self.token() != Token::RBracket {
+            entries.push(self.signed_number("signed sheaf matrix entry")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(entries)
+    }
+
     fn sheaf_body(&mut self) -> Result<sheaf::Presentation> {
         self.expect(Token::LBrace)?;
         let mut stalks = Vec::new();
@@ -1151,15 +1172,7 @@ impl<'src> Parser<'src> {
             self.expect(Token::Less)?;
             let target = self.label()?;
             self.expect(Token::Colon)?;
-            self.expect(Token::LBracket)?;
-            let mut entries = Vec::new();
-            while self.token() != Token::RBracket {
-                entries.push(self.signed_number("signed sheaf matrix entry")?);
-                if !self.eat(Token::Comma)? {
-                    break;
-                }
-            }
-            self.expect(Token::RBracket)?;
+            let entries = self.sheaf_matrix()?;
             maps.push(sheaf::Cover {
                 source,
                 target,
@@ -1210,6 +1223,50 @@ impl<'src> Parser<'src> {
                 let prime = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
+            }
+            Token::Word("shmap") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut matrices = Vec::new();
+                while self.token() != Token::RBrace {
+                    let point = self.label()?;
+                    self.expect(Token::Colon)?;
+                    matrices.push((point, self.sheaf_matrix()?));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::SheafMap(name, source, target, matrices)
+            }
+            Token::Word("shcomplex") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBrace)?;
+                let mut entries = Vec::new();
+                while self.token() != Token::RBrace {
+                    entries.push(self.label()?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::SheafComplex(name, entries)
+            }
+            Token::Word("shhyperdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafHyperDimension(name, degree)
             }
             Token::Word("shdim") => {
                 self.advance()?;
@@ -2565,6 +2622,18 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if matches!(name.text.as_str(), "ShTot" | "ShHyper") && self.eat(Token::LParen)? {
+            let form = if name.text == "ShTot" {
+                SheafForm::Cochain
+            } else {
+                SheafForm::Class
+            };
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SheafComplex(form, name, degree), 0);
+        }
         if matches!(name.text.as_str(), "ShC" | "ShH") && self.eat(Token::LParen)? {
             let form = if name.text == "ShC" {
                 SheafForm::Cochain
@@ -3729,6 +3798,46 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::SheafTerm(sheaf, chain, index, coefficient),
+                        0,
+                    );
+                }
+                if name.text == "shApply" && self.eat(Token::LBracket)? {
+                    let map = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SheafApply(map, Box::new(input)), depth);
+                }
+                if name.text == "shTotEmbed" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let q = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafEmbed(complex, q, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "shTotPart" && self.eat(Token::LBracket)? {
+                    let q = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SheafPart(q, Box::new(input)), depth);
+                }
+                if name.text == "shhypergen" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafHyperGenerator(complex, degree, index),
                         0,
                     );
                 }
