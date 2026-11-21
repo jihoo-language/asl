@@ -268,6 +268,7 @@ enum TypedForm {
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
     SatakeTransform(Box<TypedExpr>),
+    SatakeInverse(Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
@@ -2298,6 +2299,12 @@ impl Engine {
                 };
                 rv_sphhecke::multiply(&mut self.model, rank, &left, &right)
             }
+            TypedForm::SatakeInverse(input) => {
+                let Value::RVSatake(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_satake::inverse(&mut self.model, &terms)
+            }
             TypedForm::SatakeTransform(input) => {
                 let Value::RVSphHecke(terms) = self.eval(input)? else {
                     unreachable!()
@@ -4244,6 +4251,27 @@ impl Checker<'_> {
                     left.ty,
                     TypedForm::SphericalProduct(Box::new([left, right])),
                 ))
+            }
+            ExprForm::SatakeInverse(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSatake(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSatakeInverse",
+                        "a Satake polynomial",
+                    ));
+                };
+                let ty = self.model.sph_hecke_type(rank)?;
+                Ok((ty, TypedForm::SatakeInverse(Box::new(input))))
+            }
+            ExprForm::SatakeCharacter(intersection, coweight) => {
+                let ty = if intersection {
+                    self.model.sph_hecke_type(coweight.len())?
+                } else {
+                    self.model.satake_type(coweight.len())?
+                };
+                let value = rv_satake::schur(self.model, &coweight, intersection)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::SatakeTransform(input) => {
                 let input = self.expr(*input)?;

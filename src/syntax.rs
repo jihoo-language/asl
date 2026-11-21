@@ -467,6 +467,8 @@ pub(crate) enum ExprForm {
     SphericalProduct(Box<[ParsedExpr; 2]>),
     SphericalEmbedding(Box<ParsedExpr>),
     SatakeTransform(Box<ParsedExpr>),
+    SatakeInverse(Box<ParsedExpr>),
+    SatakeCharacter(bool, Vec<i128>),
     SatakeScalar(usize, i128),
     SatakeProduct(Box<[ParsedExpr; 2]>),
     RVIwAdlv(
@@ -4172,6 +4174,20 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::SphericalEmbedding(Box::new(input)), depth);
+                }
+                if name.text == "rvSatakeInverse" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SatakeInverse(Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "rvSatSchur" | "rvSphIC")
+                    && self.eat(Token::LBracket)?
+                {
+                    let intersection = name.text == "rvSphIC";
+                    let coweight =
+                        self.signed_tuple("a signed coweight entry", "coweight entry")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SatakeCharacter(intersection, coweight), 0);
                 }
                 if name.text == "rvSatake" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;

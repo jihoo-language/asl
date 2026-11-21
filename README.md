@@ -782,6 +782,21 @@ The interpreter expands the Hall–Littlewood $P$ polynomial by interlacing part
 
 In rank two the images of $S_{(0,1)}$, $S_{(0,2)}$, and $S_{(1,1)}$ are $v(X_1+X_2)$, $v^2(X_1^2+X_2^2)+(v^2-1)X_1X_2$, and $X_1X_2$. The example checks multiplication in ranks two and three and evaluates a negatively translated coweight. [Satake example](examples/rv-satake.asl)
 
+### Integral Satake inversion and spherical IC traces
+
+`rvSatakeInverse(f)` recovers a spherical Hecke element when $f$ lies in the normalized Satake image over $\mathbb Z[q]$. The interpreter strips the highest dominant monomial in the Hall–Littlewood expansion on each total weight. If its coweight is $\lambda$ and its normalization exponent is $h(\lambda)$, then its leading coefficient divided by $v^{h(\lambda)}$ must have even nonnegative powers of $v$. Signed integer coefficients are allowed. The calculation converts these powers to powers of $q$ and subtracts that spherical term's image before continuing.
+
+`rvSatSchur[[lambda0,...]]` gives the Schur character for a weakly increasing signed coweight, including the determinant shift. Its interlacing branching coefficients are all one. The spherical IC trace element `rvSphIC[[lambda0,...]]` is the inverse Satake image of $v^{h(\lambda)}s_\lambda$. Its standard-basis coefficients can be inspected with `rvSphCoeff`.
+
+For rank three, the adjoint trace element $\mathrm{IC}_{(0,1,2)}$ is $S_{(0,1,2)}+(q+1)S_{(1,1,1)}$. Its square has the following character decomposition.
+$$
+\mathrm{IC}_{(0,2,4)}
++q(\mathrm{IC}_{(1,1,4)}+\mathrm{IC}_{(0,3,3)})
++2q^2\mathrm{IC}_{(1,2,3)}
++q^4\mathrm{IC}_{(2,2,2)}.
+$$
+The example also writes the rank-two square $S_{(0,1)}^2$ as $\mathrm{IC}_{(0,2)}+q\mathrm{IC}_{(1,1)}$. [Satake inverse and IC example](examples/rv-satake-ic.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

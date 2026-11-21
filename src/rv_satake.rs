@@ -9,6 +9,7 @@ use crate::rv_sphhecke;
 const MAX_CELLS: usize = 300_000;
 
 type Exponents = Rc<[i128]>;
+type VPolynomial = Vec<(i128, i128)>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Term {
@@ -93,11 +94,28 @@ impl Sum {
         coefficient: i128,
         retained: usize,
     ) -> Result<()> {
+        self.combine(model, exponents, power, coefficient, retained, false)
+    }
+
+    fn combine(
+        &mut self,
+        model: &mut Model,
+        exponents: &Exponents,
+        power: i128,
+        coefficient: i128,
+        retained: usize,
+        subtract: bool,
+    ) -> Result<()> {
         let cells = term_cells(exponents.len())?;
         model.spend(cells * (1 + self.terms.len().max(1).ilog2() as usize))?;
         let key = (exponents.clone(), power);
         if let Some(old) = self.terms.get_mut(&key) {
-            *old = old.checked_add(coefficient).ok_or_else(arithmetic)?;
+            *old = if subtract {
+                old.checked_sub(coefficient)
+            } else {
+                old.checked_add(coefficient)
+            }
+            .ok_or_else(arithmetic)?;
             if *old == 0 {
                 self.terms.remove(&key);
                 self.cells -= cells;
@@ -105,9 +123,35 @@ impl Sum {
         } else if coefficient != 0 {
             self.cells += cells;
             check_storage(self.cells + retained)?;
-            self.terms.insert(key, coefficient);
+            let value = if subtract {
+                coefficient.checked_neg().ok_or_else(arithmetic)?
+            } else {
+                coefficient
+            };
+            self.terms.insert(key, value);
         }
         Ok(())
+    }
+
+    fn leading(&mut self, model: &mut Model) -> Result<Option<(Exponents, VPolynomial)>> {
+        let Some(((exponents, _), _)) = self.terms.last_key_value() else {
+            return Ok(None);
+        };
+        let leading = exponents.clone();
+        let mut coefficient = Vec::new();
+        let cells = term_cells(leading.len())?;
+        while self
+            .terms
+            .last_key_value()
+            .is_some_and(|((exponents, _), _)| exponents == &leading)
+        {
+            model.spend(cells * (1 + self.terms.len().max(1).ilog2() as usize))?;
+            let ((_, power), value) = self.terms.pop_last().unwrap();
+            coefficient.push((power, value));
+            self.cells -= cells;
+        }
+        coefficient.reverse();
+        Ok(Some((leading, coefficient)))
     }
 
     fn finish(self) -> Vec<Term> {
@@ -191,24 +235,11 @@ pub(crate) fn transform(model: &mut Model, input: &[rv_sphhecke::Term]) -> Resul
     let mut cache = HallLittlewood::default();
     let mut output = Sum::default();
     for source in input {
-        let coweight = &source.coweight;
-        let center = coweight.first().copied().unwrap_or(0);
-        model.spend(coweight.len())?;
-        let partition = coweight
-            .iter()
-            .rev()
-            .map(|value| value.checked_sub(center).ok_or_else(arithmetic))
-            .collect::<Result<Vec<_>>>()?;
-        let normalization = weight(&partition)?;
+        let (partition, center, normalization) = normalize(model, &source.coweight)?;
         let image = cache.expand(model, &partition, output.cells)?;
         for term in image.iter() {
             model.spend(term.exponents.len())?;
-            let exponents = term
-                .exponents
-                .iter()
-                .map(|value| value.checked_add(center).ok_or_else(arithmetic))
-                .collect::<Result<Vec<_>>>()?
-                .into();
+            let exponents = translate(&term.exponents, center)?;
             let normalized = term
                 .power
                 .checked_add(normalization)
@@ -228,10 +259,137 @@ pub(crate) fn transform(model: &mut Model, input: &[rv_sphhecke::Term]) -> Resul
     persist(model, output.finish())
 }
 
+fn normalize(model: &mut Model, coweight: &[i128]) -> Result<(Vec<i128>, i128, i128)> {
+    let center = coweight.first().copied().unwrap_or(0);
+    model.spend(coweight.len())?;
+    let partition = coweight
+        .iter()
+        .rev()
+        .map(|value| value.checked_sub(center).ok_or_else(arithmetic))
+        .collect::<Result<Vec<_>>>()?;
+    let normalization = weight(&partition)?;
+    Ok((partition, center, normalization))
+}
+
+fn translate(exponents: &[i128], center: i128) -> Result<Exponents> {
+    let shifted = exponents
+        .iter()
+        .map(|value| value.checked_add(center).ok_or_else(arithmetic))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(shifted.into())
+}
+
+pub(crate) fn inverse(model: &mut Model, input: &[Term]) -> Result<Value> {
+    let mut residual = Sum::default();
+    for term in input {
+        residual.add(model, &term.exponents, term.power, term.coefficient, 0)?;
+    }
+
+    let mut cache = HallLittlewood::default();
+    let mut terms = Vec::new();
+    let mut cells = 0;
+    while let Some((leading, leading_coefficient)) = residual.leading(model)? {
+        if leading.windows(2).any(|pair| pair[0] < pair[1]) {
+            return Err(Error::plain(
+                "Satake inverse requires symmetric Laurent terms",
+            ));
+        }
+        let coweight: Vec<_> = leading.iter().rev().copied().collect();
+        let (partition, center, normalization) = normalize(model, &coweight)?;
+        let mut coefficient = Vec::with_capacity(leading_coefficient.len());
+        for &(power, scalar) in &leading_coefficient {
+            if power < normalization {
+                return Err(outside_image(
+                    &coweight,
+                    power,
+                    normalization,
+                    "nonnegative",
+                ));
+            }
+            let difference = power - normalization;
+            if difference % 2 != 0 {
+                return Err(outside_image(&coweight, power, normalization, "even"));
+            }
+            let degree = usize::try_from(difference / 2)
+                .map_err(|_| Error::plain("Satake inverse q degree is out of range"))?;
+            coefficient.push((degree, scalar));
+        }
+        cells += 1 + 2 * coweight.len() + 3 * coefficient.len();
+        check_storage(cells + cache.cells + residual.cells)?;
+
+        // The Hall–Littlewood expansion is unitriangular on each total
+        // weight; the already removed dominant monomial has coefficient one.
+        let image = cache.expand(model, &partition, cells + residual.cells)?;
+        for term in image.iter() {
+            model.spend(term.exponents.len())?;
+            let exponents = translate(&term.exponents, center)?;
+            match exponents.cmp(&leading) {
+                Ordering::Equal => continue,
+                Ordering::Greater => {
+                    return Err(Error::plain(
+                        "Satake inverse encountered a nontriangular Hall–Littlewood term",
+                    ))
+                }
+                Ordering::Less => (),
+            }
+            for &(power, scalar) in &leading_coefficient {
+                let power = term.power.checked_add(power).ok_or_else(arithmetic)?;
+                let scalar = term
+                    .coefficient
+                    .checked_mul(scalar)
+                    .ok_or_else(arithmetic)?;
+                residual.combine(model, &exponents, power, scalar, cells + cache.cells, true)?;
+            }
+        }
+        terms.push(rv_sphhecke::Term {
+            coweight: coweight.into(),
+            coefficient: coefficient.into(),
+        });
+    }
+    let size = terms.len();
+    let rank = terms.first().map_or(0, |term| term.coweight.len());
+    model.spend(size * (1 + rank) * (1 + size.max(1).ilog2() as usize))?;
+    terms.sort_unstable_by(|a, b| a.coweight.cmp(&b.coweight));
+    rv_sphhecke::persist(model, terms)
+}
+
+fn outside_image(coweight: &[i128], power: i128, normalization: i128, condition: &str) -> Error {
+    Error::plain(format!(
+        "Satake inverse at {coweight:?} requires {condition} v powers after dividing by v^{normalization} (found v^{power})"
+    ))
+}
+
+pub(crate) fn schur(model: &mut Model, coweight: &[i128], intersection: bool) -> Result<Value> {
+    rv_sphhecke::validate(model, coweight)?;
+    let (partition, center, normalization) = normalize(model, coweight)?;
+    let mut cache = HallLittlewood {
+        schur: true,
+        ..HallLittlewood::default()
+    };
+    let representation = cache.expand(model, &partition, 0)?;
+    let offset = if intersection { normalization } else { 0 };
+    let terms = representation
+        .iter()
+        .map(|term| {
+            Ok(Term {
+                exponents: translate(&term.exponents, center)?,
+                power: offset,
+                coefficient: term.coefficient,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if intersection {
+        inverse(model, &terms)
+    } else {
+        persist(model, terms)
+    }
+}
+
 #[derive(Default)]
 struct HallLittlewood {
     cache: BTreeMap<Exponents, Support>,
     cells: usize,
+    schur: bool,
 }
 
 impl HallLittlewood {
@@ -275,7 +433,11 @@ impl HallLittlewood {
                 let power = total
                     .checked_sub(integer_sum(&child)?)
                     .ok_or_else(arithmetic)?;
-                let factor = branching_factor(model, lambda, &child)?;
+                let factor = if self.schur {
+                    vec![(0, 1)]
+                } else {
+                    branching_factor(model, lambda, &child)?
+                };
                 let polynomial = self.expand(model, &child, retained + result.cells)?;
                 for term in polynomial.iter() {
                     model.spend(rank)?;
@@ -328,11 +490,7 @@ fn add_scalar(map: &mut BTreeMap<i128, i128>, power: i128, coefficient: i128) ->
     Ok(())
 }
 
-fn branching_factor(
-    model: &mut Model,
-    lambda: &[i128],
-    child: &[i128],
-) -> Result<Vec<(i128, i128)>> {
+fn branching_factor(model: &mut Model, lambda: &[i128], child: &[i128]) -> Result<VPolynomial> {
     let mut result = BTreeMap::from([(0i128, 1i128)]);
     for equal in child.chunk_by(|a, b| a == b) {
         let value = equal[0];

@@ -42,7 +42,7 @@ fn cells(rank: usize, coefficients: usize) -> Result<usize> {
         .ok_or_else(storage)
 }
 
-fn persist(model: &mut Model, support: Vec<Term>) -> Result<Value> {
+pub(crate) fn persist(model: &mut Model, support: Vec<Term>) -> Result<Value> {
     let mut total = 0;
     for term in &support {
         total += cells(term.coweight.len(), term.coefficient.len())?;
