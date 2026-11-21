@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::cohomology;
 use crate::error::{Error, Result, Span};
-use crate::model::{Kind, Model, Poset, TypeId, Value};
+use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
+use crate::steenrod;
 use crate::syntax::{
-    Entries, ExprForm, ParsedExpr, ParsedType, Statement, StatementForm, TypeForm,
+    BinaryOp, ClassForm, Entries, ExprForm, ParsedExpr, ParsedType, Statement, StatementForm,
+    SuspensionForm, TypeForm,
 };
 
 pub(crate) struct Engine {
@@ -31,6 +34,11 @@ enum TypedForm {
     Global(usize),
     Local(usize),
     Point(usize),
+    Constant(Value),
+    Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
+    Equator,
+    Suspend(Box<TypedExpr>),
+    Shift(Box<TypedExpr>),
     Lambda(Box<TypedExpr>),
     Call(Box<TypedExpr>, Box<TypedExpr>),
     Pair(Box<TypedExpr>, Box<TypedExpr>),
@@ -160,6 +168,64 @@ impl Engine {
             &TypedForm::Global(index) => Ok(self.values[index].clone()),
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
+            TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::Binary(op, left, right) => {
+                let first = self.eval(left)?;
+                let second = self.eval(right)?;
+                match (op, first, second) {
+                    (BinaryOp::Add, Value::Class(a), Value::Class(b)) => {
+                        cohomology::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::Operation(a), Value::Operation(b)) => {
+                        steenrod::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Mul, Value::Operation(a), Value::Operation(b)) => {
+                        steenrod::multiply(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Act, Value::Operation(operation), Value::Class(class)) => {
+                        let (base, degree) = match *self.model.kind(right.ty) {
+                            Kind::Cohomology(base, degree) => (base, degree),
+                            Kind::Stable(base, shift, degree) => {
+                                let Some(reduced_degree) = degree.checked_sub(shift) else {
+                                    return Ok(cohomology::zero());
+                                };
+                                (base, reduced_degree)
+                            }
+                            _ => unreachable!(),
+                        };
+                        cohomology::act(&mut self.model, base, degree, &operation, class)
+                    }
+                    (BinaryOp::Cup, Value::Class(a), Value::Class(b)) => {
+                        cohomology::cup(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::Pull, Value::Map(f), Value::Class(b)) => {
+                        cohomology::pull(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::Equator => {
+                let Kind::Arrow(base, _) = *self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let points = self.model.elements(base)?;
+                self.model.allocate(1 + 2 * points.len())?;
+                self.model.spend(points.len())?;
+                let rows = points
+                    .iter()
+                    .map(|point| {
+                        Value::Suspension(SuspensionPoint::Equator(Rc::new(point.clone())))
+                    })
+                    .collect();
+                Ok(Value::Map(rows))
+            }
+            TypedForm::Suspend(value) => {
+                let Value::Class(class) = self.eval(value)? else {
+                    unreachable!()
+                };
+                cohomology::suspend(&mut self.model, value.ty, &class, expr.ty)
+            }
+            TypedForm::Shift(value) => self.eval(value),
             TypedForm::Lambda(body) => {
                 let Kind::Arrow(domain, range) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -293,6 +359,19 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.star(base, &point)
             }
+            TypeForm::Cohomology(base, degree) => {
+                let base = self.ty(*base)?;
+                self.model.cohomology_type(base, degree)
+            }
+            TypeForm::Operations(degree) => self.model.operation_type(degree),
+            TypeForm::Suspension(base) => {
+                let base = self.ty(*base)?;
+                self.model.suspension_type(base)
+            }
+            TypeForm::Stable(base, shift, degree) => {
+                let base = self.ty(*base)?;
+                self.model.stable_type(base, shift, degree)
+            }
             TypeForm::Product(left, right) => {
                 let left = self.ty(*left)?;
                 let right = self.ty(*right)?;
@@ -341,6 +420,88 @@ impl Checker<'_> {
                 let point = self.model.point(ty, &point)?;
                 Ok((ty, TypedForm::Point(point)))
             }
+            ExprForm::Class(base, degree, form) => {
+                let base = self.ty(base)?;
+                let ty = self.model.cohomology_type(base, degree)?;
+                let value = match form {
+                    ClassForm::Zero => cohomology::zero(),
+                    ClassForm::Generator(index, at) => {
+                        let rank = self.model.cohomology(ty)?.rank();
+                        if index >= rank {
+                            return Err(Error::new(
+                                at,
+                                format!(
+                                    "generator index {index} is out of range for {} of rank {rank}",
+                                    self.model.type_name(ty),
+                                ),
+                            ));
+                        }
+                        self.model.allocate(1)?;
+                        Value::Class([index].into())
+                    }
+                    ClassForm::Cocycle(chains) => {
+                        cohomology::literal(self.model, ty, chains, span)?
+                    }
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Zero(ty) => {
+                let ty = self.ty(ty)?;
+                let value = match self.model.kind(ty) {
+                    Kind::Operations(_) => steenrod::zero(),
+                    Kind::Cohomology(..) | Kind::Stable(..) => cohomology::zero(),
+                    _ => {
+                        return Err(Error::new(
+                            span,
+                            format!(
+                                "zero requires a cohomology or Steenrod algebra type, found {}",
+                                self.model.type_name(ty),
+                            ),
+                        ))
+                    }
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Square(degree) => {
+                let ty = self.model.operation_type(degree)?;
+                let square = steenrod::square(self.model, degree)?;
+                Ok((ty, TypedForm::Constant(square)))
+            }
+            ExprForm::Suspension(base, form) => {
+                let base = self.ty(base)?;
+                let suspension = self.model.suspension_type(base)?;
+                match form {
+                    SuspensionForm::North => Ok((
+                        suspension,
+                        TypedForm::Constant(Value::Suspension(SuspensionPoint::North)),
+                    )),
+                    SuspensionForm::South => Ok((
+                        suspension,
+                        TypedForm::Constant(Value::Suspension(SuspensionPoint::South)),
+                    )),
+                    SuspensionForm::Equator => {
+                        Ok((self.model.arrow(base, suspension)?, TypedForm::Equator))
+                    }
+                }
+            }
+            ExprForm::Shift(amount, value) => {
+                let value = self.expr(*value)?;
+                let (base, existing, degree) = match *self.model.kind(value.ty) {
+                    Kind::Cohomology(base, degree) => (base, 0, degree),
+                    Kind::Stable(base, shift, degree) => (base, shift, degree),
+                    _ => return Err(self.invalid_operand(&value, "shift", "a cohomology class")),
+                };
+                let shift = checked_degree(existing, amount, "shift", span)?;
+                let degree = checked_degree(degree, amount, "shift", span)?;
+                let ty = self.model.stable_type(base, shift, degree)?;
+                Ok((ty, TypedForm::Shift(Box::new(value))))
+            }
+            ExprForm::Binary(op, left, right) => {
+                let left = self.expr(*left)?;
+                let right = self.expr(*right)?;
+                let ty = self.binary_result(op, &left, &right, span)?;
+                Ok((ty, TypedForm::Binary(op, Box::new(left), Box::new(right))))
+            }
             ExprForm::Lambda(parameter, domain, body) => {
                 let domain = self.ty(domain)?;
                 self.locals.push((parameter.text, domain));
@@ -351,6 +512,17 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Lambda(Box::new(body))))
             }
             ExprForm::Call(function, argument) => {
+                if matches!(&function.kind, ExprForm::Name(name) if name.text == "susp")
+                    && !self.bindings.contains_key("susp")
+                    && !self.locals.iter().any(|(name, _)| name == "susp")
+                {
+                    let argument = self.expr(*argument)?;
+                    let (base, degree) = self.class_type(&argument, "susp")?;
+                    let degree = checked_degree(degree, 1, "susp", span)?;
+                    let suspension = self.model.suspension_type(base)?;
+                    let ty = self.model.cohomology_type(suspension, degree)?;
+                    return Ok((ty, TypedForm::Suspend(Box::new(argument))));
+                }
                 let function = self.expr(*function)?;
                 let Kind::Arrow(domain, range) = *self.model.kind(function.ty) else {
                     return Err(Error::new(
@@ -404,6 +576,114 @@ impl Checker<'_> {
                 let charts = self.atlas(domain, range, entries, span)?;
                 let ty = self.model.arrow(domain, range)?;
                 Ok((ty, TypedForm::Sew(charts)))
+            }
+        }
+    }
+
+    fn class_type(&self, value: &TypedExpr, op: &str) -> Result<(TypeId, usize)> {
+        match *self.model.kind(value.ty) {
+            Kind::Cohomology(base, degree) => Ok((base, degree)),
+            _ => Err(Error::new(
+                value.span,
+                format!(
+                    "{op} requires a cohomology class, found {}",
+                    self.model.type_name(value.ty),
+                ),
+            )),
+        }
+    }
+
+    fn operation_degree(&self, value: &TypedExpr, op: &str) -> Result<usize> {
+        match *self.model.kind(value.ty) {
+            Kind::Operations(degree) => Ok(degree),
+            _ => Err(self.invalid_operand(value, op, "a Steenrod operation")),
+        }
+    }
+
+    fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
+        Error::new(
+            value.span,
+            format!(
+                "{op} requires {expected}, found {}",
+                self.model.type_name(value.ty),
+            ),
+        )
+    }
+
+    fn binary_result(
+        &mut self,
+        op: BinaryOp,
+        left: &TypedExpr,
+        right: &TypedExpr,
+        span: Span,
+    ) -> Result<TypeId> {
+        match op {
+            BinaryOp::Add => {
+                if !matches!(
+                    self.model.kind(left.ty),
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Operations(..)
+                ) {
+                    return Err(self.invalid_operand(
+                        left,
+                        "add",
+                        "a cohomology class or Steenrod operation",
+                    ));
+                }
+                self.require_type(left.ty, right, "add")?;
+                Ok(left.ty)
+            }
+            BinaryOp::Mul => {
+                let left = self.operation_degree(left, "mul")?;
+                let right = self.operation_degree(right, "mul")?;
+                let degree = checked_degree(left, right, "mul", span)?;
+                self.model.operation_type(degree)
+            }
+            BinaryOp::Act => {
+                let operation = self.operation_degree(left, "act")?;
+                match *self.model.kind(right.ty) {
+                    Kind::Cohomology(base, degree) => {
+                        let degree = checked_degree(degree, operation, "act", span)?;
+                        self.model.cohomology_type(base, degree)
+                    }
+                    Kind::Stable(base, shift, degree) => {
+                        let degree = checked_degree(degree, operation, "act", span)?;
+                        self.model.stable_type(base, shift, degree)
+                    }
+                    _ => Err(self.invalid_operand(right, "act", "a cohomology class")),
+                }
+            }
+            BinaryOp::Cup => {
+                let (base, p) = self.class_type(left, "cup")?;
+                let (other, q) = self.class_type(right, "cup")?;
+                if base != other {
+                    return Err(Error::new(
+                        right.span,
+                        format!(
+                            "cup requires classes on the same space, found {} and {}",
+                            self.model.type_name(base),
+                            self.model.type_name(other),
+                        ),
+                    ));
+                }
+                let degree = p
+                    .checked_add(q)
+                    .ok_or_else(|| Error::new(span, "cup degree is out of range"))?;
+                self.model.cohomology_type(base, degree)
+            }
+            BinaryOp::Pull => {
+                let Kind::Arrow(domain, range) = *self.model.kind(left.ty) else {
+                    return Err(Error::new(
+                        left.span,
+                        format!(
+                            "pull requires a function, found {}",
+                            self.model.type_name(left.ty),
+                        ),
+                    ));
+                };
+                let (_, degree) = self.class_type(right, "pull")?;
+                let expected = self.model.cohomology_type(range, degree)?;
+                self.require_type(expected, right, "pull class")?;
+                self.model.cohomology_type(domain, degree)
             }
         }
     }
@@ -532,4 +812,9 @@ impl Checker<'_> {
         }
         Ok(charts)
     }
+}
+
+fn checked_degree(left: usize, right: usize, op: &str, span: Span) -> Result<usize> {
+    left.checked_add(right)
+        .ok_or_else(|| Error::new(span, format!("{op} degree is out of range")))
 }

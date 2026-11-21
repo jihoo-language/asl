@@ -1,7 +1,10 @@
+mod cohomology;
+mod complex;
 mod engine;
 mod error;
 mod model;
 mod observations;
+mod steenrod;
 mod syntax;
 
 use std::env;

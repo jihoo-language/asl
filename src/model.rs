@@ -2,7 +2,9 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::cohomology::Cohomology;
 use crate::error::{Error, Result};
+use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 
 const MAX_SPACE_POINTS: usize = 512;
@@ -22,6 +24,10 @@ pub(crate) enum Kind {
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
+    Cohomology(TypeId, usize),
+    Operations(usize),
+    Suspension(TypeId),
+    Stable(TypeId, usize, usize),
 }
 
 #[derive(Clone)]
@@ -29,6 +35,16 @@ pub(crate) enum Value {
     Point(usize),
     Pair(Rc<(Value, Value)>),
     Map(Rc<[Value]>),
+    Class(Rc<[usize]>),
+    Operation(Rc<[Word]>),
+    Suspension(SuspensionPoint),
+}
+
+#[derive(Clone)]
+pub(crate) enum SuspensionPoint {
+    Equator(Rc<Value>),
+    North,
+    South,
 }
 
 pub(crate) struct Poset {
@@ -57,6 +73,9 @@ struct TypeInfo {
     poset: Option<Rc<Poset>>,
     parent_points: Option<Rc<[usize]>>,
     elements: Option<Rc<[Value]>>,
+    cohomology: Option<Rc<Cohomology>>,
+    cardinality_bound: usize,
+    heights: [Option<usize>; 2],
     inhabited: bool,
     depth: usize,
 }
@@ -124,6 +143,24 @@ impl Model {
         inhabited: bool,
         depth: usize,
     ) -> TypeId {
+        let cardinality_bound = match kind {
+            Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
+            Kind::Product(left, right) => self.types[left.0]
+                .cardinality_bound
+                .saturating_mul(self.types[right.0].cardinality_bound),
+            Kind::Arrow(domain, range) => {
+                let base = self.types[range.0].cardinality_bound;
+                let exponent = self.types[domain.0].cardinality_bound;
+                match (base, exponent) {
+                    _ if !self.types[domain.0].inhabited => 1,
+                    (base @ 0..=1, _) => base,
+                    (_, exponent) if exponent >= usize::BITS as usize => usize::MAX,
+                    _ => base.saturating_pow(exponent as u32),
+                }
+            }
+            Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
+            Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
+        };
         let id = TypeId(self.types.len());
         self.type_ids.insert(kind.clone(), id);
         self.types.push(TypeInfo {
@@ -131,6 +168,9 @@ impl Model {
             poset: poset.map(Rc::new),
             parent_points,
             elements: None,
+            cohomology: None,
+            cardinality_bound,
+            heights: [None; 2],
             inhabited,
             depth,
         });
@@ -153,6 +193,13 @@ impl Model {
 
     pub(crate) fn kind(&self, id: TypeId) -> &Kind {
         &self.types[id.0].kind
+    }
+
+    pub(crate) fn intrinsically_discrete(&self, ty: TypeId) -> bool {
+        matches!(
+            self.kind(ty),
+            Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..)
+        )
     }
 
     pub(crate) fn define_space(&mut self, name: &Label, chains: &[Vec<Label>]) -> Result<()> {
@@ -240,6 +287,117 @@ impl Model {
     pub(crate) fn arrow(&mut self, domain: TypeId, range: TypeId) -> Result<TypeId> {
         let inhabited = !self.types[domain.0].inhabited || self.types[range.0].inhabited;
         self.composite(Kind::Arrow(domain, range), domain, range, inhabited)
+    }
+
+    pub(crate) fn cohomology_type(&mut self, base: TypeId, degree: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::Cohomology(base, degree), self.types[base.0].depth + 1)
+    }
+
+    pub(crate) fn operation_type(&mut self, degree: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::Operations(degree), 0)
+    }
+
+    pub(crate) fn suspension_type(&mut self, base: TypeId) -> Result<TypeId> {
+        self.inhabited_type(Kind::Suspension(base), self.types[base.0].depth + 1)
+    }
+
+    pub(crate) fn stable_type(
+        &mut self,
+        base: TypeId,
+        shift: usize,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(
+            Kind::Stable(base, shift, degree),
+            self.types[base.0].depth + 1,
+        )
+    }
+
+    fn inhabited_type(&mut self, kind: Kind, depth: usize) -> Result<TypeId> {
+        if let Some(&id) = self.type_ids.get(&kind) {
+            return Ok(id);
+        }
+        self.check_type_limit(depth)?;
+        Ok(self.insert(kind, None, None, true, depth))
+    }
+
+    pub(crate) fn cohomology(&mut self, ty: TypeId) -> Result<Rc<Cohomology>> {
+        if let Some(data) = &self.types[ty.0].cohomology {
+            return Ok(data.clone());
+        }
+        let Kind::Cohomology(base, degree) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(Cohomology::build(self, base, degree)?);
+        self.types[ty.0].cohomology = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn height(&mut self, ty: TypeId, exact: bool) -> Result<usize> {
+        if !self.types[ty.0].inhabited {
+            return Ok(0);
+        }
+        let index = usize::from(
+            exact
+                && matches!(
+                    self.kind(ty),
+                    Kind::Product(..) | Kind::Arrow(..) | Kind::Suspension(..)
+                ),
+        );
+        if let Some(height) = self.types[ty.0].heights[index] {
+            return Ok(height);
+        }
+        let height = match *self.kind(ty) {
+            Kind::Space(_) | Kind::Star(..) => {
+                let space = self.poset(ty).unwrap();
+                let size = space.names.len();
+                self.spend(2 * size * size)?;
+                let mut predecessors = vec![0; size];
+                for upper in &space.order {
+                    for (point, &above) in upper.iter().enumerate() {
+                        predecessors[point] += usize::from(above);
+                    }
+                }
+                // Strictly comparable points have strictly increasing downset sizes.
+                let mut points: Vec<_> = (0..size).collect();
+                points.sort_unstable_by_key(|&point| predecessors[point]);
+                let mut levels = vec![1; size];
+                for point in points {
+                    for (larger, &above) in space.order[point].iter().enumerate() {
+                        if above && point != larger {
+                            levels[larger] = levels[larger].max(levels[point] + 1);
+                        }
+                    }
+                }
+                levels.into_iter().max().unwrap_or(0)
+            }
+            Kind::Product(left, right) => {
+                (self.height(left, exact)? - 1).saturating_add(self.height(right, exact)?)
+            }
+            Kind::Arrow(domain, range) => {
+                if self.types[domain.0].inhabited {
+                    let range_height = self.height(range, exact)?;
+                    if range_height == 1 {
+                        1
+                    } else {
+                        let points = if exact {
+                            self.elements(domain)?.len()
+                        } else {
+                            self.types[domain.0].cardinality_bound
+                        };
+                        // Each coordinate can rise h-1 times. Raising points in reverse
+                        // topological order attains the bound using a chain in the range.
+                        points.saturating_mul(range_height - 1).saturating_add(1)
+                    }
+                } else {
+                    1
+                }
+            }
+            Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
+            Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => 1,
+        };
+        self.types[ty.0].heights[index] = Some(height);
+        Ok(height)
     }
 
     fn composite(
@@ -340,6 +498,22 @@ impl Model {
                 out.push(&self.types[base.0].poset.as_ref().unwrap().names[center])?;
                 out.push(")")
             }
+            &Kind::Cohomology(base, degree) => {
+                out.push("H(")?;
+                self.write_type(out, base, 0)?;
+                out.push(&format!(", {degree})"))
+            }
+            &Kind::Operations(degree) => out.push(&format!("A({degree})")),
+            &Kind::Suspension(base) => {
+                out.push("Susp(")?;
+                self.write_type(out, base, 0)?;
+                out.push(")")
+            }
+            &Kind::Stable(base, shift, degree) => {
+                out.push("Stable(")?;
+                self.write_type(out, base, 0)?;
+                out.push(&format!(", {shift}, {degree})"))
+            }
             &Kind::Product(left, right) => {
                 let parens = precedence > 1;
                 if parens {
@@ -375,6 +549,33 @@ impl Model {
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
+            (Value::Class(left), Value::Class(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(true);
+                }
+                if left.len() != right.len() {
+                    return Ok(false);
+                }
+                self.spend(left.len())?;
+                Ok(left == right)
+            }
+            (Value::Operation(left), Value::Operation(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || steenrod::compare(self, left, right)? == Ordering::Equal)
+            }
+            (Value::Suspension(left), Value::Suspension(right)) => {
+                use SuspensionPoint::{Equator, North, South};
+                match (left, right) {
+                    (Equator(left), Equator(right)) => {
+                        let Kind::Suspension(base) = *self.kind(ty) else {
+                            unreachable!()
+                        };
+                        Ok(Rc::ptr_eq(left, right) || self.leq(base, left, right)?)
+                    }
+                    (Equator(_), _) | (North, North) | (South, South) => Ok(true),
+                    _ => Ok(false),
+                }
+            }
             (Value::Pair(left), Value::Pair(right)) => {
                 let Kind::Product(a, b) = *self.kind(ty) else {
                     unreachable!()
@@ -403,6 +604,36 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
+            (Value::Class(left), Value::Class(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                self.spend(left.len().min(right.len()))?;
+                // Compare from the most significant set bit to match mask enumeration.
+                Ok(left.iter().rev().cmp(right.iter().rev()))
+            }
+            (Value::Operation(left), Value::Operation(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    steenrod::compare(self, left, right)
+                }
+            }
+            (Value::Suspension(left), Value::Suspension(right)) => {
+                use SuspensionPoint::{Equator, North, South};
+                match (left, right) {
+                    (Equator(left), Equator(right)) => {
+                        if Rc::ptr_eq(left, right) {
+                            Ok(Ordering::Equal)
+                        } else {
+                            self.compare(left, right)
+                        }
+                    }
+                    (Equator(_), _) | (North, South) => Ok(Ordering::Less),
+                    (_, Equator(_)) | (South, North) => Ok(Ordering::Greater),
+                    (North, North) | (South, South) => Ok(Ordering::Equal),
+                }
+            }
             (Value::Pair(left), Value::Pair(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -481,6 +712,34 @@ impl Model {
                     points
                 }
                 Kind::Arrow(domain, range) => self.enumerate_maps(domain, range)?,
+                Kind::Cohomology(..) => {
+                    let rank = self.cohomology(ty)?.rank();
+                    self.enumerate_classes(rank)?
+                }
+                Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::Suspension(base) => {
+                    let equator = self.elements(base)?;
+                    let size = equator.len() + 2;
+                    self.check_element_limit(size)?;
+                    self.allocate(size + equator.len())?;
+                    self.spend(size)?;
+                    let mut points = Vec::with_capacity(size);
+                    points.extend(equator.iter().map(|point| {
+                        Value::Suspension(SuspensionPoint::Equator(Rc::new(point.clone())))
+                    }));
+                    points.push(Value::Suspension(SuspensionPoint::North));
+                    points.push(Value::Suspension(SuspensionPoint::South));
+                    points
+                }
+                Kind::Stable(base, shift, degree) => {
+                    let rank = if let Some(reduced_degree) = degree.checked_sub(shift) {
+                        let underlying = self.cohomology_type(base, reduced_degree)?;
+                        self.cohomology(underlying)?.rank()
+                    } else {
+                        0
+                    };
+                    self.enumerate_classes(rank)?
+                }
             }
         };
         let elements: Rc<[Value]> = elements.into();
@@ -495,6 +754,20 @@ impl Model {
             ));
         }
         Ok(())
+    }
+
+    fn enumerate_classes(&mut self, rank: usize) -> Result<Vec<Value>> {
+        let count = if rank < usize::BITS as usize {
+            1usize << rank
+        } else {
+            usize::MAX
+        };
+        self.check_element_limit(count)?;
+        self.spend(count * (rank + 1))?;
+        self.allocate(count + (count / 2) * rank)?;
+        Ok((0..count)
+            .map(|mask| Value::Class((0..rank).filter(|&i| ((mask >> i) & 1) != 0).collect()))
+            .collect())
     }
 
     fn enumerate_maps(&mut self, domain: TypeId, range: TypeId) -> Result<Vec<Value>> {
@@ -595,6 +868,60 @@ impl Model {
 
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
+            Value::Class(support) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if support.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, generator) in support.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push(&format!("g{generator}"))?;
+                }
+                out.push("}")
+            }
+            Value::Operation(words) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if words.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, word) in words.iter().rev().enumerate() {
+                    if index > 0 {
+                        out.push(" + ")?;
+                    }
+                    if word.is_empty() {
+                        out.push("1")?;
+                    }
+                    for (index, degree) in word.iter().enumerate() {
+                        if index > 0 {
+                            out.push(" ")?;
+                        }
+                        out.push(&format!("Sq^{degree}"))?;
+                    }
+                }
+                out.push("}")
+            }
+            Value::Suspension(point) => {
+                let Kind::Suspension(base) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                out.push(match point {
+                    SuspensionPoint::Equator(_) => "equator[",
+                    SuspensionPoint::North => "north[",
+                    SuspensionPoint::South => "south[",
+                })?;
+                self.write_type(out, base, 0)?;
+                out.push("]")?;
+                if let SuspensionPoint::Equator(point) = point {
+                    out.push("(")?;
+                    self.write_value(out, base, point)?;
+                    out.push(")")?;
+                }
+                Ok(())
+            }
             Value::Point(point) => {
                 self.write_type(out, ty, 0)?;
                 out.push(".")?;
@@ -635,7 +962,7 @@ impl Model {
         range: TypeId,
         rows: &[Value],
     ) -> Result<()> {
-        if rows.len() < 2 || self.is_constant(rows)? {
+        if rows.len() < 2 || self.intrinsically_discrete(domain) || self.is_constant(rows)? {
             return Ok(());
         }
         let inputs = self.elements(domain)?;

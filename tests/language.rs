@@ -1,49 +1,6 @@
-use std::io::Write;
-use std::process::{Command, Output, Stdio};
+mod common;
 
-const ASL: &str = env!("CARGO_BIN_EXE_asl");
-
-fn interpret(source: &str) -> Output {
-    let mut child = Command::new(ASL)
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(source.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
-}
-
-fn example(name: &str) -> Output {
-    Command::new(ASL)
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .arg(format!("examples/{name}.asl"))
-        .output()
-        .unwrap()
-}
-
-fn stdout(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-
-fn diagnostic(output: Output) -> String {
-    assert!(!output.status.success(), "{output:?}");
-    let error = String::from_utf8(output.stderr).unwrap();
-    assert!(!error.is_empty());
-    assert!(!error.contains("panicked"), "{error}");
-    error
-}
+use common::{diagnostic, example, interpret, stdout};
 
 #[test]
 fn rotation_descends_and_its_finite_homotopy_class_is_rigid() {
@@ -62,11 +19,183 @@ fn a_point_evaluates_opens_and_meets_compute_intersections() {
 }
 
 #[test]
-fn projective_plane_has_a_mod_two_fundamental_class() {
+fn torus_projections_generate_the_top_class_and_pullbacks_preserve_products() {
+    assert_eq!(stdout(example("torus-cup")), "H(Circle * Circle, 2){g0}\n");
+}
+
+#[test]
+fn mixed_degree_cup_products_associate_on_the_three_torus() {
+    let program = r"
+        space C { p < a, q < a, p < b, q < b };
+        let u = gen[C, 1, 0];
+        let a = pull((\p : C * C * C => fst(fst(p))), u);
+        let b = pull((\p : C * C * C => snd(fst(p))), u);
+        let c = pull((\p : C * C * C => snd(p)), u);
+        let volume = cup(cup(a, b), c);
+        assert volume == cup(a, cup(b, c));
+        assert volume == gen[C * C * C, 3, 0];
+    ";
+    assert!(stdout(interpret(program)).is_empty());
+}
+
+#[test]
+fn cocycle_representatives_are_equal_modulo_coboundaries() {
+    let program = r"
+        space T { top, bottom < middle < top };
+        assert cocycle[T, 1] { bottom < middle, bottom < top } == zero[T, 1];
+        assert cocycle[T, 2] { bottom < middle < top } == zero[T, 2];
+        assert cocycle[T, 0] { top, top } == zero[T, 0];
+        let unit = cocycle[T, 0] { bottom, middle, top };
+        assert unit == gen[T, 0, 0];
+        let inclusion = res[middle](\x : T => x);
+        assert pull(inclusion, unit) == cocycle[Star(T, middle), 0] { middle, top };
+    ";
+    assert!(stdout(interpret(program)).is_empty());
+}
+
+#[test]
+fn degree_zero_ring_and_discrete_class_spaces_are_first_class() {
+    let program = r"
+        space D { a, b };
+        let a = cocycle[D, 0] { a };
+        let b = cocycle[D, 0] { b };
+        let one = cocycle[D, 0] { a, b };
+        let plus = \x : H(D, 0) => \y : H(D, 0) => add(x, y);
+        assert plus(a)(b) == one;
+        assert plus(one)(a) == b;
+        assert cup(one, a) == a;
+        assert cup(a, b) == zero[D, 0];
+        assert (\x : H(D, 0) => cup(x, x)) == (\x : H(D, 0) => x);
+        let swap = tab D -> D { a => D.b, b => D.a };
+        assert pull(swap, a) == b;
+        let translate = \p : H(D, 0) * H(D, 0) => add(fst(p), snd(p));
+        assert translate((a, b)) == one;
+        show add(gen[D, 0, 0], gen[D, 0, 1]);
+        betti H(D, 0);
+        homotopy (\x : One => a) ~ (\x : One => b);
+    ";
     assert_eq!(
-        stdout(example("projective-plane")),
-        "betti(RP2) = [1, 1, 1]\n"
+        stdout(interpret(program)),
+        "H(D, 0){g0 + g1}\nbetti(H(D, 0)) = [4]\nhomotopy = no\n"
     );
+}
+
+#[test]
+fn pull_is_continuous_in_the_function_argument_and_handles_degenerate_images() {
+    let program = r"
+        space C { p < a, q < a, p < b, q < b };
+        let u = cocycle[C, 1] { p < a };
+        let degree = \f : C -> C => pull(f, u);
+        let id = \x : C => x;
+        let collapse = \x : C => C.p;
+        assert degree(id) == u;
+        assert degree(collapse) == zero[C, 1];
+        let turn = tab C -> C { p => C.q, q => C.p, a => C.b, b => C.a };
+        assert degree(turn) == u;
+        assert pull((\x : C => turn(collapse(x))), u) == pull(collapse, pull(turn, u));
+    ";
+    assert!(stdout(interpret(program)).is_empty());
+}
+
+#[test]
+fn empty_spaces_high_degrees_and_iterated_cohomology_have_the_right_zero() {
+    let program = r"
+        space Void {};
+        betti H(Void, 0);
+        betti H(H(Void, 0), 0);
+        betti H(S -> S, 0);
+        betti H(One, 1000000000);
+        assert zero[Void, 0] == cocycle[Void, 0] {};
+        assert pull((\x : Void => One.pt), gen[One, 0, 0]) == zero[Void, 0];
+        assert cup(zero[One, 1000000000], zero[One, 1000000000]) == zero[One, 2000000000];
+    ";
+    let out = stdout(interpret(program));
+    let ranks: Vec<_> = out
+        .lines()
+        .map(|s| s.split_once(" = ").unwrap().1)
+        .collect();
+    assert_eq!(ranks, ["[1]", "[2]", "[2]", "[1]"]);
+}
+
+#[test]
+fn a_nonclosed_literal_names_the_simplex_that_detects_its_coboundary() {
+    let declaration = "space T { bottom < middle < top };";
+    let bad = "cocycle[T, 1] { bottom < middle }";
+    for expr in [bad.to_string(), format!(r"\x : Void => {bad}")] {
+        let error = diagnostic(interpret(&format!(
+            "{declaration} space Void {{}};\nshow {expr};"
+        )));
+        for witness in [":2:", "bottom", "middle", "top"] {
+            assert!(error.contains(witness), "{error}");
+        }
+    }
+}
+
+#[test]
+fn cohomology_requires_matching_spaces_degrees_and_strict_chains() {
+    for expr in [
+        "add(zero[S, 0], zero[S, 1])",
+        "cup(zero[T, 0], zero[S, 1])",
+        r"pull((\x : One => T.a), zero[S, 1])",
+        "pull(S.lo, zero[S, 0])",
+        "cup(S.lo, S.hi)",
+        "gen[One, 2, 0]",
+        "gen[S, 0, 1]",
+        "cocycle[T, 1] { a < b }",
+        "cocycle[T, 1] { a < a }",
+        "cocycle[T, 1] { c < a }",
+        "cocycle[T, 1] { a }",
+        "cocycle[T, 1] { a < absent }",
+        "cocycle[T * T, 1] {}",
+        "tab S -> H(One, 0) { lo => zero[One, 0], hi => gen[One, 0, 0] }",
+    ] {
+        let error = diagnostic(interpret(&format!(
+            "space T {{ a < c, b < c }};\nshow {expr};"
+        )));
+        assert!(error.contains(":2:"), "{expr}\n{error}");
+    }
+}
+
+#[test]
+fn individual_classes_work_beyond_the_class_space_enumeration_limit() {
+    let large = "space D { a, b, c, d, e, f, g, h, i, j, k, l, m };";
+    let source = format!("{large} let u = gen[D, 0, 12]; assert cup(u, u) == u; show add(u, u);");
+    assert_eq!(stdout(interpret(&source)), "H(D, 0){0}\n");
+    let error = diagnostic(interpret(&format!("{large}\nbetti H(D, 0);")));
+    assert!(error.contains(":2:") && error.contains("limit"), "{error}");
+}
+
+#[test]
+fn a_saturated_height_estimate_cannot_prove_a_group_vanishes() {
+    // For D discrete, D -> C is a product of one circle per point of D.
+    // Here D has more points than the largest representable degree.
+    let labels = (0..usize::BITS)
+        .map(|i| format!("p{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let source = format!(
+        "space Bits {{ {labels} }}; space C {{ p < a, q < a, p < b, q < b }};\n\
+         betti H(H(Bits, 0) -> C, {});",
+        usize::MAX
+    );
+    let error = diagnostic(interpret(&source));
+    assert!(error.contains(":2:") && error.contains("limit"), "{error}");
+}
+
+#[test]
+fn earlier_names_remain_usable_around_cohomology_syntax() {
+    let program = r"
+        space H { p };
+        let zero = H.p;
+        let gen = \x : H => x;
+        let cocycle = gen;
+        let cup = cocycle;
+        let add = cup;
+        let pull = add;
+        assert pull(add(cup(cocycle(gen(zero))))) == H.p;
+        show gen[H, 0, 0];
+    ";
+    assert_eq!(stdout(interpret(program)), "H(H, 0){g0}\n");
 }
 
 #[test]

@@ -1,65 +1,18 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
+use crate::complex::{for_each_boundary, xor_sorted, OrderComplex, Simplex, MAX_PIVOT_CELLS};
 use crate::error::{Error, Result};
 use crate::model::{Model, TypeId, Value};
 
-const MAX_SIMPLICES: usize = 50_000;
-const MAX_SIMPLEX_VERTICES: usize = 300_000;
-const MAX_PIVOT_CELLS: usize = 300_000;
-
-type Simplex = Vec<usize>;
-
 pub(crate) fn betti(model: &mut Model, ty: TypeId) -> Result<Vec<usize>> {
-    let elements = model.elements(ty)?;
-    if elements.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut upper = vec![Vec::new(); elements.len()];
-    let mut edges = 0;
-    for (left, x) in elements.iter().enumerate() {
-        for (right, y) in elements.iter().enumerate().skip(left + 1) {
-            let comparison = if model.leq(ty, x, y)? {
-                Some((left, right))
-            } else if model.leq(ty, y, x)? {
-                Some((right, left))
-            } else {
-                None
-            };
-            if let Some((smaller, larger)) = comparison {
-                edges += 1;
-                if edges + elements.len() > MAX_SIMPLICES {
-                    return Err(Error::plain("order complex exceeds the simplex limit"));
-                }
-                upper[smaller].push(larger);
-            }
-        }
-    }
-
-    let mut current: Vec<Simplex> = (0..elements.len()).map(|index| vec![index]).collect();
-    let mut simplices = current.len();
-    let mut simplex_vertices = simplices;
+    let mut complex = OrderComplex::new(model, ty)?;
+    let mut current = complex.vertices();
     let mut lower_rank = 0;
     let mut ranks = Vec::new();
-    loop {
-        let mut next = Vec::new();
-        for simplex in &current {
-            for &larger in &upper[*simplex.last().unwrap()] {
-                simplices += 1;
-                simplex_vertices += simplex.len() + 1;
-                if simplices > MAX_SIMPLICES || simplex_vertices > MAX_SIMPLEX_VERTICES {
-                    return Err(Error::plain("order complex exceeds the simplex limit"));
-                }
-                model.spend(simplex.len() + 1)?;
-                let mut extended = simplex.clone();
-                extended.push(larger);
-                next.push(extended);
-            }
-        }
+    while !current.is_empty() {
+        let next = complex.extend(model, &current)?;
         let upper_rank = boundary_rank(model, &current, &next)?;
         ranks.push(current.len() - lower_rank - upper_rank);
-        if next.is_empty() {
-            break;
-        }
         lower_rank = upper_rank;
         current = next;
     }
@@ -73,27 +26,11 @@ fn boundary_rank(model: &mut Model, rows: &[Simplex], columns: &[Simplex]) -> Re
     if columns.is_empty() {
         return Ok(0);
     }
-    let indices: HashMap<&[usize], usize> = rows
-        .iter()
-        .enumerate()
-        .map(|(index, row)| (row.as_slice(), index))
-        .collect();
     let mut pivots = vec![None::<Vec<usize>>; rows.len()];
     let mut pivot_cells = 0;
     let mut rank = 0;
-    let mut face = Vec::new();
-    for simplex in columns {
-        let mut column = Vec::with_capacity(simplex.len());
-        for vertex in 0..simplex.len() {
-            model.spend(simplex.len())?;
-            face.clear();
-            face.extend_from_slice(&simplex[..vertex]);
-            face.extend_from_slice(&simplex[vertex + 1..]);
-            column.push(indices[face.as_slice()]);
-        }
+    for_each_boundary(model, rows, columns, |model, _, mut column| {
         column.sort_unstable();
-
-        // Over F2, adding columns is the symmetric difference of row indices.
         while let Some(&leading) = column.last() {
             if let Some(pivot) = &pivots[leading] {
                 model.spend(column.len() + pivot.len())?;
@@ -108,31 +45,9 @@ fn boundary_rank(model: &mut Model, rows: &[Simplex], columns: &[Simplex]) -> Re
                 break;
             }
         }
-    }
+        Ok(())
+    })?;
     Ok(rank)
-}
-
-fn xor_sorted(mut left: &[usize], mut right: &[usize]) -> Vec<usize> {
-    let mut result = Vec::with_capacity(left.len() + right.len());
-    while let (Some((&x, xs)), Some((&y, ys))) = (left.split_first(), right.split_first()) {
-        match x.cmp(&y) {
-            std::cmp::Ordering::Less => {
-                result.push(x);
-                left = xs;
-            }
-            std::cmp::Ordering::Greater => {
-                result.push(y);
-                right = ys;
-            }
-            std::cmp::Ordering::Equal => {
-                left = xs;
-                right = ys;
-            }
-        }
-    }
-    result.extend_from_slice(left);
-    result.extend_from_slice(right);
-    result
 }
 
 pub(crate) fn homotopy(

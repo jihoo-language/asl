@@ -18,6 +18,10 @@ pub(crate) struct ParsedType {
 pub(crate) enum TypeForm {
     Name(Label),
     Star(Box<ParsedType>, Label),
+    Cohomology(Box<ParsedType>, usize),
+    Operations(usize),
+    Suspension(Box<ParsedType>),
+    Stable(Box<ParsedType>, usize, usize),
     Product(Box<ParsedType>, Box<ParsedType>),
     Arrow(Box<ParsedType>, Box<ParsedType>),
 }
@@ -30,9 +34,49 @@ pub(crate) struct ParsedExpr {
 
 pub(crate) type Entries = Vec<(Label, ParsedExpr)>;
 
+#[derive(Clone, Copy)]
+pub(crate) enum BinaryOp {
+    Add,
+    Cup,
+    Pull,
+    Mul,
+    Act,
+}
+
+impl BinaryOp {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "add" => Some(Self::Add),
+            "cup" => Some(Self::Cup),
+            "pull" => Some(Self::Pull),
+            "mul" => Some(Self::Mul),
+            "act" => Some(Self::Act),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) enum ClassForm {
+    Zero,
+    Generator(usize, Span),
+    Cocycle(Vec<Vec<Label>>),
+}
+
+pub(crate) enum SuspensionForm {
+    North,
+    South,
+    Equator,
+}
+
 pub(crate) enum ExprForm {
     Name(Label),
     Point(ParsedType, Label),
+    Class(ParsedType, usize, ClassForm),
+    Zero(ParsedType),
+    Square(usize),
+    Suspension(ParsedType, SuspensionForm),
+    Shift(usize, Box<ParsedExpr>),
+    Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
     Call(Box<ParsedExpr>, Box<ParsedExpr>),
     Pair(Box<ParsedExpr>, Box<ParsedExpr>),
@@ -60,6 +104,7 @@ pub(crate) enum StatementForm {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Token<'src> {
     Word(&'src str),
+    Number(&'src str),
     LBrace,
     RBrace,
     LParen,
@@ -85,6 +130,7 @@ impl Token<'_> {
     fn description(self) -> String {
         match self {
             Self::Word(word) => format!("'{word}'"),
+            Self::Number(number) => format!("'{number}'"),
             Self::Eof => "end of input".into(),
             symbol => {
                 let spelling = match symbol {
@@ -106,7 +152,7 @@ impl Token<'_> {
                     Self::Arrow => "->",
                     Self::FatArrow => "=>",
                     Self::Tilde => "~",
-                    Self::Word(_) | Self::Eof => unreachable!(),
+                    Self::Word(_) | Self::Number(_) | Self::Eof => unreachable!(),
                 };
                 format!("'{spelling}'")
             }
@@ -182,6 +228,12 @@ impl<'src> Lexer<'src> {
                     return Err(Error::new(span, "identifier exceeds 128 bytes"));
                 }
                 Token::Word(&self.source[start..self.offset])
+            }
+            b'0'..=b'9' => {
+                while self.peek().is_some_and(|byte| byte.is_ascii_digit()) {
+                    self.step();
+                }
+                Token::Number(&self.source[start..self.offset])
             }
             b'{' => Token::LBrace,
             b'}' => Token::RBrace,
@@ -289,6 +341,35 @@ impl<'src> Parser<'src> {
         Ok(label)
     }
 
+    fn number(&mut self) -> Result<(usize, Span)> {
+        let span = self.span();
+        let Token::Number(text) = self.token() else {
+            return Err(self.expected("a nonnegative decimal integer"));
+        };
+        let number = text
+            .parse()
+            .map_err(|_| Error::new(span, "decimal integer is out of range"))?;
+        self.advance()?;
+        Ok((number, span))
+    }
+
+    fn chains(&mut self) -> Result<Vec<Vec<Label>>> {
+        self.expect(Token::LBrace)?;
+        let mut chains = Vec::new();
+        while self.token() != Token::RBrace {
+            let mut chain = vec![self.label()?];
+            while self.eat(Token::Less)? {
+                chain.push(self.label()?);
+            }
+            chains.push(chain);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(chains)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
@@ -296,20 +377,7 @@ impl<'src> Parser<'src> {
             Token::Word("space") => {
                 self.advance()?;
                 let name = self.label()?;
-                self.expect(Token::LBrace)?;
-                let mut chains = Vec::new();
-                while self.token() != Token::RBrace {
-                    let mut chain = vec![self.label()?];
-                    while self.eat(Token::Less)? {
-                        chain.push(self.label()?);
-                    }
-                    chains.push(chain);
-                    if !self.eat(Token::Comma)? {
-                        break;
-                    }
-                }
-                self.expect(Token::RBrace)?;
-                StatementForm::Space(name, chains)
+                StatementForm::Space(name, self.chains()?)
             }
             Token::Word("let") => {
                 self.advance()?;
@@ -385,7 +453,33 @@ impl<'src> Parser<'src> {
             let depth = base.depth + 1;
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
-        ty(span, TypeForm::Name(self.label()?), 0)
+        let name = self.label()?;
+        if matches!(name.text.as_str(), "A" | "H" | "Susp" | "Stable") && self.eat(Token::LParen)? {
+            let (kind, depth) = if name.text == "A" {
+                let (degree, _) = self.number()?;
+                (TypeForm::Operations(degree), 0)
+            } else {
+                let base = self.ty(nest + 1)?;
+                let depth = base.depth + 1;
+                let kind = if name.text == "Susp" {
+                    TypeForm::Suspension(Box::new(base))
+                } else {
+                    self.expect(Token::Comma)?;
+                    let (first, _) = self.number()?;
+                    if name.text == "H" {
+                        TypeForm::Cohomology(Box::new(base), first)
+                    } else {
+                        self.expect(Token::Comma)?;
+                        let (degree, _) = self.number()?;
+                        TypeForm::Stable(Box::new(base), first, degree)
+                    }
+                };
+                (kind, depth)
+            };
+            self.expect(Token::RParen)?;
+            return ty(span, kind, depth);
+        }
+        ty(span, TypeForm::Name(name), 0)
     }
 
     fn expr(&mut self, nest: usize) -> Result<ParsedExpr> {
@@ -393,6 +487,27 @@ impl<'src> Parser<'src> {
         let mut head = self.expr_atom(nest)?;
         while self.eat(Token::LParen)? {
             let arg = self.expr(nest + 1)?;
+            if self.eat(Token::Comma)? {
+                let primitive = match &head.kind {
+                    ExprForm::Name(name) => BinaryOp::from_name(&name.text),
+                    _ => None,
+                };
+                let Some(primitive) = primitive else {
+                    return Err(Error::new(
+                        head.span,
+                        "only add, cup, pull, mul, and act take two arguments",
+                    ));
+                };
+                let right = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let depth = arg.depth.max(right.depth) + 1;
+                head = expr(
+                    head.span,
+                    ExprForm::Binary(primitive, Box::new(arg), Box::new(right)),
+                    depth,
+                )?;
+                continue;
+            }
             self.expect(Token::RParen)?;
             let span = head.span;
             let depth = head.depth.max(arg.depth) + 1;
@@ -492,6 +607,58 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "sq" && self.eat(Token::LBracket)? {
+                    let (degree, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::Square(degree), 0);
+                }
+                if name.text == "shift" && self.eat(Token::LBracket)? {
+                    let (shift, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::Shift(shift, Box::new(value)), depth);
+                }
+                let suspension = match name.text.as_str() {
+                    "north" => Some(SuspensionForm::North),
+                    "south" => Some(SuspensionForm::South),
+                    "equator" => Some(SuspensionForm::Equator),
+                    _ => None,
+                };
+                if let Some(form) = suspension {
+                    if self.eat(Token::LBracket)? {
+                        let base = self.ty(nest + 1)?;
+                        self.expect(Token::RBracket)?;
+                        return expr(span, ExprForm::Suspension(base, form), 0);
+                    }
+                }
+                if matches!(name.text.as_str(), "zero" | "gen" | "cocycle")
+                    && self.eat(Token::LBracket)?
+                {
+                    let base = self.ty(nest + 1)?;
+                    if name.text == "zero" && self.eat(Token::RBracket)? {
+                        return expr(span, ExprForm::Zero(base), 0);
+                    }
+                    self.expect(Token::Comma)?;
+                    let (degree, _) = self.number()?;
+                    let form = match name.text.as_str() {
+                        "gen" => {
+                            self.expect(Token::Comma)?;
+                            let (index, at) = self.number()?;
+                            self.expect(Token::RBracket)?;
+                            ClassForm::Generator(index, at)
+                        }
+                        "cocycle" => {
+                            self.expect(Token::RBracket)?;
+                            ClassForm::Cocycle(self.chains()?)
+                        }
+                        _ => {
+                            self.expect(Token::RBracket)?;
+                            ClassForm::Zero
+                        }
+                    };
+                    return expr(span, ExprForm::Class(base, degree, form), 0);
+                }
                 if self.eat(Token::Dot)? {
                     let ty = ty(span, TypeForm::Name(name), 0)?;
                     return expr(span, ExprForm::Point(ty, self.label()?), 0);
