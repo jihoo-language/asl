@@ -601,6 +601,14 @@ For the complete intersection $(xy+z^2,x^2+yz)$, the two classes in $(1,2)$ mult
 
 In the flag Stanley–Reisner example with ideal $(x_1x_2,x_3x_4,x_5x_6,x_1x_3,x_4x_5)$, the classes of $x_1e_2$, $x_3e_4$, and $x_5e_6$ have a triple product with exactly one value, the nonzero class of $x_1x_5e_2e_3e_4e_6$. The first adjacent product is zero at the chain level and the second is $d(x_5e_3e_4e_6)$. Both indeterminacy groups are in $(3,4)$ and vanish. [Tor Massey example](examples/rank-massey.asl)
 
+#### Explicit defining systems
+
+`rvTCurvature(a1,...,an){i < j => w, ...}` takes chosen witnesses and returns the top Koszul chain. `rvTMassey(a1,...,an){...}` takes its homology class. There are at least two adjacent inputs in order from left to right, with vertices numbered $0,\ldots,n$. An adjacent input is either an `RVTor` class with its canonical representative or a chosen closed `RVKoszul` chain. All chains and classes use the same ideal.
+
+For each proper interval $[i,j]$ the witness $A_{ij}$ has homological degree $\sum_{i<k\le j}s_k+j-i-1$ and internal degree $\sum_{i<k\le j}t_k$. Omitted witnesses are zero. The interpreter checks $d A_{ij}=\sum_{i<k<j}A_{ik}A_{kj}$ on every proper interval. The top chain is $\sum_{0<k<n}A_{0k}A_{kn}$, of homological degree $\sum_k s_k+n-2$. These expressions evaluate the supplied defining system.
+
+The fourfold example uses the classes of $x_1e_5$, $x_2e_6$, $x_3e_7$, and $x_4e_8$. It computes a nonzero class in $(6,8)$ and verifies that the raw curvature differs from $x_4x_5e_1e_2e_3e_6e_7e_8$ by an explicit boundary. [Fourfold defining system example](examples/rank-massey-four.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

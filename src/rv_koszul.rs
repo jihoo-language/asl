@@ -132,7 +132,11 @@ pub(crate) fn differential(model: &mut Model, ideal: &Ideal, support: &[Term]) -
     persist(model, terms)
 }
 
-fn differential_terms(model: &mut Model, ideal: &Ideal, support: &[Term]) -> Result<Vec<Term>> {
+pub(crate) fn differential_terms(
+    model: &mut Model,
+    ideal: &Ideal,
+    support: &[Term],
+) -> Result<Vec<Term>> {
     model.spend(support.len())?;
     let mut terms = BTreeSet::new();
     for term in support {
@@ -216,7 +220,7 @@ fn normal_terms(model: &mut Model, ideal: &Ideal, terms: BTreeSet<Term>) -> Resu
     Ok(result)
 }
 
-fn check_storage(cells: usize) -> Result<()> {
+pub(crate) fn check_storage(cells: usize) -> Result<()> {
     if cells > MAX_CELLS {
         return Err(Error::plain(
             "rank Koszul calculation exceeds the storage limit",

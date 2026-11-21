@@ -54,6 +54,7 @@ mod rv_poly;
 mod rv_rees;
 mod rv_scheme;
 mod rv_t_bracket;
+mod rv_t_system;
 mod steenrod;
 mod syntax;
 mod transfer;

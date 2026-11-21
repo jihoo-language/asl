@@ -9,6 +9,7 @@ use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
+use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -378,6 +379,7 @@ pub(crate) enum ExprForm {
     Transfer(TransferOp, Vec<ParsedExpr>),
     RvTBracket(RvTBracketOp, Vec<ParsedExpr>),
     MapBracket(MapBracketOp, Vec<ParsedExpr>),
+    RvTSystem(RvTSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     MapSystem(MapSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     OddSystem(OddSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     MapTransfer(MapTransferOp, Vec<ParsedExpr>),
@@ -1691,6 +1693,7 @@ impl<'src> Parser<'src> {
                     || TransferOp::from_name(&name.text).is_some()
                     || RvTBracketOp::from_name(&name.text).is_some()
                     || MapBracketOp::from_name(&name.text).is_some()
+                    || RvTSystemOp::from_name(&name.text).is_some()
                     || MapSystemOp::from_name(&name.text).is_some()
                     || OddSystemOp::from_name(&name.text).is_some()
                     || MapTransferOp::from_name(&name.text).is_some()
@@ -1747,10 +1750,13 @@ impl<'src> Parser<'src> {
             unreachable!();
         };
         let massey = name.text == "massey";
+        let rv_t_system = RvTSystemOp::from_name(&name.text);
         let map_system = MapSystemOp::from_name(&name.text);
         let odd_system = OddSystemOp::from_name(&name.text);
-        let has_witnesses =
-            massey || map_system.is_some() || odd_system.is_some_and(OddSystemOp::explicit);
+        let has_witnesses = massey
+            || map_system.is_some()
+            || rv_t_system.is_some()
+            || odd_system.is_some_and(OddSystemOp::explicit);
         let span = head.span;
         let mut depth = arguments
             .iter()
@@ -1775,6 +1781,14 @@ impl<'src> Parser<'src> {
         }
         if let Some(operation) = MapTransferOp::from_name(&name.text) {
             return expr(span, ExprForm::MapTransfer(operation, arguments), depth);
+        }
+        if let Some(operation) = rv_t_system {
+            let witnesses = self.witnesses(nest, &mut depth)?;
+            return expr(
+                span,
+                ExprForm::RvTSystem(operation, arguments, witnesses),
+                depth,
+            );
         }
         if let Some(operation) = map_system {
             let witnesses = self.witnesses(nest, &mut depth)?;

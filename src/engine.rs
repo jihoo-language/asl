@@ -49,6 +49,7 @@ use crate::rv_poly;
 use crate::rv_rees;
 use crate::rv_scheme;
 use crate::rv_t_bracket;
+use crate::rv_t_system;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -211,6 +212,7 @@ enum TypedForm {
     Transfer(ScalarField, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(ScalarField, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
+    RvTSystem(rv_t_system::Operation, usize, Vec<DefiningEntry>),
     MapSystem(map_system::Operation, usize, Vec<DefiningEntry>),
     OddSystem(odd_massey::Operation, usize, Vec<DefiningEntry>),
     ClassBracket {
@@ -1577,6 +1579,21 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 map_transfer::evaluate(&mut self.model, &inputs, *operation)
             }
+            TypedForm::RvTSystem(operation, arity, entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| {
+                        Ok(rv_t_system::Entry {
+                            from: entry.from,
+                            to: entry.to,
+                            ty: entry.expr.ty,
+                            span: entry.span,
+                            value: self.eval(&entry.expr)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                rv_t_system::evaluate(&mut self.model, *arity, *operation, expr.ty, &entries)
+            }
             TypedForm::MapSystem(operation, arity, entries) => {
                 let entries = entries
                     .iter()
@@ -2724,6 +2741,9 @@ impl Checker<'_> {
             ExprForm::RvTBracket(operation, inputs) => self.rv_t_bracket(operation, inputs),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
+            ExprForm::RvTSystem(operation, inputs, witnesses) => {
+                self.rv_t_system(operation, inputs, witnesses, span)
+            }
             ExprForm::MapSystem(operation, inputs, witnesses) => {
                 self.map_system(operation, inputs, witnesses, span)
             }
@@ -2787,6 +2807,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = map_transfer::Operation::from_name(&name.text) {
                             return self.map_transfer(operation, vec![*argument]);
+                        }
+                        if let Some(operation) = rv_t_system::Operation::from_name(&name.text) {
+                            return self.rv_t_system(operation, vec![*argument], Vec::new(), span);
                         }
                         if let Some(operation) = map_system::Operation::from_name(&name.text) {
                             return self.map_system(operation, vec![*argument], Vec::new(), span);
@@ -3107,6 +3130,40 @@ impl Checker<'_> {
             .collect::<Result<Vec<_>>>()?;
         let ty = operation.result_type(self.model, terms.iter().map(|term| term.ty), arity)?;
         Ok((ty, TypedForm::MapTransfer(operation, terms)))
+    }
+
+    fn rv_t_system(
+        &mut self,
+        operation: rv_t_system::Operation,
+        inputs: Vec<ParsedExpr>,
+        witnesses: Vec<Witness>,
+        span: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let arity = inputs.len();
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let signature = rv_t_system::Signature::new(
+            self.model,
+            operation,
+            inputs.iter().map(|input| (input.ty, input.span)),
+            span,
+        )?;
+        let ty = signature.result_type(self.model, span)?;
+        let mut entries = Vec::with_capacity(arity + witnesses.len());
+        for (from, expr) in inputs.into_iter().enumerate() {
+            entries.push(DefiningEntry {
+                from,
+                to: from + 1,
+                span: expr.span,
+                expr,
+            });
+        }
+        self.check_witnesses(witnesses, &mut entries, |model, from, to, at| {
+            signature.witness_type(model, from, to, at)
+        })?;
+        Ok((ty, TypedForm::RvTSystem(operation, arity, entries)))
     }
 
     fn map_system(
