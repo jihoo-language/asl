@@ -7,6 +7,7 @@ use crate::binary_field::BinaryField;
 use crate::binary_linear;
 use crate::bp_classes;
 use crate::bp_height;
+use crate::bp_mod_ext;
 use crate::bp_page;
 use crate::bp_rel;
 use crate::bp_triple;
@@ -147,6 +148,7 @@ pub(crate) enum Kind {
     BPRelExt(bp_rel::Grade),
     BPHeight(bp_height::ClassGrade),
     BPPage(bp_page::Grade),
+    BPModExt(bp_mod_ext::Grade),
     BPExt(bp_classes::Grade),
     BPTriple(bp_classes::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
@@ -287,6 +289,7 @@ struct TypeInfo {
     odd_ext_rank: Option<usize>,
     odd_page: Option<Rc<OddPage>>,
     bp_page: Option<Rc<bp_page::Page>>,
+    bp_mod_ext: Option<Rc<bp_mod_ext::Group>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
@@ -450,7 +453,8 @@ impl Model {
             | Kind::PMay(..)
             | Kind::PMayAn(..)
             | Kind::PCeAn(..)
-            | Kind::BPPage(..) => usize::MAX,
+            | Kind::BPPage(..)
+            | Kind::BPModExt(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -561,6 +565,7 @@ impl Model {
             odd_ext_rank: None,
             odd_page: None,
             bp_page: None,
+            bp_mod_ext: None,
             xext: None,
             map_ext: None,
             q_ext: None,
@@ -613,6 +618,7 @@ impl Model {
                 | Kind::PMayAn(..)
                 | Kind::PCeAn(..)
                 | Kind::BPPage(..)
+                | Kind::BPModExt(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -1139,6 +1145,10 @@ impl Model {
         self.inhabited_type(Kind::VExt(grade), depth)
     }
 
+    pub(crate) fn bp_mod_ext_type(&mut self, grade: bp_mod_ext::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPModExt(grade), 0)
+    }
+
     pub(crate) fn bp_page_type(&mut self, grade: bp_page::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::BPPage(grade), 0)
     }
@@ -1536,6 +1546,18 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn bp_mod_ext(&mut self, ty: TypeId) -> Result<Rc<bp_mod_ext::Group>> {
+        if let Some(group) = &self.types[ty.0].bp_mod_ext {
+            return Ok(group.clone());
+        }
+        let Kind::BPModExt(grade) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let group = Rc::new(bp_mod_ext::Group::build(self, grade)?);
+        self.types[ty.0].bp_mod_ext = Some(group.clone());
+        Ok(group)
+    }
+
     pub(crate) fn bp_page(&mut self, ty: TypeId) -> Result<Rc<bp_page::Page>> {
         if let Some(data) = &self.types[ty.0].bp_page {
             return Ok(data.clone());
@@ -1772,6 +1794,7 @@ impl Model {
             | Kind::PMayAn(..)
             | Kind::PCeAn(..)
             | Kind::BPPage(..)
+            | Kind::BPModExt(..)
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
             | Kind::Ext(..)
@@ -2028,6 +2051,7 @@ impl Model {
                 shape.upper.prime, shape.lower, shape.upper.height, shape.upper.arrows,
             )),
             Kind::BPPage(grade) => out.push(&grade.to_string()),
+            Kind::BPModExt(grade) => out.push(&grade.to_string()),
             Kind::BPTriple(grade) => out.push(&format!(
                 "BPTriple({}, {}, {}, {})",
                 grade.shape.prime, grade.shape.height, grade.shape.arrows, grade.t
@@ -2664,6 +2688,10 @@ impl Model {
                 Kind::PExt(p, ..) | Kind::PExtAn(p, ..) => {
                     let rank = self.odd_ext_rank(ty)?;
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
+                }
+                Kind::BPModExt(grade) => {
+                    let rank = self.bp_mod_ext(ty)?.rank();
+                    odd_ext::elements(self, grade.prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::BPPage(grade) => {
                     let rank = self.bp_page(ty)?.rank();

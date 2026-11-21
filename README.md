@@ -422,6 +422,12 @@ For the integral class $\alpha=[t_1]$, the chosen repeated systems at $p=3,5,7,1
 
 At height two, apply `bpDelta(bpThickDelta(...))` to the class of $v_2^s$ in the thick quotient to obtain an integral representative of $\beta_{s/j}$. Its internal degree is $2s(p^2-1)-2j(p-1)$. The exact $v_1$ divisibility of $d(v_2^s)$ modulo $p$ is $p^{\nu_p(s)}$ for $s>0$. The example checks order two for $\beta_{2/2}$ at $p=2$ in weight eight and order three for $\beta_{3/3}$ at $p=3$ in weight 36. [Divided Greek-letter example](examples/bp-divided-greek.asl)
 
+### Cohomology of the BP quotients
+
+`BPIExt(p, n, a, h, t)` and `BPThickExt(p, n, a, h, j, t)` are the actual cohomology groups of the normalized `BPI` and `BPThick` cobar complexes in internal degree `t`. The calculator uses their homogeneous monomial bases and reduces cycles modulo boundaries over $\mathbb F_p$. `bpIExtdim[p, n, a, h, t];` and `bpThickExtdim[p, n, a, h, j, t];` report the dimensions. The corresponding `gen` forms append a generator index. `bpIExtClass[t]` and `bpThickExtClass[t]` project homogeneous normalized cocycles. Their `Rep` operations return chosen cocycle representatives. Both groups have `zero`, `add`, `pscale`, and the signed Alexander–Whitney `bpCup` product.
+
+`bpThick[j]` and `bpReduce` also act on quotient cohomology. The `bpThickDelta` class operation goes from the thick quotient with parameter `h` to the underlying `BPIExt` depth `h−1`, raises `a` by one, and subtracts $2j(p^{h-1}-1)$ from `t`. On `BPIExt` at depth `h>1`, `bpDelta` lowers the depth by one and subtracts $2(p^{h-1}-1)$ from the internal degree. At depth one it maps to integral `BPExt` by division by $p$, which preserves the internal degree. These maps apply the connecting calculations to cocycle representatives and then project in the target. [First-class divided Greek-letter example](examples/bp-divided-classes.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

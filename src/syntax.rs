@@ -76,6 +76,7 @@ pub(crate) enum TypeForm {
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPThick(BpSpec, usize, usize),
+    BPModExt(BpModSpec),
     BPRel(BpRelSpec),
     BPRelExt(BpRelSpec, usize),
     BPHeight(BpHeightSpec),
@@ -146,6 +147,13 @@ pub(crate) enum BpRelOp {
     Class(usize),
     Representative,
     HeightDelta,
+}
+
+pub(crate) struct BpModSpec {
+    pub(crate) shape: BpSpec,
+    pub(crate) h: usize,
+    pub(crate) exponent: Option<usize>,
+    pub(crate) t: usize,
 }
 
 pub(crate) type BpPageSpec = (usize, usize, usize, usize, usize, usize);
@@ -505,6 +513,9 @@ pub(crate) enum ExprForm {
     BpRaise(usize, Box<ParsedExpr>),
     BpPageGenerator(BpPageMode, BpPageSpec, usize, Span),
     BpPageClass(BpPageMode, (usize, usize, usize), Box<ParsedExpr>),
+    BpModExtGen(BpModSpec, usize, Span),
+    BpModExtClass(bool, usize, Box<ParsedExpr>),
+    BpModExtRep(bool, Box<ParsedExpr>),
     BpPageOperation(Label, BpPageMode, BpPageOp, Box<ParsedExpr>),
     RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
     RvHasse(Vec<usize>, Box<ParsedExpr>),
@@ -586,6 +597,7 @@ pub(crate) enum StatementForm {
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     BpPageDimension(BpPageMode, BpPageSpec),
+    BpModExtDimension(BpModSpec),
     BpHeightPage(bool, BpPageSpec),
     PMayDimension(usize, usize, usize, usize, usize),
     PMayAnDimension(usize, usize, usize, usize, usize, usize),
@@ -925,6 +937,27 @@ impl<'src> Parser<'src> {
         Ok(BpRelSpec(p, n, m, a))
     }
 
+    fn bp_mod_ext_grade(&mut self, thick: bool) -> Result<BpModSpec> {
+        let (p, n, a) = self.prime_bidegree()?;
+        self.expect(Token::Comma)?;
+        let (h, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let exponent = if thick {
+            let (power, _) = self.number()?;
+            self.expect(Token::Comma)?;
+            Some(power)
+        } else {
+            None
+        };
+        let (t, _) = self.number()?;
+        Ok(BpModSpec {
+            shape: BpSpec(p, n, a),
+            h,
+            exponent,
+            t,
+        })
+    }
+
     fn bp_ext_grade(&mut self) -> Result<(BpSpec, usize)> {
         let (prime, height, arrows) = self.prime_bidegree()?;
         self.expect(Token::Comma)?;
@@ -1246,6 +1279,14 @@ impl<'src> Parser<'src> {
                 let spec = self.prime_profile_page_degree()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::BpHeightPage(image, spec)
+            }
+            Token::Word("bpIExtdim") | Token::Word("bpThickExtdim") => {
+                let thick = self.token() == Token::Word("bpThickExtdim");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.bp_mod_ext_grade(thick)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpModExtDimension(grade)
             }
             Token::Word("bpBockdim") | Token::Word("bpNovdim") => {
                 let mode = if self.token() == Token::Word("bpBockdim") {
@@ -2197,6 +2238,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
+        if matches!(name.text.as_str(), "BPIExt" | "BPThickExt") && self.eat(Token::LParen)? {
+            let grade = self.bp_mod_ext_grade(name.text == "BPThickExt")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BPModExt(grade), 0);
+        }
         if name.text == "BPThick" && self.eat(Token::LParen)? {
             let (prime, height, arrows) = self.prime_bidegree()?;
             self.expect(Token::Comma)?;
@@ -2791,6 +2837,39 @@ impl<'src> Parser<'src> {
                             depth,
                         );
                     }
+                }
+                if matches!(name.text.as_str(), "bpIExtgen" | "bpThickExtgen")
+                    && self.eat(Token::LBracket)?
+                {
+                    let grade = self.bp_mod_ext_grade(name.text == "bpThickExtgen")?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::BpModExtGen(grade, index, at), 0);
+                }
+                if matches!(name.text.as_str(), "bpIExtClass" | "bpThickExtClass")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (t, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpModExtClass(name.text == "bpThickExtClass", t, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "bpIExtRep" | "bpThickExtRep")
+                    && self.token() == Token::LParen
+                {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpModExtRep(name.text == "bpThickExtRep", Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "bpRaise" && self.eat(Token::LBracket)? {
                     let (height, _) = self.number()?;

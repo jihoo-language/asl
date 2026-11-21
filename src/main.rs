@@ -7,6 +7,7 @@ mod bp_ext;
 mod bp_height;
 mod bp_higher;
 mod bp_lattice;
+mod bp_mod_ext;
 mod bp_page;
 mod bp_polynomial;
 mod bp_rel;

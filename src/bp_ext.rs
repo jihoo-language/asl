@@ -554,11 +554,22 @@ impl Monomials {
         };
         let degree = self.weights[variable];
         let minimum = usize::from(slot != 0 && variable == 0 && !used);
-        let maximum = available / degree;
+        let mut maximum = available / degree;
+        if slot == 0 {
+            if let Some(quotient) = self.shape.reduction() {
+                if variable < quotient.killed_variables {
+                    maximum = 0;
+                } else if let Some((index, power)) = quotient.cutoff {
+                    if index == variable {
+                        maximum = maximum.min(power - 1);
+                    }
+                }
+            }
+        }
         // The last variable is v1 or t1 and has unit weight, so its
         // exponent is forced in the final slot.
         if reserved == 0 && variable == 0 {
-            if maximum >= minimum {
+            if maximum >= minimum && maximum == remaining {
                 self.with_power(slot, variable, maximum);
                 self.collect(model)?;
                 self.without_power(variable, maximum);

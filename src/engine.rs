@@ -6,6 +6,7 @@ use crate::binary_field::{BinaryField, Embedding};
 use crate::binary_linear;
 use crate::bp_height;
 use crate::bp_higher;
+use crate::bp_mod_ext;
 use crate::bp_page;
 use crate::bp_triple;
 use crate::bracket;
@@ -261,6 +262,9 @@ enum TypedForm {
     BpTripleBase(Box<TypedExpr>),
     BpRaise(Box<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
+    BpModExtClass(Box<TypedExpr>),
+    BpModExtRep(Box<TypedExpr>),
+    BpModExtOperation(bp::Operation, Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
     RvBarWord(Vec<usize>, Vec<usize>, Vec<TypedExpr>),
     RvBarLength(usize, Box<TypedExpr>),
@@ -692,6 +696,20 @@ impl Engine {
                         "bpHeightPage[{p}, {n}, {r}, {h}, {a}, {t}] = free {}, torsion {:?}",
                         group.free, group.torsion
                     )
+                }
+            }
+            StatementForm::BpModExtDimension(spec) => {
+                let grade = self.checker().bp_mod_ext_grade(spec)?;
+                let ty = self.model.bp_mod_ext_type(grade)?;
+                let rank = self.model.bp_mod_ext(ty)?.rank();
+                let shape = grade.shape;
+                let (p, n, a, t) = (shape.prime, shape.height, shape.arrows, grade.t);
+                if let Some(j) = shape.thickness {
+                    let h = shape.depth + 1;
+                    format!("bpThickExtdim[{p}, {n}, {a}, {h}, {j}, {t}] = {rank}")
+                } else {
+                    let h = shape.depth;
+                    format!("bpIExtdim[{p}, {n}, {a}, {h}, {t}] = {rank}")
                 }
             }
             StatementForm::BpPageDimension(mode, (p, n, r, a, t, f)) => {
@@ -1421,6 +1439,14 @@ impl Engine {
                         bp::persist(&mut self.model, result)
                     }
                     (BinaryOp::BpCup, Value::OddClass(a), Value::OddClass(b)) => {
+                        if matches!(self.model.kind(expr.ty), Kind::BPModExt(..)) {
+                            return bp_mod_ext::cup(
+                                &mut self.model,
+                                (left.ty, &a),
+                                (right.ty, &b),
+                                expr.ty,
+                            );
+                        }
                         if a.is_empty() || b.is_empty() {
                             return Ok(odd_ext::zero());
                         }
@@ -1519,6 +1545,7 @@ impl Engine {
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                            Kind::BPModExt(grade) => grade.prime(),
                             _ => unreachable!(),
                         };
                         odd_ext::add(&mut self.model, p, &a, &b)
@@ -2224,6 +2251,31 @@ impl Engine {
                 let values: [_; 5] = values.try_into().unwrap_or_else(|_| unreachable!());
                 let result = layout.apply(&mut self.model, values.each_ref().map(Rc::as_ref))?;
                 bp::persist(&mut self.model, result)
+            }
+            TypedForm::BpModExtClass(input) => {
+                let Value::BP(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                bp_mod_ext::class(&mut self.model, expr.ty, &polynomial)
+            }
+            TypedForm::BpModExtRep(input) => {
+                let Value::OddClass(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if class.is_empty() {
+                    return Ok(bp::zero());
+                }
+                let representative = self
+                    .model
+                    .bp_mod_ext(input.ty)?
+                    .representative(&mut self.model, &class)?;
+                bp::persist(&mut self.model, representative)
+            }
+            TypedForm::BpModExtOperation(operation, input) => {
+                let Value::OddClass(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                bp_mod_ext::apply(&mut self.model, *operation, input.ty, expr.ty, &class)
             }
             TypedForm::BpPageClass(input) => {
                 let Value::BP(polynomial) = self.eval(input)? else {
@@ -3075,6 +3127,10 @@ impl Checker<'_> {
                 let grade = self.bp_ext_grade(spec, t)?;
                 self.model.bp_ext_type(grade)
             }
+            TypeForm::BPModExt(spec) => {
+                let grade = self.bp_mod_ext_grade(spec)?;
+                self.model.bp_mod_ext_type(grade)
+            }
             TypeForm::BPThick(crate::syntax::BpSpec(p, n, a), h, power) => {
                 let shape = bp::Shape::new(self.model, p, n, a)?;
                 if !(2..=shape.height + 1).contains(&h) {
@@ -3215,7 +3271,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
-                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) => odd_ext::zero(),
+                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::JetPage(..) => jet_page::zero(),
@@ -3313,10 +3369,11 @@ impl Checker<'_> {
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..) => p,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                    Kind::BPModExt(grade) => grade.prime(),
                     _ => return Err(self.invalid_operand(
                         &value,
                         "pscale",
-                        "a PCobar cochain, PExt class, PMay class, PCEAn class, or BP page class",
+                        "a PCobar cochain, PExt class, PMay class, PCEAn class, BP page class, or mod-p BP Ext class",
                     )),
                 };
                 Ok((value.ty, TypedForm::PScale(p, scalar, Box::new(value))))
@@ -3845,6 +3902,43 @@ impl Checker<'_> {
                 };
                 Ok((ty, TypedForm::BpPageOperation(operation, Box::new(input))))
             }
+            ExprForm::BpModExtGen(spec, index, at) => {
+                let grade = self.bp_mod_ext_grade(spec)?;
+                let ty = self.model.bp_mod_ext_type(grade)?;
+                let rank = self.model.bp_mod_ext(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpModExtClass(thick, t, input) => {
+                let (name, expected) = if thick {
+                    ("bpThickExtClass", "a BPThick cochain")
+                } else {
+                    ("bpIExtClass", "a BPI cochain")
+                };
+                let input = self.expr(*input)?;
+                let shape = self.bp_shape(&input, name)?;
+                if shape.depth == 0 || shape.thickness.is_some() != thick {
+                    return Err(self.invalid_operand(&input, name, expected));
+                }
+                let ty = self.model.bp_mod_ext_type(bp_mod_ext::Grade { shape, t })?;
+                Ok((ty, TypedForm::BpModExtClass(Box::new(input))))
+            }
+            ExprForm::BpModExtRep(thick, input) => {
+                let (name, expected) = if thick {
+                    ("bpThickExtRep", "a BPThickExt class")
+                } else {
+                    ("bpIExtRep", "a BPIExt class")
+                };
+                let input = self.expr(*input)?;
+                let Kind::BPModExt(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, name, expected));
+                };
+                if grade.shape.thickness.is_some() != thick {
+                    return Err(self.invalid_operand(&input, name, expected));
+                }
+                let ty = self.model.bp_type(grade.shape)?;
+                Ok((ty, TypedForm::BpModExtRep(Box::new(input))))
+            }
             ExprForm::BpRaise(height, input) => {
                 let input = self.expr(*input)?;
                 let ty = match *self.model.kind(input.ty) {
@@ -4090,6 +4184,18 @@ impl Checker<'_> {
             ExprForm::BpOperation(operation, input) => {
                 let input = self.expr(*input)?;
                 let kind = self.model.kind(input.ty);
+                if let Kind::BPModExt(grade) = *kind {
+                    let grade = grade.map(operation)?;
+                    let ty = if grade.shape.depth == 0 {
+                        self.model.bp_ext_type(bp_classes::Grade {
+                            shape: grade.shape,
+                            t: grade.t,
+                        })?
+                    } else {
+                        self.model.bp_mod_ext_type(grade)?
+                    };
+                    return Ok((ty, TypedForm::BpModExtOperation(operation, Box::new(input))));
+                }
                 if matches!(operation, bp::Operation::Negate)
                     && matches!(
                         kind,
@@ -5326,6 +5432,20 @@ impl Checker<'_> {
         bp_rel::Shape::new(self.model, spec.0, spec.1, spec.2, spec.3)
     }
 
+    fn bp_mod_ext_grade(&mut self, spec: crate::syntax::BpModSpec) -> Result<bp_mod_ext::Grade> {
+        let crate::syntax::BpSpec(p, n, a) = spec.shape;
+        let shape = bp::Shape::new(self.model, p, n, a)?;
+        let shape = if let Some(j) = spec.exponent {
+            if !(2..=shape.height + 1).contains(&spec.h) {
+                return Err(Error::plain("BPThickExt requires 2 <= h <= n+1"));
+            }
+            shape.quotient(spec.h - 1)?.thick(j)?
+        } else {
+            shape.quotient(spec.h)?
+        };
+        Ok(bp_mod_ext::Grade { shape, t: spec.t })
+    }
+
     fn bp_ext_grade(&mut self, spec: crate::syntax::BpSpec, t: usize) -> Result<bp_classes::Grade> {
         let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
         Ok(bp_classes::Grade { shape, t })
@@ -5925,6 +6045,7 @@ impl Checker<'_> {
                         | Kind::PMayAn(..)
                         | Kind::PCeAn(..)
                         | Kind::BPPage(..)
+                        | Kind::BPModExt(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
@@ -6069,6 +6190,11 @@ impl Checker<'_> {
                     let left = self.bp_ext_operand(left, "bpCup")?;
                     let right = self.bp_ext_operand(right, "bpCup")?;
                     return self.model.bp_ext_type(left.cup(right)?);
+                }
+                if let (&Kind::BPModExt(left), &Kind::BPModExt(right)) =
+                    (self.model.kind(left.ty), self.model.kind(right.ty))
+                {
+                    return self.model.bp_mod_ext_type(left.cup(right)?);
                 }
                 if let (&Kind::BPPage(left), &Kind::BPPage(right)) =
                     (self.model.kind(left.ty), self.model.kind(right.ty))
