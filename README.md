@@ -280,6 +280,14 @@ Starting with $F_1=i$, ASL computes $U_n=\sum_{j=1}^{n-1} F_j(a_1,\ldots,a_j)F_{
 
 The higher operations can depend on the chosen contraction. The Massey product collects classes from defining systems. In this transfer, $m_3(h_0,h_1,h_0)=h_1^2$ and $m_4(h_0,h_1,h_2,h_0)=h_2^2$. The adjacent product $h_2h_0$ obstructs a Massey defining system for the four inputs. The fourth lift is $[\xi_1\xi_3]+[\xi_1^2\xi_2^2]+[\xi_1^5\xi_2]$. Run `nix run path:. -- examples/ext-transfer.asl` to compute both operations and the lift. [Transfer example](examples/ext-transfer.asl)
 
+### Signed transfer over odd primes
+
+The same `ainfty` and `alift` forms accept `PExt` classes at one common prime and return `PExt` and `PCobar` values in the bidegrees above. In stem grading $|a|=t-s$, let $\sigma$ raise degree by one. The signed binary map on suspended cochains is $b_2(\sigma a,\sigma b)=(-1)^{|a|}\sigma(ab)$. The cobar contraction closes a cochain by $q=c-P(dc)$, projects by $p(c)=[q]$, and uses $h(c)=P(q-i p(c))$. Its identity is $dh+hd=1-ip$.
+
+On suspended inputs the recursion sums $b_2$ over split pairs of previously computed lifts. It applies $p$ to obtain the higher product and $-h$ to obtain the lift. The public operations undo suspension with the sign $(-1)^{\sum_{j=1}^n(n-j)|a_j|}$ for both outputs. Thus the binary product is `yoneda`, and the binary lift satisfies $dF_2(a,b)=i(m_2(a,b))-i(a)i(b)$.
+
+For $x=[\xi_1]$ the first nonzero repeated higher product is $m_p(x,\ldots,x)=(-1)^{p(p-1)/2} b_{1,0}$. At $p=5$ the transfer gives $b_{1,0}$ and the explicit signed defining system in the example gives $-b_{1,0}$. The example also computes a nonzero mixed ternary product with $[\tau_0]$ at $p=3$. [Odd-prime transfer example](examples/odd-transfer.asl)
+
 ### Coherent restriction
 
 `resHigher[n](a1, ..., ak)` computes the component $R_k$ of the $A_\infty$ morphism induced by restriction to $\mathcal A(n)$. Its inputs are ordered as for `ainfty` and all use the full algebra or one common $\mathcal A(m)$ with $m\geq n$. The result lies in `ExtAn(n, sum s + 1 - k, sum t)`. The unary component is `resA[n]`, which preserves `yoneda`. For $k>1$, a unit input or an unchanged profile gives zero. ASL restricts canonical lifts of consecutive blocks and applies the target cobar contraction to the resulting tensors.

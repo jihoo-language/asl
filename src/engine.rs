@@ -26,6 +26,7 @@ use crate::odd_cobar::{self, Prime};
 use crate::odd_ext;
 use crate::odd_massey;
 use crate::odd_may;
+use crate::odd_transfer;
 use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade};
@@ -115,6 +116,12 @@ struct DefiningEntry {
     expr: TypedExpr,
 }
 
+#[derive(Clone, Copy)]
+enum ScalarField {
+    ModTwo(Profile),
+    Odd(Prime),
+}
+
 enum TypedForm {
     Global(usize),
     Local(usize),
@@ -136,7 +143,7 @@ enum TypedForm {
     Shift(Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
-    Transfer(Profile, transfer::Operation, Vec<TypedExpr>),
+    Transfer(ScalarField, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(Profile, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     MapSystem(map_system::Operation, usize, Vec<DefiningEntry>),
@@ -792,9 +799,24 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 bracket::evaluate(&mut self.model, target, &inputs)
             }
-            TypedForm::Transfer(profile, operation, inputs) => {
+            TypedForm::Transfer(ScalarField::ModTwo(profile), operation, inputs) => {
                 let inputs = self.scalar_arguments(inputs)?;
                 transfer::evaluate(&mut self.model, *profile, &inputs, *operation)
+            }
+            TypedForm::Transfer(ScalarField::Odd(prime), operation, inputs) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|term| {
+                        let Kind::PExt(_, s, t) = *self.model.kind(term.ty) else {
+                            unreachable!()
+                        };
+                        let Value::OddClass(coordinates) = self.eval(term)? else {
+                            unreachable!()
+                        };
+                        Ok(((s, t), coordinates))
+                    })
+                    .collect::<Result<Vec<odd_transfer::Input>>>()?;
+                odd_transfer::evaluate(&mut self.model, *prime, &inputs, *operation)
             }
             TypedForm::HigherRestriction(source, target, inputs) => {
                 let inputs = self.scalar_arguments(inputs)?;
@@ -1656,13 +1678,23 @@ impl Checker<'_> {
     ) -> Result<(TypeId, TypedForm)> {
         let arity = inputs.len();
         operation.require_arity(arity)?;
-        let (profile, terms, degrees) = self.scalar_inputs(operation.name(), inputs)?;
+        let (field, terms, degrees) = self.scalar_inputs(operation.name(), inputs, true)?;
         let (s, t) = operation.bidegree(degrees, arity)?;
-        let ty = match operation {
-            transfer::Operation::Product => self.model.profile_ext_type(profile, s, t)?,
-            transfer::Operation::Lift => self.model.profile_cobar_type(profile, s, t)?,
+        let ty = match (field, operation) {
+            (ScalarField::ModTwo(profile), transfer::Operation::Product) => {
+                self.model.profile_ext_type(profile, s, t)?
+            }
+            (ScalarField::ModTwo(profile), transfer::Operation::Lift) => {
+                self.model.profile_cobar_type(profile, s, t)?
+            }
+            (ScalarField::Odd(prime), transfer::Operation::Product) => {
+                self.model.odd_ext_type(prime, s, t)?
+            }
+            (ScalarField::Odd(prime), transfer::Operation::Lift) => {
+                self.model.pcobar_type(prime, s, t)?
+            }
         };
-        Ok((ty, TypedForm::Transfer(profile, operation, terms)))
+        Ok((ty, TypedForm::Transfer(field, operation, terms)))
     }
 
     fn higher_restriction(
@@ -1672,7 +1704,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<(TypeId, TypedForm)> {
         let arity = inputs.len();
-        let (source, terms, degrees) = self.scalar_inputs("resHigher", inputs)?;
+        let (ScalarField::ModTwo(source), terms, degrees) =
+            self.scalar_inputs("resHigher", inputs, false)?
+        else {
+            unreachable!()
+        };
         let target = Profile::An(n);
         if !source.can_restrict_to(target) {
             return Err(Error::new(
@@ -1689,22 +1725,50 @@ impl Checker<'_> {
         &mut self,
         operation: &str,
         inputs: Vec<ParsedExpr>,
-    ) -> Result<(Profile, Vec<TypedExpr>, Vec<transfer::Bidegree>)> {
+        allow_odd: bool,
+    ) -> Result<(ScalarField, Vec<TypedExpr>, Vec<transfer::Bidegree>)> {
         let arity = inputs.len();
         let mut terms = Vec::with_capacity(arity);
         let mut degrees = Vec::with_capacity(arity);
         let mut source = None;
         for input in inputs {
             let term = self.expr(input)?;
-            let (profile, s, t) = self
-                .model
-                .kind(term.ty)
-                .ext_grade()
-                .ok_or_else(|| self.invalid_operand(&term, operation, "an Ext class"))?;
+            let kind = self.model.kind(term.ty);
+            let (field, s, t) = match *kind {
+                Kind::PExt(prime, s, t) if allow_odd => (ScalarField::Odd(prime), s, t),
+                _ => {
+                    let expected = if matches!(source, Some(ScalarField::Odd(_))) {
+                        "a PExt class"
+                    } else {
+                        "an Ext class"
+                    };
+                    let (profile, s, t) = kind
+                        .ext_grade()
+                        .ok_or_else(|| self.invalid_operand(&term, operation, expected))?;
+                    (ScalarField::ModTwo(profile), s, t)
+                }
+            };
             if let Some(previous) = source {
-                require_profile(previous, profile, operation, term.span)?;
+                match (previous, field) {
+                    (ScalarField::ModTwo(p), ScalarField::ModTwo(q)) => {
+                        require_profile(p, q, operation, term.span)?;
+                    }
+                    (ScalarField::Odd(p), ScalarField::Odd(q)) if p == q => {}
+                    (ScalarField::Odd(_), ScalarField::Odd(_)) => {
+                        return Err(Error::new(
+                            term.span,
+                            format!("{operation} requires PExt classes at the same prime"),
+                        ));
+                    }
+                    (ScalarField::Odd(_), ScalarField::ModTwo(_)) => {
+                        return Err(self.invalid_operand(&term, operation, "a PExt class"));
+                    }
+                    (ScalarField::ModTwo(_), ScalarField::Odd(_)) => {
+                        return Err(self.invalid_operand(&term, operation, "an Ext class"));
+                    }
+                }
             }
-            source = Some(profile);
+            source = Some(field);
             degrees.push((s, t));
             terms.push(term);
         }
