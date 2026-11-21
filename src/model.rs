@@ -22,6 +22,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
+use crate::v_koszul;
 
 const MAX_SPACE_POINTS: usize = 512;
 const MAX_TYPES: usize = 4096;
@@ -56,6 +57,8 @@ pub(crate) enum Kind {
     MapExt(TypeId, TypeId, usize, i64),
     QKoszul(Grade),
     QExt(Grade),
+    VKoszul(v_koszul::Grade),
+    VExt(v_koszul::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -334,6 +337,13 @@ impl Model {
                 1
             }
             Kind::QKoszul(..) | Kind::QExt(..) => usize::MAX,
+            Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
+                if !self.types[grade.source.0].inhabited
+                    || !self.types[grade.target.0].inhabited =>
+            {
+                1
+            }
+            Kind::VKoszul(..) | Kind::VExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -400,6 +410,8 @@ impl Model {
                 | Kind::MapExt(..)
                 | Kind::QKoszul(..)
                 | Kind::QExt(..)
+                | Kind::VKoszul(..)
+                | Kind::VExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -613,19 +625,32 @@ impl Model {
     }
 
     pub(crate) fn q_koszul_type(&mut self, grade: Grade) -> Result<TypeId> {
-        let depth = self.types[grade.source.0]
-            .depth
-            .max(self.types[grade.target.0].depth)
-            + 1;
+        let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::QKoszul(grade), depth)
     }
 
     pub(crate) fn q_ext_type(&mut self, grade: Grade) -> Result<TypeId> {
-        let depth = self.types[grade.source.0]
+        let depth = self.koszul_depth(&grade);
+        self.inhabited_type(Kind::QExt(grade), depth)
+    }
+
+    pub(crate) fn v_koszul_type(&mut self, grade: v_koszul::Grade) -> Result<TypeId> {
+        v_koszul::top(&grade.selected)?;
+        let depth = self.koszul_depth(&grade);
+        self.inhabited_type(Kind::VKoszul(grade), depth)
+    }
+
+    pub(crate) fn v_ext_type(&mut self, grade: v_koszul::Grade) -> Result<TypeId> {
+        v_koszul::top(&grade.selected)?;
+        let depth = self.koszul_depth(&grade);
+        self.inhabited_type(Kind::VExt(grade), depth)
+    }
+
+    fn koszul_depth<S>(&self, grade: &Grade<S>) -> usize {
+        self.types[grade.source.0]
             .depth
             .max(self.types[grade.target.0].depth)
-            + 1;
-        self.inhabited_type(Kind::QExt(grade), depth)
+            + 1
     }
 
     pub(crate) fn map_ext_type(
@@ -788,18 +813,26 @@ impl Model {
         if let Some(group) = &self.types[ty.0].q_ext {
             return Ok(group.clone());
         }
-        let Kind::QExt(grade) = self.kind(ty) else {
-            unreachable!()
+        let group = match self.kind(ty).clone() {
+            Kind::QExt(grade) => QExt::build(
+                self,
+                grade.source,
+                grade.target,
+                &grade.selected,
+                grade.s,
+                grade.t,
+            )?,
+            Kind::VExt(grade) => QExt::build_localized(
+                self,
+                grade.source,
+                grade.target,
+                &grade.selected,
+                grade.s,
+                grade.t,
+            )?,
+            _ => unreachable!(),
         };
-        let grade = grade.clone();
-        let group = Rc::new(QExt::build(
-            self,
-            grade.source,
-            grade.target,
-            &grade.selected,
-            grade.s,
-            grade.t,
-        )?);
+        let group = Rc::new(group);
         self.types[ty.0].q_ext = Some(group.clone());
         Ok(group)
     }
@@ -924,6 +957,8 @@ impl Model {
             | Kind::MapExt(..)
             | Kind::QKoszul(..)
             | Kind::QExt(..)
+            | Kind::VKoszul(..)
+            | Kind::VExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1065,20 +1100,10 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
-            Kind::QKoszul(grade) | Kind::QExt(grade) => {
-                out.push(if matches!(self.kind(ty), Kind::QKoszul(..)) {
-                    "QKoszul("
-                } else {
-                    "QExt("
-                })?;
-                self.write_type(out, grade.source, 0)?;
-                out.push(", ")?;
-                self.write_type(out, grade.target, 0)?;
-                out.push(&format!(
-                    ", {:?}, {}, {})",
-                    grade.selected, grade.s, grade.t
-                ))
-            }
+            Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
+            Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
+            Kind::VKoszul(grade) => self.write_koszul_type(out, "VKoszul", grade),
+            Kind::VExt(grade) => self.write_koszul_type(out, "VExt", grade),
             &Kind::MapExt(source, target, s, t) | &Kind::MapCobar(source, target, s, t) => {
                 out.push(if matches!(self.kind(ty), Kind::MapCobar(..)) {
                     "MapCobar("
@@ -1368,7 +1393,7 @@ impl Model {
                     let rank = self.map_may(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
-                Kind::QExt(..) => {
+                Kind::QExt(..) | Kind::VExt(..) => {
                     let rank = self.q_ext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
@@ -1383,14 +1408,20 @@ impl Model {
                         grade.t,
                         MAX_ELEMENTS.ilog2() as usize,
                     )?;
-                    let rank = basis.len();
-                    self.allocate(
-                        basis.iter().map(q_koszul::Term::cells).sum::<usize>()
-                            + 4 * (support_space_size(rank) / 2) * rank,
+                    self.koszul_elements(&basis)?
+                }
+                Kind::VKoszul(ref grade) => {
+                    let grade = grade.clone();
+                    let basis = q_koszul::basis_localized(
+                        self,
+                        grade.source,
+                        grade.target,
+                        &grade.selected,
+                        i128::from(grade.s),
+                        grade.t,
+                        MAX_ELEMENTS.ilog2() as usize,
                     )?;
-                    self.enumerate_supports(0, rank, |support| {
-                        Value::QKoszul(support.iter().map(|&index| basis[index].clone()).collect())
-                    })?
+                    self.koszul_elements(&basis)?
                 }
                 Kind::MapExt(..) => {
                     let rank = self.map_ext(ty)?.rank();
@@ -1594,6 +1625,33 @@ impl Model {
         Ok(out.string)
     }
 
+    fn koszul_elements(&mut self, basis: &[q_koszul::Term]) -> Result<Vec<Value>> {
+        let rank = basis.len();
+        self.allocate(
+            basis.iter().map(q_koszul::Term::cells).sum::<usize>()
+                + 4 * (support_space_size(rank) / 2) * rank,
+        )?;
+        self.enumerate_supports(0, rank, |support| {
+            Value::QKoszul(support.iter().map(|&index| basis[index].clone()).collect())
+        })
+    }
+
+    fn write_koszul_type<S: std::fmt::Display>(
+        &self,
+        out: &mut Text,
+        name: &str,
+        grade: &Grade<S>,
+    ) -> Result<()> {
+        out.push(&format!("{name}("))?;
+        self.write_type(out, grade.source, 0)?;
+        out.push(", ")?;
+        self.write_type(out, grade.target, 0)?;
+        out.push(&format!(
+            ", {:?}, {}, {})",
+            grade.selected, grade.s, grade.t
+        ))
+    }
+
     pub(crate) fn describe(&mut self, ty: TypeId, value: &Value) -> String {
         let mut out = Text::new(1024);
         match self.write_value(&mut out, ty, value) {
@@ -1707,8 +1765,10 @@ impl Model {
                 out.push("}")
             }
             Value::QKoszul(terms) => {
-                let Kind::QKoszul(grade) = self.kind(ty) else {
-                    unreachable!()
+                let selected = match self.kind(ty) {
+                    Kind::QKoszul(grade) => &grade.selected,
+                    Kind::VKoszul(grade) => &grade.selected,
+                    _ => unreachable!(),
                 };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
@@ -1726,7 +1786,7 @@ impl Model {
                         term.target.degree,
                         term.target.index
                     ))?;
-                    for (&primitive, &power) in grade.selected.iter().zip(term.powers.iter()) {
+                    for (&primitive, &power) in selected.iter().zip(term.powers.iter()) {
                         match power {
                             0 => {}
                             1 => out.push(&format!(" v{primitive}"))?,

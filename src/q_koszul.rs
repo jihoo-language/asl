@@ -13,20 +13,21 @@ use crate::map_ext;
 use crate::model::{Kind, Model, TypeId, Value};
 use crate::profile::Profile;
 use crate::steenrod;
+use crate::v_koszul;
 
 const MAX_BASIS_TERMS: usize = 32_768;
 const MAX_CELLS: usize = 300_000;
 
 pub(crate) type Indices = Rc<[usize]>;
 pub(crate) type Support = Rc<[Term]>;
-type Powers = Rc<[usize]>;
+pub(crate) type Powers = Rc<[i128]>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct Grade {
+pub(crate) struct Grade<S = usize> {
     pub(crate) source: TypeId,
     pub(crate) target: TypeId,
     pub(crate) selected: Indices,
-    pub(crate) s: usize,
+    pub(crate) s: S,
     pub(crate) t: i64,
 }
 
@@ -39,8 +40,12 @@ pub(crate) struct Term {
 
 impl Term {
     pub(crate) fn cells(&self) -> usize {
-        5 + self.powers.len()
+        5 + power_cells(self.powers.len())
     }
+}
+
+pub(crate) fn power_cells(width: usize) -> usize {
+    width * std::mem::size_of::<i128>().div_ceil(std::mem::size_of::<usize>())
 }
 
 pub(crate) fn indices(model: &mut Model, indices: Vec<usize>) -> Result<Indices> {
@@ -60,11 +65,11 @@ pub(crate) fn indices(model: &mut Model, indices: Vec<usize>) -> Result<Indices>
     Ok(indices.into())
 }
 
-fn weight(index: usize) -> usize {
+pub(crate) fn weight(index: usize) -> usize {
     usize::MAX >> (usize::BITS as usize - 1 - index)
 }
 
-fn check_storage(cells: usize) -> Result<()> {
+pub(crate) fn check_storage(cells: usize) -> Result<()> {
     if cells > MAX_CELLS {
         return Err(Error::plain("Koszul calculation exceeds the storage limit"));
     }
@@ -90,14 +95,51 @@ impl QExt {
         s: usize,
         t: i64,
     ) -> Result<Self> {
+        Self::build_in(
+            model,
+            source,
+            target,
+            selected,
+            Filtration::Polynomial(s),
+            t,
+        )
+    }
+
+    pub(crate) fn build_localized(
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+        selected: &[usize],
+        s: i64,
+        t: i64,
+    ) -> Result<Self> {
+        v_koszul::top(selected)?;
+        Self::build_in(
+            model,
+            source,
+            target,
+            selected,
+            Filtration::Localized(i128::from(s)),
+            t,
+        )
+    }
+
+    fn build_in(
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+        selected: &[usize],
+        filtration: Filtration,
+        t: i64,
+    ) -> Result<Self> {
         let mut complex = Complex::new(model, source, target, selected)?;
-        let terms = complex.basis(model, s, t, MAX_BASIS_TERMS)?;
+        let terms = complex.basis(model, filtration, t, MAX_BASIS_TERMS)?;
         if terms.is_empty() {
             return Ok(Self::default());
         }
 
         let mut boundaries = Basis::default();
-        if let Some(previous) = s.checked_sub(1) {
+        if let Some(previous) = filtration.previous() {
             for term in complex.basis(model, previous, t, MAX_BASIS_TERMS)? {
                 let image = complex.differential(model, std::slice::from_ref(&term))?;
                 let column = term_indices(model, &terms, &image)?;
@@ -164,7 +206,7 @@ fn term_indices(model: &mut Model, basis: &[Term], terms: &[Term]) -> Result<Vec
         .collect()
 }
 
-struct Complex {
+pub(crate) struct Complex {
     source: TypeId,
     target: TypeId,
     source_bound: Option<usize>,
@@ -180,8 +222,56 @@ struct Action {
     rows: Vec<Vec<usize>>,
 }
 
+#[derive(Clone, Copy)]
+enum Filtration {
+    Polynomial(usize),
+    Localized(i128),
+}
+
+impl Filtration {
+    fn previous(self) -> Option<Self> {
+        match self {
+            Self::Polynomial(s) => s.checked_sub(1).map(Self::Polynomial),
+            Self::Localized(s) => s.checked_sub(1).map(Self::Localized),
+        }
+    }
+
+    fn word_bounds(self, weights: &[usize]) -> (i128, i128) {
+        let last = weights.last().copied().unwrap_or(0);
+        match self {
+            Self::Polynomial(s) => (
+                wide_degree(s, weights.first().copied().unwrap_or(0)),
+                wide_degree(s, last),
+            ),
+            Self::Localized(s) => {
+                let upper = s.saturating_mul(last as i128);
+                let lower = if weights.len() == 1 { upper } else { i128::MIN };
+                (lower, upper)
+            }
+        }
+    }
+
+    fn monomials(
+        self,
+        model: &mut Model,
+        weights: &[usize],
+        degree: i128,
+        limit: usize,
+    ) -> Result<Vec<Powers>> {
+        match self {
+            Self::Polynomial(s) => polynomial_basis(model, weights, s, degree as u128, limit),
+            Self::Localized(s) => v_koszul::laurent_basis(model, weights, s, degree, limit),
+        }
+    }
+}
+
 impl Complex {
-    fn new(model: &mut Model, source: TypeId, target: TypeId, selected: &[usize]) -> Result<Self> {
+    pub(crate) fn new(
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+        selected: &[usize],
+    ) -> Result<Self> {
         Ok(Self {
             source,
             target,
@@ -194,16 +284,21 @@ impl Complex {
         })
     }
 
-    fn basis(&self, model: &mut Model, s: usize, t: i64, limit: usize) -> Result<Vec<Term>> {
+    fn basis(
+        &self,
+        model: &mut Model,
+        filtration: Filtration,
+        t: i64,
+        limit: usize,
+    ) -> Result<Vec<Term>> {
         let (Some(source_bound), Some(target_bound)) = (self.source_bound, self.target_bound)
         else {
             return Ok(Vec::new());
         };
-        if self.weights.is_empty() && s != 0 {
+        if self.weights.is_empty() && matches!(filtration, Filtration::Polynomial(s) if s != 0) {
             return Ok(Vec::new());
         }
-        let min_word = wide_degree(s, self.weights.first().copied().unwrap_or(0));
-        let max_word = wide_degree(s, self.weights.last().copied().unwrap_or(0));
+        let (min_word, max_word) = filtration.word_bounds(&self.weights);
         let t = i128::from(t);
         let first_source = min_word.saturating_sub(t).max(0);
         let max_source = max_word
@@ -223,7 +318,12 @@ impl Complex {
             return Ok(Vec::new());
         }
         let first_target = (first_source + t).saturating_sub(max_word).max(0);
-        let last_target = (last_source + t - min_word).min(target_bound as i128);
+        let last_target = (last_source + t)
+            .saturating_sub(min_word)
+            .min(target_bound as i128);
+        if first_target > last_target {
+            return Ok(Vec::new());
+        }
         let sources = graded_ranks(
             model,
             self.source,
@@ -237,28 +337,29 @@ impl Complex {
             self.target,
             first_target as usize..=last_target as usize,
         )?;
-        let mut catalogue = HashMap::<u128, Vec<Powers>>::new();
+        let mut catalogue = HashMap::<i128, Vec<Powers>>::new();
         let mut catalogue_cells = 0;
         let mut terms = Vec::new();
         let mut cells = 0;
         for (q, source_rank) in sources {
             let total = q as i128 + t;
             let min_p = total.saturating_sub(max_word);
-            let max_p = total - min_word;
+            let max_p = total.saturating_sub(min_word);
             let first = targets.partition_point(|&(degree, _)| (degree as i128) < min_p);
             for &(p, target_rank) in &targets[first..] {
                 model.spend(1)?;
                 if p as i128 > max_p {
                     break;
                 }
-                let degree = (total - p as i128) as u128;
+                let degree = total - p as i128;
                 let copies = source_rank.saturating_mul(target_rank);
                 let available = (limit - terms.len()) / copies;
                 let powers = match catalogue.entry(degree) {
                     Entry::Occupied(entry) => entry.into_mut(),
                     Entry::Vacant(entry) => {
-                        let powers = polynomial_basis(model, &self.weights, s, degree, available)?;
-                        catalogue_cells += 1 + powers.len() * (1 + self.weights.len());
+                        let powers =
+                            filtration.monomials(model, &self.weights, degree, available)?;
+                        catalogue_cells += 1 + powers.len() * (1 + power_cells(self.weights.len()));
                         check_storage(catalogue_cells)?;
                         entry.insert(powers)
                     }
@@ -269,7 +370,7 @@ impl Complex {
                 if powers.is_empty() {
                     continue;
                 }
-                let added = copies * powers.len() * (5 + self.weights.len());
+                let added = copies * powers.len() * (5 + power_cells(self.weights.len()));
                 cells += added;
                 check_storage(cells)?;
                 model.spend(added)?;
@@ -297,7 +398,7 @@ impl Complex {
         Ok(terms)
     }
 
-    fn differential(&mut self, model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
+    pub(crate) fn differential(&mut self, model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
         let mut support = Accumulator::default();
         let (Some(source_bound), Some(target_bound)) = (self.source_bound, self.target_bound)
         else {
@@ -436,7 +537,7 @@ fn wide_degree(s: usize, weight: usize) -> i128 {
     i128::try_from(s as u128 * weight as u128).unwrap_or(i128::MAX)
 }
 
-fn increment(model: &mut Model, powers: &[usize], variable: usize) -> Result<Powers> {
+fn increment(model: &mut Model, powers: &[i128], variable: usize) -> Result<Powers> {
     model.spend(1 + powers.len())?;
     let mut powers = powers.to_vec();
     powers[variable] = powers[variable]
@@ -574,15 +675,16 @@ impl PolynomialBasis {
         if self.terms.len() == self.limit {
             return Err(basis_limit());
         }
-        let cells = 1 + self.powers.len();
+        let cells = 1 + power_cells(self.powers.len());
         check_storage(cells * (1 + self.terms.len()))?;
         model.spend(cells)?;
-        self.terms.push(self.powers.as_slice().into());
+        self.terms
+            .push(self.powers.iter().map(|&e| e as i128).collect());
         Ok(())
     }
 }
 
-fn gcd(mut a: usize, mut b: usize) -> usize {
+pub(crate) fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -598,7 +700,20 @@ pub(crate) fn basis(
     t: i64,
     limit: usize,
 ) -> Result<Vec<Term>> {
-    Complex::new(model, source, target, selected)?.basis(model, s, t, limit)
+    Complex::new(model, source, target, selected)?.basis(model, Filtration::Polynomial(s), t, limit)
+}
+
+pub(crate) fn basis_localized(
+    model: &mut Model,
+    source: TypeId,
+    target: TypeId,
+    selected: &[usize],
+    s: i128,
+    t: i64,
+    limit: usize,
+) -> Result<Vec<Term>> {
+    v_koszul::top(selected)?;
+    Complex::new(model, source, target, selected)?.basis(model, Filtration::Localized(s), t, limit)
 }
 
 pub(crate) fn differential(
@@ -837,18 +952,21 @@ pub(crate) fn composition_type(model: &mut Model, outer: TypeId, inner: TypeId) 
     let (outer, inner, closed) = match (model.kind(outer), model.kind(inner)) {
         (Kind::QExt(g), Kind::QExt(f)) => (g, f, true),
         (Kind::QKoszul(g), Kind::QKoszul(f)) => (g, f, false),
+        (Kind::VExt(g), Kind::VExt(f)) => {
+            let grade = v_koszul::composed(g, f)?;
+            return model.v_ext_type(grade);
+        }
+        (Kind::VKoszul(g), Kind::VKoszul(f)) => {
+            let grade = v_koszul::composed(g, f)?;
+            return model.v_koszul_type(grade);
+        }
         _ => {
             return Err(Error::plain(
-                "ecomp requires two Koszul cochains or two Koszul classes",
+                "ecomp requires two Koszul cochains or two Koszul classes in the same family",
             ))
         }
     };
-    if outer.source != inner.target {
-        return Err(Error::plain("ecomp requires composable Koszul endpoints"));
-    }
-    if outer.selected != inner.selected {
-        return Err(Error::plain("ecomp requires the same Milnor primitives"));
-    }
+    matching_endpoints(outer, inner)?;
     let s = outer
         .s
         .checked_add(inner.s)
@@ -869,6 +987,16 @@ pub(crate) fn composition_type(model: &mut Model, outer: TypeId, inner: TypeId) 
     } else {
         model.q_koszul_type(grade)
     }
+}
+
+pub(crate) fn matching_endpoints<S>(outer: &Grade<S>, inner: &Grade<S>) -> Result<()> {
+    if outer.source != inner.target {
+        return Err(Error::plain("ecomp requires composable Koszul endpoints"));
+    }
+    if outer.selected != inner.selected {
+        return Err(Error::plain("ecomp requires the same Milnor primitives"));
+    }
+    Ok(())
 }
 
 pub(crate) fn class(model: &mut Model, ty: TypeId, terms: &[Term]) -> Result<Value> {
@@ -908,7 +1036,11 @@ pub(crate) fn compose(model: &mut Model, outer: &[Term], inner: &[Term]) -> Resu
     persist(model, terms)
 }
 
-fn compose_terms(model: &mut Model, outer: &[Term], inner: &[Term]) -> Result<Vec<Term>> {
+pub(crate) fn compose_terms(
+    model: &mut Model,
+    outer: &[Term],
+    inner: &[Term],
+) -> Result<Vec<Term>> {
     let mut support = Accumulator::default();
     let search = 1 + outer.len().max(1).ilog2() as usize;
     for f in inner {
