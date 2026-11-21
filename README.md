@@ -769,6 +769,16 @@ For a declared cover with finite denominator $q(x)$ and pole radical $R(x)$, put
 
 For $y^2+y=x^5$, Cartier sends $\omega_1$ to $\omega_0$ and has square zero. The $a$-number is one. For $y^2+y=x^9$ the ranks are $4,2,1,0$ and the $a$-number is two. For $y^2+y=x+1/x$, Cartier fixes $\omega_0$. [Cartier operator example](examples/rank-cartier.asl)
 
+#### Cyclic quartic Artin–Schreier–Witt covers
+
+`rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.
+
+The deck generator $(y,z)\mapsto(y+1,z+y)$ has order four. The single pole at infinity is totally ramified. `rvWittBreaks[W];` prints the upper jumps $m,u$ with $u=\max(2m,n)$, and `rvWittGenus[W];` prints $(m+2u-3)/2$.
+
+`rvWittPoints[W,k];` counts the one point at infinity and four points for each affine parameter whose length-two Witt trace is zero. The trace uses componentwise Frobenius and Witt addition $(a,b)+(c,d)=(a+c,b+d+ac)$. `rvWittLPolynomial[W];` uses the point counts to recover the integral zeta numerator, and `rvWittNewton[W];` prints its dyadic slopes and multiplicities.
+
+`rvWittCharacterL[W];` gives the degree-$(u-1)$ Artin factor for $\chi(a,b)=i^{a+2b}$ on $W_2(\mathbb F_2)$. Each coefficient pair `(a, b)` represents $a+bi$. The quartic numerator is the product of this factor, its complex conjugate, and the $L$-polynomial of the quadratic subcover $y^2+y=f(x)$. For $f=x$ and $g=0$ the character factor is $1+(1+i)T$ and the quartic numerator is $1+2T+2T^2$. The point counts at higher extension degrees in the example give independent checks on these polynomials. [Artin–Schreier–Witt cover example](examples/rank-witt.asl)
+
 
 ### Koszul syzygies and their products
 

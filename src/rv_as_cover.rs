@@ -159,16 +159,12 @@ impl Cover {
         if let Some(&points) = self.counts.borrow().get(&extension) {
             return Ok(points);
         }
-        let field_size = extension_size(extension)?;
-        // Visit every field element. Budget the scan before constructing the
-        // field, then charge the sparse evaluations and field arithmetic too.
-        model.spend(field_size.saturating_mul(1 + extension))?;
-        let field = BinaryField::of_degree(model, extension)?;
+        let field = point_count_field(model, extension)?;
         let mut points = match self.infinity_value {
             None => 1,
             Some(value) => 2 * usize::from(!value || extension.is_multiple_of(2)),
         };
-        for parameter in 0..field_size {
+        for parameter in 0..field.order() {
             let denominator = affine_value(model, field, &self.denominator, parameter)?;
             if denominator == 0 {
                 points += 1;
@@ -190,43 +186,12 @@ impl Cover {
         if let Some(polynomial) = self.l_polynomial.borrow().as_ref() {
             return Ok(polynomial.clone());
         }
-        let genus = self.genus;
-        if genus >= usize::BITS as usize {
-            return Err(Error::plain(
-                "Artin–Schreier L-polynomial exceeds the point-count extension range",
-            ));
-        }
-        let mut sums = vec![0i128; genus + 1];
-        for (extension, sum) in sums.iter_mut().enumerate().skip(1) {
-            *sum = 1 + extension_size(extension)? as i128 - self.points(model, extension)? as i128;
-        }
-        let mut coefficients = vec![0i128; 2 * genus + 1];
-        coefficients[0] = 1;
-        // Newton identities for L(T)=product_i(1-alpha_i T).
-        for degree in 1..=genus {
-            model.spend(degree)?;
-            let mut numerator = 0i128;
-            for extension in 1..=degree {
-                let contribution = coefficients[degree - extension]
-                    .checked_mul(sums[extension])
-                    .ok_or_else(coefficient_limit)?;
-                numerator = numerator
-                    .checked_sub(contribution)
-                    .ok_or_else(coefficient_limit)?;
-            }
-            if numerator % degree as i128 != 0 {
-                return Err(Error::plain(
-                    "Artin–Schreier Newton identity did not give an integer coefficient",
-                ));
-            }
-            coefficients[degree] = numerator / degree as i128;
-        }
-        // Complete the coefficients by the genus-g functional equation.
-        for degree in 0..genus {
-            coefficients[2 * genus - degree] = coefficients[degree]
-                .checked_mul(1i128 << (genus - degree))
-                .ok_or_else(coefficient_limit)?;
-        }
+        let coefficients = integral_l_polynomial(
+            model,
+            self.genus,
+            "Artin–Schreier L-polynomial",
+            |model, extension| self.points(model, extension),
+        )?;
         model.allocate(1 + 2 * coefficients.len())?;
         let polynomial: Rc<[i128]> = coefficients.into();
         *self.l_polynomial.borrow_mut() = Some(polynomial.clone());
@@ -234,15 +199,66 @@ impl Cover {
     }
 }
 
-fn coefficient_limit() -> Error {
-    Error::plain("Artin–Schreier L-polynomial coefficient is out of range")
+pub(crate) fn integral_l_polynomial(
+    model: &mut Model,
+    genus: usize,
+    description: &str,
+    mut points: impl FnMut(&mut Model, usize) -> Result<usize>,
+) -> Result<Vec<i128>> {
+    if genus >= usize::BITS as usize {
+        return Err(Error::plain(format!(
+            "{description} exceeds the point-count extension range"
+        )));
+    }
+    let mut sums = vec![0i128; genus + 1];
+    for (extension, sum) in sums.iter_mut().enumerate().skip(1) {
+        *sum = 1 + extension_size(extension)? as i128 - points(model, extension)? as i128;
+    }
+    let mut coefficients = vec![0i128; 2 * genus + 1];
+    coefficients[0] = 1;
+    // Newton identities for L(T)=product_i(1-alpha_i T).
+    for degree in 1..=genus {
+        model.spend(degree)?;
+        let mut numerator = 0i128;
+        for extension in 1..=degree {
+            let contribution = coefficients[degree - extension]
+                .checked_mul(sums[extension])
+                .ok_or_else(|| coefficient_limit(description))?;
+            numerator = numerator
+                .checked_sub(contribution)
+                .ok_or_else(|| coefficient_limit(description))?;
+        }
+        if numerator % degree as i128 != 0 {
+            return Err(Error::plain(format!(
+                "{description} Newton identity did not give an integer coefficient"
+            )));
+        }
+        coefficients[degree] = numerator / degree as i128;
+    }
+    // Complete the coefficients by the genus-g functional equation.
+    for degree in 0..genus {
+        coefficients[2 * genus - degree] = coefficients[degree]
+            .checked_mul(1i128 << (genus - degree))
+            .ok_or_else(|| coefficient_limit(description))?;
+    }
+    Ok(coefficients)
+}
+
+fn coefficient_limit(description: &str) -> Error {
+    Error::plain(format!("{description} coefficient is out of range"))
+}
+
+pub(crate) fn point_count_field(model: &mut Model, extension: usize) -> Result<BinaryField> {
+    let field_size = extension_size(extension)?;
+    // Budget the full scan before field construction. Sparse evaluations and
+    // arithmetic over the field charge their work separately.
+    model.spend(field_size.saturating_mul(1 + extension))?;
+    BinaryField::of_degree(model, extension)
 }
 
 fn extension_size(extension: usize) -> Result<usize> {
     if !(1..usize::BITS as usize).contains(&extension) {
-        return Err(Error::plain(
-            "Artin–Schreier point-count extension degree is out of range",
-        ));
+        return Err(Error::plain("point-count extension degree is out of range"));
     }
     Ok(1 << extension)
 }
@@ -285,7 +301,7 @@ fn squarefree_layer(
     Ok((odd, remaining))
 }
 
-fn affine_value(
+pub(crate) fn affine_value(
     model: &mut Model,
     field: BinaryField,
     polynomial: &Polynomial,

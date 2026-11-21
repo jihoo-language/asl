@@ -71,6 +71,7 @@ use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
 use crate::rv_tree;
+use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -723,6 +724,27 @@ impl Engine {
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
+            StatementForm::RvWittCover(name, variables, expressions) => {
+                self.model.check_new_rv_witt_cover(&name)?;
+                let selected = q_koszul::indices(&mut self.model, variables)?;
+                let &[variable] = selected.as_ref() else {
+                    return Err(Error::new(
+                        name.span,
+                        "rvwittcover requires exactly one parameter variable",
+                    ));
+                };
+                let forms = expressions
+                    .into_iter()
+                    .map(|expression| self.rv_witt_polynomial(expression, variable))
+                    .collect::<Result<_>>()?;
+                let cover = RvWittCover::build(&mut self.model, forms)?;
+                self.model.define_rv_witt_cover(name.text, cover);
+                return Ok(None);
+            }
+            StatementForm::RvWittQuery(query, name) => {
+                let cover = self.model.rv_witt_cover(&name)?;
+                cover.report(&mut self.model, &name.text, query)?
+            }
             StatementForm::RvAsCover(name, variables, expressions) => {
                 self.model.check_new_rv_as_cover(&name)?;
                 let selected = q_koszul::indices(&mut self.model, variables)?;
@@ -1224,6 +1246,26 @@ impl Engine {
             .project(&mut self.model, ideal, terms)?;
         self.model.allocate(coordinates.len())?;
         Ok(Value::Class(coordinates.into()))
+    }
+
+    fn rv_witt_polynomial(
+        &mut self,
+        expression: ParsedExpr,
+        variable: usize,
+    ) -> Result<rv_poly::Polynomial> {
+        let input = self.checker().expr(expression)?;
+        let (variables, degree) = self.checker().rv_poly_grade(&input, "rvwittcover")?;
+        let Value::RVPoly(polynomial) = self.eval(&input)? else {
+            unreachable!()
+        };
+        self.model.spend(rv_poly::cells(&polynomial))?;
+        match variables.as_ref() {
+            [index] if *index == variable => Ok(polynomial),
+            [index, _] if *index == variable => Ok(polynomial.iter().map(|term| [term[0]].into()).collect()),
+            [_, index] if *index == variable => Ok(rv_curve::affine_form(&polynomial)),
+            [] if degree == 0 => Ok(polynomial.iter().map(|_| [0].into()).collect()),
+            _ => Err(Error::new(input.span, "rvwittcover requires a univariate polynomial or a binary homogenization in the chosen variable")),
+        }
     }
 
     fn rv_generator_values(

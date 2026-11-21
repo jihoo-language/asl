@@ -14,6 +14,7 @@ use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
+use crate::rv_witt_cover::Query as WittQuery;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -563,6 +564,8 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
+    RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
+    RvWittQuery(WittQuery, Label),
     RvOrders(Label),
     RvFrobeniusOrders(Label, usize),
     RvOrderAt(usize, Vec<usize>, ParsedExpr),
@@ -1215,6 +1218,37 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvIdeal(name, selected, self.rv_generators()?)
+            }
+            Token::Word("rvwittcover") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvWittCover(name, variables, self.rv_generators()?)
+            }
+            Token::Word(
+                "rvWittBreaks" | "rvWittGenus" | "rvWittPoints" | "rvWittLPolynomial"
+                | "rvWittNewton" | "rvWittCharacterL",
+            ) => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvWittBreaks") => WittQuery::Breaks,
+                    Token::Word("rvWittGenus") => WittQuery::Genus,
+                    Token::Word("rvWittPoints") => {
+                        self.expect(Token::Comma)?;
+                        WittQuery::Points(self.number()?.0)
+                    }
+                    Token::Word("rvWittLPolynomial") => WittQuery::LPolynomial,
+                    Token::Word("rvWittNewton") => WittQuery::Newton,
+                    Token::Word("rvWittCharacterL") => WittQuery::CharacterL,
+                    _ => unreachable!(),
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvWittQuery(query, name)
             }
             Token::Word("rvascover") => {
                 self.advance()?;
