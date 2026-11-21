@@ -13,7 +13,9 @@ use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::odd_cobar::{self, Prime};
+use crate::odd_ext::{self, OddExt};
 use crate::page_transition::Transition;
+use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -39,6 +41,7 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     PCobar(Prime, usize, usize),
+    PExt(Prime, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -89,6 +92,7 @@ pub(crate) enum Value {
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
     PCobar(odd_cobar::Support),
+    OddClass(Rc<[Coordinate]>),
     MapCobar(map_cochain::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
@@ -130,6 +134,7 @@ struct TypeInfo {
     elements: Option<Rc<[Value]>>,
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
+    odd_ext: Option<Rc<OddExt>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     map_may: Option<Rc<MapMayPage>>,
@@ -223,9 +228,9 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
-            Kind::PCobar(_, s, t) if s > t || (s == 0 && t != 0) => 1,
-            Kind::PCobar(prime, s, t) if s == t => prime.get() as usize,
-            Kind::PCobar(..) => usize::MAX,
+            Kind::PCobar(_, s, t) | Kind::PExt(_, s, t) if s > t || (s == 0 && t != 0) => 1,
+            Kind::PCobar(prime, s, t) | Kind::PExt(prime, s, t) if s == t => prime.get() as usize,
+            Kind::PCobar(..) | Kind::PExt(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -277,6 +282,7 @@ impl Model {
             elements: None,
             cohomology: None,
             adams: None,
+            odd_ext: None,
             xext: None,
             map_ext: None,
             map_may: None,
@@ -315,6 +321,7 @@ impl Model {
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::PCobar(..)
+                | Kind::PExt(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -436,6 +443,10 @@ impl Model {
 
     pub(crate) fn cobar_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
         self.profile_cobar_type(Profile::Full, s, t)
+    }
+
+    pub(crate) fn odd_ext_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::PExt(p, s, t), 0)
     }
 
     pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
@@ -578,6 +589,18 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn odd_ext(&mut self, ty: TypeId) -> Result<Rc<OddExt>> {
+        if let Some(data) = &self.types[ty.0].odd_ext {
+            return Ok(data.clone());
+        }
+        let Kind::PExt(prime, s, t) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(OddExt::build(self, prime, s, t)?);
+        self.types[ty.0].odd_ext = Some(data.clone());
+        Ok(data)
+    }
+
     pub(crate) fn adams(&mut self, ty: TypeId) -> Result<Rc<Adams>> {
         if let Some(data) = &self.types[ty.0].adams {
             return Ok(data.clone());
@@ -708,6 +731,7 @@ impl Model {
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
+            | Kind::PExt(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -831,6 +855,7 @@ impl Model {
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
+            &Kind::PExt(p, s, t) => out.push(&format!("PExt({}, {s}, {t})", p.get())),
             &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
             &Kind::ExtAn(n, s, t) => out.push(&format!("ExtAn({n}, {s}, {t})")),
@@ -924,6 +949,10 @@ impl Model {
             (Value::Cobar(left), Value::Cobar(right)) => Ok(
                 Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
             ),
+            (Value::OddClass(left), Value::OddClass(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || odd_ext::compare(self, left, right)? == Ordering::Equal)
+            }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
             (Value::MapCobar(left), Value::MapCobar(right)) => Ok(Rc::ptr_eq(left, right)
@@ -991,6 +1020,12 @@ impl Model {
                 } else {
                     cobar::compare(self, left, right)
                 }
+            }
+            (Value::OddClass(left), Value::OddClass(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                odd_ext::compare(self, left, right)
             }
             (Value::PCobar(left), Value::PCobar(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1131,6 +1166,7 @@ impl Model {
                     })?
                 }
                 Kind::PCobar(p, s, t) => odd_cobar::elements(self, p, s, t, MAX_ELEMENTS)?,
+                Kind::PExt(p, ..) => odd_ext::elements(self, ty, p, MAX_ELEMENTS)?,
                 Kind::MapCobar(source, target, s, t) => {
                     let basis =
                         map_ext::basis(self, source, target, s, t, MAX_ELEMENTS.ilog2() as usize)?;
@@ -1327,6 +1363,23 @@ impl Model {
             Value::CyclicClass(nonzero) => {
                 self.write_type(out, ty, 0)?;
                 out.push(if *nonzero { "{carry}" } else { "{0}" })
+            }
+            Value::OddClass(support) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if support.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, &(generator, coefficient)) in support.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    if coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    out.push(&format!("g{generator}"))?;
+                }
+                out.push("}")
             }
             Value::Class(support) => {
                 self.write_type(out, ty, 0)?;

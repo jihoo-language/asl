@@ -27,6 +27,7 @@ pub(crate) enum TypeForm {
     Operations(usize),
     Cobar(usize, usize),
     PCobar(usize, usize, usize),
+    PExt(usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -139,6 +140,7 @@ pub(crate) enum ExprForm {
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
     PCobarWord(usize, Vec<FactorLiteral>),
+    PExtGenerator(usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
@@ -186,6 +188,7 @@ pub(crate) enum StatementForm {
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
     ExtDimension(usize, usize),
+    PExtDimension(usize, usize, usize),
     ExtAnDimension(usize, usize, usize),
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
@@ -527,6 +530,13 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::Betti(self.ty(0)?)
             }
+            Token::Word("pextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (p, s, t) = self.prime_bidegree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::PExtDimension(p, s, t)
+            }
             Token::Word("extdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -586,6 +596,13 @@ impl<'src> Parser<'src> {
         };
         self.expect(Token::Semi)?;
         Ok(Some(Statement { span, kind }))
+    }
+
+    fn prime_bidegree(&mut self) -> Result<(usize, usize, usize)> {
+        let (p, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (s, t) = self.bidegree()?;
+        Ok((p, s, t))
     }
 
     fn bidegree(&mut self) -> Result<(usize, usize)> {
@@ -717,12 +734,15 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
-        if name.text == "PCobar" && self.eat(Token::LParen)? {
-            let (p, _) = self.number()?;
-            self.expect(Token::Comma)?;
-            let (s, t) = self.bidegree()?;
+        if matches!(name.text.as_str(), "PCobar" | "PExt") && self.eat(Token::LParen)? {
+            let (p, s, t) = self.prime_bidegree()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::PCobar(p, s, t), 0);
+            let kind = if name.text == "PCobar" {
+                TypeForm::PCobar(p, s, t)
+            } else {
+                TypeForm::PExt(p, s, t)
+            };
+            return ty(span, kind, 0);
         }
         if matches!(name.text.as_str(), "CobarAn" | "ExtAn") && self.eat(Token::LParen)? {
             let (n, s, t) = self.profile_bidegree()?;
@@ -1078,6 +1098,13 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::PScale(scalar, Box::new(value)), depth);
+                }
+                if name.text == "pextgen" && self.eat(Token::LBracket)? {
+                    let (p, s, t) = self.prime_bidegree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::PExtGenerator(p, s, t, index, at), 0);
                 }
                 if name.text == "extgen" && self.eat(Token::LBracket)? {
                     let (s, t) = self.bidegree()?;

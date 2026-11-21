@@ -50,6 +50,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `PCobar(p, s, t)` | The corresponding discrete space of normalized cobar cochains over an odd prime field $\mathbb F_p$. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
+| `PExt(p, s, t)` | The discrete space of odd-prime Adams $E_2$ classes over $\mathbb F_p$. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
@@ -183,6 +184,14 @@ For $n\geq 0$, the dual of $\mathcal A(n)$ is $\mathbb F_2[\xi_1,\ldots,\xi_{n+1
 `resA[n](c)` takes a full cobar cochain or a cochain over $\mathcal A(m)$ with $m\geq n$ to `CobarAn(n, s, t)`. It kills any word with a factor outside the quotient monomial basis. On an Ext class, it restricts a closed representative and takes its class in `ExtAn(n, s, t)`. Use `resA[n](cword{...})` to construct cochains. The operations `cobarD`, `concat`, `extClass`, `extRep`, `extPrimitive`, and `yoneda` preserve the input algebra profile, and `concat` and `yoneda` require both inputs to use the same profile.
 
 The corrected full-algebra May lift `mayRep(maygen[7, 4, 12, 0, 0])` becomes a cocycle over $\mathcal A(1)$ because each term of its differential is killed by restriction. Its class generates `ExtAn(1, 4, 12)` and represents $v_1^4$. The full group `Ext(4, 12)` and the restricted group `ExtAn(0, 4, 12)` both have rank zero. [Chromatic restriction example](examples/chromatic-restriction.asl)
+
+## The odd-prime Adams E₂ page
+
+`PExt(p, s, t)` computes the cohomology of the signed `PCobar(p, s, t)` complex. The statement `pextdim[p, s, t];` prints the dimension over $\mathbb F_p$, and `pextgen[p, s, t, i]` selects basis generator `i` starting at zero. A component of rank $r$ has $p^r$ points, including zero.
+
+The operators `extClass(c)`, `extRep(x)`, and `extPrimitive(c)` work on odd-prime cochains and classes. They project closed cochains, choose deterministic lifts, and solve the cobar boundary equation over $\mathbb F_p$. The operators `pscale[k](x)` and `add(x, y)` act on field coefficients. The Yoneda product `yoneda(x, y)` concatenates lifts at a common prime. Its graded commutation sign uses the stem $t-s$.
+
+The example computes powers of $a_0=[\tau_0]$ and the divided binomial class $b_{1,0}$ at $p=3$ and $p=5$. Its cobar coefficient on $[\xi_1^i\mid\xi_1^{p-i}]$ is the integer $\binom{p}{i}/p$ reduced modulo $p$. It also checks the nonzero anticommuting products of $[\xi_1]$ and $[\xi_1^9]$ at $p=3$. [Odd-prime Adams E₂ example](examples/odd-adams.asl)
 
 ## The algebraic May spectral sequence
 
@@ -421,6 +430,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
+| `pextdim[p, s, t];` | Print the dimension of `PExt(p, s, t)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
