@@ -1,5 +1,6 @@
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
+use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
 use crate::transfer::Operation as TransferOp;
 
@@ -154,6 +155,7 @@ pub(crate) enum ExprForm {
     Bracket(Vec<ParsedExpr>),
     Transfer(TransferOp, Vec<ParsedExpr>),
     MapBracket(MapBracketOp, Vec<ParsedExpr>),
+    MapSystem(MapSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     MapTransfer(MapTransferOp, Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
@@ -807,6 +809,7 @@ impl<'src> Parser<'src> {
                 if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket")
                     || TransferOp::from_name(&name.text).is_some()
                     || MapBracketOp::from_name(&name.text).is_some()
+                    || MapSystemOp::from_name(&name.text).is_some()
                     || MapTransferOp::from_name(&name.text).is_some()
                 {
                     head = self.variadic(head, nest)?;
@@ -856,13 +859,16 @@ impl<'src> Parser<'src> {
             unreachable!();
         };
         let massey = name.text == "massey";
+        let map_system = MapSystemOp::from_name(&name.text);
         let span = head.span;
         let mut depth = arguments
             .iter()
             .map(|argument| argument.depth + 1)
             .max()
             .unwrap_or(0);
-        if arguments.len() == 1 && (!massey || self.token() != Token::LBrace) {
+        if arguments.len() == 1
+            && (self.token() != Token::LBrace || (!massey && map_system.is_none()))
+        {
             return expr(
                 span,
                 ExprForm::Call(Box::new(head), Box::new(arguments.pop().unwrap())),
@@ -878,6 +884,14 @@ impl<'src> Parser<'src> {
         if let Some(operation) = MapTransferOp::from_name(&name.text) {
             return expr(span, ExprForm::MapTransfer(operation, arguments), depth);
         }
+        if let Some(operation) = map_system {
+            let witnesses = self.witnesses(nest, &mut depth)?;
+            return expr(
+                span,
+                ExprForm::MapSystem(operation, arguments, witnesses),
+                depth,
+            );
+        }
         if name.text == "bracket" {
             return expr(span, ExprForm::Bracket(arguments), depth);
         }
@@ -885,6 +899,11 @@ impl<'src> Parser<'src> {
             return expr(span, ExprForm::PowerDef(arguments), depth);
         }
 
+        let witnesses = self.witnesses(nest, &mut depth)?;
+        expr(span, ExprForm::Massey(arguments, witnesses), depth)
+    }
+
+    fn witnesses(&mut self, nest: usize, depth: &mut usize) -> Result<Vec<Witness>> {
         self.expect(Token::LBrace)?;
         let mut witnesses = Vec::new();
         while self.token() != Token::RBrace {
@@ -893,7 +912,7 @@ impl<'src> Parser<'src> {
             let (to, _) = self.number()?;
             self.expect(Token::FatArrow)?;
             let value = self.expr(nest + 1)?;
-            depth = depth.max(value.depth + 1);
+            *depth = (*depth).max(value.depth + 1);
             witnesses.push(Witness {
                 from,
                 to,
@@ -905,7 +924,7 @@ impl<'src> Parser<'src> {
             }
         }
         self.expect(Token::RBrace)?;
-        expr(span, ExprForm::Massey(arguments, witnesses), depth)
+        Ok(witnesses)
     }
 
     fn expr_atom(&mut self, nest: usize) -> Result<ParsedExpr> {

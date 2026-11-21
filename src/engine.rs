@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::adams;
@@ -12,6 +12,7 @@ use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
 use crate::map_may;
+use crate::map_system;
 use crate::map_transfer;
 use crate::may;
 use crate::milnor;
@@ -78,6 +79,13 @@ impl CobarOp {
     }
 }
 
+struct MapSystemEntry {
+    from: usize,
+    to: usize,
+    span: Span,
+    expr: TypedExpr,
+}
+
 enum TypedForm {
     Global(usize),
     Local(usize),
@@ -95,6 +103,7 @@ enum TypedForm {
     Bracket(Vec<TypedExpr>),
     Transfer(transfer::Operation, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
+    MapSystem(map_system::Operation, usize, Vec<MapSystemEntry>),
     MapBracket {
         target: TypeId,
         inputs: Vec<TypedExpr>,
@@ -581,6 +590,21 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 map_transfer::evaluate(&mut self.model, &inputs, *operation)
             }
+            TypedForm::MapSystem(operation, arity, entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| {
+                        Ok(map_system::Entry {
+                            from: entry.from,
+                            to: entry.to,
+                            ty: entry.expr.ty,
+                            span: entry.span,
+                            value: self.eval(&entry.expr)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                map_system::evaluate(&mut self.model, *arity, &entries, expr.ty, *operation)
+            }
             TypedForm::MapBracket {
                 target,
                 inputs,
@@ -1027,6 +1051,9 @@ impl Checker<'_> {
             ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
+            ExprForm::MapSystem(operation, inputs, witnesses) => {
+                self.map_system(operation, inputs, witnesses, span)
+            }
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -1084,6 +1111,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = map_transfer::Operation::from_name(&name.text) {
                             return self.map_transfer(operation, vec![*argument]);
+                        }
+                        if let Some(operation) = map_system::Operation::from_name(&name.text) {
+                            return self.map_system(operation, vec![*argument], Vec::new(), span);
                         }
                         if let Some(operation) = map_bracket::Operation::from_name(&name.text) {
                             return self.map_bracket(operation, vec![*argument]);
@@ -1264,6 +1294,66 @@ impl Checker<'_> {
             .collect::<Result<Vec<_>>>()?;
         let ty = operation.result_type(self.model, terms.iter().map(|term| term.ty), arity)?;
         Ok((ty, TypedForm::MapTransfer(operation, terms)))
+    }
+
+    fn map_system(
+        &mut self,
+        operation: map_system::Operation,
+        inputs: Vec<ParsedExpr>,
+        witnesses: Vec<Witness>,
+        span: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let arity = inputs.len();
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let signature = map_system::Signature::new(
+            self.model,
+            operation,
+            inputs.iter().map(|input| (input.ty, input.span)),
+            span,
+        )?;
+        let ty = signature.result_type(self.model, span)?;
+        let mut entries = Vec::with_capacity(arity + witnesses.len());
+        for (index, expr) in inputs.into_iter().enumerate() {
+            let to = arity - index;
+            entries.push(MapSystemEntry {
+                from: to - 1,
+                to,
+                span: expr.span,
+                expr,
+            });
+        }
+        let mut supplied = HashSet::new();
+        for Witness {
+            from,
+            to,
+            span,
+            value,
+        } in witnesses
+        {
+            let expected = signature.witness_type(self.model, from, to, span)?;
+            if !supplied.insert((from, to)) {
+                return Err(Error::new(
+                    span,
+                    format!("duplicate witness for interval [{from},{to}]"),
+                ));
+            }
+            let expr = self.expr(value)?;
+            self.require_type(
+                expected,
+                &expr,
+                &format!("witness for interval [{from},{to}]"),
+            )?;
+            entries.push(MapSystemEntry {
+                from,
+                to,
+                span,
+                expr,
+            });
+        }
+        Ok((ty, TypedForm::MapSystem(operation, arity, entries)))
     }
 
     fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {

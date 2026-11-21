@@ -269,6 +269,14 @@ If a proper entry changes by a boundary $dB$, the unitriangular change of basis 
 
 On `One` the algebraic triple Massey product $\langle h_0,h_1,h_0\rangle$ consists of the nonzero class $h_1^2$. A four-input example begins and ends at a two-point space and uses zero maps. The possible outcomes are the matrices of rank at most one, 10 out of 16, since the top term factors through a one-dimensional homology group. The construction uses Adams $E_2$ classes and cobar primitives. A topological Toda bracket uses stable maps and their nullhomotopies. [Triple example](examples/map-massey.asl) · [Four-input example](examples/map-massey-four.asl)
 
+### Explicit defining systems
+
+`eCurvature(fn, ..., f1){i < j => w, ...}` checks a chosen defining system and returns its top cochain. `eMassey(fn, ..., f1){i < j => w, ...}` returns the class of that same cochain. Both forms take at least two adjacent arrows, with the outermost first. Vertices are numbered from the source $X_0$ to the target $X_n$.
+
+Adjacent entries may be `MapExt` classes or chosen closed `MapCobar` cochains. Classes use their `eRep` representatives. A proper nonadjacent entry $A_{ij}$ is a raw cochain from $X_i$ to $X_j$ of bidegree $(\sum_{i<k\le j}s_k+1-(j-i),\sum_{i<k\le j}t_k)$, where $(s_k,t_k)$ is the degree of the adjacent input $f_k$. An omitted entry is zero, including when that entry would have negative cobar length.
+
+For every interval except $[0,n]$, ASL checks $dA_{ij}+\sum_{i<k<j}A_{kj}\circ A_{ik}=0$ and identifies the interval if the equation fails. The top entry is omitted from the defining system. Its curvature is the closed cochain $\sum_{0<k<n}A_{kn}\circ A_{0k}$ in bidegree $(\sum_k s_k+2-n,\sum_k t_k)$. The example gives explicit primitives for the two proper intervals of $\langle h_0,h_1,h_0\rangle$ and obtains the class $h_1^2$. [Explicit defining system](examples/map-system.asl)
+
 ## May pages for bivariant cobar morphisms
 
 `MapMay(X, Y, r, s, t, f)` applies the algebraic May construction to `MapCobar(X, Y, s, t)`. A term that sends a degree-`q` source generator to a word tensored with a degree-`p` target generator has word degree $d=q+t-p$. Its filtration is $f=d-M$, where $M$ is the May weight of the word. Splitting a word and appending or prepending the endpoint coactions preserve the decreasing filtration. At each signed internal degree `t`, the filtration is finite and the stabilized page is the associated graded of `MapExt(X, Y, s, t)`.
