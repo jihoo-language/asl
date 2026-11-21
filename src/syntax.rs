@@ -58,6 +58,7 @@ pub(crate) enum TypeForm {
     RhoBock(rho_bock::Grade),
     RhoLoc(MotivicGrade),
     MExt(MotivicGrade),
+    RMExt(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
     PExt(usize, usize, usize),
@@ -512,6 +513,7 @@ pub(crate) enum ExprForm {
     TauShift(usize, Box<ParsedExpr>),
     RhoShift(i128, Box<ParsedExpr>),
     RealComplex(Box<ParsedExpr>),
+    RhoNull(usize, Box<ParsedExpr>),
     Realize(Box<ParsedExpr>),
     PCobarWord(usize, Vec<FactorLiteral>),
     PExtGenerator(usize, usize, usize, usize, Span),
@@ -575,6 +577,7 @@ pub(crate) enum ExprForm {
     JetTerm(JetTerm),
     ExtGenerator(usize, usize, usize, Span),
     MExtGenerator(MotivicGrade, usize, Span),
+    RMExtGenerator(MotivicGrade, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
@@ -746,6 +749,8 @@ pub(crate) enum StatementForm {
     BpTripleSize(ParsedExpr),
     ExtDimension(usize, usize),
     MExtDimension(MotivicGrade),
+    RMExtDimension(MotivicGrade),
+    RhoOrder(Box<ParsedExpr>),
     RhoDimension(rho_bock::Grade),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
@@ -1768,6 +1773,18 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RhoDimension(grade)
             }
+            Token::Word("rhoorder") => {
+                self.advance()?;
+                let input = self.paren_expr(0)?;
+                StatementForm::RhoOrder(Box::new(input))
+            }
+            Token::Word("rmextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.motivic_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RMExtDimension(grade)
+            }
             Token::Word("mextdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -2673,14 +2690,17 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RhoBock(grade), 0);
         }
-        if matches!(name.text.as_str(), "MCobar" | "MExt" | "RMCobar" | "RhoLoc")
-            && self.eat(Token::LParen)?
+        if matches!(
+            name.text.as_str(),
+            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RhoLoc"
+        ) && self.eat(Token::LParen)?
         {
             let grade = self.motivic_grade()?;
             self.expect(Token::RParen)?;
             let form = match name.text.as_str() {
                 "MCobar" => TypeForm::MCobar(grade),
                 "RMCobar" => TypeForm::RMCobar(grade),
+                "RMExt" => TypeForm::RMExt(grade),
                 "RhoLoc" => TypeForm::RhoLoc(grade),
                 _ => TypeForm::MExt(grade),
             };
@@ -4224,6 +4244,13 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::RhoLocWord(t, vertex, factors), 0);
                 }
+                if name.text == "rhoNull" && self.eat(Token::LBracket)? {
+                    let (power, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RhoNull(power, Box::new(input)), depth);
+                }
                 if name.text == "rhoSection" && self.eat(Token::LBracket)? {
                     let t = self.signed_wide(
                         "a signed topological degree",
@@ -4504,6 +4531,13 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PExtAnGenerator(p, n, s, t, index, at), 0);
+                }
+                if name.text == "rmextgen" && self.eat(Token::LBracket)? {
+                    let grade = self.motivic_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RMExtGenerator(grade, index, at), 0);
                 }
                 if name.text == "mextgen" && self.eat(Token::LBracket)? {
                     let grade = self.motivic_grade()?;

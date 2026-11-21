@@ -34,6 +34,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::real_ext;
 use crate::real_motivic;
 use crate::rho_bock;
 use crate::rho_localized;
@@ -137,6 +138,7 @@ pub(crate) enum Kind {
     RhoBock(rho_bock::Grade),
     RhoLoc(motivic::Grade),
     MExt(motivic::Grade),
+    RMExt(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
     PExt(Prime, usize, usize),
@@ -201,6 +203,13 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn real_grade(&self) -> Option<motivic::Grade> {
+        match *self {
+            Self::RMCobar(grade) | Self::RMExt(grade) => Some(grade),
+            _ => None,
+        }
+    }
+
     pub(crate) fn pce_grade(&self) -> Option<(Prime, usize, usize, usize, usize, usize)> {
         match *self {
             Self::PCeAn(p, n, r, s, t, f) => Some((p, n, r, s, t, f)),
@@ -390,6 +399,7 @@ pub(crate) struct Model {
     rv_path_ext: HashMap<TypeId, Rc<rv_bar_dual::Ext>>,
     rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
     rho_pages: HashMap<TypeId, Rc<rho_bock::Page>>,
+    real_ext: HashMap<TypeId, Rc<real_ext::Group>>,
     rv_bar_ids: HashMap<String, rv_bar::PathId>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
@@ -425,6 +435,7 @@ impl Model {
             rv_path_ext: HashMap::new(),
             rv_bar_pages: HashMap::new(),
             rho_pages: HashMap::new(),
+            real_ext: HashMap::new(),
             rv_bar_ids: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
@@ -591,6 +602,7 @@ impl Model {
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
+            | Kind::RMExt(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
@@ -748,6 +760,7 @@ impl Model {
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
                 | Kind::MExt(..)
+                | Kind::RMExt(..)
                 | Kind::RhoBock(..)
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
@@ -1241,6 +1254,22 @@ impl Model {
         let page = Rc::new(rho_bock::Page::build(self, grade)?);
         self.rho_pages.insert(ty, page.clone());
         Ok(page)
+    }
+
+    pub(crate) fn rmext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMExt(grade), 0)
+    }
+
+    pub(crate) fn real_ext(&mut self, ty: TypeId) -> Result<Rc<real_ext::Group>> {
+        if let Some(group) = self.real_ext.get(&ty) {
+            return Ok(group.clone());
+        }
+        let Kind::RMExt(grade) = *self.kind(ty) else {
+            unreachable!();
+        };
+        let group = Rc::new(real_ext::Group::build(self, grade)?);
+        self.real_ext.insert(ty, group.clone());
+        Ok(group)
     }
 
     pub(crate) fn mext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
@@ -2326,6 +2355,7 @@ impl Model {
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
+            | Kind::RMExt(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
@@ -2519,6 +2549,7 @@ impl Model {
                 out.push(&format!("RMCobar({s}, {t}, {w})"))
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
+            &Kind::RMExt(motivic::Grade { s, t, w }) => out.push(&format!("RMExt({s}, {t}, {w})")),
             &Kind::RhoBock(rho_bock::Grade {
                 chain: motivic::Grade { s, t, w },
                 r,
@@ -3209,6 +3240,10 @@ impl Model {
                 Kind::Arrow(domain, range) => self.enumerate_maps(domain, range)?,
                 Kind::Cohomology(..) => {
                     let rank = self.cohomology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RMExt(..) => {
+                    let rank = self.real_ext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::RhoBock(..) => {

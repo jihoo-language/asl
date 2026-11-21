@@ -169,8 +169,13 @@ pub(crate) fn rho_shift(model: &mut Model, terms: &Cochain, power: usize) -> Res
     if power == 0 {
         return Ok(Value::RMCobar(terms.clone()));
     }
+    let shifted = shift_support(model, terms, power)?;
+    persist(model, shifted)
+}
+
+pub(crate) fn shift_support(model: &mut Model, terms: &[Term], power: usize) -> Result<Vec<Term>> {
     model.spend(terms.iter().map(Term::cells).sum())?;
-    let shifted = terms
+    terms
         .iter()
         .map(|term| {
             Ok(Term {
@@ -178,11 +183,16 @@ pub(crate) fn rho_shift(model: &mut Model, terms: &Cochain, power: usize) -> Res
                 ..term.clone()
             })
         })
-        .collect::<Result<Vec<_>>>()?;
-    persist(model, shifted)
+        .collect()
 }
 
 pub(crate) fn specialize(model: &mut Model, terms: &[Term]) -> Result<Value> {
+    let words = complex_support(model, terms)?;
+    model.allocate(words.len())?;
+    Ok(Value::Cobar(words.into()))
+}
+
+pub(crate) fn complex_support(model: &mut Model, terms: &[Term]) -> Result<Vec<Word>> {
     let mut words: Vec<_> = terms
         .iter()
         .take_while(|term| term.rho == 0)
@@ -191,9 +201,8 @@ pub(crate) fn specialize(model: &mut Model, terms: &[Term]) -> Result<Value> {
     // At fixed tridegree the scalar tau power is forced by the word.
     let cells = words.iter().map(cobar::word_cells).sum::<usize>();
     model.spend(cells * (1 + words.len().max(1).ilog2() as usize))?;
-    model.allocate(words.len())?;
     words.sort_unstable();
-    Ok(Value::Cobar(words.into()))
+    Ok(words)
 }
 
 pub(crate) fn basis(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Term>> {
