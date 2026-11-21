@@ -45,12 +45,13 @@ use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
 use crate::rv_poly;
+use crate::rv_scheme;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, JetHomSpec, JetOp, JetPageSpec, JetPathArg,
-    Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp, Statement, StatementForm,
-    SuspensionForm, TypeForm, VBockSpec, Witness,
+    Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp, RvSchemeOp, Statement,
+    StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::transfer;
 use crate::v_bars;
@@ -408,6 +409,50 @@ impl Engine {
                 let minors = self.model.rv_minors(base, selected.clone(), size)?;
                 let generators = minors.polynomials().map(|p| (size, p.clone())).collect();
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvIntersect(name, left, right) => {
+                check_new_ideal(&self.model, &name)?;
+                let left = self.model.rv_ideal(&left)?;
+                let right = self.model.rv_ideal(&right)?;
+                let ideal = rv_scheme::intersect(&mut self.model, &left, &right)?;
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvScheme(operation, name, original, input) => {
+                check_new_ideal(&self.model, &name)?;
+                let original = self.model.rv_ideal(&original)?;
+                let name_of_operation = match operation {
+                    RvSchemeOp::Colon => "rvcolon",
+                    RvSchemeOp::Saturate => "rvsaturate",
+                };
+                let input = self.checker().expr(input)?;
+                let (selected, _) = self.checker().rv_poly_grade(&input, name_of_operation)?;
+                if selected != original.selected {
+                    return Err(Error::new(
+                        input.span,
+                        format!(
+                            "{name_of_operation} polynomial uses a different primitive selection"
+                        ),
+                    ));
+                }
+                let Value::RVPoly(polynomial) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let ideal = match operation {
+                    RvSchemeOp::Colon => rv_scheme::colon(&mut self.model, &original, polynomial)?,
+                    RvSchemeOp::Saturate => {
+                        rv_scheme::saturate(&mut self.model, &original, &polynomial)?
+                    }
+                };
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvProjective(name, original) => {
+                check_new_ideal(&self.model, &name)?;
+                let original = self.model.rv_ideal(&original)?;
+                let ideal = rv_scheme::projective(&mut self.model, &original)?;
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }

@@ -539,6 +539,19 @@ For the Cusp module the size-three minors span $x_1^3+x_0^2x_2$. Its first Hasse
 
 `rvhilbert[J, d];` counts the degree-`d` monomials outside the initial monomial ideal. This is the dimension of the corresponding graded quotient, computed by inclusion–exclusion over the distinct least common multiples of the initial generators. For $(xy+z^2, x^2+yz)$ the Gröbner basis includes the cubic $xz^2+y^2z$ with witness coefficients $x$ and $y$. The degree-$d$ quotient has dimension four for $d\ge2$. For the Cusp size-three ideal, the quotient has dimension $3d$ for $d\ge1$, so the example computes 3,000 at degree 1,000. [Gröbner and fitting ideal example](examples/rank-ideals.asl)
 
+#### Intersection and saturation
+
+| Declaration | Ideal assigned to `K` |
+| --- | --- |
+| `rvintersect K[J, H];` | The intersection $J\cap H$, for ideals in the same ring. |
+| `rvcolon K[J](f);` | The colon $J:f=\{g\mid fg\in J\}$. |
+| `rvsaturate K[J](f);` | The saturation $J:f^\infty=\{g\mid f^n g\in J\text{ for some }n\}$. |
+| `rvprojective K[J];` | The saturation by the irrelevant ideal, computed as $\bigcap_i(J:x_i^\infty)$. |
+
+The polynomial `f` must be homogeneous in the variables of `J`. Zero gives the unit ideal for both colon and saturation, and one gives `J`. In the ring with no variables, projective saturation gives the unit ideal. The original generators for witness indices of each derived ideal are its reduced Gröbner basis in the order printed by `rvgroebner`.
+
+Projective saturation sends $(x^2,xy,xz,y^2)$ to $(x,y^2)$, a doubled point with Hilbert function two in positive degrees. The singular scheme of the cuspidal cubic $y^3+x^2z$ has ideal $(x^2,y^2)$ and eventual Hilbert function four. Both nilpotent coordinates survive as classes at the single projective point $[0:0:1]$. [Intersection and saturation example](examples/rank-schemes.asl)
+
 
 ### Koszul syzygies and their products
 

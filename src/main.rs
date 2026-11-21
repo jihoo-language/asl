@@ -50,6 +50,7 @@ mod rv_hom;
 mod rv_ideal;
 mod rv_koszul;
 mod rv_poly;
+mod rv_scheme;
 mod steenrod;
 mod syntax;
 mod transfer;

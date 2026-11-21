@@ -192,12 +192,14 @@ pub(crate) fn vanishes(
     Ok(sum == 0)
 }
 
-fn exact_divide(
+pub(crate) fn exact_divide(
     model: &mut Model,
     numerator: &[Monomial],
     denominator: &[Monomial],
 ) -> Result<Polynomial> {
-    let leading = denominator.last().expect("nonzero preceding pivot");
+    let leading = denominator
+        .last()
+        .ok_or_else(|| Error::plain("symbolic polynomial divisor is zero"))?;
     if denominator.len() == 1 {
         model.spend(cells(numerator))?;
         return numerator
@@ -226,9 +228,8 @@ fn quotient_term(term: &[usize], divisor: &[usize]) -> Result<Monomial> {
     term.iter()
         .zip(divisor)
         .map(|(&a, &b)| {
-            a.checked_sub(b).ok_or_else(|| {
-                Error::plain("symbolic determinant encountered a nonexact pivot division")
-            })
+            a.checked_sub(b)
+                .ok_or_else(|| Error::plain("symbolic polynomial division is not exact"))
         })
         .collect()
 }

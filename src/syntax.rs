@@ -82,6 +82,12 @@ pub(crate) struct RvGradeSpec {
     pub(crate) t: usize,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum RvSchemeOp {
+    Colon,
+    Saturate,
+}
+
 pub(crate) struct RvMatrixSpec {
     pub(crate) base: Box<ParsedType>,
     pub(crate) selected: Vec<usize>,
@@ -412,6 +418,9 @@ pub(crate) enum StatementForm {
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
     RvFitting(Label, RvMatrixSpec, usize),
     RvGroebner(Label),
+    RvIntersect(Label, Label, Label),
+    RvScheme(RvSchemeOp, Label, Label, ParsedExpr),
+    RvProjective(Label, Label),
     RvHilbert(Label, usize),
     RankJet(RankJetSpec),
     JetPath(Label, JetPathSpec),
@@ -901,6 +910,37 @@ impl<'src> Parser<'src> {
                 let (size, _) = self.number()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvFitting(name, spec, size)
+            }
+            Token::Word("rvintersect" | "rvcolon" | "rvsaturate" | "rvprojective") => {
+                let operation = self.token();
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let left = self.label()?;
+                if operation == Token::Word("rvintersect") {
+                    self.expect(Token::Comma)?;
+                    let right = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    StatementForm::RvIntersect(name, left, right)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    match operation {
+                        Token::Word("rvprojective") => StatementForm::RvProjective(name, left),
+                        Token::Word("rvcolon") => StatementForm::RvScheme(
+                            RvSchemeOp::Colon,
+                            name,
+                            left,
+                            self.paren_expr(0)?,
+                        ),
+                        Token::Word("rvsaturate") => StatementForm::RvScheme(
+                            RvSchemeOp::Saturate,
+                            name,
+                            left,
+                            self.paren_expr(0)?,
+                        ),
+                        _ => unreachable!(),
+                    }
+                }
             }
             Token::Word("rvgroebner" | "rvhilbert") => {
                 let hilbert = self.token() == Token::Word("rvhilbert");

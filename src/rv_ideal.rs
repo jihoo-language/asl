@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use crate::error::{Error, Result};
 use crate::model::Model;
@@ -15,7 +16,8 @@ pub(crate) struct Ideal {
 }
 
 struct Row {
-    degree: usize,
+    // Elimination rows use pure lex without an ordinary homogeneous degree.
+    degree: Option<usize>,
     polynomial: Polynomial,
     certificate: Certificate,
 }
@@ -79,13 +81,66 @@ impl Ideal {
             .position(|(degree, p)| *degree == 0 && !p.is_empty())
         {
             vec![Row {
-                degree: 0,
+                degree: Some(0),
                 polynomial: unit.clone(),
                 certificate: Certificate::generator(index, &unit),
             }]
         } else {
-            groebner(model, generators, &unit)?
+            let rows = generators
+                .into_iter()
+                .enumerate()
+                .map(|(index, (degree, polynomial))| Row {
+                    degree: Some(degree),
+                    polynomial,
+                    certificate: Certificate::generator(index, &unit),
+                });
+            groebner(model, rows)?
         };
+        Self::from_basis(model, selected, degrees, basis)
+    }
+
+    pub(crate) fn derived(
+        model: &mut Model,
+        selected: Indices,
+        generators: Vec<Polynomial>,
+    ) -> Result<Self> {
+        let mut rows = Vec::with_capacity(generators.len());
+        for polynomial in generators {
+            if let Some(leading) = polynomial.last() {
+                let degree = rv_poly::degree(leading)?;
+                model.spend(rv_poly::cells(&polynomial))?;
+                for term in polynomial.iter() {
+                    if rv_poly::degree(term)? != degree {
+                        return Err(Error::plain("derived ideal generator is not homogeneous"));
+                    }
+                }
+                rows.push(Row {
+                    degree: Some(degree),
+                    polynomial,
+                    certificate: Certificate::default(),
+                });
+            }
+        }
+        let mut basis = groebner(model, rows)?;
+        let unit = rv_poly::monomial(vec![0; selected.len()]);
+        let cells = basis.iter().map(Row::cells).sum::<usize>();
+        check_storage(cells + basis.len() * (2 + rv_poly::cells(&unit)))?;
+        model.spend(1 + basis.len())?;
+        let mut degrees = Vec::with_capacity(basis.len());
+        // The generating list of a derived ideal is its reduced basis.
+        for (index, row) in basis.iter_mut().enumerate() {
+            degrees.push(row.degree.expect("homogeneous basis row"));
+            row.certificate = Certificate::generator(index, &unit);
+        }
+        Self::from_basis(model, selected, degrees, basis)
+    }
+
+    fn from_basis(
+        model: &mut Model,
+        selected: Indices,
+        degrees: Vec<usize>,
+        basis: Vec<Row>,
+    ) -> Result<Self> {
         model.allocate(1 + degrees.len() + basis.iter().map(Row::cells).sum::<usize>())?;
         Ok(Self {
             selected,
@@ -135,7 +190,34 @@ impl Ideal {
     }
 }
 
-fn check_storage(cells: usize) -> Result<()> {
+// The auxiliary variable occupies the first exponent. A row whose leading
+// exponent is zero there lies entirely in the original ring.
+pub(crate) fn eliminate(model: &mut Model, generators: Vec<Polynomial>) -> Result<Vec<Polynomial>> {
+    let rows = generators.into_iter().map(|polynomial| Row {
+        degree: None,
+        polynomial,
+        certificate: Certificate::default(),
+    });
+    let mut result = Vec::new();
+    let mut cells = 0;
+    for row in groebner(model, rows)? {
+        if row.leading()[0] == 0 {
+            let cost = rv_poly::cells(&row.polynomial);
+            cells += cost;
+            check_storage(cells)?;
+            model.spend(cost)?;
+            result.push(
+                row.polynomial
+                    .iter()
+                    .map(|term| Rc::from(&term[1..]))
+                    .collect(),
+            );
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn check_storage(cells: usize) -> Result<()> {
     if cells > MAX_CELLS {
         return Err(Error::plain(
             "symbolic ideal calculation exceeds the storage limit",
@@ -211,23 +293,13 @@ fn reduce(
     Ok(remainder.into())
 }
 
-fn groebner(
-    model: &mut Model,
-    generators: Vec<(usize, Polynomial)>,
-    unit: &Polynomial,
-) -> Result<Vec<Row>> {
+fn groebner(model: &mut Model, rows: impl IntoIterator<Item = Row>) -> Result<Vec<Row>> {
     let mut basis = Vec::new();
     let mut storage = 0;
-    for (index, (degree, polynomial)) in generators.into_iter().enumerate() {
-        if polynomial.is_empty() {
-            continue;
+    for row in rows {
+        if !row.polynomial.is_empty() {
+            append_reduced(model, &mut basis, &mut storage, row)?;
         }
-        let row = Row {
-            degree,
-            polynomial,
-            certificate: Certificate::generator(index, unit),
-        };
-        append_reduced(model, &mut basis, &mut storage, row)?;
     }
 
     // Enumerate all pairs in insertion order, including pairs with every newly
@@ -276,7 +348,7 @@ fn s_polynomial(model: &mut Model, left: &Row, right: &Row) -> Result<Option<Row
         return Ok(None);
     }
     let lcm = join(a, b);
-    let degree = rv_poly::degree(&lcm)?;
+    let degree = left.degree.map(|_| rv_poly::degree(&lcm)).transpose()?;
     let left_powers = quotient(&lcm, a);
     let right_powers = quotient(&lcm, b);
     let left_tail = shift(
@@ -355,7 +427,7 @@ fn minimal_reduced(model: &mut Model, basis: Vec<Row>) -> Result<Vec<Row>> {
 }
 
 fn hilbert(model: &mut Model, width: usize, degree: usize, basis: &[Row]) -> Result<String> {
-    if basis.first().is_some_and(|row| row.degree == 0) {
+    if basis.first().is_some_and(|row| row.degree == Some(0)) {
         return Ok("0".into());
     }
     if width == 0 {
@@ -365,7 +437,10 @@ fn hilbert(model: &mut Model, width: usize, degree: usize, basis: &[Row]) -> Res
     // Merge equal LCMs after each generator, discarding degrees above the query.
     let empty: Monomial = vec![0; width].into();
     let mut lcms = BTreeMap::from([(empty, 1i128)]);
-    for row in basis.iter().take_while(|row| row.degree <= degree) {
+    for row in basis
+        .iter()
+        .take_while(|row| row.degree.expect("homogeneous basis row") <= degree)
+    {
         let mut changes = BTreeMap::new();
         for (term, &coefficient) in &lcms {
             model.spend((1 + width) * (1 + lcms.len().ilog2() as usize))?;
