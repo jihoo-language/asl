@@ -191,6 +191,7 @@ enum TypedForm {
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
+    BpMassey(bp::Massey, Vec<TypedExpr>),
     RvKoszulTerm(usize, Rc<RvIdeal>, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
@@ -818,6 +819,15 @@ impl Engine {
                         result.add_assign(&mut self.model, &b, false)?;
                         self.persist_bp(expr.ty, result)
                     }
+                    (BinaryOp::BpCup, Value::BP(a), Value::BP(b)) => {
+                        let (&Kind::BP(l), &Kind::BP(r)) =
+                            (self.model.kind(left.ty), self.model.kind(right.ty))
+                        else {
+                            unreachable!()
+                        };
+                        let result = bp::cup(&mut self.model, l, r, &a, &b)?;
+                        bp::persist(&mut self.model, result)
+                    }
                     (BinaryOp::BpMultiply, Value::BP(a), Value::BP(b)) => {
                         let result = a.multiply(&mut self.model, &b)?;
                         self.persist_bp(expr.ty, result)
@@ -1311,6 +1321,21 @@ impl Engine {
             TypedForm::QRestrict(input) => {
                 let value = self.eval(input)?;
                 q_koszul::restrict(&mut self.model, input.ty, value, expr.ty)
+            }
+            TypedForm::BpMassey(layout, inputs) => {
+                let values = inputs
+                    .iter()
+                    .map(|input| self.eval(input))
+                    .map(|value| {
+                        let Value::BP(polynomial) = value? else {
+                            unreachable!()
+                        };
+                        Ok(polynomial)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let values: [_; 5] = values.try_into().unwrap_or_else(|_| unreachable!());
+                let result = layout.apply(&mut self.model, values.each_ref().map(Rc::as_ref))?;
+                bp::persist(&mut self.model, result)
             }
             TypedForm::BpOperation(operation, shape, input) => {
                 let Value::BP(polynomial) = self.eval(input)? else {
@@ -2489,6 +2514,21 @@ impl Checker<'_> {
                 let polynomial = shape.variable(slot.unwrap_or(0), index)?;
                 let value = bp::persist(self.model, polynomial)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpMassey(inputs) => {
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let shapes = inputs
+                    .iter()
+                    .map(|input| self.bp_shape(input, "bpMassey"))
+                    .collect::<Result<Vec<_>>>()?;
+                let layout = bp::Massey::new(shapes.try_into().unwrap_or_else(|_| unreachable!()))?;
+                Ok((
+                    self.model.bp_type(layout.target)?,
+                    TypedForm::BpMassey(layout, inputs),
+                ))
             }
             ExprForm::BpOperation(operation, input) => {
                 let input = self.expr(*input)?;
@@ -4001,6 +4041,11 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "xaction", span)?;
                 let degree = checked_degree(t, v, "xaction", span)?;
                 self.model.xext_type(base, length, degree)
+            }
+            BinaryOp::BpCup => {
+                let left = self.bp_shape(left, "bpCup")?;
+                let right = self.bp_shape(right, "bpCup")?;
+                self.model.bp_type(left.cup(right)?)
             }
             BinaryOp::BpMultiply => {
                 self.bp_shape(left, "bpMul")?;

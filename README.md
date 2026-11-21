@@ -317,6 +317,16 @@ At $p=3$ the first connecting cocycle of $v_2$ from $I_2$ is $2v_1^2t+t^3$ modul
 
 At $p=2$ the analogous canonical iterated lifts of $v_2$ and $v_3$ vanish. At $p=3$ the three-step lift of $v_3$ is a closed 27-term cochain. At $p=2$ and height one, `bpBockP[3]` applied to $v_1^4$ gives $\alpha_{4/3}$ with $8\alpha_{4/3}=d(v_1^4)$. Here $v_1^4$ spans the zero-cochains of weight eight, so the nonzero cocycle detects order eight at that height. [Greek-letter cocycle example](examples/bp-greek.asl)
 
+### Cobar cup products and Massey cocycles
+
+`bpCup(f, g)` takes cochains with the same prime, height, and ideal depth. If `f` and `g` have `a` and `b` arrows, the result has `a + b` arrows. The Alexander–Whitney formula evaluates `f` on the first `a` arrows and `g` on the last `b` arrows over the base transported through the first `a`. It then multiplies the two values. The product is associative and satisfies $d(f\smile g)=df\smile g+(-1)^a f\smile dg$. For example, $t\smile v_1=(v_1+pt)t$ and $v_1\smile t=v_1t$ when $v_1$ is a zero-cochain and $t$ is the first coordinate of one arrow.
+
+`bpDegeneracy[j](f)` inserts an identity arrow at slot `j + 1`. It sets that slot's coordinates to zero, shifts the later slots, and lowers the number of arrows by one. `bpNormalize(f)` projects onto the normalized cochains by applying $x\leftarrow x-d^{j+1}s^j(x)$ in increasing order of `j`. Its result lies in every degeneracy kernel, and it commutes with `bpD`. The cup product preserves normalized cochains.
+
+`bpMassey(A, B, C, U, V)` checks that `A`, `B`, and `C` are closed and that $dU=A\smile B$ and $dV=B\smile C$. It returns the cocycle $A\smile V+(-1)^{a+1}U\smile C$, where `a` is the arrow count of `A`. The result uses this chosen defining system. Different witnesses can give different cohomology classes.
+
+At $p=3$, take $a=t$ and $w=v_1t+t^2$. Then $dw=a\smile a$ and the chosen triple value is $M=2v_1tu+4t^2u+tu^2$. The equality $M+\beta=d(v_1^2t)$ identifies its class with $-\beta$, of order three. [Brown–Peterson Massey cocycle example](examples/bp-massey.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

@@ -214,6 +214,7 @@ pub(crate) enum BinaryOp {
     RvKoszulProduct,
     RvTorProduct,
     BpMultiply,
+    BpCup,
 }
 
 impl BinaryOp {
@@ -236,6 +237,7 @@ impl BinaryOp {
             "rvkProd" => Some(Self::RvKoszulProduct),
             "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
+            "bpCup" => Some(Self::BpCup),
             _ => None,
         }
     }
@@ -356,6 +358,7 @@ pub(crate) enum ExprForm {
     BpInteger(BpSpec, i128),
     BpVariable(BpSpec, Option<usize>, usize),
     BpOperation(BpOperation, Box<ParsedExpr>),
+    BpMassey(Vec<ParsedExpr>),
     RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
     RvHasse(Vec<usize>, Box<ParsedExpr>),
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
@@ -1963,6 +1966,17 @@ impl<'src> Parser<'src> {
                     let powers = self.unsigned_list(Token::RBrace)?;
                     return expr(span, ExprForm::RvMonomial(selected, powers), 0);
                 }
+                if name.text == "bpMassey" && self.eat(Token::LParen)? {
+                    let arguments = self.arguments(nest)?;
+                    if arguments.len() != 5 {
+                        return Err(Error::new(
+                            span,
+                            "bpMassey requires five cochains A, B, C, U, V",
+                        ));
+                    }
+                    let depth = arguments.iter().map(|arg| arg.depth + 1).max().unwrap();
+                    return expr(span, ExprForm::BpMassey(arguments), depth);
+                }
                 if matches!(name.text.as_str(), "bpint" | "bpv" | "bpt")
                     && self.eat(Token::LBracket)?
                 {
@@ -1987,7 +2001,7 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "bpPow" | "bpCoface" | "bpReduce" | "bpBockP"
+                    "bpPow" | "bpCoface" | "bpReduce" | "bpBockP" | "bpDegeneracy"
                 ) && self.eat(Token::LBracket)?
                 {
                     let (index, _) = self.number()?;
@@ -1997,6 +2011,7 @@ impl<'src> Parser<'src> {
                         "bpCoface" => BpOperation::Coface(index),
                         "bpReduce" => BpOperation::Reduce(index),
                         "bpBockP" => BpOperation::BockP(index),
+                        "bpDegeneracy" => BpOperation::Degeneracy(index),
                         _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;
@@ -2007,14 +2022,17 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
-                if matches!(name.text.as_str(), "bpNeg" | "bpD" | "bpLift" | "bpDelta")
-                    && self.token() == Token::LParen
+                if matches!(
+                    name.text.as_str(),
+                    "bpNeg" | "bpD" | "bpLift" | "bpDelta" | "bpNormalize"
+                ) && self.token() == Token::LParen
                 {
                     let operation = match name.text.as_str() {
                         "bpNeg" => BpOperation::Negate,
                         "bpD" => BpOperation::Differential,
                         "bpLift" => BpOperation::Lift,
                         "bpDelta" => BpOperation::Delta,
+                        "bpNormalize" => BpOperation::Normalize,
                         _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;

@@ -45,17 +45,13 @@ impl Shape {
                 "BP height exceeds the limit of {MAX_HEIGHT}"
             )));
         }
-        if arrows > MAX_ARROWS {
-            return Err(Error::plain(format!(
-                "BP arrow arity exceeds the limit of {MAX_ARROWS}"
-            )));
-        }
-        Ok(Self {
+        Self {
             prime,
             height,
-            arrows,
+            arrows: 0,
             depth: 0,
-        })
+        }
+        .with_arrows(arrows)
     }
 
     pub(crate) fn quotient(self, depth: usize) -> Result<Self> {
@@ -90,15 +86,29 @@ impl Shape {
     }
 
     pub(crate) fn next(self) -> Result<Self> {
-        if self.arrows == MAX_ARROWS {
+        self.with_arrows(self.arrows + 1)
+    }
+
+    fn with_arrows(self, arrows: usize) -> Result<Self> {
+        if arrows > MAX_ARROWS {
             return Err(Error::plain(format!(
                 "BP arrow arity exceeds the limit of {MAX_ARROWS}"
             )));
         }
-        Ok(Self {
-            arrows: self.arrows + 1,
-            ..self
-        })
+        Ok(Self { arrows, ..self })
+    }
+
+    fn same_ring(self, other: Self) -> bool {
+        self.prime == other.prime && self.height == other.height && self.depth == other.depth
+    }
+
+    pub(crate) fn cup(self, other: Self) -> Result<Self> {
+        if !self.same_ring(other) {
+            return Err(Error::plain(
+                "bpCup requires the same prime, height, and ideal depth",
+            ));
+        }
+        self.with_arrows(self.arrows + other.arrows)
     }
 
     pub(crate) fn variable(self, slot: usize, index: usize) -> Result<Polynomial> {
@@ -324,25 +334,12 @@ pub(crate) fn coface(
         return Ok(input.clone());
     }
     let used_height = input.max_used_index(model, shape.height, face)?;
-    let mut transported = target.variables(0, used_height);
-    for variable in transported.iter_mut().take(target.depth.saturating_sub(1)) {
-        *variable = Polynomial::default();
-    }
-    // The first depth generators are invariant in this quotient.
-    if used_height > target.depth {
-        for slot in 1..face {
-            let arrow = target.variables(slot, used_height);
-            transported = right_unit(model, shape.prime, &transported, &arrow)?;
-            for coordinate in &mut transported {
-                target.normalize(model, coordinate)?;
-            }
-        }
-    }
     let mut images = Vec::with_capacity((shape.arrows + 1) * shape.height);
     for slot in 0..=shape.arrows {
         let mut variables = target.variables(slot + usize::from(slot > face), shape.height);
         if slot == face && used_height != 0 && (face != 0 || used_height > target.depth) {
             let arrow = target.variables(slot + 1, used_height);
+            let transported = transport_base(model, target, face.saturating_sub(1), used_height)?;
             let coordinates = if face == 0 {
                 right_unit(model, shape.prime, &transported, &arrow)?
             } else {
@@ -361,6 +358,29 @@ pub(crate) fn coface(
     Ok(output)
 }
 
+fn transport_base(
+    model: &mut Model,
+    target: Shape,
+    arrows: usize,
+    height: usize,
+) -> Result<Vec<Polynomial>> {
+    let mut base = target.variables(0, height);
+    for variable in base.iter_mut().take(target.depth.saturating_sub(1)) {
+        *variable = Polynomial::default();
+    }
+    // The first depth generators are invariant in this quotient.
+    if height > target.depth {
+        for slot in 1..=arrows {
+            let arrow = target.variables(slot, height);
+            base = right_unit(model, target.prime, &base, &arrow)?;
+            for coordinate in &mut base {
+                target.normalize(model, coordinate)?;
+            }
+        }
+    }
+    Ok(base)
+}
+
 pub(crate) fn differential(
     model: &mut Model,
     shape: Shape,
@@ -374,6 +394,139 @@ pub(crate) fn differential(
     }
     shape.normalize(model, &mut result)?;
     Ok(result)
+}
+
+pub(crate) fn cup(
+    model: &mut Model,
+    left: Shape,
+    right: Shape,
+    f: &Polynomial,
+    g: &Polynomial,
+) -> Result<Polynomial> {
+    let target = left.cup(right)?;
+    if f.is_zero() || g.is_zero() {
+        return Ok(Polynomial::default());
+    }
+    let used_height = g.max_used_index(model, target.height, 0)?;
+    let base = transport_base(model, target, left.arrows, used_height)?;
+    let mut images = target.variables(0, target.height);
+    images.splice(..used_height, base);
+    for slot in 1..=right.arrows {
+        images.extend(target.variables(left.arrows + slot, target.height));
+    }
+    let mut g = g.substitute(model, &images, target.coefficient_prime())?;
+    target.normalize(model, &mut g)?;
+    let mut output = f.multiply(model, &g)?;
+    target.normalize(model, &mut output)?;
+    Ok(output)
+}
+
+fn degeneracy_target(shape: Shape, index: usize) -> Result<Shape> {
+    if shape.arrows == 0 {
+        return Err(Error::plain("bpDegeneracy requires at least one arrow"));
+    }
+    if index >= shape.arrows {
+        return Err(Error::plain(format!(
+            "BP degeneracy index must be in 0..={}",
+            shape.arrows - 1
+        )));
+    }
+    Ok(Shape {
+        arrows: shape.arrows - 1,
+        ..shape
+    })
+}
+
+fn degeneracy(
+    model: &mut Model,
+    shape: Shape,
+    index: usize,
+    input: &Polynomial,
+) -> Result<Polynomial> {
+    let start = (index + 1) * shape.height;
+    let end = start + shape.height;
+    input.reindex(model, |variable| {
+        if variable >= end {
+            Some(variable - shape.height)
+        } else if variable >= start {
+            None
+        } else {
+            Some(variable)
+        }
+    })
+}
+
+fn normalized(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Polynomial> {
+    model.spend(input.cells())?;
+    let mut output = input.clone();
+    for index in 0..shape.arrows {
+        let lower = degeneracy(model, shape, index, &output)?;
+        if lower.is_zero() {
+            continue;
+        }
+        // This coface is a section of the degeneracy and preserves the earlier kernels.
+        let correction = coface(model, degeneracy_target(shape, index)?, index + 1, &lower)?;
+        output.add_assign(model, &correction, true)?;
+        shape.normalize(model, &mut output)?;
+    }
+    Ok(output)
+}
+
+pub(crate) struct Massey {
+    shapes: [Shape; 5],
+    pub(crate) target: Shape,
+}
+
+impl Massey {
+    pub(crate) fn new(shapes: [Shape; 5]) -> Result<Self> {
+        let [a, b, c, u, v] = shapes;
+        if shapes[1..].iter().any(|&other| !a.same_ring(other)) {
+            return Err(Error::plain(
+                "bpMassey requires the same prime, height, and ideal depth",
+            ));
+        }
+        if u.arrows + 1 != a.arrows + b.arrows {
+            return Err(Error::plain("bpMassey witness U must have arity a+b-1"));
+        }
+        if v.arrows + 1 != b.arrows + c.arrows {
+            return Err(Error::plain("bpMassey witness V must have arity b+c-1"));
+        }
+        for shape in shapes {
+            shape.next()?;
+        }
+        let target = a.cup(v)?;
+        Ok(Self { shapes, target })
+    }
+
+    pub(crate) fn apply(
+        &self,
+        model: &mut Model,
+        [a, b, c, u, v]: [&Polynomial; 5],
+    ) -> Result<Polynomial> {
+        let [a_shape, b_shape, c_shape, u_shape, v_shape] = self.shapes;
+        for (shape, value, name) in [(a_shape, a, "A"), (b_shape, b, "B"), (c_shape, c, "C")] {
+            if !differential(model, shape, value)?.is_zero() {
+                return Err(Error::plain(format!(
+                    "bpMassey input {name} must be closed"
+                )));
+            }
+        }
+        for (shape, witness, left_shape, left, right_shape, right, equation) in [
+            (u_shape, u, a_shape, a, b_shape, b, "d(U) = bpCup(A, B)"),
+            (v_shape, v, b_shape, b, c_shape, c, "d(V) = bpCup(B, C)"),
+        ] {
+            let actual = differential(model, shape, witness)?;
+            let expected = cup(model, left_shape, right_shape, left, right)?;
+            if !actual.compare(model, &expected)?.is_eq() {
+                return Err(Error::plain(format!("bpMassey requires {equation}")));
+            }
+        }
+        let mut result = cup(model, a_shape, v_shape, a, v)?;
+        let other = cup(model, u_shape, c_shape, u, c)?;
+        result.add_assign(model, &other, a_shape.arrows % 2 == 0)?;
+        self.target.normalize(model, &mut result)?;
+        Ok(result)
+    }
 }
 
 fn connecting(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Polynomial> {
@@ -430,6 +583,8 @@ pub(crate) enum Operation {
     Lift,
     Delta,
     BockP(usize),
+    Degeneracy(usize),
+    Normalize,
 }
 
 impl Operation {
@@ -443,6 +598,8 @@ impl Operation {
             Self::Lift => "bpLift",
             Self::Delta => "bpDelta",
             Self::BockP(_) => "bpBockP",
+            Self::Degeneracy(_) => "bpDegeneracy",
+            Self::Normalize => "bpNormalize",
         }
     }
 
@@ -453,7 +610,8 @@ impl Operation {
                 shape.next()
             }
             Self::Differential => shape.next(),
-            Self::Negate | Self::Power(_) => Ok(shape),
+            Self::Negate | Self::Power(_) | Self::Normalize => Ok(shape),
+            Self::Degeneracy(index) => degeneracy_target(shape, index),
             Self::Reduce(depth) => shape.quotient(depth),
             Self::Lift => {
                 shape.require_quotient(self.name())?;
@@ -501,6 +659,8 @@ impl Operation {
             }
             Self::Delta => connecting(model, shape, input),
             Self::BockP(exponent) => p_bockstein(model, shape, input, exponent),
+            Self::Degeneracy(index) => degeneracy(model, shape, index, input),
+            Self::Normalize => normalized(model, shape, input),
         }
     }
 }

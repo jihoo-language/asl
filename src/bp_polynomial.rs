@@ -276,6 +276,26 @@ impl Polynomial {
         Ok(result)
     }
 
+    // The surviving variable indices must be mapped in strictly increasing order.
+    pub(crate) fn reindex(
+        &self,
+        model: &mut Model,
+        image: impl Fn(usize) -> Option<usize>,
+    ) -> Result<Self> {
+        model.spend(self.cells)?;
+        let mut output = Self::default();
+        for (monomial, &coefficient) in &self.terms {
+            let mapped: Option<Monomial> = monomial
+                .iter()
+                .map(|&(index, power)| image(index).map(|index| (index, power)))
+                .collect();
+            if let Some(mapped) = mapped {
+                output.insert(model, mapped, coefficient, false)?;
+            }
+        }
+        Ok(output)
+    }
+
     pub(crate) fn write(
         &self,
         mut out: impl FnMut(&str) -> Result<()>,
