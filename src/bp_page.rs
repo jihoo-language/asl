@@ -63,6 +63,28 @@ impl fmt::Display for Grade {
     }
 }
 
+impl Grade {
+    pub(crate) fn cup(self, other: Self) -> Result<Self> {
+        if self.mode != other.mode || self.page != other.page {
+            return Err(Error::plain(
+                "bpCup requires the same BP page family and page index",
+            ));
+        }
+        Ok(Self {
+            shape: self.shape.cup(other.shape)?,
+            t: self
+                .t
+                .checked_add(other.t)
+                .ok_or_else(|| Error::plain("BP cup product internal degree is out of range"))?,
+            filtration: self
+                .filtration
+                .checked_add(other.filtration)
+                .ok_or_else(|| Error::plain("BP cup product filtration is out of range"))?,
+            ..self
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     Representative,
@@ -255,6 +277,21 @@ impl Page {
         let image = bp::differential(model, self.grade.shape, &representative)?;
         let coordinates = bp_ext::coordinates(model, &image, &target.monomials)?;
         target.project(model, coordinates, self.common)
+    }
+
+    pub(crate) fn cup(
+        &self,
+        model: &mut Model,
+        other: &Self,
+        target: &Self,
+        left: &[Coordinate],
+        right: &[Coordinate],
+    ) -> Result<Vec<Coordinate>> {
+        let f = self.representative(model, left, false)?;
+        let g = other.representative(model, right, false)?;
+        let product = bp::cup(model, self.grade.shape, other.grade.shape, &f, &g)?;
+        let coordinates = bp_ext::coordinates(model, &product, &target.monomials)?;
+        target.project(model, coordinates, self.common + other.common)
     }
 
     pub(crate) fn previous(

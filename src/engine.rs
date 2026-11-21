@@ -1044,6 +1044,16 @@ impl Engine {
                         let result = bp::cup(&mut self.model, l, r, &a, &b)?;
                         bp::persist(&mut self.model, result)
                     }
+                    (BinaryOp::BpCup, Value::OddClass(a), Value::OddClass(b)) => {
+                        if a.is_empty() || b.is_empty() {
+                            return Ok(odd_ext::zero());
+                        }
+                        let source = self.model.bp_page(left.ty)?;
+                        let other = self.model.bp_page(right.ty)?;
+                        let target = self.model.bp_page(expr.ty)?;
+                        let product = source.cup(&mut self.model, &other, &target, &a, &b)?;
+                        odd_ext::persist(&mut self.model, product)
+                    }
                     (BinaryOp::BpMultiply, Value::BP(a), Value::BP(b)) => {
                         let result = a.multiply(&mut self.model, &b)?;
                         self.persist_bp(expr.ty, result)
@@ -4686,6 +4696,11 @@ impl Checker<'_> {
                     let left = self.bp_ext_operand(left, "bpCup")?;
                     let right = self.bp_ext_operand(right, "bpCup")?;
                     return self.model.bp_ext_type(left.cup(right)?);
+                }
+                if let (&Kind::BPPage(left), &Kind::BPPage(right)) =
+                    (self.model.kind(left.ty), self.model.kind(right.ty))
+                {
+                    return self.model.bp_page_type(left.cup(right)?);
                 }
                 let left = self.bp_shape(left, "bpCup")?;
                 let right = self.bp_shape(right, "bpCup")?;
