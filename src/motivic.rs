@@ -6,7 +6,7 @@ use crate::odd_cobar::FactorLiteral;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Grade {
     pub(crate) s: usize,
-    pub(crate) t: usize,
+    pub(crate) t: i128,
     pub(crate) w: i64,
 }
 
@@ -44,8 +44,17 @@ impl Grade {
         Ok(Self { w, ..self })
     }
 
+    pub(crate) fn classical_degree(self) -> Result<usize> {
+        usize::try_from(self.t).map_err(|_| {
+            Error::plain(
+                "realize target is outside the supported classical topological degree range",
+            )
+        })
+    }
+
     pub(crate) fn tau_power(self, word: &Word) -> u128 {
-        (intrinsic_weight(word, self.t) as i128 - i128::from(self.w)) as u128
+        let intrinsic = (self.t - odd_exponents(word) as i128) / 2;
+        (intrinsic - i128::from(self.w)) as u128
     }
 }
 
@@ -53,12 +62,12 @@ fn weight_overflow() -> Error {
     Error::plain("motivic weight is out of range")
 }
 
-fn intrinsic_weight(word: &Word, t: usize) -> usize {
-    let odd = word
-        .iter()
-        .map(|factor| cobar::odd_exponents(factor))
-        .sum::<usize>();
-    (t - odd) / 2
+pub(crate) fn intrinsic_weight(word: &Word, t: usize) -> usize {
+    (t - odd_exponents(word)) / 2
+}
+
+fn odd_exponents(word: &Word) -> usize {
+    word.iter().map(|factor| cobar::odd_exponents(factor)).sum()
 }
 
 pub(crate) fn literal(
@@ -92,11 +101,17 @@ pub(crate) fn literal(
     };
     let w = i64::try_from(intrinsic_weight(&words[0], t) as i128 - carry)
         .map_err(|_| weight_overflow())?;
-    Ok((Grade { s, t, w }, value))
+    Ok((Grade { s, t: t as i128, w }, value))
 }
 
 pub(crate) fn basis(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Word>> {
     let Grade { s, t, w } = grade;
+    if t < 0 {
+        return Ok(Vec::new());
+    }
+    let t = usize::try_from(t).map_err(|_| {
+        Error::plain("motivic topological basis degree exceeds the supported range")
+    })?;
     if w <= 0 {
         return cobar::basis(model, s, t, limit);
     }

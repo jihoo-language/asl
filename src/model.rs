@@ -34,6 +34,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::real_motivic;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
@@ -117,6 +118,7 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     MCobar(motivic::Grade),
+    RMCobar(motivic::Grade),
     MExt(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
@@ -238,6 +240,7 @@ pub(crate) enum Value {
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
+    RMCobar(real_motivic::Cochain),
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
     MapCobar(map_cochain::Support),
@@ -515,6 +518,7 @@ impl Model {
             Kind::Cobar(..)
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
+            | Kind::RMCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
@@ -635,6 +639,7 @@ impl Model {
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
+                | Kind::RMCobar(..)
                 | Kind::PCobar(..)
                 | Kind::PCobarAn(..)
                 | Kind::PExt(..)
@@ -939,6 +944,10 @@ impl Model {
 
     pub(crate) fn mcobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::MCobar(grade), 0)
+    }
+
+    pub(crate) fn real_cobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMCobar(grade), 0)
     }
 
     pub(crate) fn mext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
@@ -1908,6 +1917,7 @@ impl Model {
             | Kind::BPModExt(..)
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
+            | Kind::RMCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
@@ -2062,6 +2072,9 @@ impl Model {
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::MCobar(motivic::Grade { s, t, w }) => {
                 out.push(&format!("MCobar({s}, {t}, {w})"))
+            }
+            &Kind::RMCobar(motivic::Grade { s, t, w }) => {
+                out.push(&format!("RMCobar({s}, {t}, {w})"))
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
@@ -2313,6 +2326,8 @@ impl Model {
             (Value::Cobar(left), Value::Cobar(right)) => Ok(
                 Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
             ),
+            (Value::RMCobar(left), Value::RMCobar(right)) => Ok(Rc::ptr_eq(left, right)
+                || real_motivic::compare(self, left, right)? == Ordering::Equal),
             (Value::OddClass(left), Value::OddClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || odd_ext::compare(self, left, right)? == Ordering::Equal)
@@ -2436,6 +2451,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     cobar::compare(self, left, right)
+                }
+            }
+            (Value::RMCobar(left), Value::RMCobar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    real_motivic::compare(self, left, right)
                 }
             }
             (Value::OddClass(left), Value::OddClass(right)) => {
@@ -2842,6 +2864,12 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::RMCobar(grade) => {
+                    let basis = real_motivic::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::RMCobar(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
+                }
                 Kind::MCobar(grade) => {
                     let basis = motivic::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
                     self.enumerate_supports(0, basis.len(), |support| {
@@ -3255,6 +3283,22 @@ impl Model {
                     } else {
                         write_cobar_word(out, word)?;
                     }
+                }
+                out.push("}")
+            }
+            Value::RMCobar(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().rev().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    self.spend(term.cells())?;
+                    out.push(&format!("rmcword[{}, {}]{{", term.rho, term.tau))?;
+                    write_motivic_factors(out, &term.word)?;
                 }
                 out.push("}")
             }
@@ -3738,6 +3782,10 @@ fn write_cobar_word(out: &mut Text, word: &cobar::Word) -> Result<()> {
 
 fn write_motivic_word(out: &mut Text, grade: motivic::Grade, word: &cobar::Word) -> Result<()> {
     out.push(&format!("mcword[{}]{{", grade.tau_power(word)))?;
+    write_motivic_factors(out, word)
+}
+
+fn write_motivic_factors(out: &mut Text, word: &cobar::Word) -> Result<()> {
     for (index, factor) in word.iter().enumerate() {
         if index > 0 {
             out.push(", ")?;

@@ -55,6 +55,7 @@ mod q_koszul;
 mod q_module;
 mod rank_jets;
 mod rank_variety;
+mod real_motivic;
 mod restriction_transfer;
 mod rv_arithmetic;
 mod rv_as_cartier;

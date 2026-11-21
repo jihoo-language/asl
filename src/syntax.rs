@@ -44,6 +44,7 @@ pub(crate) enum TypeForm {
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
+    RMCobar(MotivicGrade),
     MExt(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
@@ -436,7 +437,10 @@ pub(crate) enum ExprForm {
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
     MCobarWord(usize, Vec<FactorLiteral>),
+    RMCobarWord(usize, usize, Vec<FactorLiteral>),
     TauShift(usize, Box<ParsedExpr>),
+    RhoShift(usize, Box<ParsedExpr>),
+    RealComplex(Box<ParsedExpr>),
     Realize(Box<ParsedExpr>),
     PCobarWord(usize, Vec<FactorLiteral>),
     PExtGenerator(usize, usize, usize, usize, Span),
@@ -936,7 +940,7 @@ impl<'src> Parser<'src> {
     fn motivic_grade(&mut self) -> Result<MotivicGrade> {
         let (s, _) = self.number()?;
         self.expect(Token::Comma)?;
-        let (t, _) = self.number()?;
+        let t = self.signed_wide("a signed topological degree", "motivic topological degree")?;
         self.expect(Token::Comma)?;
         let w = self.signed_number("motivic weight")?;
         Ok(MotivicGrade { s, t, w })
@@ -2232,13 +2236,13 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
-        if matches!(name.text.as_str(), "MCobar" | "MExt") && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "MCobar" | "MExt" | "RMCobar") && self.eat(Token::LParen)? {
             let grade = self.motivic_grade()?;
             self.expect(Token::RParen)?;
-            let form = if name.text == "MCobar" {
-                TypeForm::MCobar(grade)
-            } else {
-                TypeForm::MExt(grade)
+            let form = match name.text.as_str() {
+                "MCobar" => TypeForm::MCobar(grade),
+                "RMCobar" => TypeForm::RMCobar(grade),
+                _ => TypeForm::MExt(grade),
             };
             return ty(span, form, 0);
         }
@@ -3466,20 +3470,40 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::CobarWord(factors), 0);
                 }
-                if name.text == "tauShift" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "tauShift" | "rhoShift")
+                    && self.eat(Token::LBracket)?
+                {
                     let (power, _) = self.number()?;
                     self.expect(Token::RBracket)?;
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
-                    return expr(span, ExprForm::TauShift(power, Box::new(input)), depth);
+                    let form = if name.text == "rhoShift" {
+                        ExprForm::RhoShift(power, Box::new(input))
+                    } else {
+                        ExprForm::TauShift(power, Box::new(input))
+                    };
+                    return expr(span, form, depth);
+                }
+                if name.text == "realComplex" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RealComplex(Box::new(input)), depth);
                 }
                 if name.text == "realize" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::Realize(Box::new(input)), depth);
                 }
-                if matches!(name.text.as_str(), "pword" | "mcword") && self.eat(Token::LBracket)? {
-                    let (p, _) = self.number()?;
+                if matches!(name.text.as_str(), "pword" | "mcword" | "rmcword")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (coefficient, _) = self.number()?;
+                    let second = if name.text == "rmcword" {
+                        self.expect(Token::Comma)?;
+                        self.number()?.0
+                    } else {
+                        0
+                    };
                     self.expect(Token::RBracket)?;
                     self.expect(Token::LBrace)?;
                     let mut factors = Vec::new();
@@ -3496,10 +3520,10 @@ impl<'src> Parser<'src> {
                         }
                     }
                     self.expect(Token::RBrace)?;
-                    let form = if name.text == "mcword" {
-                        ExprForm::MCobarWord(p, factors)
-                    } else {
-                        ExprForm::PCobarWord(p, factors)
+                    let form = match name.text.as_str() {
+                        "mcword" => ExprForm::MCobarWord(coefficient, factors),
+                        "rmcword" => ExprForm::RMCobarWord(coefficient, second, factors),
+                        _ => ExprForm::PCobarWord(coefficient, factors),
                     };
                     return expr(span, form, 0);
                 }

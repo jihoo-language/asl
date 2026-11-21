@@ -185,6 +185,16 @@ A normalized monomial $\prod_{i\ge1}\xi_i^{b_i}\tau_{i-1}^{\epsilon_{i-1}}$ real
 
 The elements $h_0=[\tau_0]$, $h_1=[\xi_1]$, and $h_2=[\xi_1^2]$ satisfy $h_0 h_1=0$ and $\tau h_1^3=h_0^2 h_2\ne0$. The class $h_1^4$ is nonzero in weight four. Multiplying by $\tau$ gives a boundary in weight three, where the explicit five-term primitive can be checked with `cobarD`. In even topological degree $t$ at weight $t/2$, every exponent is even under realization. Halving those exponents identifies that slice with the classical cobar in half the topological degree. These computations concern the motivic Adams $E_2$ page. [Complex-motivic Ext example](examples/motivic-ext.asl)
 
+## The real-motivic cobar algebra
+
+`RMCobar(s, t, w)` is the normalized real-motivic dual Steenrod cobar over $\mathbb F_2[\tau,\rho]$. Length `s` is nonnegative, and topological degree `t` and weight `w` are signed. The degrees of $\tau$ and $\rho$ are $(0,-1)$ and $(-1,-1)$. Use `rmcword[a,b]{([xi-powers], [tau-powers]), ...}` for a word with global coefficient $\rho^a\tau^b$. Its factors specify $\xi_i$ powers starting at one and $\tau_i$ powers starting at zero.
+
+The right unit sends $\tau$ to $\tau+\rho\tau_0$ and fixes $\rho$. The source coefficient in arrow slot $j$ is therefore $\tau+\rho\sum_{k<j}\tau_{0,k}$. At that slot the square relation is $\tau_i^2=(\tau+\rho\sum_{k\le j}\tau_{0,k})\xi_{i+1}+\rho\tau_{i+1}$, with the unindexed generators interpreted in slot $j$. The interpreter expands these squares into normal monomials. Applying `cobarD` transports the coefficient in the first coface and splits the arrow factors in the internal cofaces. Unit arrows are discarded after normalizing each coface. `concat` transports the second word's coefficient across the first word's arrows before multiplying. The operations `add`, `zero`, and `rhoShift[k]` act on cochains, with the last multiplying by $\rho^k$.
+
+If a normal word has topological degree $T$ before its global coefficient and has $o$ odd exponents in its encoding by classical words, set $W=(T-o)/2$. A monomial of tridegree $(s,t,w)$ has coefficient $\rho^{T-t}\tau^{W-(T-t)-w}$. Its possible degrees $T$ lie from $\max(0,t)$ to $2(t-w)$. This bounds the basis even at negative weights. The chain map `realComplex(x)` sets $\rho=0$ and has type `MCobar(s, t, w)` at the same tridegree. Complex `MCobar` and `MExt` have zero groups in negative topological degree. The classical `realize` operation requires a topological degree in the unsigned classical range.
+
+For example $d\tau=\rho[\tau_0]$ and $d(\tau^2)=\rho^2[\tau_0^2]$, with the latter expanding to three normal terms. [Real-motivic cobar example](examples/real-motivic-cobar.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

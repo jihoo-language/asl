@@ -46,6 +46,7 @@ use crate::q_koszul::{self, Grade};
 use crate::q_module;
 use crate::rank_jets;
 use crate::rank_variety;
+use crate::real_motivic;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
 use crate::rv_as_cartier;
@@ -306,6 +307,8 @@ enum TypedForm {
     MayLiftTo(usize, usize, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
     MotivicCast(Box<TypedExpr>),
+    RhoShift(usize, Box<TypedExpr>),
+    RealComplex(Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
     Equator,
@@ -1662,6 +1665,10 @@ impl Engine {
                             polynomial,
                         )?))
                     }
+                    (BinaryOp::Add, Value::RMCobar(a), Value::RMCobar(b)) => {
+                        let terms = real_motivic::add(&mut self.model, &a, &b)?;
+                        real_motivic::persist(&mut self.model, terms)
+                    }
                     (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::add(&mut self.model, &a, &b)
                     }
@@ -1730,6 +1737,10 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::MapCobar(a), Value::MapCobar(b)) => {
                         Ok(Value::MapCobar(map_cochain::add(&mut self.model, &a, &b)?))
+                    }
+                    (BinaryOp::Concat, Value::RMCobar(a), Value::RMCobar(b)) => {
+                        let terms = real_motivic::concat_support(&mut self.model, &a, &b)?;
+                        real_motivic::persist(&mut self.model, terms)
                     }
                     (BinaryOp::Concat, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::concat(&mut self.model, &a, &b)
@@ -1853,6 +1864,18 @@ impl Engine {
                 let support = milnor::coact(&mut self.model, base, *n, *index, q, class)?;
                 Ok(Value::Cobar(support.into()))
             }
+            TypedForm::RhoShift(power, input) => {
+                let Value::RMCobar(terms) = self.eval(input)? else {
+                    unreachable!();
+                };
+                real_motivic::rho_shift(&mut self.model, &terms, *power)
+            }
+            TypedForm::RealComplex(input) => {
+                let Value::RMCobar(terms) = self.eval(input)? else {
+                    unreachable!();
+                };
+                real_motivic::specialize(&mut self.model, &terms)
+            }
             TypedForm::MotivicCast(input) => {
                 let value = self.eval(input)?;
                 let Value::Class(support) = value else {
@@ -1866,6 +1889,10 @@ impl Engine {
                 adams::class(&mut self.model, expr.ty, &representative)
             }
             TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
+                (CobarOp::Differential, Value::RMCobar(terms)) => {
+                    let terms = real_motivic::differential_support(&mut self.model, &terms)?;
+                    real_motivic::persist(&mut self.model, terms)
+                }
                 (CobarOp::Differential, Value::Cobar(words)) => {
                     let kind = self.model.kind(input.ty);
                     let profile = if matches!(kind, Kind::MCobar(..)) {
@@ -3272,6 +3299,7 @@ impl Checker<'_> {
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
+            TypeForm::RMCobar(grade) => self.model.real_cobar_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
@@ -3524,6 +3552,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
+                    Kind::RMCobar(..) => real_motivic::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -3594,6 +3623,29 @@ impl Checker<'_> {
                 let ty = self.model.mcobar_type(grade)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::RMCobarWord(rho, tau, factors) => {
+                let (grade, value) = real_motivic::literal(self.model, rho, tau, factors)?;
+                let ty = self.model.real_cobar_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RhoShift(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RMCobar(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rhoShift", "an RMCobar cochain"));
+                };
+                let ty = self
+                    .model
+                    .real_cobar_type(real_motivic::shifted(grade, power)?)?;
+                Ok((ty, TypedForm::RhoShift(power, Box::new(input))))
+            }
+            ExprForm::RealComplex(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RMCobar(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "realComplex", "an RMCobar cochain"));
+                };
+                let ty = self.model.mcobar_type(grade)?;
+                Ok((ty, TypedForm::RealComplex(Box::new(input))))
+            }
             ExprForm::TauShift(power, input) => {
                 let input = self.expr(*input)?;
                 let ty = match *self.model.kind(input.ty) {
@@ -3612,8 +3664,10 @@ impl Checker<'_> {
             ExprForm::Realize(input) => {
                 let input = self.expr(*input)?;
                 let ty = match *self.model.kind(input.ty) {
-                    Kind::MCobar(grade) => self.model.cobar_type(grade.s, grade.t)?,
-                    Kind::MExt(grade) => self.model.ext_type(grade.s, grade.t)?,
+                    Kind::MCobar(grade) => {
+                        self.model.cobar_type(grade.s, grade.classical_degree()?)?
+                    }
+                    Kind::MExt(grade) => self.model.ext_type(grade.s, grade.classical_degree()?)?,
                     _ => {
                         return Err(self.invalid_operand(
                             &input,
@@ -6114,6 +6168,11 @@ impl Checker<'_> {
         name: &str,
         span: Span,
     ) -> Result<TypeId> {
+        if let Kind::RMCobar(grade) = *self.model.kind(argument.ty) {
+            if matches!(op, CobarOp::Differential) {
+                return self.model.real_cobar_type(grade.differential()?);
+            }
+        }
         if let Kind::MCobar(grade) = *self.model.kind(argument.ty) {
             match op {
                 CobarOp::Differential => return self.model.mcobar_type(grade.differential()?),
@@ -6498,6 +6557,7 @@ impl Checker<'_> {
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
                         | Kind::MCobar(..)
+                        | Kind::RMCobar(..)
                         | Kind::MExt(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
@@ -6582,6 +6642,15 @@ impl Checker<'_> {
                 Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
+                if let Kind::RMCobar(a) = *self.model.kind(left.ty) {
+                    let Kind::RMCobar(b) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "concat", "an RMCobar cochain"));
+                    };
+                    return self.model.real_cobar_type(a.product(b)?);
+                }
+                if matches!(self.model.kind(right.ty), Kind::RMCobar(..)) {
+                    return Err(self.invalid_operand(left, "concat", "an RMCobar cochain"));
+                }
                 if let Kind::MCobar(a) = *self.model.kind(left.ty) {
                     let Kind::MCobar(b) = *self.model.kind(right.ty) else {
                         return Err(self.invalid_operand(right, "concat", "an MCobar cochain"));
