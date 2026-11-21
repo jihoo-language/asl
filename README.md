@@ -6,6 +6,8 @@ The classifying spaces of the cyclic groups of orders 4 and 4,096 have isomorphi
 
 Even four zero inputs can have 344 different answers. ASL computes the entire set of outcomes as a function that tests membership. [Run the complete Massey product](#the-complete-massey-product)
 
+ASL computes a nonzero $d_7$ in internal degree 12 of the algebraic May spectral sequence and the transferred product $m_4(h_0,h_1,h_2,h_0)=h_2^2$ on the Adams $E_2$ page. [May differential](examples/may-seventh.asl) · [Transferred product and cobar lift](examples/ext-transfer.asl)
+
 ## Run a program
 
 From the repository root, run the triangle example with Nix.
@@ -172,6 +174,16 @@ Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomia
 `zero[May(r, s, t, f)]` and `add(x, y)` use the vector space structure in a fixed page component. For $r\ge1$, projection identifies lifts that differ by an $(r-1)$-cycle in $F^{f+1}$ or a cobar boundary in $F^f$ with a primitive in $F^{\max(0,f-r+1)}$. The computation stabilizes separately in each internal degree. The stabilized groups are the associated graded groups of `Ext(s, t)` for the induced filtration.
 
 Run `nix run path:. -- examples/may.asl` to compute $d_1(h_{2,0})=h_1h_0$ and the nonzero $d_3$ of a corrected $b_{2,0}$ lift in internal degree 6. The page ranks record the effect on the source and target. A second program computes a nonzero $d_7$ in internal degree 12 and checks that both page components vanish on $E_8$. [First and third differentials](examples/may.asl) · [Seventh differential](examples/may-seventh.asl)
+
+## Transferred homotopy operations on Ext
+
+`ainfty(a1, ..., an)` gives the operation $m_n$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., an)` gives the component $F_n$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $n\ge 2$ Ext classes. With input bidegrees $(s_i,t_i)$, their result types are `Ext(sum s + 2 - n, sum t)` and `Cobar(sum s + 1 - n, sum t)`, respectively. A negative result degree gives an error. The binary operation is `yoneda`, and the generator of `Ext(0, 0)` is a strict unit.
+
+At fixed internal degree, let $P_s$ send each boundary of cobar length $s$ to its deterministic preimage by sparse elimination on the ordered words of length $s-1$. Write $i$ for `extRep`. For a cochain $c$ of length $s$, form the cycle $q=c+P_{s+1}(dc)$, let $p(c)$ be `extClass(q)`, and put $h(c)=P_s(q+i p(c))$. These maps give the contraction $d h+h d=1+i p$.
+
+Starting with $F_1=i$, ASL computes $U_n=\sum_{j=1}^{n-1} F_j(a_1,\ldots,a_j)F_{n-j}(a_{j+1},\ldots,a_n)$ using cobar concatenation. It returns $m_n=p(U_n)$ and $F_n=h(U_n)$. The correction $P_{s+1}(dc)$ applies even when $U_n$ has nonzero differential. The calculation reuses lifts for each consecutive interval and caches the sparse splittings by bidegree. [Merkulov, *Strongly homotopy algebras of a Kähler manifold*](https://arxiv.org/abs/math/9809172)
+
+The higher operations can depend on the chosen contraction. The Massey product collects classes from defining systems. In this transfer, $m_3(h_0,h_1,h_0)=h_1^2$ and $m_4(h_0,h_1,h_2,h_0)=h_2^2$. The adjacent product $h_2h_0$ obstructs a Massey defining system for the four inputs. The fourth lift is $[\xi_1\xi_3]+[\xi_1^2\xi_2^2]+[\xi_1^5\xi_2]$. Run `nix run path:. -- examples/ext-transfer.asl` to compute both operations and the lift. [Transfer example](examples/ext-transfer.asl)
 
 ## Suspension and stable degrees
 

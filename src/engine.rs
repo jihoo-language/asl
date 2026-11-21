@@ -15,6 +15,7 @@ use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, ParsedExpr, ParsedType, Statement,
     StatementForm, SuspensionForm, TypeForm, Witness,
 };
+use crate::transfer;
 
 pub(crate) struct Engine {
     model: Model,
@@ -70,6 +71,7 @@ enum TypedForm {
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
+    Transfer(transfer::Operation, Vec<TypedExpr>),
     DefiningSystem {
         arity: usize,
         layout: Layout,
@@ -375,6 +377,21 @@ impl Engine {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 bracket::evaluate(&mut self.model, target, &inputs)
+            }
+            TypedForm::Transfer(operation, inputs) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|term| {
+                        let Kind::Ext(s, t) = *self.model.kind(term.ty) else {
+                            unreachable!()
+                        };
+                        let Value::Class(coordinates) = self.eval(term)? else {
+                            unreachable!()
+                        };
+                        Ok(((s, t), coordinates))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                transfer::evaluate(&mut self.model, &inputs, *operation)
             }
             TypedForm::DefiningSystem {
                 arity,
@@ -683,6 +700,7 @@ impl Checker<'_> {
             }
             ExprForm::PowerDef(inputs) => self.defining_system(inputs, None, span),
             ExprForm::Bracket(inputs) => self.bracket(inputs, span),
+            ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -729,12 +747,15 @@ impl Checker<'_> {
             }
             ExprForm::Call(function, argument) => {
                 if let ExprForm::Name(name) = &function.kind {
-                    if let Some(op) =
-                        CobarOp::from_name(&name.text).filter(|_| self.unbound(&name.text))
-                    {
-                        let argument = self.expr(*argument)?;
-                        let ty = self.cobar_result(&op, &argument, &name.text, span)?;
-                        return Ok((ty, TypedForm::Cobar(op, Box::new(argument))));
+                    if self.unbound(&name.text) {
+                        if let Some(op) = CobarOp::from_name(&name.text) {
+                            let argument = self.expr(*argument)?;
+                            let ty = self.cobar_result(&op, &argument, &name.text, span)?;
+                            return Ok((ty, TypedForm::Cobar(op, Box::new(argument))));
+                        }
+                        if let Some(operation) = transfer::Operation::from_name(&name.text) {
+                            return self.transfer(operation, vec![*argument]);
+                        }
                     }
                 }
                 if matches!(&function.kind, ExprForm::Name(name) if name.text == "susp")
@@ -829,6 +850,28 @@ impl Checker<'_> {
 
     fn unbound(&self, name: &str) -> bool {
         !self.bindings.contains_key(name) && !self.locals.iter().any(|(local, _)| local == name)
+    }
+
+    fn transfer(
+        &mut self,
+        operation: transfer::Operation,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        let arity = inputs.len();
+        operation.require_arity(arity)?;
+        let mut terms = Vec::with_capacity(arity);
+        let mut degrees = Vec::with_capacity(arity);
+        for input in inputs {
+            let term = self.expr(input)?;
+            degrees.push(self.ext_bidegree(&term, operation.name())?);
+            terms.push(term);
+        }
+        let (s, t) = operation.bidegree(degrees, arity)?;
+        let ty = match operation {
+            transfer::Operation::Product => self.model.ext_type(s, t)?,
+            transfer::Operation::Lift => self.model.cobar_type(s, t)?,
+        };
+        Ok((ty, TypedForm::Transfer(operation, terms)))
     }
 
     fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {

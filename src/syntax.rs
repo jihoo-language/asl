@@ -1,4 +1,5 @@
 use crate::error::{Error, Result, Span};
+use crate::transfer::Operation as TransferOp;
 
 const MAX_NESTING: usize = 64;
 const MAX_IDENTIFIER_BYTES: usize = 128;
@@ -108,6 +109,7 @@ pub(crate) enum ExprForm {
     Massey(Vec<ParsedExpr>, Vec<Witness>),
     PowerDef(Vec<ParsedExpr>),
     Bracket(Vec<ParsedExpr>),
+    Transfer(TransferOp, Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
     Call(Box<ParsedExpr>, Box<ParsedExpr>),
@@ -576,10 +578,13 @@ impl<'src> Parser<'src> {
         check_nesting(nest, self.span())?;
         let mut head = self.expr_atom(nest)?;
         while self.eat(Token::LParen)? {
-            if matches!(&head.kind, ExprForm::Name(name) if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket"))
-            {
-                head = self.variadic(head, nest)?;
-                continue;
+            if let ExprForm::Name(name) = &head.kind {
+                if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket")
+                    || TransferOp::from_name(&name.text).is_some()
+                {
+                    head = self.variadic(head, nest)?;
+                    continue;
+                }
             }
             let arg = self.expr(nest + 1)?;
             if self.eat(Token::Comma)? {
@@ -620,7 +625,10 @@ impl<'src> Parser<'src> {
             }
         }
         self.expect(Token::RParen)?;
-        let massey = matches!(&head.kind, ExprForm::Name(name) if name.text == "massey");
+        let ExprForm::Name(name) = &head.kind else {
+            unreachable!();
+        };
+        let massey = name.text == "massey";
         let span = head.span;
         let mut depth = arguments
             .iter()
@@ -634,7 +642,10 @@ impl<'src> Parser<'src> {
                 depth,
             );
         }
-        if matches!(&head.kind, ExprForm::Name(name) if name.text == "bracket") {
+        if let Some(operation) = TransferOp::from_name(&name.text) {
+            return expr(span, ExprForm::Transfer(operation, arguments), depth);
+        }
+        if name.text == "bracket" {
             return expr(span, ExprForm::Bracket(arguments), depth);
         }
         if !massey {

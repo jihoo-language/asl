@@ -12,6 +12,7 @@ mod model;
 mod observations;
 mod steenrod;
 mod syntax;
+mod transfer;
 
 use std::env;
 use std::ffi::OsString;
