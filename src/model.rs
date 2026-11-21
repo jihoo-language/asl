@@ -6,6 +6,7 @@ use crate::adams::Adams;
 use crate::bp_classes;
 use crate::bp_page;
 use crate::bp_rel;
+use crate::bp_triple;
 use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
@@ -93,6 +94,7 @@ pub(crate) enum Kind {
     BPRelExt(bp_rel::Grade),
     BPPage(bp_page::Grade),
     BPExt(bp_classes::Grade),
+    BPTriple(bp_classes::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -182,6 +184,7 @@ pub(crate) enum Value {
     BP(Rc<bp_polynomial::Polynomial>),
     BPRel(Rc<bp_polynomial::Polynomial>),
     BPExt(bp_classes::Support),
+    BPTriple(Rc<bp_triple::Coset>),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -462,6 +465,7 @@ impl Model {
             | Kind::BP(..)
             | Kind::BPRel(..)
             | Kind::BPExt(..)
+            | Kind::BPTriple(..)
             | Kind::BPRelExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
@@ -553,6 +557,7 @@ impl Model {
                 | Kind::BP(..)
                 | Kind::BPRel(..)
                 | Kind::BPExt(..)
+                | Kind::BPTriple(..)
                 | Kind::BPRelExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
@@ -996,6 +1001,15 @@ impl Model {
 
     pub(crate) fn bp_page_type(&mut self, grade: bp_page::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::BPPage(grade), 0)
+    }
+
+    pub(crate) fn bp_triple_type(&mut self, grade: bp_classes::Grade) -> Result<TypeId> {
+        if grade.shape.arrows < 2 {
+            return Err(Error::plain(
+                "BPTriple requires target cobar degree at least two",
+            ));
+        }
+        self.inhabited_type(Kind::BPTriple(grade), 0)
     }
 
     pub(crate) fn bp_ext_type(&mut self, grade: bp_classes::Grade) -> Result<TypeId> {
@@ -1558,6 +1572,7 @@ impl Model {
             | Kind::BP(..)
             | Kind::BPRel(..)
             | Kind::BPExt(..)
+            | Kind::BPTriple(..)
             | Kind::BPRelExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
@@ -1751,6 +1766,10 @@ impl Model {
                 shape.upper.prime, shape.lower, shape.upper.height, shape.upper.arrows,
             )),
             Kind::BPPage(grade) => out.push(&grade.to_string()),
+            Kind::BPTriple(grade) => out.push(&format!(
+                "BPTriple({}, {}, {}, {})",
+                grade.shape.prime, grade.shape.height, grade.shape.arrows, grade.t
+            )),
             Kind::BPExt(grade) => out.push(&format!(
                 "BPExt({}, {}, {}, {})",
                 grade.shape.prime, grade.shape.height, grade.shape.arrows, grade.t,
@@ -1885,6 +1904,9 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::BPTriple(left), Value::BPTriple(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::BPExt(left), Value::BPExt(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(true);
@@ -2000,6 +2022,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::BPTriple(left), Value::BPTriple(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
             }
             (Value::BPExt(left), Value::BPExt(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -2208,6 +2237,11 @@ impl Model {
                 Kind::BPRel(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an integral BP relative cochain space",
+                    ))
+                }
+                Kind::BPTriple(..) => {
+                    return Err(Error::plain(
+                        "BPTriple types do not enumerate ambient cosets",
                     ))
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) => {
@@ -2649,6 +2683,16 @@ impl Model {
                     write_odd_word(out, p, word)?;
                 }
                 out.push("}")
+            }
+            Value::BPTriple(coset) => {
+                let Kind::BPTriple(grade) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{base = ")?;
+                let ext_type = self.bp_ext_type(grade)?;
+                self.write_value(out, ext_type, &coset.base())?;
+                out.push(&format!(", size = {}}}", coset.size()))
             }
             Value::BPExt(support) => {
                 self.spend(support.len())?;

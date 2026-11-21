@@ -4,6 +4,7 @@ use std::rc::Rc;
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
 use crate::bp_page;
+use crate::bp_triple;
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
@@ -215,6 +216,8 @@ enum TypedForm {
     BpRelOperation(BpRelOp, bp_rel::Shape, Box<TypedExpr>),
     BpExtOperation(BpExtOp, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
+    BpTriple(bp_triple::Layout, Box<[TypedExpr; 3]>),
+    BpTripleBase(Box<TypedExpr>),
     BpRaise(Box<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
@@ -475,6 +478,41 @@ impl Engine {
                     "bpext[{p}, {n}, {a}, {t}] = free {}, torsion {:?}",
                     group.free, group.torsion,
                 )
+            }
+            StatementForm::BpTripleDefined(inputs) => {
+                let (layout, inputs) = self
+                    .checker()
+                    .bp_triple_inputs(*inputs, "bpTripleDefined")?;
+                let values = self.eval_bp_triple_inputs(&inputs)?;
+                let answer =
+                    layout.defined(&mut self.model, values.each_ref().map(|(ty, x)| (*ty, x)))?;
+                format!("bpTripleDefined = {}", if answer { "yes" } else { "no" })
+            }
+            StatementForm::BpTripleContains(pair) => {
+                let [bracket, candidate] = *pair;
+                let mut checker = self.checker();
+                let bracket = checker.expr(bracket)?;
+                let grade = checker.bp_triple_grade(&bracket, "bpTripleContains")?;
+                let candidate = checker.expr(candidate)?;
+                let ty = checker.model.bp_ext_type(grade)?;
+                checker.require_type(ty, &candidate, "bpTripleContains")?;
+                let Value::BPTriple(coset) = self.eval(&bracket)? else {
+                    unreachable!()
+                };
+                let Value::BPExt(candidate) = self.eval(&candidate)? else {
+                    unreachable!()
+                };
+                let answer = coset.contains(&mut self.model, &candidate)?;
+                format!("bpTripleContains = {}", if answer { "yes" } else { "no" })
+            }
+            StatementForm::BpTripleSize(bracket) => {
+                let mut checker = self.checker();
+                let bracket = checker.expr(bracket)?;
+                checker.bp_triple_grade(&bracket, "bpTripleSize")?;
+                let Value::BPTriple(coset) = self.eval(&bracket)? else {
+                    unreachable!()
+                };
+                format!("bpTripleSize = {}", coset.size())
             }
             StatementForm::BpOrder(t, input) => {
                 let input = self.checker().expr(input)?;
@@ -1081,6 +1119,19 @@ impl Engine {
         let right = checker.expr(right)?;
         checker.require_type(left.ty, &right, context)?;
         Ok((left, right))
+    }
+
+    fn eval_bp_triple_inputs(
+        &mut self,
+        [a, b, c]: &[TypedExpr; 3],
+    ) -> Result<[(TypeId, bp_classes::Support); 3]> {
+        let mut evaluate = |input: &TypedExpr| {
+            let Value::BPExt(class) = self.eval(input)? else {
+                unreachable!()
+            };
+            Ok((input.ty, class))
+        };
+        Ok([evaluate(a)?, evaluate(b)?, evaluate(c)?])
     }
 
     fn persist_bp(&mut self, ty: TypeId, mut value: BpPolynomial) -> Result<Value> {
@@ -1758,6 +1809,20 @@ impl Engine {
                     }
                     _ => unreachable!(),
                 }
+            }
+            TypedForm::BpTriple(layout, inputs) => {
+                let values = self.eval_bp_triple_inputs(inputs)?;
+                let coset = layout.build(
+                    &mut self.model,
+                    values.each_ref().map(|(ty, class)| (*ty, class)),
+                )?;
+                Ok(Value::BPTriple(Rc::new(coset)))
+            }
+            TypedForm::BpTripleBase(input) => {
+                let Value::BPTriple(coset) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(coset.base())
             }
             TypedForm::BpMassey(layout, inputs) => {
                 let values = inputs
@@ -2555,6 +2620,10 @@ impl Checker<'_> {
                 let shape = self.bp_relative_shape(spec)?;
                 self.model.bp_rel_type(shape)
             }
+            TypeForm::BPTriple(crate::syntax::BpSpec(p, n, a), t) => {
+                let shape = bp::Shape::new(self.model, p, n, a)?;
+                self.model.bp_triple_type(bp_classes::Grade { shape, t })
+            }
             TypeForm::BPExt(spec, t) => {
                 let grade = self.bp_ext_grade(spec, t)?;
                 self.model.bp_ext_type(grade)
@@ -3244,6 +3313,17 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::BpRaise(Box::new(input))))
+            }
+            ExprForm::BpTriple(inputs) => {
+                let (layout, inputs) = self.bp_triple_inputs(*inputs, "bpTriple")?;
+                let ty = self.model.bp_triple_type(layout.target)?;
+                Ok((ty, TypedForm::BpTriple(layout, inputs)))
+            }
+            ExprForm::BpTripleBase(input) => {
+                let input = self.expr(*input)?;
+                let grade = self.bp_triple_grade(&input, "bpTripleBase")?;
+                let ty = self.model.bp_ext_type(grade)?;
+                Ok((ty, TypedForm::BpTripleBase(Box::new(input))))
             }
             ExprForm::BpMassey(inputs) => {
                 let inputs = inputs
@@ -4525,6 +4605,28 @@ impl Checker<'_> {
             return Err(self.invalid_operand(value, name, "a BPExt class"));
         };
         Ok(grade)
+    }
+
+    fn bp_triple_grade(&self, value: &TypedExpr, name: &str) -> Result<bp_classes::Grade> {
+        match *self.model.kind(value.ty) {
+            Kind::BPTriple(grade) => Ok(grade),
+            _ => Err(self.invalid_operand(value, name, "a BPTriple coset")),
+        }
+    }
+
+    fn bp_triple_inputs(
+        &mut self,
+        [a, b, c]: [ParsedExpr; 3],
+        name: &str,
+    ) -> Result<(bp_triple::Layout, Box<[TypedExpr; 3]>)> {
+        let inputs = Box::new([self.expr(a)?, self.expr(b)?, self.expr(c)?]);
+        let [a, b, c] = &*inputs;
+        let layout = bp_triple::Layout::new([
+            self.bp_ext_operand(a, name)?,
+            self.bp_ext_operand(b, name)?,
+            self.bp_ext_operand(c, name)?,
+        ])?;
+        Ok((layout, inputs))
     }
 
     fn bp_shape(&self, value: &TypedExpr, name: &str) -> Result<bp::Shape> {

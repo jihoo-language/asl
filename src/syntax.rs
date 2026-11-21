@@ -68,6 +68,7 @@ pub(crate) enum TypeForm {
     BPRelExt(BpRelSpec, usize),
     BpPage(BpPageMode, BpPageSpec),
     BPExt(BpSpec, usize),
+    BPTriple(BpSpec, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -426,6 +427,8 @@ pub(crate) enum ExprForm {
     BpExtOperation(BpExtOp, Box<ParsedExpr>),
     BpExtGenerator(BpSpec, usize, usize, Span),
     BpMassey(Vec<ParsedExpr>),
+    BpTriple(Box<[ParsedExpr; 3]>),
+    BpTripleBase(Box<ParsedExpr>),
     BpRaise(usize, Box<ParsedExpr>),
     BpPageGenerator(BpPageMode, BpPageSpec, usize, Span),
     BpPageClass(BpPageMode, (usize, usize, usize), Box<ParsedExpr>),
@@ -494,6 +497,9 @@ pub(crate) enum StatementForm {
     BpExt(BpSpec, usize),
     BpRelExt(BpRelSpec, usize),
     BpOrder(usize, ParsedExpr),
+    BpTripleDefined(Box<[ParsedExpr; 3]>),
+    BpTripleContains(Box<[ParsedExpr; 2]>),
+    BpTripleSize(ParsedExpr),
     ExtDimension(usize, usize),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
@@ -1037,6 +1043,27 @@ impl<'src> Parser<'src> {
                 let (spec, t) = self.bp_ext_grade()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::BpExt(spec, t)
+            }
+            Token::Word("bpTripleDefined") => {
+                self.advance()?;
+                self.expect(Token::LParen)?;
+                StatementForm::BpTripleDefined(self.bp_triple_arguments(
+                    0,
+                    span,
+                    "bpTripleDefined",
+                )?)
+            }
+            Token::Word("bpTripleContains") => {
+                self.advance()?;
+                self.expect(Token::LParen)?;
+                let pair: [ParsedExpr; 2] = self.arguments(0)?.try_into().map_err(|_| {
+                    Error::new(span, "bpTripleContains requires a bracket and a class")
+                })?;
+                StatementForm::BpTripleContains(Box::new(pair))
+            }
+            Token::Word("bpTripleSize") => {
+                self.advance()?;
+                StatementForm::BpTripleSize(self.paren_expr(0)?)
             }
             Token::Word("bporder") => {
                 self.advance()?;
@@ -1894,10 +1921,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BPRel(shape), 0);
         }
-        if name.text == "BPExt" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "BPExt" | "BPTriple") && self.eat(Token::LParen)? {
             let (spec, t) = self.bp_ext_grade()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::BPExt(spec, t), 0);
+            let kind = if name.text == "BPExt" {
+                TypeForm::BPExt(spec, t)
+            } else {
+                TypeForm::BPTriple(spec, t)
+            };
+            return ty(span, kind, 0);
         }
         if matches!(name.text.as_str(), "BP" | "BPI") && self.eat(Token::LParen)? {
             let (prime, height, arrows) = self.prime_bidegree()?;
@@ -2091,6 +2123,19 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RParen)?;
         Ok(arguments)
+    }
+
+    fn bp_triple_arguments(
+        &mut self,
+        nest: usize,
+        span: Span,
+        name: &str,
+    ) -> Result<Box<[ParsedExpr; 3]>> {
+        let triple: [ParsedExpr; 3] = self
+            .arguments(nest)?
+            .try_into()
+            .map_err(|_| Error::new(span, format!("{name} requires three BPExt classes")))?;
+        Ok(Box::new(triple))
     }
 
     fn variadic(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
@@ -2410,6 +2455,16 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::BpRaise(height, Box::new(input)), depth);
+                }
+                if name.text == "bpTriple" && self.eat(Token::LParen)? {
+                    let inputs = self.bp_triple_arguments(nest, span, "bpTriple")?;
+                    let depth = inputs.iter().map(|input| input.depth + 1).max().unwrap();
+                    return expr(span, ExprForm::BpTriple(inputs), depth);
+                }
+                if name.text == "bpTripleBase" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::BpTripleBase(Box::new(input)), depth);
                 }
                 if name.text == "bpMassey" && self.eat(Token::LParen)? {
                     let arguments = self.arguments(nest)?;

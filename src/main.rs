@@ -9,6 +9,7 @@ mod bp_page;
 mod bp_polynomial;
 mod bp_rel;
 mod bp_smith;
+mod bp_triple;
 mod bracket;
 mod ce;
 mod cobar;

@@ -131,7 +131,7 @@ impl Cohomology {
         })
     }
 
-    fn project(&self, model: &mut Model, cycle: &Polynomial) -> Result<Support> {
+    pub(crate) fn project(&self, model: &mut Model, cycle: &Polynomial) -> Result<Support> {
         if cycle.is_zero() {
             return Ok([].into());
         }
