@@ -104,6 +104,13 @@
           done
           awk -v n=20 -v pages=1 -f ${./examples/staircase-transfer.awk} | asl - > bar-pages.out
           test "$(tail -n 1 bar-pages.out)" = 'RVBarE(StairBar, 0, 20, 19, 39, 1){g0}'
+          awk -v n=20 -v pages=1 -v dual=1 -v omega=1 -f ${./examples/staircase-transfer.awk} | asl - > bar-cobar.out
+          tail -n 3 bar-cobar.out > bar-cobar.last
+          {
+            echo 'RVBarE(StairBar, 0, 20, 19, 39, 1){g0}'
+            echo 'RVPathExt(StairBar, 0, 20, 40){0}'
+            tail -n 1 "$out"
+          } | diff -u - bar-cobar.last
           if awk -v local=2 -f ${./examples/staircase-transfer.awk} > rejected.asl; then
             exit 1
           fi

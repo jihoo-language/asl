@@ -35,6 +35,7 @@ use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
+use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -94,6 +95,7 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVBarE(rv_bar_page::Grade),
+    RVBarCobar(rv_bar::Grade),
     RVBarDual(rv_bar::Grade),
     RVPathExt(rv_bar::Grade),
     RVBar(rv_bar::Grade),
@@ -190,6 +192,7 @@ pub(crate) enum Value {
     ASDiff(rv_hom::Support),
     RVLaurent(rv_laurent::Support),
     JetHom(jet_hom::Support),
+    RVBarCobar(rv_barcobar::Support),
     RVBar(rv_bar::Support),
     RVKoszul(rv_koszul::Support),
     JetClass(jet_page::Coordinates),
@@ -478,6 +481,7 @@ impl Model {
             {
                 1
             }
+            Kind::RVBarCobar(..) => usize::MAX,
             Kind::RVBar(..) | Kind::RVBarE(..) | Kind::RVBarDual(..) | Kind::RVPathExt(..) => {
                 usize::MAX
             }
@@ -582,6 +586,7 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVBarE(..)
+                | Kind::RVBarCobar(..)
                 | Kind::RVBarDual(..)
                 | Kind::RVPathExt(..)
                 | Kind::RVBar(..)
@@ -923,6 +928,12 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_barcobar_type(&mut self, grade: rv_bar::Grade) -> Result<TypeId> {
+        self.rv_bar_path(grade.path)
+            .check_interval(grade.start, grade.end)?;
+        self.inhabited_type(Kind::RVBarCobar(grade), 0)
     }
 
     pub(crate) fn rv_path_type(&mut self, grade: rv_bar::Grade, homology: bool) -> Result<TypeId> {
@@ -1702,6 +1713,7 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVBarE(..)
+            | Kind::RVBarCobar(..)
             | Kind::RVBarDual(..)
             | Kind::RVPathExt(..)
             | Kind::RVBar(..)
@@ -1870,9 +1882,13 @@ impl Model {
                 grade.chain.b,
                 grade.length,
             )),
-            Kind::RVBar(grade) | Kind::RVBarDual(grade) | Kind::RVPathExt(grade) => {
+            Kind::RVBar(grade)
+            | Kind::RVBarDual(grade)
+            | Kind::RVPathExt(grade)
+            | Kind::RVBarCobar(grade) => {
                 let family = match self.kind(ty) {
                     Kind::RVBar(_) => "RVBar",
+                    Kind::RVBarCobar(_) => "RVBarCobar",
                     Kind::RVBarDual(_) => "RVBarDual",
                     _ => "RVPathExt",
                 };
@@ -2078,6 +2094,8 @@ impl Model {
             (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
+            (Value::RVBarCobar(left), Value::RVBarCobar(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_barcobar::compare(self, left, right)? == Ordering::Equal),
             (Value::RVBar(left), Value::RVBar(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_bar::compare(self, left, right)? == Ordering::Equal)
@@ -2204,6 +2222,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     left.compare(self, right)
+                }
+            }
+            (Value::RVBarCobar(left), Value::RVBarCobar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_barcobar::compare(self, left, right)
                 }
             }
             (Value::RVBar(left), Value::RVBar(right)) => {
@@ -2413,6 +2438,13 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RVBarCobar(grade) => {
+                    let basis = rv_barcobar::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.allocate(basis.iter().map(|word| rv_barcobar::word_cells(word)).sum())?;
+                    self.enumerate_supports(0, basis.len(), |class| {
+                        Value::RVBarCobar(class.iter().map(|&item| basis[item].clone()).collect())
+                    })?
                 }
                 Kind::RVPathExt(..) => {
                     let rank = self.rv_path_ext(ty)?.rank();
@@ -2899,6 +2931,29 @@ impl Model {
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
+            Value::RVBarCobar(words) => {
+                let Kind::RVBarCobar(grade) = self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if words.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, word) in words.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    let mut start = grade.start;
+                    for (outer, block) in word.iter().enumerate() {
+                        if outer != 0 {
+                            out.push(" * ")?;
+                        }
+                        start = write_bar_word(out, block, start)?;
+                    }
+                }
+                out.push("}")
+            }
             Value::RVBar(words) => {
                 let (Kind::RVBar(grade) | Kind::RVBarDual(grade)) = self.kind(ty) else {
                     unreachable!();
@@ -2912,19 +2967,7 @@ impl Model {
                     if index != 0 {
                         out.push(" + ")?;
                     }
-                    out.push("[")?;
-                    let mut start = grade.start;
-                    for (position, factor) in word.iter().enumerate() {
-                        if position != 0 {
-                            out.push(" | ")?;
-                        }
-                        out.push(&format!(
-                            "({}, {}, {}):g{}",
-                            start, factor.end, factor.s, factor.generator
-                        ))?;
-                        start = factor.end;
-                    }
-                    out.push("]")?;
+                    write_bar_word(out, word, grade.start)?;
                 }
                 out.push("}")
             }
@@ -3180,6 +3223,22 @@ impl Model {
         }
         Ok(true)
     }
+}
+
+fn write_bar_word(out: &mut Text, word: &rv_bar::Word, mut start: usize) -> Result<usize> {
+    out.push("[")?;
+    for (position, factor) in word.iter().enumerate() {
+        if position != 0 {
+            out.push(" | ")?;
+        }
+        out.push(&format!(
+            "({}, {}, {}):g{}",
+            start, factor.end, factor.s, factor.generator
+        ))?;
+        start = factor.end;
+    }
+    out.push("]")?;
+    Ok(start)
 }
 
 fn write_cobar_word(out: &mut Text, word: &cobar::Word) -> Result<()> {

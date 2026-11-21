@@ -669,3 +669,12 @@ pub(crate) fn basis(
 pub(crate) fn replacements(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Word>> {
     BasisPlan::build(model, grade, grade.max_length())?.words(model, 2, limit)
 }
+
+pub(crate) fn basis_at_length(
+    model: &mut Model,
+    grade: Grade,
+    length: usize,
+    limit: usize,
+) -> Result<Vec<Word>> {
+    BasisPlan::build(model, grade, length)?.words(model, length, limit)
+}

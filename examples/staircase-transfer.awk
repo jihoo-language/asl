@@ -5,6 +5,11 @@ BEGIN {
         print "n must be an integer between 3 and 31 (primitive labels are 1 through 2n)" > "/dev/stderr"
         exit 2
     }
+    if (omega == "") omega = 0
+    if (omega !~ /^[01]$/) {
+        print "omega must be 0 or 1" > "/dev/stderr"
+        exit 2
+    }
     if (dual == "") dual = 0
     if (dual !~ /^[01]$/) {
         print "dual must be 0 or 1" > "/dev/stderr"
@@ -25,7 +30,7 @@ BEGIN {
         print "local must be 0 (total grading) or 1 (multigrading)" > "/dev/stderr"
         exit 2
     }
-    if (pages || dual) bar = 1
+    if (pages || dual || omega) bar = 1
     if (bar) local = 1
     constructor = local ? "rvmkterm" : "rvkterm"
     for (k = 1; k <= 2*n; k++) selection = append(selection, k)
@@ -119,7 +124,33 @@ BEGIN {
         emit(sprintf("show ext1_%d;",n))
     }
 
+    if (omega) {
+        emit("let rectified = rvBCDesuspend(word);")
+        emit("let inclusion = rvBCDesuspend(top);")
+        emit("let boundary0 = inclusion;")
+        for (j = 1; j < n; j++) {
+            left = "rvBCDesuspend(rvBarWord[StairBar,[" cuts_between(0,j) "]](" arguments(1,j) "))"
+            right = "rvBCDesuspend(rvBarWord[StairBar,[" cuts_between(j,n) "]](" arguments(j+1,n-j) "))"
+            emit(sprintf("let split%d = rvBCMul(%s,%s);",j,left,right))
+            emit(sprintf("let boundary%d = add(boundary%d,split%d);",j,j-1,j))
+        }
+        emit(sprintf("assert rvBCD(rectified) == boundary%d;",n-1))
+        emit(sprintf("assert rvBCD(rvBCD(rectified)) == zero[RVBarCobar(StairBar,0,%d,%d)];",n,2*n-3))
+        emit("assert rvBCHomotopy(rvBCD(rectified)) == rectified;")
+        emit(sprintf("assert rvBCHomotopy(rectified) == zero[RVBarCobar(StairBar,0,%d,%d)];",n,2*n))
+        emit("assert rvBCProject(split1) == result;")
+        emit("assert rvBCProject(inclusion) == result;")
+        emit("assert add(rvBCD(rvBCHomotopy(split1)),rvBCHomotopy(rvBCD(split1))) == add(split1,inclusion);")
+        emit(sprintf("assert rvBCHomotopy(rvBCHomotopy(split1)) == zero[RVBarCobar(StairBar,0,%d,%d)];",n,2*n))
+        emit("show rvBCProject(split1);")
+    }
+
     for (i = 1; i <= line_count; i++) print lines[i]
+}
+
+function cuts_between(first, last,    k, cuts) {
+    for (k = first; k <= last; k++) cuts = append(cuts, k)
+    return cuts
 }
 
 function append(list, value) {

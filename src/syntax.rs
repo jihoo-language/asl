@@ -64,6 +64,7 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
+    RVBarCobar(RvBarSpec),
     RVBarDual(RvBarSpec),
     RVPathExt(RvBarSpec),
     RVBar(RvBarSpec),
@@ -302,6 +303,7 @@ pub(crate) enum BinaryOp {
     CeMul,
     MilnorPair,
     RvMultiply,
+    RvBCMul,
     RvBarPair,
     RvPathCup,
     RvKoszulProduct,
@@ -327,6 +329,7 @@ impl BinaryOp {
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
+            "rvBCMul" => Some(Self::RvBCMul),
             "rvBarPair" => Some(Self::RvBarPair),
             "rvPathCup" => Some(Self::RvPathCup),
             "rvkProd" => Some(Self::RvKoszulProduct),
@@ -2167,6 +2170,11 @@ impl<'src> Parser<'src> {
             };
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
+        }
+        if name.text == "RVBarCobar" && self.eat(Token::LParen)? {
+            let grade = self.rv_bar_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVBarCobar(grade), 0);
         }
         if name.text == "RVBarE" && self.eat(Token::LParen)? {
             let grade = self.rv_bar_page_spec()?;

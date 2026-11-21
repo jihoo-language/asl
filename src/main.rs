@@ -59,6 +59,7 @@ mod rv_as_cover;
 mod rv_bar;
 mod rv_bar_dual;
 mod rv_bar_page;
+mod rv_barcobar;
 mod rv_curve;
 mod rv_descent;
 mod rv_field;

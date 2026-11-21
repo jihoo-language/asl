@@ -892,6 +892,21 @@ awk -v dual=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
 
 Every proper consecutive product of the adjacent classes is nonzero. The full raw cup is the dual of the long bar word, and the dual of the singleton top has exactly that coboundary. The full path product therefore prints `RVPathExt(StairBar, 0, 20, 40){0}`.
 
+#### Bar–cobar rectification
+
+`RVBarCobar(P,i,j,b)` is the positive-interval part of the dg bar–cobar category $\Omega B(A)$ of the directed Tor $A_\infty$ category. Its words have outer factors, each a nonempty bar word desuspended once. Thus $b$ is the sum of the suspended degrees of all letters minus the number of outer factors. `rvBCDesuspend(x)` puts each supported bar word in a single outer factor, and `rvBCMul(x,y)` concatenates the outer lists at their common endpoint.
+
+The differential `rvBCD` sums the bar differential inside each outer factor and all splittings of one factor at a proper inner gap. Over $\mathbb F_2$ this is a strict differential satisfying the Leibniz rule for `rvBCMul`.
+
+The inclusion $i$ puts a Tor class in a singleton bar and desuspends it. For the split differential, the elementary homotopy $h_0$ removes the outer separator at the first gap of the flattened word if that separator is present. The projection $p$ retains singleton words. With $\delta$ the internal bar differential, `rvBCProject` and `rvBCHomotopy` apply
+$ p'=p\sum_{j\ge0}(\delta h_0)^j$ and $h'=h_0\sum_{j\ge0}(\delta h_0)^j$. Each application of $\delta h_0$ lowers the flattened letter count. These maps satisfy $p'i=1$ and $Dh'+h'D=1+ip'$. On singleton inclusions $p'(i(a)i(b))=m_2(a,b)$. [Bar–cobar example](examples/rank-barcobar.asl)
+
+```sh
+awk -v omega=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+The differential of the one-factor word is the singleton top plus all nineteen outer splits. The example checks the retract identity both on that word and on its first-gap split, which projects to the twentieth operation.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.
