@@ -1,5 +1,6 @@
 mod cohomology;
 mod complex;
+mod cyclic;
 mod engine;
 mod error;
 mod model;

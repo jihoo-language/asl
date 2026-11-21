@@ -22,6 +22,8 @@ pub(crate) enum TypeForm {
     Operations(usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
+    Bar(usize),
+    CyclicH2(usize),
     Product(Box<ParsedType>, Box<ParsedType>),
     Arrow(Box<ParsedType>, Box<ParsedType>),
 }
@@ -68,6 +70,19 @@ pub(crate) enum SuspensionForm {
     Equator,
 }
 
+pub(crate) enum CyclicForm {
+    Support(Vec<(usize, Span)>),
+    Binomial(usize, Span),
+    Carry,
+}
+
+pub(crate) struct Witness {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) span: Span,
+    pub(crate) value: ParsedExpr,
+}
+
 pub(crate) enum ExprForm {
     Name(Label),
     Point(ParsedType, Label),
@@ -76,6 +91,9 @@ pub(crate) enum ExprForm {
     Square(usize),
     Suspension(ParsedType, SuspensionForm),
     Shift(usize, Box<ParsedExpr>),
+    Cyclic(usize, Span, CyclicForm),
+    Massey(Vec<ParsedExpr>, Vec<Witness>),
+    PowerDef(Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
     Call(Box<ParsedExpr>, Box<ParsedExpr>),
@@ -454,10 +472,19 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
-        if matches!(name.text.as_str(), "A" | "H" | "Susp" | "Stable") && self.eat(Token::LParen)? {
-            let (kind, depth) = if name.text == "A" {
+        if matches!(
+            name.text.as_str(),
+            "A" | "Bar" | "H2" | "H" | "Susp" | "Stable"
+        ) && self.eat(Token::LParen)?
+        {
+            let (kind, depth) = if matches!(name.text.as_str(), "A" | "Bar" | "H2") {
                 let (degree, _) = self.number()?;
-                (TypeForm::Operations(degree), 0)
+                let kind = match name.text.as_str() {
+                    "Bar" => TypeForm::Bar(degree),
+                    "H2" => TypeForm::CyclicH2(degree),
+                    _ => TypeForm::Operations(degree),
+                };
+                (kind, 0)
             } else {
                 let base = self.ty(nest + 1)?;
                 let depth = base.depth + 1;
@@ -486,6 +513,11 @@ impl<'src> Parser<'src> {
         check_nesting(nest, self.span())?;
         let mut head = self.expr_atom(nest)?;
         while self.eat(Token::LParen)? {
+            if matches!(&head.kind, ExprForm::Name(name) if name.text == "massey" || name.text == "powerdef")
+            {
+                head = self.defining_system(head, nest)?;
+                continue;
+            }
             let arg = self.expr(nest + 1)?;
             if self.eat(Token::Comma)? {
                 let primitive = match &head.kind {
@@ -495,7 +527,7 @@ impl<'src> Parser<'src> {
                 let Some(primitive) = primitive else {
                     return Err(Error::new(
                         head.span,
-                        "only add, cup, pull, mul, and act take two arguments",
+                        "a function call takes one argument; use nested calls or pass a pair",
                     ));
                 };
                 let right = self.expr(nest + 1)?;
@@ -514,6 +546,56 @@ impl<'src> Parser<'src> {
             head = expr(span, ExprForm::Call(Box::new(head), Box::new(arg)), depth)?;
         }
         Ok(head)
+    }
+
+    fn defining_system(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
+        let mut arguments = Vec::new();
+        while self.token() != Token::RParen {
+            arguments.push(self.expr(nest + 1)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RParen)?;
+        let massey = matches!(&head.kind, ExprForm::Name(name) if name.text == "massey");
+        let span = head.span;
+        let mut depth = arguments
+            .iter()
+            .map(|argument| argument.depth + 1)
+            .max()
+            .unwrap_or(0);
+        if arguments.len() == 1 && (!massey || self.token() != Token::LBrace) {
+            return expr(
+                span,
+                ExprForm::Call(Box::new(head), Box::new(arguments.pop().unwrap())),
+                depth,
+            );
+        }
+        if !massey {
+            return expr(span, ExprForm::PowerDef(arguments), depth);
+        }
+
+        self.expect(Token::LBrace)?;
+        let mut witnesses = Vec::new();
+        while self.token() != Token::RBrace {
+            let (from, span) = self.number()?;
+            self.expect(Token::Less)?;
+            let (to, _) = self.number()?;
+            self.expect(Token::FatArrow)?;
+            let value = self.expr(nest + 1)?;
+            depth = depth.max(value.depth + 1);
+            witnesses.push(Witness {
+                from,
+                to,
+                span,
+                value,
+            });
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        expr(span, ExprForm::Massey(arguments, witnesses), depth)
     }
 
     fn expr_atom(&mut self, nest: usize) -> Result<ParsedExpr> {
@@ -607,6 +689,37 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if matches!(name.text.as_str(), "bar" | "binom" | "carry")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (modulus, at) = self.number()?;
+                    let form = match name.text.as_str() {
+                        "binom" => {
+                            self.expect(Token::Comma)?;
+                            let (index, index_at) = self.number()?;
+                            self.expect(Token::RBracket)?;
+                            CyclicForm::Binomial(index, index_at)
+                        }
+                        "bar" => {
+                            self.expect(Token::RBracket)?;
+                            self.expect(Token::LBrace)?;
+                            let mut support = Vec::new();
+                            while self.token() != Token::RBrace {
+                                support.push(self.number()?);
+                                if !self.eat(Token::Comma)? {
+                                    break;
+                                }
+                            }
+                            self.expect(Token::RBrace)?;
+                            CyclicForm::Support(support)
+                        }
+                        _ => {
+                            self.expect(Token::RBracket)?;
+                            CyclicForm::Carry
+                        }
+                    };
+                    return expr(span, ExprForm::Cyclic(modulus, at, form), 0);
+                }
                 if name.text == "sq" && self.eat(Token::LBracket)? {
                     let (degree, _) = self.number()?;
                     self.expect(Token::RBracket)?;

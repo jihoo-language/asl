@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::cohomology;
+use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::steenrod;
 use crate::syntax::{
-    BinaryOp, ClassForm, Entries, ExprForm, ParsedExpr, ParsedType, Statement, StatementForm,
-    SuspensionForm, TypeForm,
+    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, ParsedExpr, ParsedType, Statement,
+    StatementForm, SuspensionForm, TypeForm, Witness,
 };
 
 pub(crate) struct Engine {
@@ -39,6 +40,11 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
+    DefiningSystem {
+        arity: usize,
+        layout: Layout,
+        cochains: Vec<TypedExpr>,
+    },
     Lambda(Box<TypedExpr>),
     Call(Box<TypedExpr>, Box<TypedExpr>),
     Pair(Box<TypedExpr>, Box<TypedExpr>),
@@ -179,6 +185,12 @@ impl Engine {
                     (BinaryOp::Add, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::Bar(a), Value::Bar(b)) => {
+                        cyclic::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::CyclicClass(a), Value::CyclicClass(b)) => {
+                        Ok(Value::CyclicClass(a ^ b))
+                    }
                     (BinaryOp::Mul, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::multiply(&mut self.model, &a, &b)
                     }
@@ -226,6 +238,28 @@ impl Engine {
                 cohomology::suspend(&mut self.model, value.ty, &class, expr.ty)
             }
             TypedForm::Shift(value) => self.eval(value),
+            TypedForm::DefiningSystem {
+                arity,
+                layout,
+                cochains,
+            } => {
+                let Kind::CyclicH2(modulus) = *self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let cochains = cochains
+                    .iter()
+                    .map(|cochain| {
+                        let Value::Bar(support) = self.eval(cochain)? else {
+                            unreachable!()
+                        };
+                        Ok(cyclic::Cochain {
+                            support,
+                            span: cochain.span,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                cyclic::evaluate(&mut self.model, modulus, *arity, *layout, cochains)
+            }
             TypedForm::Lambda(body) => {
                 let Kind::Arrow(domain, range) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -364,6 +398,8 @@ impl Checker<'_> {
                 self.model.cohomology_type(base, degree)
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
+            TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
+            TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
                 let base = self.ty(*base)?;
                 self.model.suspension_type(base)
@@ -450,11 +486,13 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) => cohomology::zero(),
+                    Kind::Bar(_) => Value::Bar([].into()),
+                    Kind::CyclicH2(_) => Value::CyclicClass(false),
                     _ => {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology or Steenrod algebra type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -467,6 +505,26 @@ impl Checker<'_> {
                 let square = steenrod::square(self.model, degree)?;
                 Ok((ty, TypedForm::Constant(square)))
             }
+            ExprForm::Cyclic(modulus, at, form) => {
+                let ty = self
+                    .model
+                    .cyclic_type(modulus, matches!(form, CyclicForm::Carry))
+                    .map_err(|error| error.at(at))?;
+                let value = match form {
+                    CyclicForm::Support(residues) => {
+                        cyclic::support(self.model, modulus, residues)?
+                    }
+                    CyclicForm::Binomial(index, index_at) => {
+                        cyclic::binomial(self.model, modulus, index, index_at)?
+                    }
+                    CyclicForm::Carry => Value::CyclicClass(modulus & 1 == 0),
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Massey(inputs, witnesses) => {
+                self.defining_system(inputs, Some(witnesses), span)
+            }
+            ExprForm::PowerDef(inputs) => self.defining_system(inputs, None, span),
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -513,8 +571,7 @@ impl Checker<'_> {
             }
             ExprForm::Call(function, argument) => {
                 if matches!(&function.kind, ExprForm::Name(name) if name.text == "susp")
-                    && !self.bindings.contains_key("susp")
-                    && !self.locals.iter().any(|(name, _)| name == "susp")
+                    && self.unbound("susp")
                 {
                     let argument = self.expr(*argument)?;
                     let (base, degree) = self.class_type(&argument, "susp")?;
@@ -522,6 +579,11 @@ impl Checker<'_> {
                     let suspension = self.model.suspension_type(base)?;
                     let ty = self.model.cohomology_type(suspension, degree)?;
                     return Ok((ty, TypedForm::Suspend(Box::new(argument))));
+                }
+                if matches!(&function.kind, ExprForm::Name(name) if name.text == "powerdef")
+                    && self.unbound("powerdef")
+                {
+                    return self.defining_system(vec![*argument], None, span);
                 }
                 let function = self.expr(*function)?;
                 let Kind::Arrow(domain, range) = *self.model.kind(function.ty) else {
@@ -593,6 +655,117 @@ impl Checker<'_> {
         }
     }
 
+    fn unbound(&self, name: &str) -> bool {
+        !self.bindings.contains_key(name) && !self.locals.iter().any(|(local, _)| local == name)
+    }
+
+    fn defining_system(
+        &mut self,
+        inputs: Vec<ParsedExpr>,
+        witnesses: Option<Vec<Witness>>,
+        span: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let (arity, layout) = if witnesses.is_some() {
+            if inputs.len() < 2 {
+                return Err(Error::new(
+                    span,
+                    "massey requires at least two adjacent cochains",
+                ));
+            }
+            (inputs.len(), Layout::Explicit)
+        } else {
+            if inputs.is_empty() {
+                return Err(Error::new(
+                    span,
+                    "powerdef requires at least one bar cochain",
+                ));
+            }
+            (inputs.len() + 1, Layout::Repeated)
+        };
+        let mut input_iter = inputs.into_iter();
+        let first = self.expr(input_iter.next().unwrap())?;
+        let op = if witnesses.is_some() {
+            "massey"
+        } else {
+            "powerdef"
+        };
+        let Kind::Bar(modulus) = *self.model.kind(first.ty) else {
+            return Err(self.invalid_operand(&first, op, "a bar cochain"));
+        };
+        let expected = first.ty;
+        let mut cochains = vec![first];
+        for argument in input_iter {
+            let value = self.expr(argument)?;
+            self.require_type(expected, &value, op)?;
+            cochains.push(value);
+        }
+
+        if let Some(witnesses) = witnesses {
+            let mut entries = HashMap::new();
+            for Witness {
+                from,
+                to,
+                span,
+                value,
+            } in witnesses
+            {
+                if from >= to || to > arity {
+                    return Err(Error::new(
+                        span,
+                        format!(
+                            "invalid interval [{from},{to}]: expected 0 <= start < end <= {arity}",
+                        ),
+                    ));
+                }
+                let gap = to - from;
+                if gap == 1 {
+                    return Err(Error::new(
+                        span,
+                        format!("adjacent interval [{from},{to}] already has an input"),
+                    ));
+                }
+                if gap == arity {
+                    return Err(Error::new(
+                        span,
+                        format!("top interval [{from},{to}] cannot have a witness"),
+                    ));
+                }
+                let std::collections::hash_map::Entry::Vacant(entry) = entries.entry((gap, from))
+                else {
+                    return Err(Error::new(
+                        span,
+                        format!("duplicate witness for interval [{from},{to}]"),
+                    ));
+                };
+                let value = self.expr(value)?;
+                self.require_type(
+                    expected,
+                    &value,
+                    &format!("witness for interval [{from},{to}]"),
+                )?;
+                entry.insert(value);
+            }
+            for gap in 2..arity {
+                for from in 0..=arity - gap {
+                    let to = from + gap;
+                    let value = entries.remove(&(gap, from)).ok_or_else(|| {
+                        Error::new(span, format!("missing witness for interval [{from},{to}]"))
+                    })?;
+                    cochains.push(value);
+                }
+            }
+        }
+        let ty = self.model.cyclic_type(modulus, true)?;
+        Ok((
+            ty,
+            TypedForm::DefiningSystem {
+                arity,
+                layout,
+                cochains,
+            },
+        ))
+    }
+
     fn operation_degree(&self, value: &TypedExpr, op: &str) -> Result<usize> {
         match *self.model.kind(value.ty) {
             Kind::Operations(degree) => Ok(degree),
@@ -621,12 +794,16 @@ impl Checker<'_> {
             BinaryOp::Add => {
                 if !matches!(
                     self.model.kind(left.ty),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Operations(..)
+                    Kind::Cohomology(..)
+                        | Kind::Stable(..)
+                        | Kind::Operations(..)
+                        | Kind::Bar(..)
+                        | Kind::CyclicH2(..)
                 ) {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class or Steenrod operation",
+                        "a cohomology class, Steenrod operation, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;

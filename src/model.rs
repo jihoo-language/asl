@@ -28,6 +28,8 @@ pub(crate) enum Kind {
     Operations(usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
+    Bar(usize),
+    CyclicH2(usize),
 }
 
 #[derive(Clone)]
@@ -38,6 +40,8 @@ pub(crate) enum Value {
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
     Suspension(SuspensionPoint),
+    Bar(Rc<[usize]>),
+    CyclicClass(bool),
 }
 
 #[derive(Clone)]
@@ -160,6 +164,8 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
+            Kind::Bar(modulus) => support_space_size(modulus - 1),
+            Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
         let id = TypeId(self.types.len());
         self.type_ids.insert(kind.clone(), id);
@@ -198,7 +204,11 @@ impl Model {
     pub(crate) fn intrinsically_discrete(&self, ty: TypeId) -> bool {
         matches!(
             self.kind(ty),
-            Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..)
+            Kind::Cohomology(..)
+                | Kind::Operations(..)
+                | Kind::Stable(..)
+                | Kind::Bar(..)
+                | Kind::CyclicH2(..)
         )
     }
 
@@ -295,6 +305,18 @@ impl Model {
 
     pub(crate) fn operation_type(&mut self, degree: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::Operations(degree), 0)
+    }
+
+    pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
+        if modulus < 2 {
+            return Err(Error::plain("cyclic modulus must be at least 2"));
+        }
+        let kind = if cohomology {
+            Kind::CyclicH2(modulus)
+        } else {
+            Kind::Bar(modulus)
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn suspension_type(&mut self, base: TypeId) -> Result<TypeId> {
@@ -394,7 +416,11 @@ impl Model {
                 }
             }
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
-            Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => 1,
+            Kind::Cohomology(..)
+            | Kind::Operations(..)
+            | Kind::Stable(..)
+            | Kind::Bar(..)
+            | Kind::CyclicH2(..) => 1,
         };
         self.types[ty.0].heights[index] = Some(height);
         Ok(height)
@@ -504,6 +530,8 @@ impl Model {
                 out.push(&format!(", {degree})"))
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
+            &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
+            &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
                 out.push("Susp(")?;
                 self.write_type(out, base, 0)?;
@@ -549,7 +577,7 @@ impl Model {
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
-            (Value::Class(left), Value::Class(right)) => {
+            (Value::Class(left), Value::Class(right)) | (Value::Bar(left), Value::Bar(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(true);
                 }
@@ -559,6 +587,7 @@ impl Model {
                 self.spend(left.len())?;
                 Ok(left == right)
             }
+            (Value::CyclicClass(left), Value::CyclicClass(right)) => Ok(left == right),
             (Value::Operation(left), Value::Operation(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || steenrod::compare(self, left, right)? == Ordering::Equal)
@@ -604,7 +633,7 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
-            (Value::Class(left), Value::Class(right)) => {
+            (Value::Class(left), Value::Class(right)) | (Value::Bar(left), Value::Bar(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
                 }
@@ -612,6 +641,7 @@ impl Model {
                 // Compare from the most significant set bit to match mask enumeration.
                 Ok(left.iter().rev().cmp(right.iter().rev()))
             }
+            (Value::CyclicClass(left), Value::CyclicClass(right)) => Ok(left.cmp(right)),
             (Value::Operation(left), Value::Operation(right)) => {
                 if Rc::ptr_eq(left, right) {
                     Ok(Ordering::Equal)
@@ -714,9 +744,17 @@ impl Model {
                 Kind::Arrow(domain, range) => self.enumerate_maps(domain, range)?,
                 Kind::Cohomology(..) => {
                     let rank = self.cohomology(ty)?.rank();
-                    self.enumerate_classes(rank)?
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::Bar(modulus) => self.enumerate_supports(1, modulus - 1, Value::Bar)?,
+                Kind::CyclicH2(modulus) => {
+                    let count = 2 - (modulus & 1);
+                    self.allocate(count)?;
+                    (0..count)
+                        .map(|index| Value::CyclicClass(index == 1))
+                        .collect()
+                }
                 Kind::Suspension(base) => {
                     let equator = self.elements(base)?;
                     let size = equator.len() + 2;
@@ -738,7 +776,7 @@ impl Model {
                     } else {
                         0
                     };
-                    self.enumerate_classes(rank)?
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
             }
         };
@@ -756,17 +794,25 @@ impl Model {
         Ok(())
     }
 
-    fn enumerate_classes(&mut self, rank: usize) -> Result<Vec<Value>> {
-        let count = if rank < usize::BITS as usize {
-            1usize << rank
-        } else {
-            usize::MAX
-        };
+    fn enumerate_supports(
+        &mut self,
+        first: usize,
+        rank: usize,
+        value: fn(Rc<[usize]>) -> Value,
+    ) -> Result<Vec<Value>> {
+        let count = support_space_size(rank);
         self.check_element_limit(count)?;
         self.spend(count * (rank + 1))?;
         self.allocate(count + (count / 2) * rank)?;
         Ok((0..count)
-            .map(|mask| Value::Class((0..rank).filter(|&i| ((mask >> i) & 1) != 0).collect()))
+            .map(|mask| {
+                value(
+                    (0..rank)
+                        .filter(|&i| ((mask >> i) & 1) != 0)
+                        .map(|i| i + first)
+                        .collect(),
+                )
+            })
             .collect())
     }
 
@@ -868,6 +914,23 @@ impl Model {
 
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
+            Value::Bar(support) => {
+                let Kind::Bar(modulus) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                out.push(&format!("bar[{modulus}]{{"))?;
+                for (index, residue) in support.iter().enumerate() {
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&residue.to_string())?;
+                }
+                out.push("}")
+            }
+            Value::CyclicClass(nonzero) => {
+                self.write_type(out, ty, 0)?;
+                out.push(if *nonzero { "{carry}" } else { "{0}" })
+            }
             Value::Class(support) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
@@ -992,6 +1055,14 @@ impl Model {
             }
         }
         Ok(true)
+    }
+}
+
+fn support_space_size(rank: usize) -> usize {
+    if rank < usize::BITS as usize {
+        1usize << rank
+    } else {
+        usize::MAX
     }
 }
 

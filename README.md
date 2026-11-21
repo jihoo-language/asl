@@ -2,6 +2,8 @@
 
 ASL is a pure functional language in which every type is a finite T₀ topological space and every function is continuous. Its two-point space `S` has exactly three endomorphisms. You can return the low point, preserve the input, or return the high point. Try to exchange the two points and the interpreter reports the order relation your function breaks.
 
+The classifying spaces of the cyclic groups of orders 4 and 4,096 have isomorphic mod-two cohomology rings. ASL can distinguish them by how many copies of the degree-one generator it takes to produce a nonzero Massey product. [Run the higher-product experiment](#how-late-can-a-higher-product-appear)
+
 ## Run a program
 
 From the repository root, run the triangle example with Nix.
@@ -43,6 +45,8 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
+| `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
+| `H2(m)` | The discrete space of classes in $H^2(BC_m;\mathbb F_2)$. It has two points for even `m` and one for odd `m`. |
 
 Products associate to the left. Arrows associate to the right and bind more loosely than products. Named spaces have distinct types, even when their orders are isomorphic. A star also has its own type. For `q` in the star, its local point is written `Star(X, p).q`. A declaration can introduce isolated points, chains such as `p < q < r`, or the empty space `space Void {};`. A cycle of strict comparisons is an error.
 
@@ -140,6 +144,60 @@ show distant(shift[1000000](alpha));   // Stable(RP2, 1000000, 1000002){g0}
 ```
 
 The basepoint convention matters in degree zero. For a nonempty connected space, `susp` sends the constant unit to zero. Shifting the unit by one gives a nonzero class in `Stable(X, 1, 1)`. Stable classes support addition, zero, further shifts and the Steenrod action.
+
+## How late can a higher product appear?
+
+For every cyclic group $C_m$ of order $m=2^r\ge 4$, the mod-two cohomology ring of $BC_m$ is $\mathbb F_2[x,y]/(x^2)$, with generators in degrees one and two. Take $x(g)=g\bmod 2$ and repeat it as the input to successively longer Massey products. Every result from arity 2 through $m-1$ is zero. At arity $m$ the result is $y$. The input stays in degree one and the answer stays in degree two throughout. [Totaro, Theorem 1.2](https://assets.cambridge.org/97811070/15777/excerpt/9781107015777_excerpt.pdf) · [Benson and Greenlees, §2](https://arxiv.org/pdf/2006.07160)
+
+```sh
+nix run path:. -- examples/massey-tower.asl
+awk -v m=64 -f examples/massey-sweep.awk | nix run path:. -- -
+awk -v m=4096 -v first=4096 -f examples/massey-sweep.awk | nix run path:. -- -
+```
+
+The first program supplies witnesses for $C_8$. The second emits ASL source for $C_{64}$ and runs every arity from 2 through 64. The first 62 output lines read `H2(64){0}`. Line 63 reads `H2(64){carry}`. The third command checks one system of arity 4,096, supplying 4,095 distinct cochains for a triangle with 8,390,655 proper intervals. [Worked program](examples/massey-tower.asl) · [Experiment generator](examples/massey-sweep.awk)
+
+| Group | Arity requested in a single run | Observed result |
+| --- | --- | --- |
+| $C_{4096}$ | 4,095 | `H2(4096){0}` |
+| $C_{4096}$ | 4,096 | `H2(4096){carry}` |
+| $C_{4096}$ | 4,097 | Interval `[0,4096]` fails at residues `(1,4095)`. The coboundary is zero and the products sum to one. |
+| $C_{8192}$ | 8,192 | Constructing the binomial witnesses reaches the interpreter's finite-value storage limit. |
+
+To reproduce one row, set both `first` and `last` to the requested arity. The default range is 2 through `m`.
+
+**Supplying a defining system.** Write `massey(a, b, c){0 < 2 => u, 1 < 3 => v}` for a triple product. The inputs and witnesses all have type `Bar(m)`, with $m\ge 2$. Write any normalized cochain by listing its support, as in `bar[4]{1, 3}`. Repeated residues cancel. `binom[m, k]` gives the cochain $g\mapsto\binom{g}{k}\bmod 2$ for the representative $0\le g<m$ and $k\ge1$. Both new types support `add` and `zero[T]`. The finite group supplies an index for these types. Its classifying space can have cohomology in infinitely many degrees.
+
+For $n$ inputs, put input $i$ in entry $a_{i,i+1}$, starting at $i=0$. Supply one witness for each longer interval except $[0,n]$. At every residue pair the interpreter checks
+
+$$
+a_{ij}(g)+a_{ij}(h)+a_{ij}((g+h)\bmod m)
+=\sum_{i<k<j} a_{ik}(g)a_{kj}(h) \pmod 2.
+$$
+
+For adjacent entries the right side is zero, so each input must be a cocycle. At the omitted corner the right side gives a 2-cocycle $\omega$. The answer is its class for the supplied witnesses. For even $m$ its coordinate is $\sum_g\omega(g,1)\bmod 2$. This sum telescopes to zero for every coboundary. The carry cocycle, which is one when $g+h\ge m$, pairs to one because only $g=m-1$ contributes. Its class is `carry[m]`. For odd $m$ every 2-cocycle is exact.
+
+Witness choices can change the answer. Over $C_2$ take $y(1)=1$ and use inputs $(y,0,y)$. Both inner products are zero, so either $0$ or $y$ is a valid witness on the right. With the left witness fixed at zero, the answer is respectively zero or the nonzero square of $y$.
+
+```text
+let y = bar[2]{1};
+let z = zero[Bar(2)];
+let triple = \w : Bar(2) => massey(y, z, y) { 0 < 2 => z, 1 < 3 => w };
+show triple(z);   // H2(2){0}
+show triple(y);   // H2(2){carry}
+```
+
+Changing one choice can change thousands of witnesses while all proper interval equations continue to hold. This experiment emits two ordinary `massey` calls with identical lists of 127 inputs. Each call supplies 8,000 inner witnesses. Of those, 1,805 change between the two calls. The output is `H2(64){carry}` followed by `H2(64){0}`. [Defining-system generator](examples/massey-choices.awk)
+
+```sh
+awk -f examples/massey-choices.awk | nix run path:. -- -
+```
+
+The generator uses a directed graph with 64 steps from its initial vertex to its terminal vertex. Every internal layer has two vertices. Between consecutive internal layers its adjacency matrix is $\left(\begin{smallmatrix}1&1\\1&0\end{smallmatrix}\right)$. Removing the edge $61\to64$ preserves every adjacent input. If $N$ is the adjacency matrix of the whole graph, the proper entries of $(I+N)^g$ give the cochains at residue $g$. The top corner of $(I+N)^{64}=I+N^{64}$ counts full paths modulo two. The first graph has 17,167,680,177,565 such paths and the second has 12,422,650,078,084. The interpreter receives just the cochains and checks both defining systems.
+
+**Checking thousands of witnesses.** In `powerdef(b1, ..., bL)` every interval of length $j$ uses the same cochain $b_j$. The omitted corner has arity $L+1$. Set $P_h(t)=1+\sum_{j=1}^{L} b_j(h)t^j$ in $\mathbb F_2[t]/(t^{L+1})$. The proper interval equations are exactly the coefficients of $P_{g+h}=P_gP_h$. The checker tests $P_{h+1}=P_1P_h$ for every residue, including the wrap to zero. Since $P_0=1$ and $1$ generates $C_m$, these checks imply every pair equation. This works for any cochains the program supplies. Explicit `massey` checks each interval across residue pairs directly.
+
+**Why the first obstruction can be arbitrarily late.** The binomial witnesses in the experiment are the entries of $(I+J)^g$, where $J$ has ones on the first superdiagonal and zeros elsewhere. More generally, each defining system gives a homomorphism to the group of upper unitriangular matrices modulo its top-right entry. At arity $n$, a lift of the generator has size $n+1$ and form $U=I+N$ with ones on the first superdiagonal. Since $m$ is a power of two, $U^m=I+N^m$. For $n<m$ there is no path of $m$ strict steps, so $N^m=0$ and the lift respects the group relation. For $n=m$ exactly one such path connects $0$ to $m$. Its product is one for every choice of the higher entries. No choice of witnesses removes that obstruction. [Dwyer's lifting criterion, Theorem 2.4 in Merkurjev and Scavia](https://www.math.ucla.edu/~merkurev/papers/massey4.pdf)
 
 ## Observing a computation
 
