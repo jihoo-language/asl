@@ -61,6 +61,25 @@
           {H(K, 2){0} => S.lo, H(K, 2){g0} => S.lo}
           EXPECTED
         '';
+        flash-bockstein = pkgs.runCommand "asl-flash-bockstein" {
+          nativeBuildInputs = [ (package pkgs) pkgs.gawk ];
+        } ''
+          set -o pipefail
+          {
+            awk -v m=1 -f ${./examples/flash-bockstein.awk} | asl -
+            awk -v m=97 -f ${./examples/flash-bockstein.awk} | asl -
+          } > "$out"
+          diff -u - "$out" <<'EXPECTED'
+          VBock(One, Flash, [0, 1], 1, 1, 2, 1){g0}
+          VBock(One, Flash, [0, 1], 97, 1, 2, 97){g0}
+          EXPECTED
+          for invalid in 0 -1 2.5 bad 1000000; do
+            if awk -v m="$invalid" -f ${./examples/flash-bockstein.awk} > rejected.asl; then
+              exit 1
+            fi
+            test ! -s rejected.asl
+          done
+        '';
       });
     };
 }

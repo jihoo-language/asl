@@ -448,6 +448,14 @@ The differential $v_n Q_n+\sum_{i<n}v_iQ_i$ acts on coefficient maps. The first 
 
 The example over real projective four-space uses $I=[0,1]$. Here $Dz_2=v_0z_1$ and $Dz_4=v_1z_1+v_0z_3$. The lift $z_2+(v_0/v_1)z_4$ gives the nonzero differential $d_2(z_2)=(v_0^2/v_1)z_3$. Both components vanish on $E_3$. The same calculation after multiplying by $v_1^{-1}$ starts in negative cohomological degree. [Localized Bockstein example](examples/vbock-rp4.asl)
 
+For a differential on a prescribed page $m\ge 1$, take a declared module with generators $a_j$ of degree $2j$ and $b_j$ of degree $2j-1$ for $1\le j\le m$. Its nonzero primitive actions are $Q_0a_j=b_j$ and $Q_1a_j=b_{j-1}$ for $j>1$. The lift of $a_1$ is $\sum_{j=1}^m(v_0/v_1)^{j-1}a_j$. Its differential cancels in every filtration below $m$ and leaves $v_0^m v_1^{1-m}b_m$. The program verifies that this term represents a nonzero $d_m$ from $(s,t,f)=(0,2,0)$ to $(1,2,m)$ and becomes zero on $E_{m+1}$. [Flash module generator](examples/flash-bockstein.awk)
+
+```sh
+awk -v m=97 -f examples/flash-bockstein.awk | nix run path:. -- -
+```
+
+The output is `VBock(One, Flash, [0, 1], 97, 1, 2, 97){g0}`. The generator checks the interpreter's source-size limit before emitting the program.
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
