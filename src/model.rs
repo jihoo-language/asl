@@ -7,6 +7,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::error::{Error, Result};
 use crate::may::MayPage;
+use crate::milnor::MilnorBasis;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 
@@ -96,6 +97,7 @@ struct TypeInfo {
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
     type_ids: HashMap<Kind, TypeId>,
+    milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     work: usize,
     storage: usize,
 }
@@ -105,6 +107,7 @@ impl Model {
         let mut model = Self {
             types: Vec::new(),
             type_ids: HashMap::new(),
+            milnor_bases: HashMap::new(),
             work: MAX_WORK,
             storage: MAX_STORAGE,
         };
@@ -324,6 +327,15 @@ impl Model {
 
     pub(crate) fn operation_type(&mut self, degree: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::Operations(degree), 0)
+    }
+
+    pub(crate) fn milnor_basis(&mut self, degree: usize) -> Result<Rc<MilnorBasis>> {
+        if let Some(data) = self.milnor_bases.get(&degree) {
+            return Ok(data.clone());
+        }
+        let data = Rc::new(MilnorBasis::build(self, degree)?);
+        self.milnor_bases.insert(degree, data.clone());
+        Ok(data)
     }
 
     pub(crate) fn cobar_type(&mut self, s: usize, t: usize) -> Result<TypeId> {

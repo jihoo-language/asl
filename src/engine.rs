@@ -8,6 +8,7 @@ use crate::cohomology;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
 use crate::may;
+use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::steenrod;
@@ -67,6 +68,7 @@ enum TypedForm {
     Constant(Value),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Cobar(CobarOp, Box<TypedExpr>),
+    Coact(usize, usize, Box<TypedExpr>),
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
@@ -271,6 +273,10 @@ impl Engine {
                     (BinaryOp::Mul, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::multiply(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::MilnorPair, Value::Operation(a), Value::Cobar(b)) => {
+                        let paired = milnor::pair(&mut self.model, &a, &b)?;
+                        Ok(Value::Point(usize::from(paired)))
+                    }
                     (BinaryOp::Act, Value::Operation(operation), Value::Class(class)) => {
                         let (base, degree) = match *self.model.kind(right.ty) {
                             Kind::Cohomology(base, degree) => (base, degree),
@@ -292,6 +298,16 @@ impl Engine {
                     }
                     _ => unreachable!(),
                 }
+            }
+            TypedForm::Coact(n, index, input) => {
+                let Kind::Cohomology(base, q) = *self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let Value::Class(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let support = milnor::coact(&mut self.model, base, *n, *index, q, class)?;
+                Ok(Value::Cobar(support.into()))
             }
             TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
                 (CobarOp::Differential, Value::Cobar(words)) => {
@@ -655,6 +671,19 @@ impl Checker<'_> {
                 let ty = self.model.operation_type(degree)?;
                 let square = steenrod::square(self.model, degree)?;
                 Ok((ty, TypedForm::Constant(square)))
+            }
+            ExprForm::Milnor(exponents) => {
+                let (degree, value) = milnor::literal(self.model, exponents)?;
+                let ty = self.model.operation_type(degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Coact(n, index, at, input) => {
+                let input = self.expr(*input)?;
+                let (base, q) = self.class_type(&input, "coact")?;
+                let (s, t) = milnor::coact_bidegree(self.model, base, n, index, q)
+                    .map_err(|error| error.at(at))?;
+                let ty = self.model.cobar_type(s, t)?;
+                Ok((ty, TypedForm::Coact(n, index, Box::new(input))))
             }
             ExprForm::CobarWord(factors) => {
                 let ((s, t), value) = cobar::literal(self.model, factors)?;
@@ -1148,6 +1177,22 @@ impl Checker<'_> {
                 let right = self.operation_degree(right, "mul")?;
                 let degree = checked_degree(left, right, "mul", span)?;
                 self.model.operation_type(degree)
+            }
+            BinaryOp::MilnorPair => {
+                let degree = self.operation_degree(left, "milnorPair")?;
+                match *self.model.kind(right.ty) {
+                    Kind::Cobar(1, t) if t == degree => {}
+                    Kind::Cobar(0, 0) if degree == 0 => {}
+                    _ => {
+                        let expected = if degree == 0 {
+                            "a cochain in Cobar(1, 0) or Cobar(0, 0)".into()
+                        } else {
+                            format!("a cochain in Cobar(1, {degree})")
+                        };
+                        return Err(self.invalid_operand(right, "milnorPair", &expected));
+                    }
+                }
+                Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
                 let (s, t) = self.cobar_bidegree(left, "concat")?;

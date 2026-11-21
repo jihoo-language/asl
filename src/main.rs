@@ -8,6 +8,7 @@ mod engine;
 mod error;
 mod linear;
 mod may;
+mod milnor;
 mod model;
 mod observations;
 mod steenrod;

@@ -50,6 +50,7 @@ pub(crate) enum BinaryOp {
     Concat,
     Yoneda,
     MayMul,
+    MilnorPair,
 }
 
 impl BinaryOp {
@@ -63,6 +64,7 @@ impl BinaryOp {
             "concat" => Some(Self::Concat),
             "yoneda" => Some(Self::Yoneda),
             "mayMul" => Some(Self::MayMul),
+            "milnorPair" => Some(Self::MilnorPair),
             _ => None,
         }
     }
@@ -99,6 +101,8 @@ pub(crate) enum ExprForm {
     Class(ParsedType, usize, ClassForm),
     Zero(ParsedType),
     Square(usize),
+    Milnor(Vec<usize>),
+    Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
     ExtGenerator(usize, usize, usize, Span),
     MayClass(usize, usize, Box<ParsedExpr>),
@@ -388,6 +392,19 @@ impl<'src> Parser<'src> {
             .map_err(|_| Error::new(span, "decimal integer is out of range"))?;
         self.advance()?;
         Ok((number, span))
+    }
+
+    fn exponents(&mut self) -> Result<Vec<usize>> {
+        self.expect(Token::LBracket)?;
+        let mut exponents = Vec::new();
+        while self.token() != Token::RBracket {
+            exponents.push(self.number()?.0);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(exponents)
     }
 
     fn chains(&mut self) -> Result<Vec<Vec<Label>>> {
@@ -766,20 +783,16 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "milnor" && self.eat(Token::LBrace)? {
+                    let exponents = self.exponents()?;
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::Milnor(exponents), 0);
+                }
                 if name.text == "cword" && self.eat(Token::LBrace)? {
                     let mut factors = Vec::new();
                     while self.token() != Token::RBrace {
                         let at = self.span();
-                        self.expect(Token::LBracket)?;
-                        let mut exponents = Vec::new();
-                        while self.token() != Token::RBracket {
-                            exponents.push(self.number()?.0);
-                            if !self.eat(Token::Comma)? {
-                                break;
-                            }
-                        }
-                        self.expect(Token::RBracket)?;
-                        factors.push((exponents, at));
+                        factors.push((self.exponents()?, at));
                         if !self.eat(Token::Comma)? {
                             break;
                         }
@@ -843,6 +856,15 @@ impl<'src> Parser<'src> {
                     let (degree, _) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::Square(degree), 0);
+                }
+                if name.text == "coact" && self.eat(Token::LBracket)? {
+                    let (n, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::Coact(n, index, at, Box::new(value)), depth);
                 }
                 if name.text == "shift" && self.eat(Token::LBracket)? {
                     let (shift, _) = self.number()?;

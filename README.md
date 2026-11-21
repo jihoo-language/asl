@@ -185,6 +185,14 @@ Starting with $F_1=i$, ASL computes $U_n=\sum_{j=1}^{n-1} F_j(a_1,\ldots,a_j)F_{
 
 The higher operations can depend on the chosen contraction. The Massey product collects classes from defining systems. In this transfer, $m_3(h_0,h_1,h_0)=h_1^2$ and $m_4(h_0,h_1,h_2,h_0)=h_2^2$. The adjacent product $h_2h_0$ obstructs a Massey defining system for the four inputs. The fourth lift is $[\xi_1\xi_3]+[\xi_1^2\xi_2^2]+[\xi_1^5\xi_2]$. Run `nix run path:. -- examples/ext-transfer.asl` to compute both operations and the lift. [Transfer example](examples/ext-transfer.asl)
 
+## Milnor duality and the homology coaction
+
+`milnor{[r1, r2, ...]}` is the element of the Steenrod algebra dual to the monomial $\xi_1^{r_1}\xi_2^{r_2}\cdots$. Its type is `A(d)`, where `d` is the monomial degree. Trailing zeros are optional, and `milnor{[0]}` is `sq[0]`. The interpreter converts Milnor basis operations to the existing admissible basis. `milnorPair(theta, c)` evaluates the pairing with a cochain in `Cobar(1, d)` and gives `S.hi` for one and `S.lo` for zero. In degree zero it also pairs against `Cobar(0, 0)`. [Milnor, *The Steenrod Algebra and Its Dual*](https://doi.org/10.2307/1969932)
+
+The pairing of `mul(a, b)` against a monomial uses `a` on the left coproduct factor and `b` on the right. Thus `milnorPair(mul(sq[2], sq[1]), cword{[0, 1]})` is `S.hi`, and reversing the squares gives `S.lo`. Pairing a single square with a monomial reads the coefficient of the corresponding power of $\xi_1$. [Milnor duality example](examples/milnor-duality.asl)
+
+`coact[n, i](u)` takes `u : H(X, q)` and pairs the coaction on the homology generator dual to `gen[X, n, i]` against `u`. The coefficient of $\xi^R$ is the `i`th coordinate of `act(milnor{[r1, r2, ...]}, u)`. For `n > q`, the result has type `Cobar(1, n - q)`. For `n = q`, it gives the `i`th coordinate of `u` as a multiple of the unit in `Cobar(0, 0)`.
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
