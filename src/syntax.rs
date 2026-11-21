@@ -175,6 +175,8 @@ pub(crate) enum ExprForm {
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
+    CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
+    ExtSquare(usize, Box<ParsedExpr>),
     HigherRestriction(usize, Vec<ParsedExpr>),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
     MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
@@ -1203,6 +1205,28 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::RestrictAlgebra(n, Box::new(value)), depth);
+                }
+                if name.text == "cCup" && self.eat(Token::LBracket)? {
+                    let (i, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let left = self.expr(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let right = self.expr(nest + 1)?;
+                    self.expect(Token::RParen)?;
+                    let depth = left.depth.max(right.depth) + 1;
+                    return expr(
+                        span,
+                        ExprForm::CobarCup(i, Box::new(left), Box::new(right)),
+                        depth,
+                    );
+                }
+                if name.text == "extSq" && self.eat(Token::LBracket)? {
+                    let (k, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::ExtSquare(k, Box::new(value)), depth);
                 }
                 if name.text == "resHigher" && self.eat(Token::LBracket)? {
                     let (n, _) = self.number()?;

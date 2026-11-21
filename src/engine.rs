@@ -5,6 +5,7 @@ use crate::adams;
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
+use crate::cobar_squares;
 use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
@@ -113,6 +114,8 @@ enum TypedForm {
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Cobar(CobarOp, Box<TypedExpr>),
     RestrictAlgebra(Profile, Box<TypedExpr>),
+    CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
+    ExtSquare(usize, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
@@ -644,6 +647,21 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::CobarCup(profile, i, left, right) => {
+                let Value::Cobar(a) = self.eval(left)? else {
+                    unreachable!()
+                };
+                let Value::Cobar(b) = self.eval(right)? else {
+                    unreachable!()
+                };
+                cobar_squares::cup(&mut self.model, *profile, *i, &a, &b)
+            }
+            TypedForm::ExtSquare(k, input) => {
+                let Value::Class(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cobar_squares::square(&mut self.model, input.ty, expr.ty, *k, &class)
+            }
             TypedForm::MapExtInduced(function) => {
                 let Value::Map(table) = self.eval(function)? else {
                     unreachable!()
@@ -1168,6 +1186,30 @@ impl Checker<'_> {
                     ));
                 };
                 Ok((ty, TypedForm::RestrictAlgebra(target, Box::new(value))))
+            }
+            ExprForm::CobarCup(i, left, right) => {
+                let left = self.expr(*left)?;
+                let right = self.expr(*right)?;
+                let (profile, s, t) = self.profile_cobar_bidegree(&left, "cCup")?;
+                let (other, u, v) = self.profile_cobar_bidegree(&right, "cCup")?;
+                require_profile(profile, other, "cCup", right.span)?;
+                let (length, degree) = cobar_squares::cup_bidegree(i, (s, t), (u, v))?;
+                let ty = self.model.profile_cobar_type(profile, length, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::CobarCup(profile, i, Box::new(left), Box::new(right)),
+                ))
+            }
+            ExprForm::ExtSquare(k, value) => {
+                let value = self.expr(*value)?;
+                let (profile, s, t) = self
+                    .model
+                    .kind(value.ty)
+                    .ext_grade()
+                    .ok_or_else(|| self.invalid_operand(&value, "extSq", "an Ext class"))?;
+                let (length, degree) = cobar_squares::square_bidegree(k, s, t)?;
+                let ty = self.model.profile_ext_type(profile, length, degree)?;
+                Ok((ty, TypedForm::ExtSquare(k, Box::new(value))))
             }
             ExprForm::XExtGenerator(base, s, t, index, at) => {
                 let base = self.ty(base)?;

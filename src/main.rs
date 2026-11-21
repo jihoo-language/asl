@@ -2,6 +2,7 @@ mod adams;
 mod bracket;
 mod ce;
 mod cobar;
+mod cobar_squares;
 mod cohomology;
 mod comodule;
 mod complex;

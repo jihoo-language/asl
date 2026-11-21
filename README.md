@@ -213,6 +213,14 @@ Write $\overline A=(-1)^{t-s+1} A$ for a cochain of bidegree $(s,t)$. Each prope
 
 The example computes $d_1([\tau_1])=[\xi_1\mid\tau_0]$ at $p=3$. It also computes a nonzero $d_5$ from bidegree $(3,15)$ in filtration $6$ to $(4,15)$ in filtration $11$. Both components vanish on $E_6$. [Odd-prime May example](examples/odd-may.asl)
 
+## Algebraic Steenrod squares on Adams E₂
+
+`cCup[i](a, b)` is the normalized cobar cup-$i$ product. The inputs have a common Steenrod profile, either full `Cobar` or the same finite `CobarAn`. For input bidegrees $(s,t)$ and $(u,v)$ the result has bidegree $(s+u-i,t+v)$. An index greater than $\min(s,u)$ gives zero when the result length is nonnegative. Index zero is concatenation.
+
+For result length $N$, the calculation takes increasing subsets $U\subseteq\{0,\ldots,N\}$ of size $N-i$. It assigns the $j$th vertex $u_j$ to the first input when $u_j+j$ is even and to the second otherwise, with $j$ starting at one. It keeps assignments with $N-s$ and $N-u$ cofaces, respectively. The cofaces lift both words to length $N$ using the full coproduct for an inner coface and a unit for an end coface. ASL multiplies the lifted words factor by factor in the dual algebra and projects away the words containing units. Finite profiles use their quotient multiplication.
+
+`extSq[k](x)` applies cup-$(s-k)$ to a canonical representative of $x$ and itself, then takes the class in bidegree $(s+k,2t)$. It works on `Ext` and `ExtAn`. The result is independent of the representative. Indices above $s$ give zero. The top square is the Yoneda square. Here $\mathrm{Sq}^0$ is Frobenius on the Milnor exponents, so $\mathrm{Sq}^0(h_i)=h_{i+1}$ in the full algebra. The example computes the nonzero intermediate square $\mathrm{Sq}^1(h_0h_2)=h_0^2h_3$. [Cobar squares example](examples/cobar-squares.asl)
+
 ## The algebraic May spectral sequence
 
 Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomial, count the set bits of each exponent and multiply that count by the corresponding generator weight. The weight $M$ of a cobar word is the sum over its factors. In internal degree $t$, the decreasing filtration $F^f$ is spanned by words with $t-M\ge f$. The cobar differential preserves this filtration, and concatenation adds filtration indices. The associated graded complex is page $E_0$. Its differential preserves $f$, and $d_r$ increases $s$ by one and $f$ by $r$, preserving $t$. [May, *The cohomology of restricted Lie algebras and of Hopf algebras*](https://doi.org/10.1016/0021-8693(66)90009-3)

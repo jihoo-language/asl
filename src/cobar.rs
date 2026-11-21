@@ -246,6 +246,26 @@ fn reduced_coproduct(
     profile: Profile,
     factor: &Monomial,
 ) -> Result<Vec<CoproductTerm>> {
+    Ok(coproduct_terms(model, profile, factor)?
+        .terms
+        .into_iter()
+        .filter(|(left, right)| !left.is_empty() && !right.is_empty())
+        .collect())
+}
+
+pub(crate) fn coproduct(
+    model: &mut Model,
+    profile: Profile,
+    factor: &Monomial,
+) -> Result<Vec<CoproductTerm>> {
+    Ok(coproduct_terms(model, profile, factor)?.into_vec())
+}
+
+fn coproduct_terms(
+    model: &mut Model,
+    profile: Profile,
+    factor: &Monomial,
+) -> Result<Support<CoproductTerm>> {
     let unit: Monomial = [].into();
     let mut terms = Support::new();
     terms.toggle(model, (unit.clone(), unit), 1)?;
@@ -282,11 +302,7 @@ fn reduced_coproduct(
             terms = next;
         }
     }
-    Ok(terms
-        .terms
-        .into_iter()
-        .filter(|(left, right)| !left.is_empty() && !right.is_empty())
-        .collect())
+    Ok(terms)
 }
 
 fn with_power(
@@ -324,20 +340,20 @@ pub(crate) fn check_storage(cells: usize) -> Result<()> {
     Ok(())
 }
 
-struct Support<T> {
+pub(crate) struct Support<T> {
     terms: BTreeSet<T>,
     cells: usize,
 }
 
 impl<T: Ord> Support<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             terms: BTreeSet::new(),
             cells: 0,
         }
     }
 
-    fn toggle(&mut self, model: &mut Model, term: T, cells: usize) -> Result<()> {
+    pub(crate) fn toggle(&mut self, model: &mut Model, term: T, cells: usize) -> Result<()> {
         model.spend(cells * (1 + (1 + self.terms.len()).ilog2() as usize))?;
         if self.terms.remove(&term) {
             self.cells -= cells;
@@ -349,7 +365,7 @@ impl<T: Ord> Support<T> {
         Ok(())
     }
 
-    fn into_vec(self) -> Vec<T> {
+    pub(crate) fn into_vec(self) -> Vec<T> {
         self.terms.into_iter().collect()
     }
 }
