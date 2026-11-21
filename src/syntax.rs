@@ -32,6 +32,7 @@ pub(crate) enum TypeForm {
     PExt(usize, usize, usize),
     PExtAn(usize, usize, usize, usize),
     PMay(usize, usize, usize, usize, usize),
+    PMayAn(usize, usize, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -200,6 +201,7 @@ pub(crate) enum ExprForm {
     PExtGenerator(usize, usize, usize, usize, Span),
     PExtAnGenerator(usize, usize, usize, usize, usize, Span),
     PMayGenerator(usize, usize, usize, usize, usize, usize, Span),
+    PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PScale(usize, Box<ParsedExpr>),
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
@@ -266,6 +268,7 @@ pub(crate) enum StatementForm {
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     PMayDimension(usize, usize, usize, usize, usize),
+    PMayAnDimension(usize, usize, usize, usize, usize, usize),
     ExtAnDimension(usize, usize, usize),
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
@@ -756,6 +759,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::PMayDimension(p, r, s, t, f)
             }
+            Token::Word("pmayandim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::PMayAnDimension(p, n, r, s, t, f)
+            }
             Token::Word("homotopy") => {
                 self.advance()?;
                 let left = self.expr(0)?;
@@ -930,6 +940,13 @@ impl<'src> Parser<'src> {
         Ok((prime, r, s, t, f))
     }
 
+    fn prime_profile_page_degree(&mut self) -> Result<(usize, usize, usize, usize, usize, usize)> {
+        let (prime, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (n, r, s, t, f) = self.profile_page_degree()?;
+        Ok((prime, n, r, s, t, f))
+    }
+
     fn ty(&mut self, nest: usize) -> Result<ParsedType> {
         check_nesting(nest, self.span())?;
         let mut head = self.type_atom(nest)?;
@@ -1075,6 +1092,11 @@ impl<'src> Parser<'src> {
             let (p, r, s, t, f) = self.pmay_degree()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::PMay(p, r, s, t, f), 0);
+        }
+        if name.text == "PMayAn" && self.eat(Token::LParen)? {
+            let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::PMayAn(p, n, r, s, t, f), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -1628,6 +1650,17 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PMayGenerator(p, r, s, t, f, index, at), 0);
+                }
+                if name.text == "pmayangen" && self.eat(Token::LBracket)? {
+                    let (p, n, r, s, t, f) = self.prime_profile_page_degree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::PMayAnGenerator(p, n, r, s, t, f, index, at),
+                        0,
+                    );
                 }
                 if matches!(name.text.as_str(), "mayClass" | "ceClass")
                     && self.eat(Token::LBracket)?

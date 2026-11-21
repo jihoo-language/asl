@@ -359,10 +359,6 @@ pub(crate) fn differential(
     persist(model, terms)
 }
 
-pub(crate) fn differential_word(model: &mut Model, prime: Prime, word: &Word) -> Result<Vec<Term>> {
-    differential_support(model, prime, &[(word.clone(), 1)])
-}
-
 pub(crate) fn differential_profile_word(
     model: &mut Model,
     prime: Prime,

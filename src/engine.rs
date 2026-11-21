@@ -305,6 +305,14 @@ impl Engine {
                 let rank = self.model.pmay(ty)?.rank();
                 format!("pmaydim[{p}, {r}, {s}, {t}, {f}] = {rank}")
             }
+            StatementForm::PMayAnDimension(p, n, r, s, t, f) => {
+                let prime = Prime::new(&mut self.model, p)?;
+                let ty = self
+                    .model
+                    .profile_pmay_type(prime, Profile::An(n), r, s, t, f)?;
+                let rank = self.model.pmay(ty)?.rank();
+                format!("pmayandim[{p}, {n}, {r}, {s}, {t}, {f}] = {rank}")
+            }
             StatementForm::ExtDimension(s, t) => {
                 let ty = self.model.ext_type(s, t)?;
                 let rank = self.model.adams(ty)?.rank();
@@ -464,8 +472,10 @@ impl Engine {
                         cobar::add(&mut self.model, &a, &b)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
-                        let (Kind::PExt(p, ..) | Kind::PExtAn(p, ..) | Kind::PMay(p, ..)) =
-                            *self.model.kind(expr.ty)
+                        let (Kind::PExt(p, ..)
+                        | Kind::PExtAn(p, ..)
+                        | Kind::PMay(p, ..)
+                        | Kind::PMayAn(p, ..)) = *self.model.kind(expr.ty)
                         else {
                             unreachable!()
                         };
@@ -796,7 +806,11 @@ impl Engine {
                         odd_cobar::persist(&mut self.model, terms)
                     }
                     Value::OddClass(class) => {
-                        odd_ext::restrict(&mut self.model, input.ty, &class, expr.ty)
+                        if self.model.kind(input.ty).pmay_grade().is_some() {
+                            odd_may::restrict(&mut self.model, input.ty, &class, expr.ty)
+                        } else {
+                            odd_ext::restrict(&mut self.model, input.ty, &class, expr.ty)
+                        }
                     }
                     Value::Class(class) => {
                         if class.is_empty() {
@@ -1166,6 +1180,11 @@ impl Checker<'_> {
                 let prime = Prime::new(self.model, p)?;
                 self.model.pmay_type(prime, r, s, t, f)
             }
+            TypeForm::PMayAn(p, n, r, s, t, f) => {
+                let prime = Prime::new(self.model, p)?;
+                self.model
+                    .profile_pmay_type(prime, Profile::An(n), r, s, t, f)
+            }
             TypeForm::PCobar(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.pcobar_type(prime, s, t)
@@ -1293,7 +1312,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
-                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) => odd_ext::zero(),
+                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
@@ -1350,7 +1369,8 @@ impl Checker<'_> {
                     | Kind::PCobarAn(p, ..)
                     | Kind::PExt(p, ..)
                     | Kind::PExtAn(p, ..)
-                    | Kind::PMay(p, ..) => p,
+                    | Kind::PMay(p, ..)
+                    | Kind::PMayAn(p, ..) => p,
                     _ => {
                         return Err(self.invalid_operand(
                             &value,
@@ -1384,6 +1404,15 @@ impl Checker<'_> {
                 let value = self.prime_generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::PMayAnGenerator(p, n, r, s, t, f, index, at) => {
+                let prime = Prime::new(self.model, p)?;
+                let ty = self
+                    .model
+                    .profile_pmay_type(prime, Profile::An(n), r, s, t, f)?;
+                let rank = self.model.pmay(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::ExtGenerator(s, t, index, at) => {
                 let ty = self.model.ext_type(s, t)?;
                 let rank = self.model.adams(ty)?.rank();
@@ -1403,6 +1432,9 @@ impl Checker<'_> {
                 let ty = if let Some((source, r, s, t, f)) = kind.may_grade() {
                     require_restriction(source, target, span)?;
                     self.model.profile_may_type(target, r, s, t, f)?
+                } else if let Some((prime, source, r, s, t, f)) = kind.pmay_grade() {
+                    require_restriction(source, target, span)?;
+                    self.model.profile_pmay_type(prime, target, r, s, t, f)?
                 } else if let Some((source, s, t)) = kind.cobar_grade() {
                     require_restriction(source, target, span)?;
                     self.model.profile_cobar_type(target, s, t)?
@@ -1650,6 +1682,10 @@ impl Checker<'_> {
                         self.model.map_may_type(source, target, r, s, t, f)?
                     }
                     Kind::PCobar(p, s, t) => self.model.pmay_type(p, r, s, t, f)?,
+                    Kind::PCobarAn(p, n, s, t) => {
+                        self.model
+                            .profile_pmay_type(p, Profile::An(n), r, s, t, f)?
+                    }
                     _ => {
                         let (profile, s, t) = self.profile_cobar_bidegree(&value, "mayClass")?;
                         self.model.profile_may_type(profile, r, s, t, f)?
@@ -2469,8 +2505,8 @@ impl Checker<'_> {
                 return self.model.profile_cobar_type(profile, s, t);
             }
             CobarOp::MayRepresentative => {
-                if let Kind::PMay(p, _, s, t, _) = *self.model.kind(argument.ty) {
-                    return self.model.pcobar_type(p, s, t);
+                if let Some((p, profile, _, s, t, _)) = self.model.kind(argument.ty).pmay_grade() {
+                    return self.model.profile_pcobar_type(p, profile, s, t);
                 }
                 if let Kind::MapMay(source, target, _, s, t, _) = *self.model.kind(argument.ty) {
                     return self.model.map_cobar_type(source, target, s, t);
@@ -2479,10 +2515,10 @@ impl Checker<'_> {
                 return self.model.profile_cobar_type(profile, s, t);
             }
             CobarOp::MayDifferential => {
-                if let Kind::PMay(p, r, s, t, f) = *self.model.kind(argument.ty) {
+                if let Some((p, profile, r, s, t, f)) = self.model.kind(argument.ty).pmay_grade() {
                     let s = checked_degree(s, 1, name, span)?;
                     let f = checked_degree(f, r, name, span)?;
-                    return self.model.pmay_type(p, r, s, t, f);
+                    return self.model.profile_pmay_type(p, profile, r, s, t, f);
                 }
                 if let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(argument.ty) {
                     let s = checked_degree(s, 1, name, span)?;
@@ -2606,6 +2642,7 @@ impl Checker<'_> {
                         | Kind::PExt(..)
                         | Kind::PExtAn(..)
                         | Kind::PMay(..)
+                        | Kind::PMayAn(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
@@ -2813,13 +2850,15 @@ impl Checker<'_> {
                 self.model.ce_type(n, r, s, t, f)
             }
             BinaryOp::MayMul => {
-                if let Kind::PMay(p, r, s, t, f) = *self.model.kind(left.ty) {
-                    let Kind::PMay(q, page, u, v, g) = *self.model.kind(right.ty) else {
+                if let Some((p, profile, r, s, t, f)) = self.model.kind(left.ty).pmay_grade() {
+                    let Some((q, other, page, u, v, g)) = self.model.kind(right.ty).pmay_grade()
+                    else {
                         return Err(self.invalid_operand(right, "mayMul", "a PMay class"));
                     };
                     if p != q {
                         return Err(Error::new(right.span, "mayMul requires the same prime"));
                     }
+                    require_profile(profile, other, "mayMul", right.span)?;
                     if r != page {
                         return Err(Error::new(
                             right.span,
@@ -2829,7 +2868,7 @@ impl Checker<'_> {
                     let s = checked_degree(s, u, "mayMul", span)?;
                     let t = checked_degree(t, v, "mayMul", span)?;
                     let f = checked_degree(f, g, "mayMul", span)?;
-                    return self.model.pmay_type(p, r, s, t, f);
+                    return self.model.profile_pmay_type(p, profile, r, s, t, f);
                 }
                 let (profile, r, s, t, f) = self.may_degree(left, "mayMul")?;
                 let (other, page, u, v, g) = self.may_degree(right, "mayMul")?;

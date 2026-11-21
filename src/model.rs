@@ -52,6 +52,7 @@ pub(crate) enum Kind {
     PExt(Prime, usize, usize),
     PExtAn(Prime, usize, usize, usize),
     PMay(Prime, usize, usize, usize, usize),
+    PMayAn(Prime, usize, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -74,6 +75,14 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn pmay_grade(&self) -> Option<(Prime, Profile, usize, usize, usize, usize)> {
+        match *self {
+            Self::PMay(p, r, s, t, f) => Some((p, Profile::Full, r, s, t, f)),
+            Self::PMayAn(p, n, r, s, t, f) => Some((p, Profile::An(n), r, s, t, f)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn pcobar_grade(&self) -> Option<(Prime, Profile, usize, usize)> {
         match *self {
             Self::PCobar(p, s, t) => Some((p, Profile::Full, s, t)),
@@ -283,13 +292,20 @@ impl Model {
             {
                 p.get() as usize
             }
-            Kind::PMay(_, _, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
-            Kind::PMay(prime, _, s, t, _) if s == t => prime.get() as usize,
+            Kind::PMay(_, _, s, t, f) | Kind::PMayAn(_, _, _, s, t, f)
+                if s > t || f > t - s || (s == 0 && t != 0) =>
+            {
+                1
+            }
+            Kind::PMay(prime, _, s, t, _) | Kind::PMayAn(prime, _, _, s, t, _) if s == t => {
+                prime.get() as usize
+            }
             Kind::PCobar(..)
             | Kind::PCobarAn(..)
             | Kind::PExt(..)
             | Kind::PExtAn(..)
-            | Kind::PMay(..) => usize::MAX,
+            | Kind::PMay(..)
+            | Kind::PMayAn(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -411,6 +427,7 @@ impl Model {
                 | Kind::PExt(..)
                 | Kind::PExtAn(..)
                 | Kind::PMay(..)
+                | Kind::PMayAn(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -611,7 +628,23 @@ impl Model {
         t: usize,
         f: usize,
     ) -> Result<TypeId> {
-        self.inhabited_type(Kind::PMay(prime, r, s, t, f), 0)
+        self.profile_pmay_type(prime, Profile::Full, r, s, t, f)
+    }
+
+    pub(crate) fn profile_pmay_type(
+        &mut self,
+        prime: Prime,
+        profile: Profile,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::PMay(prime, r, s, t, f),
+            Profile::An(n) => Kind::PMayAn(prime, n, r, s, t, f),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
@@ -837,10 +870,8 @@ impl Model {
         if let Some(data) = &self.types[ty.0].pmay {
             return Ok(data.clone());
         }
-        let Kind::PMay(prime, r, s, t, f) = *self.kind(ty) else {
-            unreachable!()
-        };
-        let data = Rc::new(OddMay::build(self, prime, r, s, t, f)?);
+        let (prime, profile, r, s, t, f) = self.kind(ty).pmay_grade().unwrap();
+        let data = Rc::new(OddMay::build(self, prime, profile, r, s, t, f)?);
         self.types[ty.0].pmay = Some(data.clone());
         Ok(data)
     }
@@ -1037,6 +1068,7 @@ impl Model {
             | Kind::PExt(..)
             | Kind::PExtAn(..)
             | Kind::PMay(..)
+            | Kind::PMayAn(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -1173,6 +1205,9 @@ impl Model {
             &Kind::PExtAn(p, n, s, t) => out.push(&format!("PExtAn({}, {n}, {s}, {t})", p.get())),
             &Kind::PMay(p, r, s, t, f) => {
                 out.push(&format!("PMay({}, {r}, {s}, {t}, {f})", p.get()))
+            }
+            &Kind::PMayAn(p, n, r, s, t, f) => {
+                out.push(&format!("PMayAn({}, {n}, {r}, {s}, {t}, {f})", p.get()))
             }
             &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
@@ -1560,7 +1595,7 @@ impl Model {
                     let rank = self.odd_ext(ty)?.rank();
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }
-                Kind::PMay(p, ..) => {
+                Kind::PMay(p, ..) | Kind::PMayAn(p, ..) => {
                     let rank = self.pmay(ty)?.rank();
                     odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
                 }

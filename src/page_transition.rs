@@ -47,9 +47,9 @@ impl Direction {
         family: PageFamily,
     ) -> Result<TypeId> {
         if family == PageFamily::May {
-            if let Kind::PMay(p, r, s, t, f) = *model.kind(ty) {
+            if let Some((p, profile, r, s, t, f)) = model.kind(ty).pmay_grade() {
                 let page = self.target_page(r, family)?;
-                return model.pmay_type(p, page, s, t, f);
+                return model.profile_pmay_type(p, profile, page, s, t, f);
             }
         }
         if family == PageFamily::VBock {

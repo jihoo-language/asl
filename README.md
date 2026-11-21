@@ -54,6 +54,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `PExt(p, s, t)` | The discrete space of odd-prime Adams $E_2$ classes over $\mathbb F_p$. |
 | `PExtAn(p, n, s, t)` | The discrete space of Ext classes over $\mathcal A_p(n)$. |
 | `PMay(p, r, s, t, f)` | The discrete space of odd-prime algebraic May classes on page `r` in filtration `f`. |
+| `PMayAn(p, n, r, s, t, f)` | The algebraic May page of the finite odd-primary profile $\mathcal A_p(n)$. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
@@ -226,6 +227,12 @@ Write $\overline A=(-1)^{t-s+1} A$ for a cochain of bidegree $(s,t)$. Each prope
 `mayRep(x)` returns a chosen raw lift and `mayD(x)` raises $s$ by one and $f$ by $r$. `mayNext(x)` takes a $d_r$-cycle to its class on page $r+1$, and `mayPrev(x)` lifts a class to a cycle on the preceding page. `mayMul(x, y)` concatenates lifts at a common prime and page. The differential satisfies the Leibniz rule with the sign of the stem $t-s$, and `pscale[k](x)` and `add(x, y)` act on field coefficients.
 
 The example computes $d_1([\tau_1])=[\xi_1\mid\tau_0]$ at $p=3$. It also computes a nonzero $d_5$ from bidegree $(3,15)$ in filtration $6$ to $(4,15)$ in filtration $11$. Both components vanish on $E_6$. [Odd-prime May example](examples/odd-may.asl)
+
+### Odd-primary May pages over finite Steenrod subalgebras
+
+`PMayAn(p, n, r, s, t, f)` applies the same weight and filtered quotient to `PCobarAn(p, n, s, t)`. The statement `pmayandim[p, n, r, s, t, f];` prints a rank, and `pmayangen[p, n, r, s, t, f, i]` selects generator `i`. The May operations and `pscale` preserve the prime and profile.
+
+`resA[n]` restricts a full odd-primary May class or a class over a containing finite profile at the same prime. Each projected word keeps its weight, so restriction commutes with page products, differentials, and passage to the next page on cycles. At $p=3$ the full $d_5$ on the corrected $[\tau_1]^3$ lift has nonzero target. Over $\mathcal A_3(1)$ that target vanishes and the restricted lift is a cocycle representing the nonzero class in `PExtAn(3, 1, 3, 15)`. [Odd finite May example](examples/odd-profile-may.asl)
 
 ## Algebraic Steenrod squares on Adams E₂
 
@@ -568,6 +575,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `pextdim[p, s, t];` | Print the dimension of `PExt(p, s, t)` over 𝔽ₚ. |
 | `pextandim[p, n, s, t];` | Print the dimension of `PExtAn(p, n, s, t)` over 𝔽ₚ. |
 | `pmaydim[p, r, s, t, f];` | Print the dimension of `PMay(p, r, s, t, f)` over 𝔽ₚ. |
+| `pmayandim[p, n, r, s, t, f];` | Print the dimension of `PMayAn(p, n, r, s, t, f)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
 | `ceandim[n, r, s, t, f];` | Print the dimension of a Cartan–Eilenberg page component over 𝔽₂. |

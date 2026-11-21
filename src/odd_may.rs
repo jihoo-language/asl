@@ -6,12 +6,15 @@ use crate::error::{Error, Result};
 use crate::model::{Model, TypeId, Value};
 use crate::odd_cobar::{self, word_cells, Prime, Term, Word};
 use crate::odd_ext::{self, decode, word_indices, WordRows};
+use crate::odd_profile;
 use crate::prime_linear::{add_scaled, Basis, Coordinate};
+use crate::profile::Profile;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
 pub(crate) struct OddMay {
     prime: Prime,
+    profile: Profile,
     r: usize,
     s: usize,
     t: usize,
@@ -28,6 +31,7 @@ impl OddMay {
     pub(crate) fn build(
         model: &mut Model,
         prime: Prime,
+        profile: Profile,
         r: usize,
         s: usize,
         t: usize,
@@ -35,6 +39,7 @@ impl OddMay {
     ) -> Result<Self> {
         let mut page = Self {
             prime,
+            profile,
             r,
             s,
             t,
@@ -72,7 +77,7 @@ impl OddMay {
         if s > self.t || f > self.t - s {
             return Ok(Vec::new());
         }
-        odd_cobar::basis(model, self.prime, s, self.t, MAX_BASIS_WORDS)
+        odd_cobar::basis_profile(model, self.prime, self.profile, s, self.t, MAX_BASIS_WORDS)
     }
 
     fn build_quotient(&mut self, model: &mut Model) -> Result<()> {
@@ -83,7 +88,7 @@ impl OddMay {
         let mut cells = 0;
         for (index, word) in self.words.iter().enumerate() {
             let mut lower = Vec::new();
-            for term in odd_cobar::differential_word(model, prime, word)? {
+            for term in odd_cobar::differential_profile_word(model, prime, self.profile, word)? {
                 if self.filtration(model, &term.0)? < self.cutoff {
                     lower.push(term);
                 }
@@ -133,7 +138,7 @@ impl OddMay {
             }
             let mut lower = Vec::new();
             let mut leading = Vec::new();
-            for term in odd_cobar::differential_word(model, prime, &word)? {
+            for term in odd_cobar::differential_profile_word(model, prime, self.profile, &word)? {
                 match self.filtration(model, &term.0)?.cmp(&self.f) {
                     Ordering::Less => lower.push(term),
                     Ordering::Equal => leading.push(term),
@@ -189,7 +194,7 @@ impl OddMay {
         if self.r == 0 {
             return Ok(leading);
         }
-        for (word, _) in odd_cobar::differential_support(model, self.prime, &below_cutoff)? {
+        for (word, _) in self.differential(model, &below_cutoff)? {
             if self.filtration(model, &word)? < self.cutoff {
                 return Err(Error::plain(
                     "odd-prime cobar chain does not satisfy the May page cycle condition",
@@ -255,14 +260,18 @@ impl OddMay {
             .ok_or_else(|| Error::plain("odd-prime May weight exceeds the internal degree"))
     }
 
+    fn differential(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
+        odd_cobar::differential_profile_support(model, self.prime, self.profile, terms)
+    }
+
     fn build_transition(&self, model: &mut Model, target: TypeId) -> Result<Basis> {
         let mut cycles = Basis::default();
         if let (Some(s), Some(f)) = (self.s.checked_sub(1), self.f.checked_sub(self.r)) {
-            let ty = model.pmay_type(self.prime, self.r, s, self.t, f)?;
+            let ty = model.profile_pmay_type(self.prime, self.profile, self.r, s, self.t, f)?;
             let incoming = model.pmay(ty)?;
             for index in 0..incoming.rank() {
                 let lift = incoming.representative(model, &[(index, 1)])?;
-                let image = odd_cobar::differential_support(model, self.prime, &lift)?;
+                let image = self.differential(model, &lift)?;
                 let coordinates = self.project(model, &image)?;
                 cycles.insert(model, self.prime, coordinates)?;
             }
@@ -305,7 +314,7 @@ pub(crate) fn differential(
     }
     let page = model.pmay(source)?;
     let lift = page.representative(model, coordinates)?;
-    let image = odd_cobar::differential_support(model, page.prime, &lift)?;
+    let image = page.differential(model, &lift)?;
     class(model, target, &image)
 }
 
@@ -365,6 +374,24 @@ pub(crate) fn previous(
     }
     let lift = model.pmay(source)?.representative(model, coordinates)?;
     class(model, target, &lift)
+}
+
+pub(crate) fn restrict(
+    model: &mut Model,
+    source: TypeId,
+    coordinates: &[Coordinate],
+    target: TypeId,
+) -> Result<Value> {
+    if coordinates.is_empty() {
+        return Ok(odd_ext::zero());
+    }
+    let (_, Profile::An(n), ..) = model.kind(target).pmay_grade().unwrap() else {
+        unreachable!()
+    };
+    let page = model.pmay(source)?;
+    let lift = page.representative(model, coordinates)?;
+    let terms = odd_profile::restrict(model, page.prime, n, &lift)?;
+    class(model, target, &terms)
 }
 
 fn check_storage(cells: usize) -> Result<()> {
