@@ -1,3 +1,4 @@
+use crate::bp::Operation as BpOperation;
 use crate::comodule::Generator;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
@@ -52,6 +53,7 @@ pub(crate) enum TypeForm {
     VExt(QSpec<i64>),
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
+    BP(BpSpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -69,6 +71,8 @@ pub(crate) enum RvIdealOp {
     Contains,
     Witness(usize),
 }
+
+pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
 
 pub(crate) struct RvMatrixSpec {
     pub(crate) base: Box<ParsedType>,
@@ -175,6 +179,7 @@ pub(crate) enum BinaryOp {
     CeMul,
     MilnorPair,
     RvMultiply,
+    BpMultiply,
 }
 
 impl BinaryOp {
@@ -194,6 +199,7 @@ impl BinaryOp {
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
+            "bpMul" => Some(Self::BpMultiply),
             _ => None,
         }
     }
@@ -304,6 +310,9 @@ pub(crate) enum ExprForm {
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
     RvMonomial(Vec<usize>, Vec<usize>),
+    BpInteger(BpSpec, i128),
+    BpVariable(BpSpec, Option<usize>, usize),
+    BpOperation(BpOperation, Box<ParsedExpr>),
     RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
     RvHasse(Vec<usize>, Box<ParsedExpr>),
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
@@ -651,6 +660,28 @@ impl<'src> Parser<'src> {
             .map_err(|_| out_of_range())?;
         self.advance()?;
         Ok(degree)
+    }
+
+    fn bp_coefficient(&mut self) -> Result<i128> {
+        let span = self.span();
+        let negative = self.eat(Token::Minus)?;
+        let Token::Number(text) = self.token() else {
+            return Err(self.expected("a signed BP integer"));
+        };
+        let overflow = || Error::new(span, "BP coefficient exceeds the signed i128 range");
+        let magnitude = text.parse::<u128>().map_err(|_| overflow())?;
+        let value = if negative && magnitude == i128::MIN.unsigned_abs() {
+            i128::MIN
+        } else {
+            let value = i128::try_from(magnitude).map_err(|_| overflow())?;
+            if negative {
+                -value
+            } else {
+                value
+            }
+        };
+        self.advance()?;
+        Ok(value)
     }
 
     fn exponents(&mut self) -> Result<Vec<usize>> {
@@ -1396,6 +1427,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, depth);
         }
+        if name.text == "BP" && self.eat(Token::LParen)? {
+            let (prime, height, arrows) = self.prime_bidegree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BP(BpSpec(prime, height, arrows)), 0);
+        }
         if name.text == "RVPoly" && self.eat(Token::LParen)? {
             let selected = self.exponents()?;
             self.expect(Token::Comma)?;
@@ -1737,6 +1773,60 @@ impl<'src> Parser<'src> {
                     self.expect(Token::LBrace)?;
                     let powers = self.unsigned_list(Token::RBrace)?;
                     return expr(span, ExprForm::RvMonomial(selected, powers), 0);
+                }
+                if matches!(name.text.as_str(), "bpint" | "bpv" | "bpt")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (prime, height, arrows) = self.prime_bidegree()?;
+                    let shape = BpSpec(prime, height, arrows);
+                    self.expect(Token::Comma)?;
+                    let kind = if name.text == "bpint" {
+                        ExprForm::BpInteger(shape, self.bp_coefficient()?)
+                    } else {
+                        let slot = if name.text == "bpt" {
+                            let (slot, _) = self.number()?;
+                            self.expect(Token::Comma)?;
+                            Some(slot)
+                        } else {
+                            None
+                        };
+                        let (index, _) = self.number()?;
+                        ExprForm::BpVariable(shape, slot, index)
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, kind, 0);
+                }
+                if matches!(name.text.as_str(), "bpPow" | "bpCoface")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (index, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let operation = if name.text == "bpPow" {
+                        BpOperation::Power(index)
+                    } else {
+                        BpOperation::Coface(index)
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "bpNeg" | "bpD") && self.token() == Token::LParen {
+                    let operation = if name.text == "bpNeg" {
+                        BpOperation::Negate
+                    } else {
+                        BpOperation::Differential
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::BpOperation(operation, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvMinor" && self.eat(Token::LBracket)? {
                     let spec = self.rv_matrix(nest)?;

@@ -1,6 +1,8 @@
 mod adams;
 mod binary_field;
 mod binary_linear;
+mod bp;
+mod bp_polynomial;
 mod bracket;
 mod ce;
 mod cobar;

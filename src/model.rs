@@ -30,6 +30,7 @@ use crate::syntax::Label;
 use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock::{self, BocksteinPage};
+use crate::{bp, bp_polynomial};
 
 const MAX_SPACE_POINTS: usize = 512;
 const MAX_TYPES: usize = 4096;
@@ -73,6 +74,7 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVPoly(q_koszul::Indices, usize),
+    BP(bp::Shape),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -155,6 +157,7 @@ pub(crate) enum Value {
     RVHom(rv_hom::Support),
     JetHom(jet_hom::Support),
     RVPoly(Polynomial),
+    BP(Rc<bp_polynomial::Polynomial>),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -405,7 +408,7 @@ impl Model {
             Kind::VKoszul(..) | Kind::VExt(..) | Kind::VBock(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
-            Kind::RVPoly(..) => usize::MAX,
+            Kind::RVPoly(..) | Kind::BP(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -484,6 +487,7 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVPoly(..)
+                | Kind::BP(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -856,6 +860,10 @@ impl Model {
         v_koszul::top(&grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::VExt(grade), depth)
+    }
+
+    pub(crate) fn bp_type(&mut self, shape: bp::Shape) -> Result<TypeId> {
+        self.inhabited_type(Kind::BP(shape), 0)
     }
 
     pub(crate) fn rv_poly_type(
@@ -1305,6 +1313,7 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVPoly(..)
+            | Kind::BP(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1453,6 +1462,10 @@ impl Model {
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
+            Kind::BP(shape) => out.push(&format!(
+                "BP({}, {}, {})",
+                shape.prime, shape.height, shape.arrows
+            )),
             Kind::JetHom(grade) => {
                 out.push("JetHom(")?;
                 self.write_jet_diagram(out, grade.diagram)?;
@@ -1570,6 +1583,9 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::BP(left), Value::BP(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
+            }
             (Value::RVPoly(left), Value::RVPoly(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
@@ -1666,6 +1682,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::BP(left), Value::BP(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
             }
             (Value::RVPoly(left), Value::RVPoly(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1826,6 +1849,7 @@ impl Model {
                     let rank = self.vbock_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
+                Kind::BP(..) => return Err(Error::plain("cannot enumerate a BP polynomial ring")),
                 Kind::RVPoly(ref selected, degree) => {
                     let basis = rv_poly::basis(
                         self,
@@ -2210,6 +2234,18 @@ impl Model {
                     }
                     write_odd_word(out, p, word)?;
                 }
+                out.push("}")
+            }
+            Value::BP(polynomial) => {
+                self.spend(polynomial.cells())?;
+                let Kind::BP(shape) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                out.push(&format!(
+                    "BP({}, {}, {}){{",
+                    shape.prime, shape.height, shape.arrows
+                ))?;
+                polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
             Value::RVPoly(polynomial) => {

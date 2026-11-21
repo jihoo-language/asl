@@ -299,6 +299,14 @@ For $\mathcal A(1)$ the example computes $d_2(v_1)=h_0h_1$ and $d_3(v_1^2)=h_1^3
 
 Over $\mathcal A_p(1)$ the class of $[\tau_1]^{p-1}\mid[\xi_1]$ survives to $E_p$ at $p=3$ and $p=5$. Its differential is $-a_0^{p-1}b_{1,0}$, with the $\tau_0$ factors first. Both components vanish on $E_{p+1}$. The class with leading term $[\tau_1]^p$ survives and gives a nonzero class in bidegree $(p,p(2p-1))$ of `PExtAn` at these primes. [Odd-primary Cartan–Eilenberg example](examples/odd-ce.asl)
 
+## Brown–Peterson cobar coordinates
+
+`BP(p, n, a)` is the integral polynomial ring in `v1` through `vn` and the coordinates `t1_1` through `ta_n` of `a` composable arrows. Here `p` is a prime that fits in 32 bits. Height `n = 0` gives the integers. Use `bpv[p, n, a, i]` for $v_i$, `bpt[p, n, a, j, i]` for the $i$th coordinate of arrow $j$, and `bpint[p, n, a, k]` for a signed integer. Arrow and generator indices start at one. `add`, `bpNeg`, `bpMul`, and `bpPow[k]` perform integral arithmetic within one ring. `zero[BP(p, n, a)]` gives its zero polynomial.
+
+`bpCoface[j](f)` goes from `BP(p, n, a)` to `BP(p, n, a + 1)`. Coface zero transports the base through the first arrow and shifts the old arrow slots. Cofaces `1` through `a` merge adjacent arrows over their transported base. Coface `a + 1` forgets the last arrow. `bpD(f)` sums all cofaces of the unnormalized complex with signs $(-1)^j$. In height two at $p=2$, for example, $d(t_{1,2})=v_1t_{1,1}t_{2,1}-t_{1,1}t_{2,1}^2$.
+
+The coordinate formulas use the Hazewinkel recursion $pL_k=\sum_{i=0}^{k-1}L_i v_{k-i}^{p^i}$ with $L_0=1$ and the right unit $\eta_R(L_k)=\sum_{i=0}^k L_i t_{k-i}^{p^i}$ with $t_0=1$. Intermediate log coefficients use exact powers of $p$ as denominators. Each public coordinate formula must divide integrally. ASL bounds heights by 8 and arrow counts by 16. Coefficients and intermediate numerators and denominators use checked signed 128-bit arithmetic. Large expansions can reach the term storage or computation limit. [Brown–Peterson cobar example](examples/bp-cobar.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.
