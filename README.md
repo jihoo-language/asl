@@ -51,6 +51,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `PCobar(p, s, t)` | The corresponding discrete space of normalized cobar cochains over an odd prime field $\mathbb F_p$. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `PExt(p, s, t)` | The discrete space of odd-prime Adams $E_2$ classes over $\mathbb F_p$. |
+| `PMay(p, r, s, t, f)` | The discrete space of odd-prime algebraic May classes on page `r` in filtration `f`. |
 | `CobarAn(n, s, t)` | The discrete space of normalized cobar cochains for the dual of $\mathcal A(n)$. |
 | `ExtAn(n, s, t)` | The discrete space of Ext classes over $\mathcal A(n)$ in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
@@ -200,6 +201,16 @@ The example computes powers of $a_0=[\tau_0]$ and the divided binomial class $b_
 Write $\overline A=(-1)^{t-s+1} A$ for a cochain of bidegree $(s,t)$. Each proper interval must satisfy $d A_{ij}=\sum_{i<k<j}\overline A_{ik} A_{kj}$ with cobar concatenation. `pCurvature` takes the same inputs and returns the closed upper-right sum in `PCobar`. `pMassey` takes its class in `PExt`. Both evaluate the supplied defining system.
 
 `pPowerDef(b1, ..., b_(n-1))` uses `b1` for each adjacent input and `b_k` on every proper interval of length $k$. For $n=p$ and $b_k=[\xi_1^k]/k!$, the binomial coproduct gives the required proper equations. The upper-right sum represents the negative of the nonzero $b_{1,0}$ class because $(p-1)!=-1$ in $\mathbb F_p$. [Odd-prime power examples at 3 and 5](examples/odd-massey-power.asl)
+
+## The odd-prime May spectral sequence
+
+`PMay(p, r, s, t, f)` computes the algebraic May page of the signed `PCobar` complex over $\mathbb F_p$. The weight of $\xi_i^e$ is $(2i-1)$ times the sum of the base-$p$ digits of $e$, and the weight of $\tau_j$ is $2j+1$. Sum the weights over the factors of a word to get $M$. In internal degree $t$, filtration $F^f$ contains the words with $t-M\ge f$.
+
+`pmaydim[p, r, s, t, f];` prints a rank and `pmaygen[p, r, s, t, f, i]` selects basis generator `i` starting at zero. `mayClass[r, f](c)` projects a raw `PCobar` lift. Page zero is the associated graded complex. For $r>0$, a lift in $F^f$ must have differential in $F^{f+r}$. The projection takes the leading piece of a filtered cocycle modulo the leading pieces of boundaries from $F^{\max(0,f-r+1)}$.
+
+`mayRep(x)` returns a chosen raw lift and `mayD(x)` raises $s$ by one and $f$ by $r$. `mayNext(x)` takes a $d_r$-cycle to its class on page $r+1$, and `mayPrev(x)` lifts a class to a cycle on the preceding page. `mayMul(x, y)` concatenates lifts at a common prime and page. The differential satisfies the Leibniz rule with the sign of the stem $t-s$, and `pscale[k](x)` and `add(x, y)` act on field coefficients.
+
+The example computes $d_1([\tau_1])=[\xi_1\mid\tau_0]$ at $p=3$. It also computes a nonzero $d_5$ from bidegree $(3,15)$ in filtration $6$ to $(4,15)$ in filtration $11$. Both components vanish on $E_6$. [Odd-prime May example](examples/odd-may.asl)
 
 ## The algebraic May spectral sequence
 
@@ -439,6 +450,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `pextdim[p, s, t];` | Print the dimension of `PExt(p, s, t)` over 𝔽ₚ. |
+| `pmaydim[p, r, s, t, f];` | Print the dimension of `PMay(p, r, s, t, f)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |

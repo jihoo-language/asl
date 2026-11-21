@@ -14,6 +14,7 @@ use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
+use crate::odd_may::OddMay;
 use crate::page_transition::Transition;
 use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
@@ -42,6 +43,7 @@ pub(crate) enum Kind {
     Cobar(usize, usize),
     PCobar(Prime, usize, usize),
     PExt(Prime, usize, usize),
+    PMay(Prime, usize, usize, usize, usize),
     CobarAn(usize, usize, usize),
     Ext(usize, usize),
     ExtAn(usize, usize, usize),
@@ -135,6 +137,7 @@ struct TypeInfo {
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
     odd_ext: Option<Rc<OddExt>>,
+    pmay: Option<Rc<OddMay>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     map_may: Option<Rc<MapMayPage>>,
@@ -230,7 +233,9 @@ impl Model {
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
             Kind::PCobar(_, s, t) | Kind::PExt(_, s, t) if s > t || (s == 0 && t != 0) => 1,
             Kind::PCobar(prime, s, t) | Kind::PExt(prime, s, t) if s == t => prime.get() as usize,
-            Kind::PCobar(..) | Kind::PExt(..) => usize::MAX,
+            Kind::PMay(_, _, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
+            Kind::PMay(prime, _, s, t, _) if s == t => prime.get() as usize,
+            Kind::PCobar(..) | Kind::PExt(..) | Kind::PMay(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
             {
@@ -283,6 +288,7 @@ impl Model {
             cohomology: None,
             adams: None,
             odd_ext: None,
+            pmay: None,
             xext: None,
             map_ext: None,
             map_may: None,
@@ -322,6 +328,7 @@ impl Model {
                 | Kind::Cobar(..)
                 | Kind::PCobar(..)
                 | Kind::PExt(..)
+                | Kind::PMay(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
@@ -447,6 +454,17 @@ impl Model {
 
     pub(crate) fn odd_ext_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::PExt(p, s, t), 0)
+    }
+
+    pub(crate) fn pmay_type(
+        &mut self,
+        prime: Prime,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::PMay(prime, r, s, t, f), 0)
     }
 
     pub(crate) fn pcobar_type(&mut self, p: Prime, s: usize, t: usize) -> Result<TypeId> {
@@ -601,6 +619,18 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn pmay(&mut self, ty: TypeId) -> Result<Rc<OddMay>> {
+        if let Some(data) = &self.types[ty.0].pmay {
+            return Ok(data.clone());
+        }
+        let Kind::PMay(prime, r, s, t, f) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(OddMay::build(self, prime, r, s, t, f)?);
+        self.types[ty.0].pmay = Some(data.clone());
+        Ok(data)
+    }
+
     pub(crate) fn adams(&mut self, ty: TypeId) -> Result<Rc<Adams>> {
         if let Some(data) = &self.types[ty.0].adams {
             return Ok(data.clone());
@@ -732,6 +762,7 @@ impl Model {
             | Kind::Cobar(..)
             | Kind::PCobar(..)
             | Kind::PExt(..)
+            | Kind::PMay(..)
             | Kind::CobarAn(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
@@ -856,6 +887,9 @@ impl Model {
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
             &Kind::PExt(p, s, t) => out.push(&format!("PExt({}, {s}, {t})", p.get())),
+            &Kind::PMay(p, r, s, t, f) => {
+                out.push(&format!("PMay({}, {r}, {s}, {t}, {f})", p.get()))
+            }
             &Kind::CobarAn(n, s, t) => out.push(&format!("CobarAn({n}, {s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
             &Kind::ExtAn(n, s, t) => out.push(&format!("ExtAn({n}, {s}, {t})")),
@@ -1166,7 +1200,14 @@ impl Model {
                     })?
                 }
                 Kind::PCobar(p, s, t) => odd_cobar::elements(self, p, s, t, MAX_ELEMENTS)?,
-                Kind::PExt(p, ..) => odd_ext::elements(self, ty, p, MAX_ELEMENTS)?,
+                Kind::PExt(p, ..) => {
+                    let rank = self.odd_ext(ty)?.rank();
+                    odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
+                }
+                Kind::PMay(p, ..) => {
+                    let rank = self.pmay(ty)?.rank();
+                    odd_ext::elements(self, p, rank, MAX_ELEMENTS)?
+                }
                 Kind::MapCobar(source, target, s, t) => {
                     let basis =
                         map_ext::basis(self, source, target, s, t, MAX_ELEMENTS.ilog2() as usize)?;

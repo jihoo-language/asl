@@ -19,18 +19,24 @@ impl Direction {
     }
 
     pub(crate) fn result_type(self, model: &mut Model, ty: TypeId) -> Result<TypeId> {
+        if let Kind::PMay(p, r, s, t, f) = *model.kind(ty) {
+            let page = self.target_page(r)?;
+            return model.pmay_type(p, page, s, t, f);
+        }
         let mut grade = Grade::from_type(model, ty, self.name())?;
-        grade.page = match self {
-            Self::Next => grade
-                .page
-                .checked_add(1)
-                .ok_or_else(|| Error::plain("mayNext page is out of range"))?,
-            Self::Previous => grade
-                .page
-                .checked_sub(1)
-                .ok_or_else(|| Error::plain("mayPrev requires a page greater than zero"))?,
-        };
+        grade.page = self.target_page(grade.page)?;
         grade.ty(model)
+    }
+
+    fn target_page(self, page: usize) -> Result<usize> {
+        match self {
+            Self::Next => page
+                .checked_add(1)
+                .ok_or_else(|| Error::plain("mayNext page is out of range")),
+            Self::Previous => page
+                .checked_sub(1)
+                .ok_or_else(|| Error::plain("mayPrev requires a page greater than zero")),
+        }
     }
 }
 

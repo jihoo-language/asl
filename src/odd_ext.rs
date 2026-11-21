@@ -134,7 +134,11 @@ fn boundary_columns(
     Ok(source)
 }
 
-fn word_indices(model: &mut Model, basis: &[Word], terms: &[Term]) -> Result<Vec<Coordinate>> {
+pub(crate) fn word_indices(
+    model: &mut Model,
+    basis: &[Word],
+    terms: &[Term],
+) -> Result<Vec<Coordinate>> {
     let search_steps = 1 + basis.len().max(1).ilog2() as usize;
     terms
         .iter()
@@ -148,7 +152,7 @@ fn word_indices(model: &mut Model, basis: &[Word], terms: &[Term]) -> Result<Vec
         .collect()
 }
 
-fn decode(words: &[Word], coordinates: Vec<Coordinate>) -> Vec<Term> {
+pub(crate) fn decode(words: &[Word], coordinates: Vec<Coordinate>) -> Vec<Term> {
     coordinates
         .into_iter()
         .map(|(index, coefficient)| (words[index].clone(), coefficient))
@@ -157,13 +161,17 @@ fn decode(words: &[Word], coordinates: Vec<Coordinate>) -> Vec<Term> {
 
 // Only outgoing rows that occur in a differential need to be indexed.
 #[derive(Default)]
-struct WordRows {
+pub(crate) struct WordRows {
     indices: BTreeMap<Word, usize>,
     cells: usize,
 }
 
 impl WordRows {
-    fn encode(&mut self, model: &mut Model, terms: Vec<Term>) -> Result<Vec<Coordinate>> {
+    pub(crate) fn encode(
+        &mut self,
+        model: &mut Model,
+        terms: Vec<Term>,
+    ) -> Result<Vec<Coordinate>> {
         let mut column = Vec::with_capacity(terms.len());
         for (word, coefficient) in terms {
             let size = 1 + word_cells(&word);
@@ -174,7 +182,9 @@ impl WordRows {
                 Entry::Vacant(entry) => {
                     self.cells += size;
                     if self.cells > MAX_PIVOT_CELLS {
-                        return Err(Error::plain("odd-prime Ext exceeds the row storage limit"));
+                        return Err(Error::plain(
+                            "odd-prime cobar reduction exceeds the row storage limit",
+                        ));
                     }
                     *entry.insert(next)
                 }
@@ -226,11 +236,10 @@ pub(crate) fn scale(
 
 pub(crate) fn elements(
     model: &mut Model,
-    ty: TypeId,
     prime: Prime,
+    rank: usize,
     limit: usize,
 ) -> Result<Vec<Value>> {
-    let rank = model.odd_ext(ty)?.rank();
     let p = prime.get() as usize;
     let mut size = 1;
     for _ in 0..rank {

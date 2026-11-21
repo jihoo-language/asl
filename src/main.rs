@@ -22,6 +22,7 @@ mod observations;
 mod odd_cobar;
 mod odd_ext;
 mod odd_massey;
+mod odd_may;
 mod page_transition;
 mod prime_linear;
 mod profile;
@@ -50,7 +51,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, extdim, pextdim, extandim, xextdim, mapextdim, maydim, mayandim, mapmaydim, and homotopy statements print to standard output.
+The show, card, betti, extdim, pextdim, extandim, xextdim, mapextdim, maydim, pmaydim, mayandim, mapmaydim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 
