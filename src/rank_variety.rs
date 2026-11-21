@@ -158,13 +158,13 @@ pub(crate) fn add_multiple(
     Ok(result)
 }
 
-struct Endpoints {
+pub(crate) struct Endpoints {
     source: Endpoint,
     target: Option<Endpoint>,
 }
 
 impl Endpoints {
-    fn build(
+    pub(crate) fn build(
         model: &mut Model,
         source: TypeId,
         target: TypeId,
@@ -182,7 +182,12 @@ impl Endpoints {
         })
     }
 
-    fn dimension(&self, model: &mut Model, field: BinaryField, point: &[usize]) -> Result<usize> {
+    pub(crate) fn dimension(
+        &self,
+        model: &mut Model,
+        field: BinaryField,
+        point: &[usize],
+    ) -> Result<usize> {
         let source = self.source.dimension(model, field, point)?;
         let target = match &self.target {
             Some(target) => target.dimension(model, field, point)?,
@@ -226,41 +231,67 @@ pub(crate) fn spectrum(
     if selected.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let mut points = 0usize;
-    for _ in selected {
-        points = points
-            .checked_mul(field.order())
-            .and_then(|n| n.checked_add(1))
-            .filter(|&n| n <= MAX_PROJECTIVE_POINTS)
-            .ok_or_else(|| {
-                Error::plain(format!(
-                    "projective spectrum exceeds the limit of {MAX_PROJECTIVE_POINTS} points"
-                ))
-            })?;
-    }
-    model.spend(points)?;
+    let space = ProjectiveSpace::new(field, selected.len(), Some(MAX_PROJECTIVE_POINTS))?;
     let endpoints = Endpoints::build(model, source, target, selected)?;
     let mut counts = BTreeMap::new();
-    let mut point = vec![0; selected.len()];
-    let mut size = 1;
-    // A projective line has a unique vector with first nonzero digit one.
-    for first in (0..selected.len()).rev() {
-        for mut digits in 0..size {
-            model.spend(point.len())?;
-            point[first] = 1;
-            for digit in &mut point[first + 1..] {
-                *digit = digits % field.order();
-                digits /= field.order();
-            }
-            let dimension = endpoints.dimension(model, field, &point)?;
-            *counts.entry(dimension).or_insert(0) += 1;
-        }
-        if first > 0 {
-            size *= field.order();
-        }
-    }
-    debug_assert_eq!(counts.values().sum::<usize>(), points);
+    space.visit(model, |model, point| {
+        let dimension = endpoints.dimension(model, field, point)?;
+        *counts.entry(dimension).or_insert(0) += 1;
+        Ok(())
+    })?;
     Ok(counts)
+}
+
+pub(crate) struct ProjectiveSpace {
+    order: usize,
+    width: usize,
+    size: usize,
+}
+
+impl ProjectiveSpace {
+    pub(crate) fn new(field: BinaryField, width: usize, limit: Option<usize>) -> Result<Self> {
+        let order = field.order();
+        let mut size = 0usize;
+        for _ in 0..width {
+            size = size
+                .checked_mul(order)
+                .and_then(|n| n.checked_add(1))
+                .filter(|&n| limit.is_none_or(|limit| n <= limit))
+                .ok_or_else(|| match limit {
+                    Some(limit) => Error::plain(format!(
+                        "projective spectrum exceeds the limit of {limit} points"
+                    )),
+                    None => Error::plain("projective point count is out of range"),
+                })?;
+        }
+        Ok(Self { order, width, size })
+    }
+
+    pub(crate) fn visit(
+        &self,
+        model: &mut Model,
+        mut visit: impl FnMut(&mut Model, &[usize]) -> Result<()>,
+    ) -> Result<()> {
+        model.spend(self.size)?;
+        let mut point = vec![0; self.width];
+        let mut chart_size = 1;
+        // Every projective point has a unique vector with first nonzero digit one.
+        for first in (0..self.width).rev() {
+            for mut digits in 0..chart_size {
+                model.spend(point.len())?;
+                point[first] = 1;
+                for digit in &mut point[first + 1..] {
+                    *digit = digits % self.order;
+                    digits /= self.order;
+                }
+                visit(model, &point)?;
+            }
+            if first > 0 {
+                chart_size *= self.order;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn check_storage(cells: usize) -> Result<()> {

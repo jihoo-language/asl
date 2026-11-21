@@ -37,6 +37,7 @@ use crate::q_module;
 use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
+use crate::rv_arithmetic;
 use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
@@ -383,6 +384,33 @@ impl Engine {
                 let rank_jets::Report { dimension, blocks } = report;
                 format!(
                     "rvjet[{from}, {to}, {selected:?}, {modulus}, {order}, {coefficients:?}] = dimension {dimension}, blocks {blocks:?}"
+                )
+            }
+            StatementForm::RankOrbit(modulus, point) => {
+                let orbit = rv_arithmetic::orbit(&mut self.model, modulus, &point)?;
+                format!(
+                    "rvorbit[{modulus}, {point:?}] = degree {}, orbit {orbit:?}",
+                    orbit.len(),
+                )
+            }
+            StatementForm::RankArithmetic(series, spec) => {
+                let source = self.checker().q_endpoint(*spec.source)?;
+                let target = self.checker().q_endpoint(*spec.target)?;
+                let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                let max_degree = spec.max_degree;
+                let counts = rv_arithmetic::evaluate(
+                    &mut self.model,
+                    source,
+                    target,
+                    &selected,
+                    max_degree,
+                    series,
+                )?;
+                format!(
+                    "{}[{}, {}, {selected:?}, {max_degree}] = {counts:?}",
+                    series.name(),
+                    self.model.type_name(source),
+                    self.model.type_name(target),
                 )
             }
             StatementForm::RankVariety(spec) => {

@@ -21,21 +21,46 @@ impl BinaryField {
             order: 1 << degree,
             degree,
         };
-        let x = polynomial_remainder(2, modulus);
-        let mut power = x;
-        for exponent in 1..=degree {
-            model.spend(1 + 2 * degree)?;
-            power = field.multiply(power, power);
-            // Any proper factor of degree k <= m/2 divides X^(2^k)-X
-            // when it is irreducible of degree k.
-            if exponent <= degree / 2 && polynomial_gcd(modulus, power ^ x) != 1 {
-                return Err(Error::plain("field modulus is reducible over F2"));
-            }
-        }
-        if power != x {
+        if !field.is_irreducible(model)? {
             return Err(Error::plain("field modulus is reducible over F2"));
         }
         Ok(field)
+    }
+
+    pub(crate) fn of_degree(model: &mut Model, degree: usize) -> Result<Self> {
+        if degree == 0 || degree >= usize::BITS as usize {
+            return Err(Error::plain("binary extension degree is out of range"));
+        }
+        let order = 1 << degree;
+        // Scan monic polynomials with nonzero constant term in encoding order.
+        for lower in (1..order).step_by(2) {
+            let field = Self {
+                modulus: order | lower,
+                order,
+                degree,
+            };
+            if field.is_irreducible(model)? {
+                return Ok(field);
+            }
+        }
+        Err(Error::plain(
+            "no irreducible modulus found for binary extension",
+        ))
+    }
+
+    fn is_irreducible(self, model: &mut Model) -> Result<bool> {
+        let x = polynomial_remainder(2, self.modulus);
+        let mut power = x;
+        for exponent in 1..=self.degree {
+            model.spend(1 + 2 * self.degree)?;
+            power = self.multiply(power, power);
+            // Any proper factor of degree k <= m/2 divides X^(2^k)-X
+            // when it is irreducible of degree k.
+            if exponent <= self.degree / 2 && polynomial_gcd(self.modulus, power ^ x) != 1 {
+                return Ok(false);
+            }
+        }
+        Ok(power == x)
     }
 
     pub(crate) fn order(self) -> usize {

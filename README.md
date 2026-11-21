@@ -486,6 +486,16 @@ The bits of `modulus` encode the coefficients of an irreducible polynomial over 
 
 For the example module, the determinant of the three-by-three action block is $\lambda_1^3+\lambda_0^2\lambda_2$. In the chart $\lambda_2=1$, the equation parametrizes as $(\lambda_0,\lambda_1)=(r^3,r^2)$. At a nonzero point the inverse parameter is $r=\lambda_0/\lambda_1$. The cusp has Margolis dimension four, and the remaining $q-1$ affine curve points and the one point at infinity have dimension two over $\mathbb F_q$. The other $q^2$ projective points have dimension zero. [Rank variety example](examples/rank-variety.asl)
 
+### Frobenius orbits and zeta coefficients
+
+`rvorbit[modulus, point];` requires a nonzero projective vector. It normalizes the first nonzero coordinate to one and reports the orbit under coordinatewise squaring. The list starts at its lexicographically least vector, and its length is the degree of the closed point over $\mathbb F_2$.
+
+`rvclosed[X, Y, I, m];` reports exact counts $C_1,\ldots,C_m$ of closed points, grouped by Margolis Hom dimension. The interpreter chooses an irreducible modulus for each $\mathbb F_{2^r}$ and evaluates the rank at the least representative of every Frobenius orbit of exact length $r$. Both endpoints accept finite spaces or declared Koszul modules. The report lists the strata observed through degree $m$, so $m=0$ or an empty selection gives an empty report. The enumeration uses the interpreter's work and storage budgets.
+
+`rvzeta[X, Y, I, m];` reports the coefficients $a_0,\ldots,a_m$ of the Hasse–Weil zeta series for each observed stratum. The counts over the extension fields are $N_r=\sum_{d\mid r}d C_d$. The coefficients use $a_0=1$ and $n a_n=\sum_{r=1}^n N_r a_{n-r}$, with exact integer arithmetic.
+
+The TwistedCusp action block has determinant $y^6+x^2y^3z+x^4z^2$. Its dimension-two stratum first appears over $\mathbb F_4$, where $[1:1:\omega]$ and $[1:1:\omega^2]$ form a degree-two orbit. Through degree six the stratum has closed-point counts `[0, 3, 0, 6, 0, 20]` and zeta coefficients `[1, 0, 3, 0, 12, 0, 48]`, agreeing with $(1-T^2)/(1-4T^2)$. [Rank arithmetic example](examples/rank-arithmetic.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

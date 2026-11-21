@@ -5,6 +5,7 @@ use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
+use crate::rv_arithmetic::Series as RankSeries;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -80,6 +81,13 @@ pub(crate) struct RankJetSpec {
     pub(crate) modulus: usize,
     pub(crate) order: usize,
     pub(crate) coefficients: Vec<Vec<usize>>,
+}
+
+pub(crate) struct RankArithmeticSpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) selected: Vec<usize>,
+    pub(crate) max_degree: usize,
 }
 
 pub(crate) struct QSpec<S = usize> {
@@ -318,6 +326,8 @@ pub(crate) enum StatementForm {
     MapMayDimension(MapMaySpec),
     QExtDimension(QSpec),
     RankVariety(RankVarietySpec),
+    RankOrbit(usize, Vec<usize>),
+    RankArithmetic(RankSeries, RankArithmeticSpec),
     RvMinors(RvMatrixSpec, usize),
     RankJet(RankJetSpec),
     VExtDimension(QSpec<i64>),
@@ -794,6 +804,38 @@ impl<'src> Parser<'src> {
                     order,
                     coefficients,
                 })
+            }
+            Token::Word("rvorbit") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let point = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RankOrbit(modulus, point)
+            }
+            Token::Word(name @ ("rvclosed" | "rvzeta")) => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (source, target) = self.map_endpoints(0)?;
+                let selected = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let (max_degree, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                let series = if name == "rvclosed" {
+                    RankSeries::Closed
+                } else {
+                    RankSeries::Zeta
+                };
+                StatementForm::RankArithmetic(
+                    series,
+                    RankArithmeticSpec {
+                        source: Box::new(source),
+                        target: Box::new(target),
+                        selected,
+                        max_degree,
+                    },
+                )
             }
             Token::Word("rvdim" | "rvspectrum") => {
                 let affine = self.token() == Token::Word("rvdim");
