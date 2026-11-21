@@ -394,6 +394,14 @@ The result has type `BPTriple(p, n, a, t)`, where `a` is the target cobar degree
 
 At $p=3$, the triple of the first generator in bidegree $(1,4)$ is the singleton $-\beta$. At $p=2$ and height two, take the outer classes $\eta$ in $(1,2)$ and a zero middle class in $(1,4)$. The target group in $(2,8)$ has two order-two generators. The bracket contains zero and the first generator. Neither the second generator nor its sum with the first belongs. With the nonzero middle class $\alpha_2=[v_1t+t^2]$ in $(1,4)$, the same outer classes give the affine coset $g_1+\langle g_0\rangle$. [Integral BP triple coset example](examples/bp-triple.asl)
 
+### Integral higher BP defining systems
+
+`bpHigherSystem[n](A1, ..., An, witnesses...)` checks one defining system on `n ≥ 3` positive-degree homogeneous `BPExt` classes at a common prime and height. Number vertices from zero to `n`. Supply integral normalized BP witnesses in increasing interval length and then increasing starting vertex. For `n=4` their order is $X_{02},X_{13},X_{24},X_{03},X_{14}$. A witness on $[i,j)$ has cobar degree $1+\sum_{i\le l<j}(a_l-1)$ and internal degree $\sum_{i\le l<j}t_l$.
+
+The required differential of a proper witness is the sum of $X_{ik}\smile X_{kj}$ over $i<k<j$, with sign $(-1)^{\sum_{i\le l<k-1}(a_l-1)}$. The terminal sum is projected to `BPExt`. At arity three this gives the signed convention of `bpMassey`. Changing a proper witness can change the returned class. `bpChosenHigher(A1, ..., An)` builds the witnesses in the same order using deterministic integral primitives. It reports an obstruction to this particular choice when an intermediate sum represents a nonzero class.
+
+For the integral class $\alpha=[t_1]$, the chosen repeated systems at $p=3,5,7,11$ have zero values before arity $p$ and class $-\beta$ at arity $p$, where $\beta$ is the two-step connecting class of $v_2$. The height-two example checks a fivefold result using explicitly supplied integral witnesses at $p=5$. [Higher BP defining system example](examples/bp-higher.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

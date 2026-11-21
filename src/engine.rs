@@ -5,6 +5,7 @@ use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
 use crate::binary_linear;
 use crate::bp_height;
+use crate::bp_higher;
 use crate::bp_page;
 use crate::bp_triple;
 use crate::bracket;
@@ -230,6 +231,7 @@ enum TypedForm {
     BpRelOperation(BpRelOp, bp_rel::Shape, Box<TypedExpr>),
     BpExtOperation(BpExtOp, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
+    BpHigher(bp_higher::Layout, Vec<TypedExpr>, Option<Vec<TypedExpr>>),
     BpTriple(bp_triple::Layout, Box<[TypedExpr; 3]>),
     BpTripleBase(Box<TypedExpr>),
     BpRaise(Box<TypedExpr>),
@@ -1969,6 +1971,32 @@ impl Engine {
                 };
                 Ok(coset.base())
             }
+            TypedForm::BpHigher(layout, inputs, witnesses) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|input| {
+                        let Value::BPExt(class) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        Ok((input.ty, class))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let witnesses = witnesses
+                    .as_ref()
+                    .map(|witnesses| {
+                        witnesses
+                            .iter()
+                            .map(|witness| {
+                                let Value::BP(polynomial) = self.eval(witness)? else {
+                                    unreachable!()
+                                };
+                                Ok((witness.span, polynomial))
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?;
+                layout.apply(&mut self.model, inputs, witnesses, expr.ty)
+            }
             TypedForm::BpMassey(layout, inputs) => {
                 let values = inputs
                     .iter()
@@ -3511,6 +3539,38 @@ impl Checker<'_> {
                 let grade = self.bp_triple_grade(&input, "bpTripleBase")?;
                 let ty = self.model.bp_ext_type(grade)?;
                 Ok((ty, TypedForm::BpTripleBase(Box::new(input))))
+            }
+            ExprForm::BpHigher(arity, mut inputs) => {
+                let (operation, witnesses) = if let Some(arity) = arity {
+                    ("bpHigherSystem", Some(inputs.split_off(arity)))
+                } else {
+                    ("bpChosenHigher", None)
+                };
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let grades = inputs
+                    .iter()
+                    .map(|input| self.bp_ext_operand(input, operation))
+                    .collect::<Result<Vec<_>>>()?;
+                let layout = bp_higher::Layout::new(self.model, grades)?;
+                let witnesses = witnesses
+                    .map(|witnesses| {
+                        witnesses
+                            .into_iter()
+                            .zip(layout.witness_grades())
+                            .map(|(witness, grade)| {
+                                let witness = self.expr(witness)?;
+                                let ty = self.model.bp_type(grade.shape)?;
+                                self.require_type(ty, &witness, operation)?;
+                                Ok(witness)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?;
+                let ty = self.model.bp_ext_type(layout.target)?;
+                Ok((ty, TypedForm::BpHigher(layout, inputs, witnesses)))
             }
             ExprForm::BpMassey(inputs) => {
                 let inputs = inputs

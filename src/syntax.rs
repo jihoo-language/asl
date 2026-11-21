@@ -445,6 +445,7 @@ pub(crate) enum ExprForm {
     BpExtOperation(BpExtOp, Box<ParsedExpr>),
     BpExtGenerator(BpSpec, usize, usize, Span),
     BpMassey(Vec<ParsedExpr>),
+    BpHigher(Option<usize>, Vec<ParsedExpr>),
     BpTriple(Box<[ParsedExpr; 3]>),
     BpTripleBase(Box<ParsedExpr>),
     BpRaise(usize, Box<ParsedExpr>),
@@ -2594,6 +2595,24 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::BpTripleBase(Box::new(input)), depth);
+                }
+                if name.text == "bpHigherSystem" && self.eat(Token::LBracket)? {
+                    let (arity, at) = self.number()?;
+                    let count = crate::bp_higher::interval_count(arity).map_err(|e| e.at(at))?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let inputs = self.arguments(nest)?;
+                    if inputs.len() != count - 1 {
+                        return Err(Error::new(span, format!("bpHigherSystem requires {arity} BPExt leaves and {} proper witnesses", count-1-arity)));
+                    }
+                    let depth = inputs.iter().map(|input| input.depth + 1).max().unwrap();
+                    return expr(span, ExprForm::BpHigher(Some(arity), inputs), depth);
+                }
+                if name.text == "bpChosenHigher" && self.eat(Token::LParen)? {
+                    let inputs = self.arguments(nest)?;
+                    crate::bp_higher::interval_count(inputs.len()).map_err(|e| e.at(span))?;
+                    let depth = inputs.iter().map(|input| input.depth + 1).max().unwrap();
+                    return expr(span, ExprForm::BpHigher(None, inputs), depth);
                 }
                 if name.text == "bpMassey" && self.eat(Token::LParen)? {
                     let arguments = self.arguments(nest)?;

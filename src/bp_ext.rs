@@ -376,6 +376,34 @@ fn require_arrow_slots(shape: Shape, slots: u32) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_homogeneous(
+    model: &mut Model,
+    shape: Shape,
+    t: usize,
+    cycle: &Polynomial,
+) -> Result<()> {
+    let weight = unit_weight(shape.prime, t).ok_or_else(wrong_weight)?;
+    let weights = weights(shape, weight);
+    for (monomial, _) in cycle.terms() {
+        model.spend(1 + monomial.len())?;
+        let mut remaining = weight;
+        let mut slots = 0u32;
+        for &(variable, exponent) in monomial {
+            slots |= 1 << (variable / shape.height);
+            let degree = weights
+                .get(variable % shape.height)
+                .and_then(|degree| degree.checked_mul(exponent))
+                .ok_or_else(wrong_weight)?;
+            remaining = remaining.checked_sub(degree).ok_or_else(wrong_weight)?;
+        }
+        require_arrow_slots(shape, slots)?;
+        if remaining != 0 {
+            return Err(wrong_weight());
+        }
+    }
+    Ok(())
+}
+
 impl Domain {
     pub(crate) fn validate_cycle(
         self,
@@ -384,25 +412,7 @@ impl Domain {
         cycle: &Polynomial,
     ) -> Result<()> {
         let shape = self.shape;
-        let weight = unit_weight(shape.prime, t).ok_or_else(wrong_weight)?;
-        let weights = weights(shape, weight);
-        for (monomial, _) in cycle.terms() {
-            model.spend(1 + monomial.len())?;
-            let mut remaining = weight;
-            let mut slots = 0u32;
-            for &(variable, exponent) in monomial {
-                slots |= 1 << (variable / shape.height);
-                let degree = weights
-                    .get(variable % shape.height)
-                    .and_then(|degree| degree.checked_mul(exponent))
-                    .ok_or_else(wrong_weight)?;
-                remaining = remaining.checked_sub(degree).ok_or_else(wrong_weight)?;
-            }
-            require_arrow_slots(shape, slots)?;
-            if remaining != 0 {
-                return Err(wrong_weight());
-            }
-        }
+        validate_homogeneous(model, shape, t, cycle)?;
         if self.at_arrows(shape.arrows + 1).has_monomials(t)
             && !self.differential(model, cycle)?.is_zero()
         {

@@ -106,7 +106,7 @@ impl Shape {
         self.with_arrows(self.arrows + 1)
     }
 
-    fn with_arrows(self, arrows: usize) -> Result<Self> {
+    pub(crate) fn with_arrows(self, arrows: usize) -> Result<Self> {
         if arrows > MAX_ARROWS {
             return Err(Error::plain(format!(
                 "BP arrow arity exceeds the limit of {MAX_ARROWS}"
