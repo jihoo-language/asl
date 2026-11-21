@@ -434,6 +434,14 @@ At height two, apply `bpDelta(bpThickDelta(...))` to the class of $v_2^s$ in the
 
 `bpThick[j]` and `bpReduce` also act on quotient cohomology. The `bpThickDelta` class operation goes from the thick quotient with parameter `h` to the underlying `BPIExt` depth `h−1`, raises `a` by one, and subtracts $2j(p^{h-1}-1)$ from `t`. On `BPIExt` at depth `h>1`, `bpDelta` lowers the depth by one and subtracts $2(p^{h-1}-1)$ from the internal degree. At depth one it maps to integral `BPExt` by division by $p$, which preserves the internal degree. These maps apply the connecting calculations to cocycle representatives and then project in the target. [First-class divided Greek-letter example](examples/bp-divided-classes.asl)
 
+### The chromatic Bockstein for an invariant generator
+
+`BPVPage(p,n,r,a,h,t,f)` is page `r` of the $v_h$-adic filtration of the normalized `BPI(p,n,a,h)` cobar, for `1 <= h <= n`. Filtration `f` consists of the cochains divisible by $v_h^f$. The associated graded in that filtration is the cobar of `BPI` at depth `h+1`, shifted in internal degree by $2f(p^h-1)$. In particular `E1` in that grade has the dimension of the corresponding `BPIExt` group. In any fixed internal degree the filtration is finite and the stable page is the associated graded of `BPIExt` at depth `h`.
+
+Use `bpVdim[p,n,r,a,h,t,f];` for the dimension over $\mathbb F_p$ and `bpVgen[p,n,r,a,h,t,f,k]` for a basis class. `bpVClass[r,t,f](cochain)` requires a normalized homogeneous `BPI` cochain in filtration `f` whose differential lies in `f+r`. `bpVRep(x)` returns a chosen correcting lift, and `bpVD(x)` raises arity by one and filtration by `r`. `bpVNext(x)` projects a $d_r$-cycle to the next page, and `bpVPrev(x)` chooses a lift to the previous page. The pages support `zero`, `add`, `pscale`, and the signed `bpCup` product. The computation reduces sparse differential columns over $\mathbb F_p$ in the relevant thick quotients, subject to the usual work and storage bounds.
+
+At height two and depth one, $d(v_2)=v_1t_1^p-v_1^pt_1$ modulo $p$. The example detects nonzero $d_2(v_2^2)$ at $p=2$ and $d_9(v_2^9)$ at $p=3$. It compares the $d_2$ target with the divided connecting cochain multiplied back by $v_1^2$. [Chromatic Bockstein example](examples/bp-vadic.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

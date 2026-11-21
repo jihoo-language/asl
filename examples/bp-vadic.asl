@@ -1,0 +1,20 @@
+let v1 = bpReduce[1](bpv[2,2,0,1]);
+let v2 = bpReduce[1](bpv[2,2,0,2]);
+let square = bpPow[2](v2);
+let x = bpVClass[2,12,0](square);
+let y = bpVD(x);
+let divided = bpThickDelta(bpThick[2](square));
+assert y == bpVClass[2,12,2](bpCup(bpPow[2](v1),divided));
+assert bpVD(y) == zero[BPVPage(2,2,2,2,1,12,4)];
+assert bpVNext(y) == zero[BPVPage(2,2,3,1,1,12,2)];
+show x;
+show y;
+show bpVRep(y);
+bpVdim[2,2,3,0,1,12,0];
+
+let odd = bpReduce[1](bpv[3,2,0,2]);
+let ninth = bpVClass[9,144,0](bpPow[9](odd));
+let d9 = bpVD(ninth);
+show d9;
+show bpVRep(d9);
+bpVdim[3,2,10,0,1,144,0];

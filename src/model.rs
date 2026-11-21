@@ -11,6 +11,7 @@ use crate::bp_mod_ext;
 use crate::bp_page;
 use crate::bp_rel;
 use crate::bp_triple;
+use crate::bp_vpage;
 use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
@@ -158,6 +159,7 @@ pub(crate) enum Kind {
     BPRelExt(bp_rel::Grade),
     BPHeight(bp_height::ClassGrade),
     BPPage(bp_page::Grade),
+    BPVPage(bp_vpage::Grade),
     BPModExt(bp_mod_ext::Grade),
     BPExt(bp_classes::Grade),
     BPTriple(bp_classes::Grade),
@@ -302,6 +304,7 @@ struct TypeInfo {
     odd_ext_rank: Option<usize>,
     odd_page: Option<Rc<OddPage>>,
     bp_page: Option<Rc<bp_page::Page>>,
+    bp_vpage: Option<Rc<bp_vpage::Page>>,
     bp_mod_ext: Option<Rc<bp_mod_ext::Group>>,
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
@@ -471,6 +474,7 @@ impl Model {
             | Kind::PMayAn(..)
             | Kind::PCeAn(..)
             | Kind::BPPage(..)
+            | Kind::BPVPage(..)
             | Kind::BPModExt(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) | Kind::CobarAn(_, s, t) | Kind::ExtAn(_, s, t)
                 if s > t || (s == 0 && t != 0) =>
@@ -585,6 +589,7 @@ impl Model {
             odd_ext_rank: None,
             odd_page: None,
             bp_page: None,
+            bp_vpage: None,
             bp_mod_ext: None,
             xext: None,
             map_ext: None,
@@ -638,6 +643,7 @@ impl Model {
                 | Kind::PMayAn(..)
                 | Kind::PCeAn(..)
                 | Kind::BPPage(..)
+                | Kind::BPVPage(..)
                 | Kind::BPModExt(..)
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
@@ -1210,6 +1216,10 @@ impl Model {
         self.inhabited_type(Kind::BPModExt(grade), 0)
     }
 
+    pub(crate) fn bp_vpage_type(&mut self, grade: bp_vpage::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::BPVPage(grade), 0)
+    }
+
     pub(crate) fn bp_page_type(&mut self, grade: bp_page::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::BPPage(grade), 0)
     }
@@ -1640,6 +1650,18 @@ impl Model {
         Ok(group)
     }
 
+    pub(crate) fn bp_vpage(&mut self, ty: TypeId) -> Result<Rc<bp_vpage::Page>> {
+        if let Some(data) = &self.types[ty.0].bp_vpage {
+            return Ok(data.clone());
+        }
+        let Kind::BPVPage(grade) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(bp_vpage::Page::build(self, grade)?);
+        self.types[ty.0].bp_vpage = Some(data.clone());
+        Ok(data)
+    }
+
     pub(crate) fn bp_page(&mut self, ty: TypeId) -> Result<Rc<bp_page::Page>> {
         if let Some(data) = &self.types[ty.0].bp_page {
             return Ok(data.clone());
@@ -1882,6 +1904,7 @@ impl Model {
             | Kind::PMayAn(..)
             | Kind::PCeAn(..)
             | Kind::BPPage(..)
+            | Kind::BPVPage(..)
             | Kind::BPModExt(..)
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
@@ -2153,6 +2176,7 @@ impl Model {
                 shape.upper.prime, shape.lower, shape.upper.height, shape.upper.arrows,
             )),
             Kind::BPPage(grade) => out.push(&grade.to_string()),
+            Kind::BPVPage(grade) => out.push(&grade.to_string()),
             Kind::BPModExt(grade) => out.push(&grade.to_string()),
             Kind::BPTriple(grade) => out.push(&format!(
                 "BPTriple({}, {}, {}, {})",
@@ -2841,6 +2865,10 @@ impl Model {
                 }
                 Kind::BPModExt(grade) => {
                     let rank = self.bp_mod_ext(ty)?.rank();
+                    odd_ext::elements(self, grade.prime(), rank, MAX_ELEMENTS)?
+                }
+                Kind::BPVPage(grade) => {
+                    let rank = self.bp_vpage(ty)?.rank();
                     odd_ext::elements(self, grade.prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::BPPage(grade) => {

@@ -1,5 +1,6 @@
 use crate::bp::Operation as BpOperation;
 use crate::bp_page::{Mode as BpPageMode, Operation as BpPageOp};
+use crate::bp_vpage::Operation as BpVPageOp;
 use crate::comodule::Generator;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
@@ -86,6 +87,7 @@ pub(crate) enum TypeForm {
     BPRelExt(BpRelSpec, usize),
     BPHeight(BpHeightSpec),
     BpPage(BpPageMode, BpPageSpec),
+    BPVPage(BpVPageSpec),
     BPExt(BpSpec, usize),
     BPTriple(BpSpec, usize),
     May(usize, usize, usize, usize),
@@ -164,6 +166,7 @@ pub(crate) struct BpModSpec {
 }
 
 pub(crate) type BpPageSpec = (usize, usize, usize, usize, usize, usize);
+pub(crate) type BpVPageSpec = (usize, usize, usize, usize, usize, usize, usize);
 
 #[derive(Clone, Copy)]
 pub(crate) enum BpExtOp {
@@ -535,6 +538,9 @@ pub(crate) enum ExprForm {
     BpModExtClass(bool, usize, Box<ParsedExpr>),
     BpModExtRep(bool, Box<ParsedExpr>),
     BpPageOperation(Label, BpPageMode, BpPageOp, Box<ParsedExpr>),
+    BpVPageGenerator(BpVPageSpec, usize, Span),
+    BpVPageClass((usize, usize, usize), Box<ParsedExpr>),
+    BpVPageOperation(Label, BpVPageOp, Box<ParsedExpr>),
     RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
     RvHasse(Vec<usize>, Box<ParsedExpr>),
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
@@ -617,6 +623,7 @@ pub(crate) enum StatementForm {
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     BpPageDimension(BpPageMode, BpPageSpec),
+    BpVPageDimension(BpVPageSpec),
     BpModExtDimension(BpModSpec),
     BpHeightPage(bool, BpPageSpec),
     PMayDimension(usize, usize, usize, usize, usize),
@@ -1337,6 +1344,13 @@ impl<'src> Parser<'src> {
                 let grade = self.bp_mod_ext_grade(thick)?;
                 self.expect(Token::RBracket)?;
                 StatementForm::BpModExtDimension(grade)
+            }
+            Token::Word("bpVdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.bp_vpage_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpVPageDimension(spec)
             }
             Token::Word("bpBockdim") | Token::Word("bpNovdim") => {
                 let mode = if self.token() == Token::Word("bpBockdim") {
@@ -2158,6 +2172,13 @@ impl<'src> Parser<'src> {
         Ok((prime, n, r, s, t, f))
     }
 
+    fn bp_vpage_spec(&mut self) -> Result<BpVPageSpec> {
+        let (p, n, r) = self.profile_bidegree()?;
+        self.expect(Token::Comma)?;
+        let (a, h, t, f) = self.prime_profile_bidegree()?;
+        Ok((p, n, r, a, h, t, f))
+    }
+
     fn ty(&mut self, nest: usize) -> Result<ParsedType> {
         check_nesting(nest, self.span())?;
         let mut head = self.type_atom(nest)?;
@@ -2305,6 +2326,11 @@ impl<'src> Parser<'src> {
                 TypeForm::VExt(spec)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "BPVPage" && self.eat(Token::LParen)? {
+            let spec = self.bp_vpage_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BPVPage(spec), 0);
         }
         if matches!(name.text.as_str(), "BPBock" | "BPNov") && self.eat(Token::LParen)? {
             let mode = if name.text == "BPBock" {
@@ -2937,6 +2963,31 @@ impl<'src> Parser<'src> {
                     self.expect(Token::LBrace)?;
                     let powers = self.unsigned_list(Token::RBrace)?;
                     return expr(span, ExprForm::RvMonomial(selected, powers), 0);
+                }
+                if name.text == "bpVgen" && self.eat(Token::LBracket)? {
+                    let spec = self.bp_vpage_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::BpVPageGenerator(spec, index, at), 0);
+                }
+                if name.text == "bpVClass" && self.eat(Token::LBracket)? {
+                    let spec = self.prime_bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::BpVPageClass(spec, Box::new(input)), depth);
+                }
+                if let Some(operation) = BpVPageOp::from_name(&name.text) {
+                    if self.token() == Token::LParen {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::BpVPageOperation(name, operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if matches!(name.text.as_str(), "bpBockgen" | "bpNovgen")
                     && self.eat(Token::LBracket)?

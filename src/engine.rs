@@ -9,6 +9,7 @@ use crate::bp_higher;
 use crate::bp_mod_ext;
 use crate::bp_page;
 use crate::bp_triple;
+use crate::bp_vpage;
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
@@ -284,6 +285,8 @@ enum TypedForm {
     BpModExtRep(Box<TypedExpr>),
     BpModExtOperation(bp::Operation, Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
+    BpVPageClass(Box<TypedExpr>),
+    BpVPageOperation(bp_vpage::Operation, Box<TypedExpr>),
     RvHHWord(Vec<TypedExpr>),
     RvHHLength(usize, Box<TypedExpr>),
     RvBarWord(Vec<usize>, Vec<usize>, Vec<TypedExpr>),
@@ -780,6 +783,12 @@ impl Engine {
                     let h = shape.depth;
                     format!("bpIExtdim[{p}, {n}, {a}, {h}, {t}] = {rank}")
                 }
+            }
+            StatementForm::BpVPageDimension(spec @ (p, n, r, a, h, t, f)) => {
+                let grade = self.checker().bp_vpage_grade(spec)?;
+                let ty = self.model.bp_vpage_type(grade)?;
+                let rank = self.model.bp_vpage(ty)?.rank();
+                format!("bpVdim[{p}, {n}, {r}, {a}, {h}, {t}, {f}] = {rank}")
             }
             StatementForm::BpPageDimension(mode, (p, n, r, a, t, f)) => {
                 let shape = bp::Shape::new(&mut self.model, p, n, a)?;
@@ -1558,6 +1567,14 @@ impl Engine {
                         if a.is_empty() || b.is_empty() {
                             return Ok(odd_ext::zero());
                         }
+                        if matches!(self.model.kind(expr.ty), Kind::BPVPage(..)) {
+                            return bp_vpage::cup(
+                                &mut self.model,
+                                (left.ty, &a),
+                                (right.ty, &b),
+                                expr.ty,
+                            );
+                        }
                         let source = self.model.bp_page(left.ty)?;
                         let other = self.model.bp_page(right.ty)?;
                         let target = self.model.bp_page(expr.ty)?;
@@ -1656,6 +1673,7 @@ impl Engine {
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                            Kind::BPVPage(grade) => grade.prime(),
                             Kind::BPModExt(grade) => grade.prime(),
                             _ => unreachable!(),
                         };
@@ -2463,6 +2481,18 @@ impl Engine {
                     unreachable!()
                 };
                 bp_mod_ext::apply(&mut self.model, *operation, input.ty, expr.ty, &class)
+            }
+            TypedForm::BpVPageClass(input) => {
+                let Value::BP(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                bp_vpage::class(&mut self.model, expr.ty, &polynomial)
+            }
+            TypedForm::BpVPageOperation(operation, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                bp_vpage::apply(&mut self.model, *operation, input.ty, expr.ty, &coordinates)
             }
             TypedForm::BpPageClass(input) => {
                 let Value::BP(polynomial) = self.eval(input)? else {
@@ -3315,6 +3345,10 @@ impl Checker<'_> {
                 self.model.v_ext_type(grade)
             }
             TypeForm::VBock(spec) => self.vbock_type(spec),
+            TypeForm::BPVPage(spec) => {
+                let grade = self.bp_vpage_grade(spec)?;
+                self.model.bp_vpage_type(grade)
+            }
             TypeForm::BpPage(mode, spec) => {
                 let grade = self.bp_page_grade(mode, spec)?;
                 self.model.bp_page_type(grade)
@@ -3491,7 +3525,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
-                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) => odd_ext::zero(),
+                    Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::JetPage(..) => jet_page::zero(),
@@ -3607,6 +3641,7 @@ impl Checker<'_> {
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..) => p,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
+                    Kind::BPVPage(grade) => grade.prime(),
                     Kind::BPModExt(grade) => grade.prime(),
                     _ => return Err(self.invalid_operand(
                         &value,
@@ -4176,6 +4211,39 @@ impl Checker<'_> {
                 let polynomial = shape.variable(slot.unwrap_or(0), index)?;
                 let value = bp::persist(self.model, polynomial)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpVPageGenerator(spec, index, at) => {
+                let grade = self.bp_vpage_grade(spec)?;
+                let ty = self.model.bp_vpage_type(grade)?;
+                let rank = self.model.bp_vpage(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpVPageClass((page, t, filtration), input) => {
+                let input = self.expr(*input)?;
+                let shape = self.bp_shape(&input, "bpVClass")?;
+                if shape.depth == 0 || shape.thickness.is_some() || shape.depth > shape.height {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "bpVClass",
+                        "a BPI cochain with an invariant generator v_h",
+                    ));
+                }
+                let grade = bp_vpage::Grade::new(shape, page, t, filtration)?;
+                let ty = self.model.bp_vpage_type(grade)?;
+                Ok((ty, TypedForm::BpVPageClass(Box::new(input))))
+            }
+            ExprForm::BpVPageOperation(name, operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::BPVPage(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, &name.text, "a BPVPage class"));
+                };
+                let ty = if matches!(operation, bp_vpage::Operation::Rep) {
+                    self.model.bp_type(grade.shape)?
+                } else {
+                    self.model.bp_vpage_type(operation.target(grade)?)?
+                };
+                Ok((ty, TypedForm::BpVPageOperation(operation, Box::new(input))))
             }
             ExprForm::BpPageGenerator(mode, spec, index, at) => {
                 let grade = self.bp_page_grade(mode, spec)?;
@@ -5745,6 +5813,14 @@ impl Checker<'_> {
         }
     }
 
+    fn bp_vpage_grade(
+        &mut self,
+        (p, n, page, a, h, t, filtration): crate::syntax::BpVPageSpec,
+    ) -> Result<bp_vpage::Grade> {
+        let shape = bp::Shape::new(self.model, p, n, a)?.quotient(h)?;
+        bp_vpage::Grade::new(shape, page, t, filtration)
+    }
+
     fn bp_page_grade(
         &mut self,
         mode: bp_page::Mode,
@@ -6431,6 +6507,7 @@ impl Checker<'_> {
                         | Kind::PMayAn(..)
                         | Kind::PCeAn(..)
                         | Kind::BPPage(..)
+                        | Kind::BPVPage(..)
                         | Kind::BPModExt(..)
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
@@ -6594,6 +6671,11 @@ impl Checker<'_> {
                     (self.model.kind(left.ty), self.model.kind(right.ty))
                 {
                     return self.model.bp_mod_ext_type(left.cup(right)?);
+                }
+                if let (&Kind::BPVPage(left), &Kind::BPVPage(right)) =
+                    (self.model.kind(left.ty), self.model.kind(right.ty))
+                {
+                    return self.model.bp_vpage_type(left.cup(right)?);
                 }
                 if let (&Kind::BPPage(left), &Kind::BPPage(right)) =
                     (self.model.kind(left.ty), self.model.kind(right.ty))

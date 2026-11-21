@@ -13,6 +13,7 @@ mod bp_polynomial;
 mod bp_rel;
 mod bp_smith;
 mod bp_triple;
+mod bp_vpage;
 mod bracket;
 mod ce;
 mod cobar;
