@@ -31,6 +31,7 @@ use crate::odd_transfer;
 use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade};
+use crate::q_module;
 use crate::restriction_transfer;
 use crate::steenrod;
 use crate::syntax::{
@@ -199,6 +200,10 @@ impl Engine {
 
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
+            StatementForm::QModule(name, selected, presentation) => {
+                self.model.define_q_module(&name, selected, presentation)?;
+                return Ok(None);
+            }
             StatementForm::Space(name, chains) => {
                 self.model.define_space(&name, &chains)?;
                 return Ok(None);
@@ -1444,6 +1449,66 @@ impl Checker<'_> {
                 let ty = self.model.map_cobar_type(source_ty, target_ty, s, t)?;
                 Ok((ty, TypedForm::MapWord(source, target, Box::new(input))))
             }
+            ExprForm::QTerm(literal) => {
+                let source = self.q_endpoint(literal.source.base)?;
+                let target = self.q_endpoint(literal.target.base)?;
+                let selected = q_koszul::indices(self.model, literal.selected)?;
+                let (s, t) = q_module::term_bidegree(
+                    self.model,
+                    literal.source.degree,
+                    literal.target.degree,
+                    &selected,
+                    &literal.powers,
+                )?;
+                let ty = self.model.q_koszul_type(Grade {
+                    source,
+                    target,
+                    selected,
+                    s,
+                    t,
+                })?;
+                let source = q_module::generator(
+                    self.model,
+                    source,
+                    literal.source.degree,
+                    literal.source.index,
+                )
+                .map_err(|error| error.at(literal.source.span))?;
+                let target = q_module::generator(
+                    self.model,
+                    target,
+                    literal.target.degree,
+                    literal.target.index,
+                )
+                .map_err(|error| error.at(literal.target.span))?;
+                let powers = literal
+                    .powers
+                    .into_iter()
+                    .map(|power| power as i128)
+                    .collect();
+                let terms = q_koszul::persist(
+                    self.model,
+                    vec![q_koszul::Term {
+                        source,
+                        target,
+                        powers,
+                    }],
+                )?;
+                Ok((ty, TypedForm::Constant(Value::QKoszul(terms))))
+            }
+            ExprForm::QIdentity(base, selected) => {
+                let base = self.q_endpoint(base)?;
+                let selected = q_koszul::indices(self.model, selected)?;
+                let ty = self.model.q_ext_type(Grade {
+                    source: base,
+                    target: base,
+                    selected,
+                    s: 0,
+                    t: 0,
+                })?;
+                let value = q_koszul::identity(self.model, ty)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::QExtGenerator(spec, index, at) => {
                 let grade = self.q_grade(spec)?;
                 let ty = self.model.q_ext_type(grade)?;
@@ -2158,9 +2223,18 @@ impl Checker<'_> {
         }
     }
 
+    fn q_endpoint(&mut self, ty: ParsedType) -> Result<TypeId> {
+        if let TypeForm::Name(name) = &ty.kind {
+            if let Some(base) = self.model.q_endpoint_named(&name.text) {
+                return Ok(base);
+            }
+        }
+        self.ty(ty)
+    }
+
     fn q_grade<S>(&mut self, spec: QSpec<S>) -> Result<Grade<S>> {
-        let source = self.ty(*spec.source)?;
-        let target = self.ty(*spec.target)?;
+        let source = self.q_endpoint(*spec.source)?;
+        let target = self.q_endpoint(*spec.target)?;
         let selected = q_koszul::indices(self.model, spec.selected)?;
         Ok(Grade {
             source,

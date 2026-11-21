@@ -275,8 +275,8 @@ impl Complex {
         Ok(Self {
             source,
             target,
-            source_bound: model.height(source, false)?.checked_sub(1),
-            target_bound: model.height(target, false)?.checked_sub(1),
+            source_bound: endpoint_bound(model, source)?,
+            target_bound: endpoint_bound(model, target)?,
             primitives: selected.to_vec(),
             weights: selected.iter().map(|&index| weight(index)).collect(),
             actions: HashMap::new(),
@@ -409,6 +409,8 @@ impl Complex {
         }
         let source_bound = exact_bound(model, self.source, source_bound)?;
         let target_bound = exact_bound(model, self.target, target_bound)?;
+        let source_is_module = model.q_module(self.source).is_some();
+        let target_is_module = model.q_module(self.target).is_some();
         for term in terms {
             model.spend(term.cells())?;
             for variable in 0..self.primitives.len() {
@@ -420,7 +422,7 @@ impl Complex {
                     .checked_add(weight)
                     .filter(|&d| d <= source_bound)
                 {
-                    if source_degree != 0 {
+                    if source_degree != 0 || source_is_module {
                         let action =
                             self.action(model, self.source, index, source_degree, degree)?;
                         let affected = &action.columns[term.source.index];
@@ -442,7 +444,7 @@ impl Complex {
                 let target_degree = term.target.degree;
                 if let Some(degree) = target_degree
                     .checked_sub(weight)
-                    .filter(|&d| d != 0 && d <= target_bound)
+                    .filter(|&d| (d != 0 || target_is_module) && d <= target_bound)
                 {
                     let action = self.action(model, self.target, index, degree, target_degree)?;
                     let affected = &action.rows[term.target.index];
@@ -485,6 +487,27 @@ impl Complex {
                     columns: Vec::with_capacity(columns),
                     rows: vec![Vec::new(); rows],
                 };
+                if let Some(module) = model.q_module(base) {
+                    let mut transpose = vec![Vec::new(); columns];
+                    for (index, row) in action.rows.iter_mut().enumerate() {
+                        let image = module.image(
+                            primitive,
+                            Generator {
+                                degree: upper,
+                                index,
+                            },
+                        );
+                        self.action_cells += 2 * image.len();
+                        check_storage(self.action_cells)?;
+                        model.spend(1 + image.len())?;
+                        row.extend_from_slice(image);
+                        for &output in image {
+                            transpose[output].push(index);
+                        }
+                    }
+                    action.columns = transpose.into_iter().map(Rc::from).collect();
+                    return Ok(entry.insert(action));
+                }
                 for index in 0..columns {
                     let image = if rows == 0 {
                         [].into()
@@ -505,6 +528,9 @@ impl Complex {
 }
 
 fn rank(model: &mut Model, base: TypeId, degree: usize) -> Result<usize> {
+    if let Some(module) = model.q_module(base) {
+        return Ok(module.rank(degree));
+    }
     let ty = model.cohomology_type(base, degree)?;
     Ok(model.cohomology(ty)?.rank())
 }
@@ -514,6 +540,11 @@ fn graded_ranks(
     base: TypeId,
     range: RangeInclusive<usize>,
 ) -> Result<Vec<(usize, usize)>> {
+    if let Some(module) = model.q_module(base) {
+        let ranks = module.graded_ranks(range);
+        model.spend(1 + ranks.len())?;
+        return Ok(ranks);
+    }
     let mut result = Vec::new();
     for degree in range {
         model.spend(1)?;
@@ -525,8 +556,15 @@ fn graded_ranks(
     Ok(result)
 }
 
+fn endpoint_bound(model: &mut Model, base: TypeId) -> Result<Option<usize>> {
+    if let Some(module) = model.q_module(base) {
+        return Ok(module.bound());
+    }
+    Ok(model.height(base, false)?.checked_sub(1))
+}
+
 fn exact_bound(model: &mut Model, base: TypeId, bound: usize) -> Result<usize> {
-    if bound == usize::MAX - 1 {
+    if bound == usize::MAX - 1 && model.q_module(base).is_none() {
         Ok(model.height(base, true)?.saturating_sub(1))
     } else {
         Ok(bound)
@@ -997,6 +1035,23 @@ pub(crate) fn matching_endpoints<S>(outer: &Grade<S>, inner: &Grade<S>) -> Resul
         return Err(Error::plain("ecomp requires the same Milnor primitives"));
     }
     Ok(())
+}
+
+pub(crate) fn identity(model: &mut Model, ty: TypeId) -> Result<Value> {
+    let group = model.q_ext(ty)?;
+    model.spend(group.terms.len())?;
+    let diagonal = group
+        .terms
+        .iter()
+        .enumerate()
+        .filter_map(|(index, term)| (term.source == term.target).then_some(index))
+        .collect();
+    let coordinates = group
+        .quotient
+        .project(model, diagonal)?
+        .ok_or_else(|| Error::plain("Koszul identity is not closed"))?;
+    model.allocate(coordinates.len())?;
+    Ok(Value::Class(coordinates.into()))
 }
 
 pub(crate) fn class(model: &mut Model, ty: TypeId, terms: &[Term]) -> Result<Value> {

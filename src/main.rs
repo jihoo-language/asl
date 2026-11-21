@@ -33,6 +33,7 @@ mod page_transition;
 mod prime_linear;
 mod profile;
 mod q_koszul;
+mod q_module;
 mod restriction_transfer;
 mod steenrod;
 mod syntax;

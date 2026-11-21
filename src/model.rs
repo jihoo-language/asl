@@ -20,6 +20,7 @@ use crate::page_transition::Transition;
 use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
+use crate::q_module::{Module, Presentation};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_koszul;
@@ -38,6 +39,7 @@ pub(crate) struct TypeId(usize);
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     Space(String),
+    QModule(String),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
@@ -168,6 +170,7 @@ struct TypeInfo {
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
+    q_module: Option<Rc<Module>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
     ce_page: Option<Rc<CePage>>,
@@ -245,6 +248,7 @@ impl Model {
     ) -> TypeId {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
+            Kind::QModule(_) => 1,
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -361,6 +365,7 @@ impl Model {
             xext: None,
             map_ext: None,
             q_ext: None,
+            q_module: None,
             map_may: None,
             may_page: None,
             ce_page: None,
@@ -422,8 +427,53 @@ impl Model {
         )
     }
 
+    pub(crate) fn q_endpoint_named(&self, name: &str) -> Option<TypeId> {
+        self.type_ids
+            .get(&Kind::QModule(name.into()))
+            .copied()
+            .or_else(|| self.named(name))
+    }
+
+    pub(crate) fn q_module(&self, ty: TypeId) -> Option<Rc<Module>> {
+        self.types[ty.0].q_module.clone()
+    }
+
+    pub(crate) fn define_q_module(
+        &mut self,
+        name: &Label,
+        selected: Vec<usize>,
+        presentation: Presentation,
+    ) -> Result<()> {
+        if self.q_endpoint_named(&name.text).is_some() {
+            return Err(Error::new(
+                name.span,
+                format!("endpoint '{}' is already defined", name.text),
+            ));
+        }
+        self.check_type_limit(0)?;
+        let module = Rc::new(Module::build(self, selected, presentation)?);
+        let id = self.insert(
+            Kind::QModule(name.text.clone()),
+            None,
+            None,
+            module.bound().is_some(),
+            0,
+        );
+        self.types[id.0].q_module = Some(module);
+        Ok(())
+    }
+
+    fn check_q_endpoints(&self, source: TypeId, target: TypeId, selected: &[usize]) -> Result<()> {
+        for endpoint in [source, target] {
+            if let Some(module) = &self.types[endpoint.0].q_module {
+                module.check_selection(selected)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn define_space(&mut self, name: &Label, chains: &[Vec<Label>]) -> Result<()> {
-        if self.named(&name.text).is_some() {
+        if self.q_endpoint_named(&name.text).is_some() {
             return Err(Error::new(
                 name.span,
                 format!("space '{}' is already defined", name.text),
@@ -625,22 +675,26 @@ impl Model {
     }
 
     pub(crate) fn q_koszul_type(&mut self, grade: Grade) -> Result<TypeId> {
+        self.check_q_endpoints(grade.source, grade.target, &grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::QKoszul(grade), depth)
     }
 
     pub(crate) fn q_ext_type(&mut self, grade: Grade) -> Result<TypeId> {
+        self.check_q_endpoints(grade.source, grade.target, &grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::QExt(grade), depth)
     }
 
     pub(crate) fn v_koszul_type(&mut self, grade: v_koszul::Grade) -> Result<TypeId> {
+        self.check_q_endpoints(grade.source, grade.target, &grade.selected)?;
         v_koszul::top(&grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::VKoszul(grade), depth)
     }
 
     pub(crate) fn v_ext_type(&mut self, grade: v_koszul::Grade) -> Result<TypeId> {
+        self.check_q_endpoints(grade.source, grade.target, &grade.selected)?;
         v_koszul::top(&grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::VExt(grade), depth)
@@ -895,6 +949,11 @@ impl Model {
             return Ok(height);
         }
         let height = match *self.kind(ty) {
+            Kind::QModule(_) => {
+                return Err(Error::plain(
+                    "coefficient modules are allowed only as Koszul endpoints",
+                ))
+            }
             Kind::Space(_) | Kind::Star(..) => {
                 let space = self.poset(ty).unwrap();
                 let size = space.names.len();
@@ -1061,7 +1120,7 @@ impl Model {
 
     fn write_type(&self, out: &mut Text, ty: TypeId, precedence: u8) -> Result<()> {
         match self.kind(ty) {
-            Kind::Space(name) => out.push(name),
+            Kind::Space(name) | Kind::QModule(name) => out.push(name),
             &Kind::Star(base, center) => {
                 out.push("Star(")?;
                 self.write_type(out, base, 0)?;
@@ -1356,6 +1415,11 @@ impl Model {
             Vec::new()
         } else {
             match *self.kind(ty) {
+                Kind::QModule(_) => {
+                    return Err(Error::plain(
+                        "coefficient modules are allowed only as Koszul endpoints",
+                    ))
+                }
                 Kind::Space(_) | Kind::Star(_, _) => {
                     let size = self.types[ty.0].poset.as_ref().unwrap().names.len();
                     self.allocate(size)?;

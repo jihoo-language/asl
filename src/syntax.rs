@@ -166,6 +166,13 @@ pub(crate) fn validate_witness_interval(
     Ok(())
 }
 
+pub(crate) struct QTerm {
+    pub(crate) source: MapGenerator,
+    pub(crate) target: MapGenerator,
+    pub(crate) selected: Vec<usize>,
+    pub(crate) powers: Vec<usize>,
+}
+
 pub(crate) struct MapGenerator {
     pub(crate) base: ParsedType,
     pub(crate) degree: usize,
@@ -201,6 +208,8 @@ pub(crate) enum ExprForm {
     MapExtIdentity(ParsedType),
     MapMayGenerator(MapMaySpec, usize, Span),
     QExtGenerator(QSpec, usize, Span),
+    QTerm(QTerm),
+    QIdentity(ParsedType, Vec<usize>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VShift(i64, Box<ParsedExpr>),
     QRestrict(Vec<usize>, Box<ParsedExpr>),
@@ -238,6 +247,7 @@ pub(crate) struct Statement {
 
 pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
+    QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
     Card(ParsedExpr),
@@ -541,6 +551,49 @@ impl<'src> Parser<'src> {
         Ok(exponents)
     }
 
+    fn q_module_body(&mut self) -> Result<crate::q_module::Presentation> {
+        self.expect(Token::LBrace)?;
+        let mut generators = Vec::new();
+        while self.token() != Token::RBrace {
+            let name = self.label()?;
+            self.expect(Token::Colon)?;
+            generators.push((name, self.number()?.0));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::LBrace)?;
+        let mut rules = Vec::new();
+        while self.token() != Token::RBrace {
+            let (primitive, span) = self.number()?;
+            self.expect(Token::LParen)?;
+            let source = self.label()?;
+            self.expect(Token::RParen)?;
+            self.expect(Token::FatArrow)?;
+            self.expect(Token::LBracket)?;
+            let mut targets = Vec::new();
+            while self.token() != Token::RBracket {
+                targets.push(self.label()?);
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            rules.push(crate::q_module::Rule {
+                primitive,
+                span,
+                source,
+                targets,
+            });
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(crate::q_module::Presentation { generators, rules })
+    }
+
     fn chains(&mut self) -> Result<Vec<Vec<Label>>> {
         self.expect(Token::LBrace)?;
         let mut chains = Vec::new();
@@ -562,6 +615,13 @@ impl<'src> Parser<'src> {
         let span = self.span();
         let kind = match self.token() {
             Token::Eof => return Ok(None),
+            Token::Word("qmodule") => {
+                self.advance()?;
+                let name = self.label()?;
+                let selected = self.exponents()?;
+                let presentation = self.q_module_body()?;
+                StatementForm::QModule(name, selected, presentation)
+            }
             Token::Word("space") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -1408,6 +1468,40 @@ impl<'src> Parser<'src> {
                     let base = self.ty(nest + 1)?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapExtIdentity(base), 0);
+                }
+                if name.text == "qterm" && self.eat(Token::LBracket)? {
+                    let source = self.map_generator(nest)?;
+                    self.expect(Token::Comma)?;
+                    let target = self.map_generator(nest)?;
+                    self.expect(Token::Comma)?;
+                    let selected = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut powers = Vec::new();
+                    while self.token() != Token::RBrace {
+                        powers.push(self.number()?.0);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(
+                        span,
+                        ExprForm::QTerm(QTerm {
+                            source,
+                            target,
+                            selected,
+                            powers,
+                        }),
+                        0,
+                    );
+                }
+                if name.text == "qid" && self.eat(Token::LBracket)? {
+                    let base = self.ty(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let selected = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::QIdentity(base, selected), 0);
                 }
                 if name.text == "qextgen" && self.eat(Token::LBracket)? {
                     let spec = self.q_spec(nest)?;

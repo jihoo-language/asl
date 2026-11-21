@@ -410,6 +410,25 @@ Its highest exponent is $s-\sum_{i<n}a_i$ and may be negative. The differential 
 
 Use `vextdim[X, Y, I, s, t];` and `vextgen[X, Y, I, s, t, k]` for ranks and basis generators. Over $I=[0,1]$ and with target $\mathbb{RP}^4$, the example verifies $[z_1]=(v_0/v_1)[z_3]\ne0$ and $(v_0/v_1)^2[z_3]=0$. Localizing the one-primitive complex for $I=[1]$ kills $[z_1]$. [Localized Koszul example](examples/v-koszul.asl)
 
+## Declared graded Koszul modules
+
+A `qmodule` declaration specifies a finite graded homology module over the exterior algebra on a selected list of Milnor primitives. The first block lists basis generators and their nonnegative homological degrees. The second block lists the images under selected primitives.
+
+```text
+qmodule Flash[0, 1] {
+    a1:2, b1:1, a2:4, b2:3
+} {
+    0(a1)=>[b1], 0(a2)=>[b2], 1(a2)=>[b1]
+};
+```
+
+Each image is the sum of its listed generators over $\mathbb F_2$. Repeated summands cancel and omitted rules give zero. ASL checks that every $Q_i$ drops degree by $2^{i+1}-1$, squares to zero, and commutes with the other declared primitives. Module names can appear as either endpoint of the ordinary or localized Koszul types. The list in a Koszul type must be a subset of the declared primitives at each module endpoint. A morphism can have a finite-space endpoint at one end and a declared module at the other.
+
+The literal `qterm[X,q,i,Y,p,j,I]{a0,...}` gives a `QKoszul` cochain sending generator `i` of degree `q` to generator `j` of degree `p` times the monomial with the specified exponents in the variables of `I`. Coordinates start at zero within each degree. Module coordinates follow declaration order within that degree. The class `qid[X,I]` is the identity at endpoint `X` for that primitive selection.
+
+The example computes a lightning-flash module with four pairs of generators. The differential has an explicit witness for the fourth power of $v_0$ annihilating the last class, and the third power is nonzero. [Declared module example](examples/q-module.asl)
+
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
