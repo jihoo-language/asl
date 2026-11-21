@@ -645,6 +645,20 @@ For each proper interval $[i,j]$ the witness $A_{ij}$ has homological degree $\s
 
 The fourfold example uses the classes of $x_1e_5$, $x_2e_6$, $x_3e_7$, and $x_4e_8$. It computes a nonzero class in $(6,8)$ and verifies that the raw curvature differs from $x_4x_5e_1e_2e_3e_6e_7e_8$ by an explicit boundary. [Fourfold defining system example](examples/rank-massey-four.asl)
 
+#### Transferred higher products
+
+`rvTHigher(a1,...,an)` evaluates the minimal $A_\infty$ operation $m_n$ on `RVTor` for $n\ge2$. It adds $n-2$ to the total homological degree and preserves the total internal degree. `rvTLift(a1,...,an)` evaluates the corresponding Koszul chain $F_n$, which adds $n-1$ to the homological degree. The unary lift $F_1$ is the chosen cycle representative, $m_1=0$, and $m_2$ is `rvTorProd`.
+
+Let $P$ be the linear boundary preimage given by the ordered incoming Koszul columns. For an arbitrary chain $w$, set $q=w+P(dw)$. Then $p(w)=[q]$ and $h(w)=P(q+i(p(w)))$, with $i$ the chosen cycle inclusion. Over $\mathbb F_2$ the signs disappear, so $dh+hd=1+ip$ and $h^2=hi=ph=0$. For each interval the interpreter forms $U=\sum F_{\rm left}F_{\rm right}$ and takes $m=p(U)$ and $F=h(U)$. The closure step handles $U$ even when $dU\ne0$. Each interval lift is computed once per call.
+
+For a monomial ideal, the reduction preserves the exponent vector of the coefficient plus the exterior indicators. The staircase example imposes $x_jy_k=0$ for $k\le j$ except $(j,k)=(n,1)$. On the inputs $[x_i e_{y_i}]$, every proper contiguous product vanishes and the top transferred product is the nonzero class of $x_ny_1$ times the exterior product of all generators except $e_{x_n}$ and $e_{y_1}$. The calculation fixes a contraction and preserves the variable multigrading. Unrestricted Massey products range over all defining systems, including choices that mix variable multidegrees. [Staircase generator](examples/staircase-transfer.awk)
+
+```sh
+awk -v n=6 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+The generated program checks the proper products and prints `RVTor(Stair, 10, 12){g0}`. The checks run at arities three through six with the standard computation limits.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

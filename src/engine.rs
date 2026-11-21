@@ -52,6 +52,7 @@ use crate::rv_scheme;
 use crate::rv_shintani;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
+use crate::rv_t_transfer;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -216,6 +217,7 @@ enum TypedForm {
     Transfer(ScalarField, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(ScalarField, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
+    RvTTransfer(rv_t_transfer::Operation, Vec<TypedExpr>),
     RvTSystem(rv_t_system::Operation, usize, Vec<DefiningEntry>),
     MapSystem(map_system::Operation, usize, Vec<DefiningEntry>),
     OddSystem(odd_massey::Operation, usize, Vec<DefiningEntry>),
@@ -1670,6 +1672,18 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 map_transfer::evaluate(&mut self.model, &inputs, *operation)
             }
+            TypedForm::RvTTransfer(operation, terms) => {
+                let inputs = terms
+                    .iter()
+                    .map(|term| {
+                        let Value::Class(class) = self.eval(term)? else {
+                            unreachable!();
+                        };
+                        Ok((term.ty, class))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                rv_t_transfer::evaluate(&mut self.model, *operation, expr.ty, &inputs)
+            }
             TypedForm::RvTSystem(operation, arity, entries) => {
                 let entries = entries
                     .iter()
@@ -2867,6 +2881,7 @@ impl Checker<'_> {
             ExprForm::RvTBracket(operation, inputs) => self.rv_t_bracket(operation, inputs),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
+            ExprForm::RvTTransfer(operation, inputs) => self.rv_t_transfer(operation, inputs),
             ExprForm::RvTSystem(operation, inputs, witnesses) => {
                 self.rv_t_system(operation, inputs, witnesses, span)
             }
@@ -2933,6 +2948,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = map_transfer::Operation::from_name(&name.text) {
                             return self.map_transfer(operation, vec![*argument]);
+                        }
+                        if let Some(operation) = rv_t_transfer::Operation::from_name(&name.text) {
+                            return self.rv_t_transfer(operation, vec![*argument]);
                         }
                         if let Some(operation) = rv_t_system::Operation::from_name(&name.text) {
                             return self.rv_t_system(operation, vec![*argument], Vec::new(), span);
@@ -3256,6 +3274,21 @@ impl Checker<'_> {
             .collect::<Result<Vec<_>>>()?;
         let ty = operation.result_type(self.model, terms.iter().map(|term| term.ty), arity)?;
         Ok((ty, TypedForm::MapTransfer(operation, terms)))
+    }
+
+    fn rv_t_transfer(
+        &mut self,
+        operation: rv_t_transfer::Operation,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        operation.require_arity(inputs.len())?;
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let ty =
+            rv_t_transfer::result_type(self.model, operation, inputs.iter().map(|term| term.ty))?;
+        Ok((ty, TypedForm::RvTTransfer(operation, inputs)))
     }
 
     fn rv_t_system(

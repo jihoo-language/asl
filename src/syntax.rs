@@ -11,6 +11,7 @@ use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
+use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -385,6 +386,7 @@ pub(crate) enum ExprForm {
     Transfer(TransferOp, Vec<ParsedExpr>),
     RvTBracket(RvTBracketOp, Vec<ParsedExpr>),
     MapBracket(MapBracketOp, Vec<ParsedExpr>),
+    RvTTransfer(RvTTransferOp, Vec<ParsedExpr>),
     RvTSystem(RvTSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     MapSystem(MapSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     OddSystem(OddSystemOp, Vec<ParsedExpr>, Vec<Witness>),
@@ -1738,6 +1740,7 @@ impl<'src> Parser<'src> {
                     || TransferOp::from_name(&name.text).is_some()
                     || RvTBracketOp::from_name(&name.text).is_some()
                     || MapBracketOp::from_name(&name.text).is_some()
+                    || RvTTransferOp::from_name(&name.text).is_some()
                     || RvTSystemOp::from_name(&name.text).is_some()
                     || MapSystemOp::from_name(&name.text).is_some()
                     || OddSystemOp::from_name(&name.text).is_some()
@@ -1817,6 +1820,9 @@ impl<'src> Parser<'src> {
         }
         if let Some(operation) = TransferOp::from_name(&name.text) {
             return expr(span, ExprForm::Transfer(operation, arguments), depth);
+        }
+        if let Some(operation) = RvTTransferOp::from_name(&name.text) {
+            return expr(span, ExprForm::RvTTransfer(operation, arguments), depth);
         }
         if let Some(operation) = RvTBracketOp::from_name(&name.text) {
             return expr(span, ExprForm::RvTBracket(operation, arguments), depth);

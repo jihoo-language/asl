@@ -80,6 +80,25 @@
             test ! -s rejected.asl
           done
         '';
+        staircase-transfer = pkgs.runCommand "asl-staircase-transfer" {
+          nativeBuildInputs = [ (package pkgs) pkgs.gawk ];
+        } ''
+          set -o pipefail
+          {
+            awk -v n=3 -f ${./examples/staircase-transfer.awk} | asl -
+            awk -v n=6 -f ${./examples/staircase-transfer.awk} | asl -
+          } > "$out"
+          diff -u - "$out" <<'EXPECTED'
+          RVTor(Stair, 4, 6){g0}
+          RVTor(Stair, 10, 12){g0}
+          EXPECTED
+          for invalid in 2 32 2.5 bad; do
+            if awk -v n="$invalid" -f ${./examples/staircase-transfer.awk} > rejected.asl; then
+              exit 1
+            fi
+            test ! -s rejected.asl
+          done
+        '';
       });
     };
 }

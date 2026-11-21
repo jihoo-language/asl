@@ -1,5 +1,5 @@
 use std::cell::OnceCell;
-use std::collections::BTreeSet;
+use std::collections::{hash_map::Entry, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use crate::complex::xor_sorted;
@@ -434,6 +434,47 @@ fn standard_search(
     }
 }
 
+// Only rows occurring in an outgoing column enter the reduction. Interning
+// the coefficient separately also shares powers between different wedges.
+#[derive(Default)]
+struct OutgoingRows {
+    coefficients: HashMap<Monomial, usize>,
+    indices: HashMap<(usize, usize), usize>,
+    cells: usize,
+}
+
+impl OutgoingRows {
+    fn column(&mut self, model: &mut Model, terms: Vec<Term>) -> Result<Vec<usize>> {
+        let mut column = Vec::with_capacity(terms.len());
+        for term in terms {
+            let cost = 2 + term.powers.len();
+            model.spend(cost)?;
+            let next = self.coefficients.len();
+            let coefficient = match self.coefficients.entry(term.powers) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    self.cells += cost;
+                    check_storage(self.cells)?;
+                    *entry.insert(next)
+                }
+            };
+            let next = self.indices.len();
+            let index = match self.indices.entry((term.wedge, coefficient)) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    self.cells += 3;
+                    check_storage(self.cells)?;
+                    *entry.insert(next)
+                }
+            };
+            column.push(index);
+        }
+        model.spend(column.len() * (1 + column.len().max(1).ilog2() as usize))?;
+        column.sort_unstable();
+        Ok(column)
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Tor {
     slice: Slice,
@@ -475,17 +516,12 @@ impl Tor {
             return Ok(Self::default());
         }
         let incoming = Slice::build(model, ideal, s + 1, t, MAX_BASIS)?;
-        let outgoing = if s == 0 {
-            Slice::default()
-        } else {
-            Slice::build(model, ideal, s - 1, t, MAX_BASIS)?
-        };
-        check_storage(slice.cells() + incoming.cells() + outgoing.cells())?;
-
+        check_storage(slice.cells() + incoming.cells())?;
         let boundaries = boundary_basis(model, ideal, &incoming, &slice, false)?;
+        let mut rows = OutgoingRows::default();
         let quotient = QuotientBasis::build(model, boundaries, slice.len(), |model, index| {
             let support = differential_terms(model, ideal, &[slice.term(index)])?;
-            outgoing.encode(model, &support)
+            rows.column(model, support)
         })?;
         model.allocate(slice.cells())?;
         Ok(Self {
