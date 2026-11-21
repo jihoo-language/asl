@@ -12,6 +12,7 @@ use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
 use crate::map_may;
+use crate::map_transfer;
 use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
@@ -87,6 +88,7 @@ enum TypedForm {
     Shift(Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
     Transfer(transfer::Operation, Vec<TypedExpr>),
+    MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     MapBracket {
         target: TypeId,
         inputs: Box<[TypedExpr; 3]>,
@@ -514,6 +516,18 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 transfer::evaluate(&mut self.model, &inputs, *operation)
             }
+            TypedForm::MapTransfer(operation, inputs) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|term| {
+                        let Value::Class(coordinates) = self.eval(term)? else {
+                            unreachable!()
+                        };
+                        Ok((term.ty, coordinates))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                map_transfer::evaluate(&mut self.model, &inputs, *operation)
+            }
             TypedForm::MapBracket {
                 target,
                 inputs,
@@ -918,6 +932,7 @@ impl Checker<'_> {
             ExprForm::Bracket(inputs) => self.bracket(inputs, span),
             ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
+            ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -972,6 +987,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = transfer::Operation::from_name(&name.text) {
                             return self.transfer(operation, vec![*argument]);
+                        }
+                        if let Some(operation) = map_transfer::Operation::from_name(&name.text) {
+                            return self.map_transfer(operation, vec![*argument]);
                         }
                         if let Some(operation) = map_bracket::Operation::from_name(&name.text) {
                             return self.map_bracket(operation, vec![*argument]);
@@ -1130,6 +1148,21 @@ impl Checker<'_> {
             transfer::Operation::Lift => self.model.cobar_type(s, t)?,
         };
         Ok((ty, TypedForm::Transfer(operation, terms)))
+    }
+
+    fn map_transfer(
+        &mut self,
+        operation: map_transfer::Operation,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        let arity = inputs.len();
+        operation.require_arity(arity)?;
+        let terms = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let ty = operation.result_type(self.model, terms.iter().map(|term| term.ty), arity)?;
+        Ok((ty, TypedForm::MapTransfer(operation, terms)))
     }
 
     fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {

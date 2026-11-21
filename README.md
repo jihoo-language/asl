@@ -252,6 +252,14 @@ On a fixed page `r`, `ecomp(g, f)` composes classes with matching endpoints and 
 
 The example detects the projective plane’s Steenrod coaction at both the source and the target on $E_0$. It checks functorial composition and shows two stabilized slices whose ranks sum to a signed `MapExt` rank. With both endpoints `One`, the pages recover scalar May. [Bivariant May example](examples/map-may.asl)
 
+## Transferred operations on stable maps
+
+For composable `MapExt` classes $f_i:X_{i-1}\to X_i$ of bidegrees $(s_i,t_i)$, pass the maps in composition order with the outermost map first. For $n\ge2$, `eHigher(f_n, ..., f_1)` gives the transferred $m_n$ in `MapExt` from $X_0$ to $X_n$ of bidegree $(\sum_i s_i+2-n,\sum_i t_i)$. `eLift(f_n, ..., f_1)` gives the corresponding $F_n$ in `MapCobar` of bidegree $(\sum_i s_i+1-n,\sum_i t_i)$. An intermediate lift of negative cobar length contributes zero, and a negative output length gives an error.
+
+The transfer uses the ordered sparse cobar reduction. Write $P$ for its selected preimage of a boundary and $r$ for the chosen representative of a class. For a cochain $c$, $q=c+P(dc)$ is a cycle. The projection and homotopy are $p(c)=[q]$ and $h(c)=P(q+r(p(c)))$. Starting with $F_1=r$, the computation sums the compositions of the lifts over consecutive splits of the inputs, then applies $p$ for $m_n$ and $h$ for $F_n$. The higher products depend on this contraction.
+
+The binary product is `ecomp` and `eid[X]` is a strict unit. On `One`, the operations recover the sphere transfer with the arguments reversed. The example composes a path of matrices through four finite spaces and obtains the square of $h_2$ at arity four. [Stable-map transfer example](examples/map-transfer.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
