@@ -628,6 +628,16 @@ For $\sigma$ acting on coefficients and fixing $u$, `rvMuAt[modulus, root](A, X)
 
 For the two-cycle $A=\begin{pmatrix}0&u\\1&0\end{pmatrix}$, the Newton slopes are both $1/2$. The standard lattice has position $(0,1)$, and the lattice framed by $\operatorname{diag}(u^2,1)$ has position $(-1,2)$. The coweight $(0,1)$ accepts the standard lattice for exact membership. The closure with coweight $(-1,2)$ contains both. The example also changes the latter frame by a basis of determinant $1+u$ and computes a Hodge exponent arising from determinant cancellation. [Affine Deligne–Lusztig example](examples/rv-adlv.asl)
 
+### Rank-two Bruhat–Tits shells
+
+For an invertible rank-two `RVLaurent` endomorphism $A$, `rvTreeShell[modulus, root, r](A);` reports how many vertices of the Bruhat–Tits tree at distance $r$ from the standard lattice have each position under $A\sigma$. The affine point must lie in the specified subfield, with $\sigma$ the corresponding relative Frobenius on the field $L$ of $A$. Vertex positions are the ascending Hodge exponents of $X^{-1}A\sigma(X)$ for their lattice frames $X$. The difference of those exponents is the tree displacement.
+
+Every vertex at radius $r>0$ has a unique normalized lattice with elementary divisors $(0,r)$. Its image modulo $u^r$ is a primitive line over $L[u]/(u^r)$. The interpreter uses the disjoint charts $(1,a)$, with $a$ any residue, and $(b,1)$, with $b$ divisible by $u$. Thus for $Q=|L|$ the sphere has $Q^r+Q^{r-1}$ vertices. Radius zero has just the standard lattice. If $Y=\operatorname{adj}(X)A\sigma(X)$, the first exponent is the minimum valuation of an entry of $Y$ minus $r$. Their sum is $\nu_u(\det A)$.
+
+`rvTreeBall[modulus, root, R](A);` collects the same histogram for radii up to $R$. `rvTreeCount[modulus, root, R, [mu0,mu1]](A);` counts vertices in that ball with exact position $\mu$. `rvTreeClosureCount` uses the ascending-prefix closure condition from `rvInADLVClosure`. These counts run over the finite $L$-residue vertices in the chosen shells or ball. Each query can visit up to 4,096 vertices.
+
+For $L=\mathbb F_4$ over $\mathbb F_2$ at radius three, relative Frobenius fixes 12 vertices. The other displacements $2$, $4$, and $6$ occur at 12, 24, and 32 vertices, respectively. The supersingular two-cycle exchanges the endpoints of the standard edge and gives positions $(-2,3)$ and $(-3,4)$ at 16 and 64 vertices. The example also checks invariance under a change of basis fixing the standard lattice and the effect of a negative Tate twist. [Bruhat–Tits tree example](examples/rv-tree.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

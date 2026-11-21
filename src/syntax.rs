@@ -470,6 +470,7 @@ pub(crate) enum StatementForm {
     RVInvariantFactors(usize, usize, ParsedExpr),
     RVNewton(usize, usize, ParsedExpr),
     RVHodge(ParsedExpr),
+    RVTree(crate::rv_tree::Report, usize, usize, usize, ParsedExpr),
     RVPosition(Box<[ParsedExpr; 2]>),
     RVMuAt(usize, usize, Box<[ParsedExpr; 2]>),
     Card(ParsedExpr),
@@ -930,6 +931,35 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 self.expect(Token::Equal)?;
                 StatementForm::Let(name, self.expr(0)?)
+            }
+            Token::Word(
+                name @ ("rvTreeShell" | "rvTreeBall" | "rvTreeCount" | "rvTreeClosureCount"),
+            ) => {
+                use crate::rv_hodge::Boundary;
+                use crate::rv_tree::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (root, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (radius, _) = self.number()?;
+                let report = match name {
+                    "rvTreeShell" => Report::Shell,
+                    "rvTreeBall" => Report::Ball,
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let mu = self.coweight()?;
+                        let boundary = if name == "rvTreeCount" {
+                            Boundary::Exact
+                        } else {
+                            Boundary::Closure
+                        };
+                        Report::Count(boundary, mu)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
             }
             Token::Word("rvHodge") => {
                 self.advance()?;
@@ -2901,15 +2931,7 @@ impl<'src> Parser<'src> {
                     self.expect(Token::Comma)?;
                     let (root, _) = self.number()?;
                     self.expect(Token::Comma)?;
-                    self.expect(Token::LBracket)?;
-                    let mut mu = Vec::new();
-                    while self.token() != Token::RBracket {
-                        mu.push(self.signed_number("ADLV coweight entry")?);
-                        if !self.eat(Token::Comma)? {
-                            break;
-                        }
-                    }
-                    self.expect(Token::RBracket)?;
+                    let mu = self.coweight()?;
                     self.expect(Token::RBracket)?;
                     let arguments = self.paren_pair(nest)?;
                     let depth = 1 + arguments[0].depth.max(arguments[1].depth);
@@ -3211,6 +3233,19 @@ impl<'src> Parser<'src> {
             RvDegree::Total(self.number()?.0)
         };
         Ok(RvGradeSpec { ideal, s, degree })
+    }
+
+    fn coweight(&mut self) -> Result<Vec<i64>> {
+        self.expect(Token::LBracket)?;
+        let mut mu = Vec::new();
+        while self.token() != Token::RBracket {
+            mu.push(self.signed_number("ADLV coweight entry")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(mu)
     }
 
     fn paren_pair(&mut self, nest: usize) -> Result<[ParsedExpr; 2]> {

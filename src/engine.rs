@@ -59,6 +59,7 @@ use crate::rv_shintani;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
+use crate::rv_tree;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -314,6 +315,23 @@ impl Engine {
                 );
                 self.values.push(value);
                 return Ok(None);
+            }
+            StatementForm::RVTree(report, modulus, root, radius, input) => {
+                let input = self.checker().expr(input)?;
+                let plan =
+                    rv_tree::plan(&mut self.model, input.ty, modulus, root, radius, &report)?;
+                let Value::RVLaurent(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                rv_tree::evaluate(
+                    &mut self.model,
+                    plan,
+                    &value,
+                    &report,
+                    modulus,
+                    root,
+                    radius,
+                )?
             }
             StatementForm::RVHodge(input) => {
                 let input = self.checker().expr(input)?;
