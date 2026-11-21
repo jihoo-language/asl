@@ -70,6 +70,7 @@ pub(crate) enum TypeForm {
     ASDiff(Label, usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
+    BPThick(BpSpec, usize, usize),
     BPRel(BpRelSpec),
     BPRelExt(BpRelSpec, usize),
     BPHeight(BpHeightSpec),
@@ -2143,6 +2144,19 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
+        if name.text == "BPThick" && self.eat(Token::LParen)? {
+            let (prime, height, arrows) = self.prime_bidegree()?;
+            self.expect(Token::Comma)?;
+            let (h, _) = self.number()?;
+            self.expect(Token::Comma)?;
+            let (power, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::BPThick(BpSpec(prime, height, arrows), h, power),
+                0,
+            );
+        }
         if matches!(name.text.as_str(), "BP" | "BPI") && self.eat(Token::LParen)? {
             let (prime, height, arrows) = self.prime_bidegree()?;
             let depth = if name.text == "BPI" {
@@ -2910,7 +2924,13 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "bpPow" | "bpCoface" | "bpNull" | "bpReduce" | "bpBockP" | "bpDegeneracy"
+                    "bpPow"
+                        | "bpCoface"
+                        | "bpNull"
+                        | "bpReduce"
+                        | "bpBockP"
+                        | "bpDegeneracy"
+                        | "bpThick"
                 ) && self.eat(Token::LBracket)?
                 {
                     let (index, _) = self.number()?;
@@ -2922,6 +2942,7 @@ impl<'src> Parser<'src> {
                         "bpBockP" => BpOperation::BockP(index),
                         "bpDegeneracy" => BpOperation::Degeneracy(index),
                         "bpNull" => BpOperation::Null(index),
+                        "bpThick" => BpOperation::Thick(index),
                         _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;
@@ -2934,7 +2955,13 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "bpNeg" | "bpD" | "bpLift" | "bpDelta" | "bpNormalize"
+                    "bpNeg"
+                        | "bpD"
+                        | "bpLift"
+                        | "bpDelta"
+                        | "bpNormalize"
+                        | "bpThickLift"
+                        | "bpThickDelta"
                 ) && self.token() == Token::LParen
                 {
                     let operation = match name.text.as_str() {
@@ -2943,6 +2970,8 @@ impl<'src> Parser<'src> {
                         "bpLift" => BpOperation::Lift,
                         "bpDelta" => BpOperation::Delta,
                         "bpNormalize" => BpOperation::Normalize,
+                        "bpThickLift" => BpOperation::ThickLift,
+                        "bpThickDelta" => BpOperation::ThickDelta,
                         _ => unreachable!(),
                     };
                     let input = self.paren_expr(nest)?;

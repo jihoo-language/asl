@@ -7,6 +7,27 @@ use crate::model::Model;
 const MAX_POLYNOMIAL_CELLS: usize = 200_000;
 pub(crate) type Monomial = Box<[(usize, usize)]>;
 
+#[derive(Clone, Copy)]
+pub(crate) struct Quotient {
+    pub(crate) prime: u32,
+    pub(crate) killed_variables: usize,
+    pub(crate) cutoff: Option<(usize, usize)>,
+}
+
+impl Quotient {
+    fn retains(self, monomial: &Monomial) -> bool {
+        monomial
+            .first()
+            .is_none_or(|&(index, _)| index >= self.killed_variables)
+            && self.cutoff.is_none_or(|(variable, power)| {
+                monomial
+                    .binary_search_by_key(&variable, |&(index, _)| index)
+                    .ok()
+                    .is_none_or(|index| monomial[index].1 < power)
+            })
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct Polynomial {
     terms: BTreeMap<Monomial, i128>,
@@ -159,20 +180,12 @@ impl Polynomial {
         Ok(true)
     }
 
-    pub(crate) fn reduce(
-        &mut self,
-        model: &mut Model,
-        prime: u32,
-        killed_variables: usize,
-    ) -> Result<()> {
+    pub(crate) fn reduce(&mut self, model: &mut Model, quotient: Quotient) -> Result<()> {
         model.spend(self.cells)?;
-        let modulus = i128::from(prime);
+        let modulus = i128::from(quotient.prime);
         self.terms.retain(|monomial, coefficient| {
             *coefficient = coefficient.rem_euclid(modulus);
-            let keep = *coefficient != 0
-                && monomial
-                    .first()
-                    .is_none_or(|&(variable, _)| variable >= killed_variables);
+            let keep = *coefficient != 0 && quotient.retains(monomial);
             if !keep {
                 self.cells -= 3 + 2 * monomial.len();
             }
@@ -181,10 +194,11 @@ impl Polynomial {
         Ok(())
     }
 
-    pub(crate) fn divide_variable(
+    pub(crate) fn divide_variable_power(
         self,
         model: &mut Model,
         variable: usize,
+        power: usize,
     ) -> Result<Option<Self>> {
         let mut quotient = Self::default();
         for (monomial, coefficient) in self.terms {
@@ -192,11 +206,14 @@ impl Polynomial {
             let Ok(index) = monomial.binary_search_by_key(&variable, |&(index, _)| index) else {
                 return Ok(None);
             };
+            let Some(remaining) = monomial[index].1.checked_sub(power) else {
+                return Ok(None);
+            };
             let mut monomial = monomial.into_vec();
-            if monomial[index].1 == 1 {
+            if remaining == 0 {
                 monomial.remove(index);
             } else {
-                monomial[index].1 -= 1;
+                monomial[index].1 = remaining;
             }
             quotient.insert(model, monomial.into_boxed_slice(), coefficient, false)?;
         }
@@ -204,11 +221,23 @@ impl Polynomial {
     }
 
     pub(crate) fn multiply(&self, model: &mut Model, rhs: &Self) -> Result<Self> {
+        self.multiply_in(model, rhs, None)
+    }
+
+    pub(crate) fn multiply_in(
+        &self,
+        model: &mut Model,
+        rhs: &Self,
+        quotient: Option<Quotient>,
+    ) -> Result<Self> {
+        let cutoff = quotient.and_then(|q| q.cutoff);
         let mut result = Self::default();
         for (left, &a) in &self.terms {
             for (right, &b) in &rhs.terms {
                 model.spend(1 + left.len() + right.len())?;
-                let monomial = multiply_monomials(left, right)?;
+                let Some(monomial) = multiply_monomials(left, right, cutoff)? else {
+                    continue;
+                };
                 result.insert(
                     model,
                     monomial,
@@ -217,18 +246,21 @@ impl Polynomial {
                 )?;
             }
         }
+        if let Some(quotient) = quotient {
+            result.reduce(model, quotient)?;
+        }
         Ok(result)
     }
 
     pub(crate) fn power(&self, model: &mut Model, exponent: usize) -> Result<Self> {
-        self.power_mod(model, exponent, None)
+        self.power_in(model, exponent, None)
     }
 
-    pub(crate) fn power_mod(
+    pub(crate) fn power_in(
         &self,
         model: &mut Model,
         mut exponent: usize,
-        prime: Option<u32>,
+        quotient: Option<Quotient>,
     ) -> Result<Self> {
         model.spend(self.cells)?;
         if exponent == 0 {
@@ -239,19 +271,13 @@ impl Polynomial {
         loop {
             model.spend(1)?;
             if exponent & 1 != 0 {
-                result = result.multiply(model, &base)?;
-                if let Some(prime) = prime {
-                    result.reduce(model, prime, 0)?;
-                }
+                result = result.multiply_in(model, &base, quotient)?;
             }
             exponent >>= 1;
             if exponent == 0 {
                 return Ok(result);
             }
-            base = base.multiply(model, &base)?;
-            if let Some(prime) = prime {
-                base.reduce(model, prime, 0)?;
-            }
+            base = base.multiply_in(model, &base, quotient)?;
         }
     }
 
@@ -276,17 +302,14 @@ impl Polynomial {
         &self,
         model: &mut Model,
         images: &[Self],
-        prime: Option<u32>,
+        quotient: Option<Quotient>,
     ) -> Result<Self> {
         let mut result = Self::default();
         for (monomial, &coefficient) in &self.terms {
             let mut term = Self::integer(coefficient);
             for &(variable, exponent) in monomial.iter() {
-                let power = images[variable].power_mod(model, exponent, prime)?;
-                term = term.multiply(model, &power)?;
-                if let Some(prime) = prime {
-                    term.reduce(model, prime, 0)?;
-                }
+                let power = images[variable].power_in(model, exponent, quotient)?;
+                term = term.multiply_in(model, &power, quotient)?;
             }
             result.add_assign(model, &term, false)?;
         }
@@ -359,7 +382,8 @@ impl Polynomial {
 fn multiply_monomials(
     mut left: &[(usize, usize)],
     mut right: &[(usize, usize)],
-) -> Result<Monomial> {
+    cutoff: Option<(usize, usize)>,
+) -> Result<Option<Monomial>> {
     let mut result = Vec::with_capacity(left.len() + right.len());
     while let (Some((&(i, a), next_left)), Some((&(j, b), next_right))) =
         (left.split_first(), right.split_first())
@@ -370,6 +394,11 @@ fn multiply_monomials(
                 left = next_left;
             }
             Ordering::Equal => {
+                if let Some((variable, power)) = cutoff {
+                    if i == variable && (a >= power || b >= power - a) {
+                        return Ok(None);
+                    }
+                }
                 result.push((
                     i,
                     a.checked_add(b)
@@ -386,7 +415,7 @@ fn multiply_monomials(
     }
     result.extend_from_slice(left);
     result.extend_from_slice(right);
-    Ok(result.into_boxed_slice())
+    Ok(Some(result.into_boxed_slice()))
 }
 
 fn overflow() -> Error {

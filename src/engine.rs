@@ -1386,8 +1386,11 @@ impl Engine {
                         odd_ext::persist(&mut self.model, product)
                     }
                     (BinaryOp::BpMultiply, Value::BP(a), Value::BP(b)) => {
-                        let result = a.multiply(&mut self.model, &b)?;
-                        self.persist_bp(expr.ty, result)
+                        let Kind::BP(shape) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let result = a.multiply_in(&mut self.model, &b, shape.reduction())?;
+                        bp::persist(&mut self.model, result)
                     }
                     (BinaryOp::Add, Value::RVPoly(a), Value::RVPoly(b)) => {
                         let polynomial = rv_poly::add(&mut self.model, &a, &b)?;
@@ -2965,6 +2968,13 @@ impl Checker<'_> {
             TypeForm::BPExt(spec, t) => {
                 let grade = self.bp_ext_grade(spec, t)?;
                 self.model.bp_ext_type(grade)
+            }
+            TypeForm::BPThick(crate::syntax::BpSpec(p, n, a), h, power) => {
+                let shape = bp::Shape::new(self.model, p, n, a)?;
+                if !(2..=shape.height + 1).contains(&h) {
+                    return Err(Error::plain("BPThick requires 2 <= h <= n+1"));
+                }
+                self.model.bp_type(shape.quotient(h - 1)?.thick(power)?)
             }
             TypeForm::BP(spec, depth) => {
                 let mut shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;

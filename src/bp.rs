@@ -1,7 +1,7 @@
 use std::fmt;
 use std::rc::Rc;
 
-use crate::bp_polynomial::Polynomial;
+use crate::bp_polynomial::{Polynomial, Quotient};
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
@@ -15,6 +15,7 @@ pub(crate) struct Shape {
     pub(crate) height: usize,
     pub(crate) arrows: usize,
     pub(crate) depth: usize,
+    pub(crate) thickness: Option<usize>,
 }
 
 impl fmt::Display for Shape {
@@ -24,8 +25,15 @@ impl fmt::Display for Shape {
             height,
             arrows,
             depth,
+            thickness,
         } = *self;
-        if depth == 0 {
+        if let Some(exponent) = thickness {
+            write!(
+                out,
+                "BPThick({prime}, {height}, {arrows}, {}, {exponent})",
+                depth + 1
+            )
+        } else if depth == 0 {
             write!(out, "BP({prime}, {height}, {arrows})")
         } else {
             write!(out, "BPI({prime}, {height}, {arrows}, {depth})")
@@ -45,6 +53,7 @@ impl Shape {
             height: 0,
             arrows: 0,
             depth: 0,
+            thickness: None,
         }
         .raise(height)?
         .with_arrows(arrows)
@@ -72,16 +81,55 @@ impl Shape {
         if depth < self.depth {
             return Err(Error::plain("bpReduce cannot decrease the ideal depth"));
         }
-        Ok(Self { depth, ..self })
+        if self.thickness.is_some() && depth == self.depth {
+            return Err(Error::plain("bpReduce must kill the thickened generator"));
+        }
+        Ok(Self {
+            depth,
+            thickness: None,
+            ..self
+        })
     }
 
-    fn coefficient_prime(self) -> Option<u32> {
-        (self.depth != 0).then_some(self.prime)
+    pub(crate) fn thick(self, exponent: usize) -> Result<Self> {
+        self.require_quotient("bpThick")?;
+        if self.depth > self.height {
+            return Err(Error::plain(
+                "bpThick requires a last invariant generator in this height",
+            ));
+        }
+        if exponent == 0 {
+            return Err(Error::plain("BPThick exponent must be positive"));
+        }
+        Ok(Self {
+            thickness: Some(exponent),
+            ..self
+        })
+    }
+
+    fn thick_lift(self, operation: &str) -> Result<Self> {
+        if self.thickness.is_none() {
+            return Err(Error::plain(format!(
+                "{operation} requires a BPThick cochain"
+            )));
+        }
+        Ok(Self {
+            thickness: None,
+            ..self
+        })
+    }
+
+    pub(crate) fn reduction(self) -> Option<Quotient> {
+        (self.depth != 0).then(|| Quotient {
+            prime: self.prime,
+            killed_variables: self.depth - 1,
+            cutoff: self.thickness.map(|power| (self.depth - 1, power)),
+        })
     }
 
     pub(crate) fn normalize(self, model: &mut Model, polynomial: &mut Polynomial) -> Result<()> {
-        if let Some(prime) = self.coefficient_prime() {
-            polynomial.reduce(model, prime, self.depth - 1)?;
+        if let Some(quotient) = self.reduction() {
+            polynomial.reduce(model, quotient)?;
         }
         Ok(())
     }
@@ -96,7 +144,7 @@ impl Shape {
     }
 
     fn require_quotient(self, operation: &str) -> Result<()> {
-        if self.depth == 0 {
+        if self.depth == 0 || self.thickness.is_some() {
             return Err(Error::plain(format!("{operation} requires a BPI cochain")));
         }
         Ok(())
@@ -116,13 +164,16 @@ impl Shape {
     }
 
     fn same_ring(self, other: Self) -> bool {
-        self.prime == other.prime && self.height == other.height && self.depth == other.depth
+        self.prime == other.prime
+            && self.height == other.height
+            && self.depth == other.depth
+            && self.thickness == other.thickness
     }
 
     pub(crate) fn cup(self, other: Self) -> Result<Self> {
         if !self.same_ring(other) {
             return Err(Error::plain(
-                "bpCup requires the same prime, height, and ideal depth",
+                "bpCup requires the same prime, height, and ideal depth and the same truncation",
             ));
         }
         self.with_arrows(self.arrows + other.arrows)
@@ -445,7 +496,7 @@ pub(crate) fn coface(
     for image in &mut images {
         target.normalize(model, image)?;
     }
-    let mut output = input.substitute(model, &images, target.coefficient_prime())?;
+    let mut output = input.substitute(model, &images, target.reduction())?;
     target.normalize(model, &mut output)?;
     Ok(output)
 }
@@ -506,11 +557,9 @@ pub(crate) fn cup(
     for slot in 1..=right.arrows {
         images.extend(target.variables(left.arrows + slot, target.height));
     }
-    let mut g = g.substitute(model, &images, target.coefficient_prime())?;
+    let mut g = g.substitute(model, &images, target.reduction())?;
     target.normalize(model, &mut g)?;
-    let mut output = f.multiply(model, &g)?;
-    target.normalize(model, &mut output)?;
-    Ok(output)
+    f.multiply_in(model, &g, target.reduction())
 }
 
 fn degeneracy_target(shape: Shape, index: usize) -> Result<Shape> {
@@ -574,7 +623,7 @@ impl Massey {
         let [a, b, c, u, v] = shapes;
         if shapes[1..].iter().any(|&other| !a.same_ring(other)) {
             return Err(Error::plain(
-                "bpMassey requires the same prime, height, and ideal depth",
+                "bpMassey requires the same prime, height, and ideal depth and the same truncation",
             ));
         }
         if u.arrows + 1 != a.arrows + b.arrows {
@@ -637,9 +686,22 @@ fn connecting(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Pol
         Ok(numerator)
     } else {
         numerator
-            .divide_variable(model, previous.depth - 1)?
+            .divide_variable_power(model, previous.depth - 1, 1)?
             .ok_or_else(noncycle)
     }
+}
+
+fn thick_connecting(model: &mut Model, shape: Shape, input: &Polynomial) -> Result<Polynomial> {
+    let base = shape.thick_lift("bpThickDelta")?;
+    let exponent = shape.thickness.unwrap();
+    // The invariant generator is a non-zero divisor in the unthickened
+    // polynomial complex. Exact division is equivalent to thick closure.
+    differential(model, base, input)?
+        .divide_variable_power(model, base.depth - 1, exponent)?
+        .ok_or_else(|| Error::plain(format!(
+            "bpThickDelta requires a closed BPThick cochain with lifted differential divisible by v{}^{exponent}",
+            base.depth
+        )))
 }
 
 fn p_bockstein(
@@ -678,6 +740,9 @@ pub(crate) enum Operation {
     Degeneracy(usize),
     Normalize,
     Null(usize),
+    Thick(usize),
+    ThickLift,
+    ThickDelta,
 }
 
 impl Operation {
@@ -694,6 +759,9 @@ impl Operation {
             Self::Degeneracy(_) => "bpDegeneracy",
             Self::Normalize => "bpNormalize",
             Self::Null(_) => "bpNull",
+            Self::Thick(_) => "bpThick",
+            Self::ThickLift => "bpThickLift",
+            Self::ThickDelta => "bpThickDelta",
         }
     }
 
@@ -711,6 +779,9 @@ impl Operation {
             Self::Negate | Self::Power(_) | Self::Normalize => Ok(shape),
             Self::Degeneracy(index) => degeneracy_target(shape, index),
             Self::Reduce(depth) => shape.quotient(depth),
+            Self::Thick(exponent) => shape.thick(exponent),
+            Self::ThickLift => shape.thick_lift(self.name()),
+            Self::ThickDelta => shape.thick_lift(self.name())?.next(),
             Self::Lift => {
                 shape.require_quotient(self.name())?;
                 Ok(Shape { depth: 0, ..shape })
@@ -744,10 +815,10 @@ impl Operation {
                 target.normalize(model, &mut output)?;
                 Ok(output)
             }
-            Self::Power(power) => input.power_mod(model, power, shape.coefficient_prime()),
+            Self::Power(power) => input.power_in(model, power, shape.reduction()),
             Self::Coface(face) => coface(model, shape, face, input),
             Self::Differential => differential(model, shape, input),
-            Self::Reduce(_) | Self::Lift => {
+            Self::Reduce(_) | Self::Lift | Self::Thick(_) | Self::ThickLift => {
                 model.spend(input.cells())?;
                 let mut output = input.clone();
                 target.normalize(model, &mut output)?;
@@ -758,6 +829,7 @@ impl Operation {
             Self::Degeneracy(index) => degeneracy(model, shape, index, input),
             Self::Normalize => normalized(model, shape, input),
             Self::Null(t) => crate::bp_ext::null(model, shape, t, input),
+            Self::ThickDelta => thick_connecting(model, shape, input),
         }
     }
 }

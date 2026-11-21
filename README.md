@@ -406,6 +406,14 @@ The required differential of a proper witness is the sum of $X_{ik}\smile X_{kj}
 
 For the integral class $\alpha=[t_1]$, the chosen repeated systems at $p=3,5,7,11$ have zero values before arity $p$ and class $-\beta$ at arity $p$, where $\beta$ is the two-step connecting class of $v_2$. The height-two example checks a fivefold result using explicitly supplied integral witnesses at $p=5$. [Higher BP defining system example](examples/bp-higher.asl)
 
+### Divided Greek-letter connecting maps
+
+`BPThick(p, n, a, h, j)` is the quotient of `BPI(p, n, a, h−1)` by $v_{h-1}^j$, for $2\le h\le n+1$ and $j\ge1$. Apply `bpThick[j](x)` to a cochain in that `BPI` ring. Its canonical polynomials retain powers of $v_{h-1}$ below `j` and use coefficients in $0,\ldots,p-1$. The generator $v_{h-1}$ is strictly invariant in the underlying `BPI`, so arithmetic, cup, cofaces, codegeneracies and differential descend. `bpThickLift` returns the chosen monomial lift in the underlying `BPI`. Reduction to a deeper invariant-ideal quotient is available once that quotient kills $v_{h-1}$.
+
+`bpThickDelta(x)` differentiates this lift and divides exactly by $v_{h-1}^j$. A failed division detects a noncycle. The output is closed in `BPI(p, n, a+1, h−1)`. For `j=1` the operation agrees with `bpDelta` after reduction to `BPI` depth `h`. Changing a lift by $v_{h-1}^j y$ changes the quotient of its differential by the boundary $dy$.
+
+At height two, apply `bpDelta(bpThickDelta(...))` to the class of $v_2^s$ in the thick quotient to obtain an integral representative of $\beta_{s/j}$. Its internal degree is $2s(p^2-1)-2j(p-1)$. The exact $v_1$ divisibility of $d(v_2^s)$ modulo $p$ is $p^{\nu_p(s)}$ for $s>0$. The example checks order two for $\beta_{2/2}$ at $p=2$ in weight eight and order three for $\beta_{3/3}$ at $p=3$ in weight 36. [Divided Greek-letter example](examples/bp-divided-greek.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.
