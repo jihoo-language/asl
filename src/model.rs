@@ -24,6 +24,8 @@ use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
 use crate::rv_hom::{self, Hom};
+use crate::rv_ideal::Ideal as RvIdeal;
+use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -73,6 +75,8 @@ pub(crate) enum Kind {
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
+    RVKoszul(RvGrade),
+    RVTor(RvGrade),
     RVPoly(q_koszul::Indices, usize),
     BP(bp::Shape),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
@@ -156,6 +160,7 @@ pub(crate) enum Value {
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
     JetHom(jet_hom::Support),
+    RVKoszul(rv_koszul::Support),
     RVPoly(Polynomial),
     BP(Rc<bp_polynomial::Polynomial>),
     Suspension(SuspensionPoint),
@@ -224,6 +229,8 @@ pub(crate) struct Model {
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
+    rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
+    rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
@@ -239,6 +246,8 @@ impl Model {
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
+            rv_ideals: HashMap::new(),
+            rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
@@ -406,6 +415,12 @@ impl Model {
                 1
             }
             Kind::VKoszul(..) | Kind::VExt(..) | Kind::VBock(..) => usize::MAX,
+            Kind::RVKoszul(ref grade) | Kind::RVTor(ref grade)
+                if grade.s > grade.t || grade.s > self.rv_ideals[&grade.ideal].selected.len() =>
+            {
+                1
+            }
+            Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
             Kind::RVPoly(..) | Kind::BP(..) => usize::MAX,
@@ -486,6 +501,8 @@ impl Model {
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
+                | Kind::RVKoszul(..)
+                | Kind::RVTor(..)
                 | Kind::RVPoly(..)
                 | Kind::BP(..)
                 | Kind::MapMay(..)
@@ -864,6 +881,51 @@ impl Model {
 
     pub(crate) fn bp_type(&mut self, shape: bp::Shape) -> Result<TypeId> {
         self.inhabited_type(Kind::BP(shape), 0)
+    }
+
+    pub(crate) fn rv_ideal_named(&self, name: &str) -> Option<Rc<RvIdeal>> {
+        self.rv_ideals.get(name).cloned()
+    }
+
+    pub(crate) fn rv_ideal(&self, name: &Label) -> Result<Rc<RvIdeal>> {
+        self.rv_ideal_named(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
+    }
+
+    pub(crate) fn define_rv_ideal(&mut self, name: String, ideal: RvIdeal) {
+        self.rv_ideals.insert(name.into(), Rc::new(ideal));
+    }
+
+    pub(crate) fn rv_grade(&self, name: Label, s: usize, t: usize) -> Result<RvGrade> {
+        self.rv_ideal(&name)?;
+        Ok(RvGrade {
+            ideal: name.text.into(),
+            s,
+            t,
+        })
+    }
+
+    pub(crate) fn rv_complex_type(&mut self, grade: RvGrade, homology: bool) -> Result<TypeId> {
+        let kind = if homology {
+            Kind::RVTor(grade)
+        } else {
+            Kind::RVKoszul(grade)
+        };
+        self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn rv_tor(&mut self, ty: TypeId) -> Result<Rc<Tor>> {
+        if let Some(tor) = self.rv_tor.get(&ty) {
+            return Ok(tor.clone());
+        }
+        let Kind::RVTor(grade) = self.kind(ty) else {
+            unreachable!();
+        };
+        let grade = grade.clone();
+        let ideal = self.rv_ideals[&grade.ideal].clone();
+        let tor = Rc::new(Tor::build(self, &ideal, &grade)?);
+        self.rv_tor.insert(ty, tor.clone());
+        Ok(tor)
     }
 
     pub(crate) fn rv_poly_type(
@@ -1312,6 +1374,8 @@ impl Model {
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
+            | Kind::RVKoszul(..)
+            | Kind::RVTor(..)
             | Kind::RVPoly(..)
             | Kind::BP(..)
             | Kind::MapMay(..)
@@ -1461,6 +1525,17 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
+            Kind::RVKoszul(grade) | Kind::RVTor(grade) => {
+                let family = if matches!(self.kind(ty), Kind::RVKoszul(_)) {
+                    "RVKoszul"
+                } else {
+                    "RVTor"
+                };
+                out.push(&format!(
+                    "{family}({}, {}, {})",
+                    grade.ideal, grade.s, grade.t
+                ))
+            }
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&format!(
                 "BP({}, {}, {})",
@@ -1586,6 +1661,8 @@ impl Model {
             (Value::BP(left), Value::BP(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
+            (Value::RVKoszul(left), Value::RVKoszul(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_koszul::compare(self, left, right)? == Ordering::Equal),
             (Value::RVPoly(left), Value::RVPoly(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
@@ -1688,6 +1765,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     left.compare(self, right)
+                }
+            }
+            (Value::RVKoszul(left), Value::RVKoszul(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_koszul::compare(self, left, right)
                 }
             }
             (Value::RVPoly(left), Value::RVPoly(right)) => {
@@ -1850,6 +1934,26 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::BP(..) => return Err(Error::plain("cannot enumerate a BP polynomial ring")),
+                Kind::RVKoszul(ref grade) => {
+                    let grade = grade.clone();
+                    let ideal = self.rv_ideals[&grade.ideal].clone();
+                    let basis = rv_koszul::Slice::build(
+                        self,
+                        &ideal,
+                        grade.s,
+                        grade.t,
+                        MAX_ELEMENTS.ilog2() as usize,
+                    )?;
+                    let rank = basis.len();
+                    self.allocate(basis.cells() + 2 * (support_space_size(rank) / 2) * rank)?;
+                    self.enumerate_supports(0, rank, |support| {
+                        Value::RVKoszul(support.iter().map(|&index| basis.term(index)).collect())
+                    })?
+                }
+                Kind::RVTor(..) => {
+                    let rank = self.rv_tor(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
                 Kind::RVPoly(ref selected, degree) => {
                     let basis = rv_poly::basis(
                         self,
@@ -2248,6 +2352,29 @@ impl Model {
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
+            Value::RVKoszul(terms) => {
+                let Kind::RVKoszul(grade) = self.kind(ty) else {
+                    unreachable!();
+                };
+                let selected = &self.rv_ideals[&grade.ideal].selected;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().rev().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    write_rv_polynomial(out, selected, std::slice::from_ref(&term.powers))?;
+                    for (bit, primitive) in selected.iter().enumerate() {
+                        if term.wedge & (1 << bit) != 0 {
+                            out.push(&format!(" e{primitive}"))?;
+                        }
+                    }
+                }
+                out.push("}")
+            }
             Value::RVPoly(polynomial) => {
                 self.spend(rv_poly::cells(polynomial))?;
                 let Kind::RVPoly(selected, degree) = self.kind(ty) else {
@@ -2484,7 +2611,11 @@ fn write_odd_word(out: &mut Text, p: Prime, word: &odd_cobar::Word) -> Result<()
     out.push("}")
 }
 
-fn write_rv_polynomial(out: &mut Text, selected: &[usize], polynomial: &Polynomial) -> Result<()> {
+fn write_rv_polynomial(
+    out: &mut Text,
+    selected: &[usize],
+    polynomial: &[rv_poly::Monomial],
+) -> Result<()> {
     if polynomial.is_empty() {
         return out.push("0");
     }

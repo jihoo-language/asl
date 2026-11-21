@@ -53,6 +53,7 @@ pub(crate) enum TypeForm {
     VExt(QSpec<i64>),
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
+    RVComplex(RvGradeSpec, bool),
     BP(BpSpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -73,6 +74,12 @@ pub(crate) enum RvIdealOp {
 }
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
+
+pub(crate) struct RvGradeSpec {
+    pub(crate) ideal: Label,
+    pub(crate) s: usize,
+    pub(crate) t: usize,
+}
 
 pub(crate) struct RvMatrixSpec {
     pub(crate) base: Box<ParsedType>,
@@ -179,6 +186,8 @@ pub(crate) enum BinaryOp {
     CeMul,
     MilnorPair,
     RvMultiply,
+    RvKoszulProduct,
+    RvTorProduct,
     BpMultiply,
 }
 
@@ -199,6 +208,8 @@ impl BinaryOp {
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
+            "rvkProd" => Some(Self::RvKoszulProduct),
+            "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
             _ => None,
         }
@@ -309,6 +320,8 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvKoszulTerm(Label, Vec<usize>, Box<ParsedExpr>),
+    RvTorGenerator(RvGradeSpec, usize, Span),
     RvMonomial(Vec<usize>, Vec<usize>),
     BpInteger(BpSpec, i128),
     BpVariable(BpSpec, Option<usize>, usize),
@@ -376,6 +389,7 @@ pub(crate) enum StatementForm {
     RankVariety(RankVarietySpec),
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
+    RvBetti(RvGradeSpec),
     RvMinors(RvMatrixSpec, usize),
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
     RvFitting(Label, RvMatrixSpec, usize),
@@ -882,6 +896,13 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 form
+            }
+            Token::Word("rvbetti") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.rv_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvBetti(grade)
             }
             Token::Word("rvminors") => {
                 self.advance()?;
@@ -1432,6 +1453,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows)), 0);
         }
+        if matches!(name.text.as_str(), "RVKoszul" | "RVTor") && self.eat(Token::LParen)? {
+            let grade = self.rv_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVComplex(grade, name.text == "RVTor"), 0);
+        }
         if name.text == "RVPoly" && self.eat(Token::LParen)? {
             let selected = self.exponents()?;
             self.expect(Token::Comma)?;
@@ -1767,6 +1793,26 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvkterm" && self.eat(Token::LBracket)? {
+                    let ideal = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let wedge = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvKoszulTerm(ideal, wedge, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvtorgen" && self.eat(Token::LBracket)? {
+                    let grade = self.rv_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvTorGenerator(grade, index, at), 0);
+                }
                 if name.text == "rvmon" && self.eat(Token::LBracket)? {
                     let selected = self.exponents()?;
                     self.expect(Token::RBracket)?;
@@ -2382,6 +2428,15 @@ impl<'src> Parser<'src> {
             }
             _ => Err(self.expected("an expression")),
         }
+    }
+
+    fn rv_grade(&mut self) -> Result<RvGradeSpec> {
+        let ideal = self.label()?;
+        self.expect(Token::Comma)?;
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (t, _) = self.number()?;
+        Ok(RvGradeSpec { ideal, s, t })
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {

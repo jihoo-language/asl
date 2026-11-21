@@ -530,6 +530,16 @@ For the Cusp module the size-three minors span $x_1^3+x_0^2x_2$. Its first Hasse
 `rvhilbert[J, d];` counts the degree-`d` monomials outside the initial monomial ideal. This is the dimension of the corresponding graded quotient, computed by inclusion–exclusion over the distinct least common multiples of the initial generators. For $(xy+z^2, x^2+yz)$ the Gröbner basis includes the cubic $xz^2+y^2z$ with witness coefficients $x$ and $y$. The degree-$d$ quotient has dimension four for $d\ge2$. For the Cusp size-three ideal, the quotient has dimension $3d$ for $d\ge1$, so the example computes 3,000 at degree 1,000. [Gröbner and fitting ideal example](examples/rank-ideals.asl)
 
 
+### Koszul syzygies and their products
+
+For a declared rank ideal $J\subset S=\mathbb F_2[x_i:i\in I]$, `RVKoszul(J, s, t)` is the discrete space of chains in $(S/J)_{t-s}\otimes\Lambda^s(e_i)$. The constructor `rvkterm[J, [i,j,...]](p)` reduces the homogeneous coefficient $p$ modulo $J$ and wedges the listed generators in increasing primitive order. The internal degree is the polynomial degree plus the wedge length. The empty wedge is the unit of the exterior algebra.
+
+`rvkD(a)` replaces each wedge factor $e_i$ by $x_i$ and sums the resulting terms. It requires positive homological degree and preserves internal degree. `rvkProd(a,b)` multiplies the coefficients modulo $J$ and takes the wedge product. A repeated exterior generator gives zero. Both chains and classes support `zero` and `add`.
+
+`RVTor(J, s, t)` is the corresponding homology group $\operatorname{Tor}^S_s(S/J,\mathbb F_2)_t$. Use `rvbetti[J,s,t];` for its rank and `rvtorgen[J,s,t,j]` for its zero-based basis generators. `rvTorClass(a)` projects a cycle to its class and `rvTorRep(x)` chooses a cycle representative. `rvTorProd(x,y)` multiplies represented cycles and takes their class. The calculation uses standard monomials of the reduced Gröbner basis, so individual sparse chains can be multiplied without enumerating the ambient finite space.
+
+For the complete intersection $(xy+z^2,x^2+yz)$, the two classes in $(1,2)$ multiply to the generator at $(2,4)$. The example also multiplies a cycle by a nonzero chain boundary and verifies that the product is a boundary. For $(x^2,xy,y^2)$ the ranks in $(1,2)$ and $(2,3)$ are three and two, and all products of positive homological degree vanish. [Syzygies example](examples/rank-syzygies.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

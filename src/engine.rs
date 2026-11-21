@@ -41,6 +41,7 @@ use crate::restriction_transfer;
 use crate::rv_arithmetic;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
+use crate::rv_koszul;
 use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
@@ -60,7 +61,6 @@ pub(crate) struct Engine {
     bindings: HashMap<String, Binding>,
     values: Vec<Value>,
     locals: Vec<Value>,
-    ideals: HashMap<String, Rc<RvIdeal>>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,6 +90,9 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvKoszulDifferential,
+    RvTorClass,
+    RvTorRepresentative,
     QDifferential,
     QClass,
     QRepresentative,
@@ -123,6 +126,9 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvkD" => Some(Self::RvKoszulDifferential),
+            "rvTorClass" => Some(Self::RvTorClass),
+            "rvTorRep" => Some(Self::RvTorRepresentative),
             "qD" => Some(Self::QDifferential),
             "qClass" => Some(Self::QClass),
             "qRep" => Some(Self::QRepresentative),
@@ -166,6 +172,7 @@ enum TypedForm {
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
+    RvKoszulTerm(usize, Rc<RvIdeal>, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
     RvInMinors(TypeId, q_koszul::Indices, usize, Box<TypedExpr>),
@@ -215,7 +222,6 @@ impl Engine {
             bindings: HashMap::new(),
             values: Vec::new(),
             locals: Vec::new(),
-            ideals: HashMap::new(),
         }
     }
 
@@ -224,7 +230,6 @@ impl Engine {
             model: &mut self.model,
             bindings: &self.bindings,
             locals: Vec::new(),
-            ideals: &self.ideals,
         }
     }
 
@@ -372,7 +377,7 @@ impl Engine {
                 )
             }
             StatementForm::RvIdeal(name, selected, expressions) => {
-                check_new_ideal(&self.ideals, &name)?;
+                check_new_ideal(&self.model, &name)?;
                 let selected = q_koszul::indices(&mut self.model, selected)?;
                 let mut generators = Vec::with_capacity(expressions.len());
                 for expression in expressions {
@@ -390,29 +395,38 @@ impl Engine {
                     generators.push((degree, polynomial));
                 }
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
-                self.ideals.insert(name.text, Rc::new(ideal));
+                self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
             StatementForm::RvFitting(name, spec, size) => {
-                check_new_ideal(&self.ideals, &name)?;
+                check_new_ideal(&self.model, &name)?;
                 let base = self.checker().q_endpoint(*spec.base)?;
                 let selected = q_koszul::indices(&mut self.model, spec.selected)?;
                 let minors = self.model.rv_minors(base, selected.clone(), size)?;
                 let generators = minors.polynomials().map(|p| (size, p.clone())).collect();
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
-                self.ideals.insert(name.text, Rc::new(ideal));
+                self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
             StatementForm::RvGroebner(name) => {
-                let ideal = find_ideal(&self.ideals, &name)?;
+                let ideal = self.model.rv_ideal(&name)?;
                 let prefix = format!("rvgroebner[{}]", name.text);
                 self.model
                     .show_rv_polynomials(&prefix, &ideal.selected, ideal.polynomials())?
             }
             StatementForm::RvHilbert(name, degree) => {
-                let ideal = find_ideal(&self.ideals, &name)?;
+                let ideal = self.model.rv_ideal(&name)?;
                 let count = ideal.hilbert(&mut self.model, degree)?;
                 format!("rvhilbert[{}, {degree}] = {count}", name.text)
+            }
+            StatementForm::RvBetti(spec) => {
+                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                let ty = self.model.rv_complex_type(grade.clone(), true)?;
+                let rank = self.model.rv_tor(ty)?.rank();
+                format!(
+                    "rvbetti[{}, {}, {}] = {rank}",
+                    grade.ideal, grade.s, grade.t
+                )
             }
             StatementForm::RvMinors(spec, size) => {
                 let base = self.checker().q_endpoint(*spec.base)?;
@@ -642,6 +656,23 @@ impl Engine {
         Ok(Some(line))
     }
 
+    fn rv_tor_class(
+        &mut self,
+        ty: TypeId,
+        ideal: &RvIdeal,
+        terms: &[rv_koszul::Term],
+    ) -> Result<Value> {
+        if terms.is_empty() {
+            return Ok(cohomology::zero());
+        }
+        let coordinates = self
+            .model
+            .rv_tor(ty)?
+            .project(&mut self.model, ideal, terms)?;
+        self.model.allocate(coordinates.len())?;
+        Ok(Value::Class(coordinates.into()))
+    }
+
     fn comparable_exprs(
         &mut self,
         left: ParsedExpr,
@@ -692,6 +723,40 @@ impl Engine {
                             &mut self.model,
                             polynomial,
                         )?))
+                    }
+                    (BinaryOp::Add, Value::RVKoszul(a), Value::RVKoszul(b)) => {
+                        Ok(Value::RVKoszul(rv_koszul::add(&mut self.model, &a, &b)?))
+                    }
+                    (BinaryOp::RvKoszulProduct, Value::RVKoszul(a), Value::RVKoszul(b)) => {
+                        let Kind::RVKoszul(grade) = self.model.kind(expr.ty) else {
+                            unreachable!();
+                        };
+                        let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                        Ok(Value::RVKoszul(rv_koszul::product(
+                            &mut self.model,
+                            &ideal,
+                            &a,
+                            &b,
+                        )?))
+                    }
+                    (BinaryOp::RvTorProduct, Value::Class(a), Value::Class(b)) => {
+                        if a.is_empty() || b.is_empty() {
+                            return Ok(cohomology::zero());
+                        }
+                        let Kind::RVTor(grade) = self.model.kind(expr.ty) else {
+                            unreachable!();
+                        };
+                        let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                        let a = self
+                            .model
+                            .rv_tor(left.ty)?
+                            .representative(&mut self.model, &a)?;
+                        let b = self
+                            .model
+                            .rv_tor(right.ty)?
+                            .representative(&mut self.model, &b)?;
+                        let terms = rv_koszul::product(&mut self.model, &ideal, &a, &b)?;
+                        self.rv_tor_class(expr.ty, &ideal, &terms)
                     }
                     (BinaryOp::RvMultiply, Value::RVPoly(a), Value::RVPoly(b)) => {
                         let polynomial = rv_poly::multiply(&mut self.model, &a, &b)?;
@@ -879,6 +944,33 @@ impl Engine {
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
                 }
+                (CobarOp::RvKoszulDifferential, Value::RVKoszul(terms)) => {
+                    let Kind::RVKoszul(grade) = self.model.kind(input.ty) else {
+                        unreachable!();
+                    };
+                    let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                    Ok(Value::RVKoszul(rv_koszul::differential(
+                        &mut self.model,
+                        &ideal,
+                        &terms,
+                    )?))
+                }
+                (CobarOp::RvTorClass, Value::RVKoszul(terms)) => {
+                    let Kind::RVTor(grade) = self.model.kind(expr.ty) else {
+                        unreachable!();
+                    };
+                    let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                    self.rv_tor_class(expr.ty, &ideal, &terms)
+                }
+                (CobarOp::RvTorRepresentative, Value::Class(class)) => {
+                    if class.is_empty() {
+                        return Ok(Value::RVKoszul([].into()));
+                    }
+                    let tor = self.model.rv_tor(input.ty)?;
+                    Ok(Value::RVKoszul(
+                        tor.representative(&mut self.model, &class)?,
+                    ))
+                }
                 (CobarOp::QClass, Value::QKoszul(terms)) => {
                     q_koszul::class(&mut self.model, expr.ty, &terms)
                 }
@@ -1060,6 +1152,17 @@ impl Engine {
                 };
                 let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
                 Ok(Value::Point(usize::from(vanishes)))
+            }
+            TypedForm::RvKoszulTerm(wedge, ideal, input) => {
+                let Value::RVPoly(coefficient) = self.eval(input)? else {
+                    unreachable!();
+                };
+                Ok(Value::RVKoszul(rv_koszul::term(
+                    &mut self.model,
+                    ideal,
+                    *wedge,
+                    coefficient,
+                )?))
             }
             TypedForm::RvIdeal(op, ideal, input) => {
                 let Value::RVPoly(original) = self.eval(input)? else {
@@ -1495,8 +1598,8 @@ impl Engine {
     }
 }
 
-fn check_new_ideal(ideals: &HashMap<String, Rc<RvIdeal>>, name: &Label) -> Result<()> {
-    if ideals.contains_key(&name.text) {
+fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
+    if model.rv_ideal_named(&name.text).is_some() {
         return Err(Error::new(
             name.span,
             format!("rank ideal '{}' is already defined", name.text),
@@ -1505,18 +1608,10 @@ fn check_new_ideal(ideals: &HashMap<String, Rc<RvIdeal>>, name: &Label) -> Resul
     Ok(())
 }
 
-fn find_ideal(ideals: &HashMap<String, Rc<RvIdeal>>, name: &Label) -> Result<Rc<RvIdeal>> {
-    ideals
-        .get(&name.text)
-        .cloned()
-        .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
-}
-
 struct Checker<'a> {
     model: &'a mut Model,
     bindings: &'a HashMap<String, Binding>,
     locals: Vec<(String, TypeId)>,
-    ideals: &'a HashMap<String, Rc<RvIdeal>>,
 }
 
 impl Checker<'_> {
@@ -1601,6 +1696,10 @@ impl Checker<'_> {
             TypeForm::BP(spec) => {
                 let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
                 self.model.bp_type(shape)
+            }
+            TypeForm::RVComplex(spec, homology) => {
+                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                self.model.rv_complex_type(grade, homology)
             }
             TypeForm::RVPoly(selected, degree) => {
                 let selected = q_koszul::indices(self.model, selected)?;
@@ -1705,6 +1804,8 @@ impl Checker<'_> {
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::JetHom(..) => jet_hom::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
+                    Kind::RVKoszul(..) => Value::RVKoszul([].into()),
+                    Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
@@ -2165,8 +2266,36 @@ impl Checker<'_> {
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
             }
+            ExprForm::RvKoszulTerm(name, indices, input) => {
+                let ideal = self.model.rv_ideal(&name)?;
+                let input = self.expr(*input)?;
+                let (selected, degree) = self.rv_poly_grade(&input, "rvkterm")?;
+                if selected != ideal.selected {
+                    return Err(Error::new(
+                        input.span,
+                        "rvkterm coefficient uses a different primitive selection",
+                    ));
+                }
+                let wedge = rv_koszul::mask(&ideal, &indices)?;
+                let s = indices.len();
+                let t = checked_degree(degree, s, "rvkterm", span)?;
+                let grade = rv_koszul::Grade {
+                    ideal: name.text.into(),
+                    s,
+                    t,
+                };
+                let ty = self.model.rv_complex_type(grade, false)?;
+                Ok((ty, TypedForm::RvKoszulTerm(wedge, ideal, Box::new(input))))
+            }
+            ExprForm::RvTorGenerator(spec, index, at) => {
+                let grade = self.model.rv_grade(spec.ideal, spec.s, spec.t)?;
+                let ty = self.model.rv_complex_type(grade, true)?;
+                let rank = self.model.rv_tor(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::RvIdeal(op, name, input) => {
-                let ideal = find_ideal(self.ideals, &name)?;
+                let ideal = self.model.rv_ideal(&name)?;
                 let input = self.expr(*input)?;
                 let operation = match op {
                     RvIdealOp::Normal => "rvNormal",
@@ -2965,6 +3094,25 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_complex_grade(
+        &self,
+        value: &TypedExpr,
+        homology: bool,
+        name: &str,
+    ) -> Result<rv_koszul::Grade> {
+        match (self.model.kind(value.ty), homology) {
+            (Kind::RVKoszul(grade), false) | (Kind::RVTor(grade), true) => Ok(grade.clone()),
+            _ => {
+                let expected = if homology {
+                    "an RVTor class"
+                } else {
+                    "an RVKoszul chain"
+                };
+                Err(self.invalid_operand(value, name, expected))
+            }
+        }
+    }
+
     fn rv_poly_grade(&self, value: &TypedExpr, name: &str) -> Result<(q_koszul::Indices, usize)> {
         match self.model.kind(value.ty) {
             Kind::RVPoly(selected, degree) => Ok((selected.clone(), *degree)),
@@ -3115,6 +3263,16 @@ impl Checker<'_> {
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
+            }
+            CobarOp::RvKoszulDifferential | CobarOp::RvTorClass | CobarOp::RvTorRepresentative => {
+                let underlying_tor = matches!(op, CobarOp::RvTorRepresentative);
+                let mut grade = self.rv_complex_grade(argument, underlying_tor, name)?;
+                if matches!(op, CobarOp::RvKoszulDifferential) {
+                    grade = grade.differential()?;
+                }
+                return self
+                    .model
+                    .rv_complex_type(grade, matches!(op, CobarOp::RvTorClass));
             }
             CobarOp::QDifferential | CobarOp::QClass => {
                 if let Kind::VKoszul(grade) = self.model.kind(argument.ty) {
@@ -3320,6 +3478,8 @@ impl Checker<'_> {
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
+                        | Kind::RVKoszul(..)
+                        | Kind::RVTor(..)
                         | Kind::RVPoly(..)
                         | Kind::BP(..)
                         | Kind::QExt(..)
@@ -3434,6 +3594,13 @@ impl Checker<'_> {
                 self.bp_shape(right, "bpMul")?;
                 self.require_type(left.ty, right, "bpMul")?;
                 Ok(left.ty)
+            }
+            BinaryOp::RvKoszulProduct | BinaryOp::RvTorProduct => {
+                let homology = matches!(op, BinaryOp::RvTorProduct);
+                let name = if homology { "rvTorProd" } else { "rvkProd" };
+                let left = self.rv_complex_grade(left, homology, name)?;
+                let right = self.rv_complex_grade(right, homology, name)?;
+                self.model.rv_complex_type(left.product(&right)?, homology)
             }
             BinaryOp::RvMultiply => {
                 let (selected, s) = self.rv_poly_grade(left, "rvMul")?;
