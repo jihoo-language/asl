@@ -44,6 +44,7 @@ pub(crate) enum Kind {
     MapExt(TypeId, TypeId, usize, i64),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
+    MayAn(usize, usize, usize, usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
     Bar(usize),
@@ -51,6 +52,14 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn may_grade(&self) -> Option<(Profile, usize, usize, usize, usize)> {
+        match *self {
+            Self::May(r, s, t, f) => Some((Profile::Full, r, s, t, f)),
+            Self::MayAn(n, r, s, t, f) => Some((Profile::An(n), r, s, t, f)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn cobar_grade(&self) -> Option<(Profile, usize, usize)> {
         match *self {
             Self::Cobar(s, t) => Some((Profile::Full, s, t)),
@@ -227,8 +236,12 @@ impl Model {
                 1
             }
             Kind::MapMay(..) => usize::MAX,
-            Kind::May(_, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
-            Kind::May(_, s, t, _) if s == t => 2,
+            Kind::May(_, s, t, f) | Kind::MayAn(_, _, s, t, f)
+                if s > t || f > t - s || (s == 0 && t != 0) =>
+            {
+                1
+            }
+            Kind::May(_, s, t, _) | Kind::MayAn(_, _, s, t, _) if s == t => 2,
             Kind::XExt(base, s, t) if s > t || !self.types[base.0].inhabited => 1,
             Kind::MapExt(source, target, ..) | Kind::MapCobar(source, target, ..)
                 if !self.types[source.0].inhabited || !self.types[target.0].inhabited =>
@@ -242,7 +255,8 @@ impl Model {
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
-            | Kind::May(..) => usize::MAX,
+            | Kind::May(..)
+            | Kind::MayAn(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -299,6 +313,7 @@ impl Model {
                 | Kind::MapExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
+                | Kind::MayAn(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
@@ -483,7 +498,22 @@ impl Model {
     }
 
     pub(crate) fn may_type(&mut self, r: usize, s: usize, t: usize, f: usize) -> Result<TypeId> {
-        self.inhabited_type(Kind::May(r, s, t, f), 0)
+        self.profile_may_type(Profile::Full, r, s, t, f)
+    }
+
+    pub(crate) fn profile_may_type(
+        &mut self,
+        profile: Profile,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<TypeId> {
+        let kind = match profile {
+            Profile::Full => Kind::May(r, s, t, f),
+            Profile::An(n) => Kind::MayAn(n, r, s, t, f),
+        };
+        self.inhabited_type(kind, 0)
     }
 
     pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
@@ -584,10 +614,8 @@ impl Model {
         if let Some(data) = &self.types[ty.0].may_page {
             return Ok(data.clone());
         }
-        let Kind::May(r, s, t, f) = *self.kind(ty) else {
-            unreachable!()
-        };
-        let data = Rc::new(MayPage::build(self, r, s, t, f)?);
+        let (profile, r, s, t, f) = self.kind(ty).may_grade().unwrap();
+        let data = Rc::new(MayPage::build(self, profile, r, s, t, f)?);
         self.types[ty.0].may_page = Some(data.clone());
         Ok(data)
     }
@@ -664,6 +692,7 @@ impl Model {
             | Kind::MapExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
+            | Kind::MayAn(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
             | Kind::CyclicH2(..) => 1,
@@ -804,6 +833,7 @@ impl Model {
                 out.push(&format!(", {s}, {t})"))
             }
             &Kind::May(r, s, t, f) => out.push(&format!("May({r}, {s}, {t}, {f})")),
+            &Kind::MayAn(n, r, s, t, f) => out.push(&format!("MayAn({n}, {r}, {s}, {t}, {f})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
@@ -1055,7 +1085,7 @@ impl Model {
                     let rank = self.map_ext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
-                Kind::May(..) => {
+                Kind::May(..) | Kind::MayAn(..) => {
                     let rank = self.may_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }

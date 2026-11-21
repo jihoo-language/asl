@@ -32,6 +32,7 @@ pub(crate) enum TypeForm {
     MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapMay(MapMaySpec),
     May(usize, usize, usize, usize),
+    MayAn(usize, usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
     Bar(usize),
@@ -144,6 +145,7 @@ pub(crate) enum ExprForm {
     MapMayGenerator(MapMaySpec, usize, Span),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
+    MayAnGenerator(usize, usize, usize, usize, usize, usize, Span),
     Suspension(ParsedType, SuspensionForm),
     Shift(usize, Box<ParsedExpr>),
     Cyclic(usize, Span, CyclicForm),
@@ -182,6 +184,7 @@ pub(crate) enum StatementForm {
     MapExtDimension(ParsedType, ParsedType, usize, i64),
     MapMayDimension(MapMaySpec),
     MayDimension(usize, usize, usize, usize),
+    MayAnDimension(usize, usize, usize, usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
 
@@ -552,6 +555,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::MapMayDimension(spec)
             }
+            Token::Word("mayandim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (n, r, s, t, f) = self.may_an_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MayAnDimension(n, r, s, t, f)
+            }
             Token::Word("maydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -641,6 +651,13 @@ impl<'src> Parser<'src> {
         })
     }
 
+    fn may_an_degree(&mut self) -> Result<(usize, usize, usize, usize, usize)> {
+        let (n, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (r, s, t, f) = self.may_degree()?;
+        Ok((n, r, s, t, f))
+    }
+
     fn may_degree(&mut self) -> Result<(usize, usize, usize, usize)> {
         let (r, _) = self.number()?;
         self.expect(Token::Comma)?;
@@ -727,6 +744,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.source.depth.max(spec.target.depth) + 1;
             return ty(span, TypeForm::MapMay(spec), depth);
+        }
+        if name.text == "MayAn" && self.eat(Token::LParen)? {
+            let (n, r, s, t, f) = self.may_an_degree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MayAn(n, r, s, t, f), 0);
         }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
@@ -1057,6 +1079,13 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapMayGenerator(spec, index, at), 0);
+                }
+                if name.text == "mayangen" && self.eat(Token::LBracket)? {
+                    let (n, r, s, t, f) = self.may_an_degree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MayAnGenerator(n, r, s, t, f, index, at), 0);
                 }
                 if name.text == "maygen" && self.eat(Token::LBracket)? {
                     let (r, s, t, f) = self.may_degree()?;

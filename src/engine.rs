@@ -246,6 +246,11 @@ impl Engine {
                     self.model.type_name(target),
                 )
             }
+            StatementForm::MayAnDimension(n, r, s, t, f) => {
+                let ty = self.model.profile_may_type(Profile::An(n), r, s, t, f)?;
+                let rank = self.model.may_page(ty)?.rank();
+                format!("mayandim[{n}, {r}, {s}, {t}, {f}] = {rank}")
+            }
             StatementForm::MayDimension(r, s, t, f) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -472,10 +477,19 @@ impl Engine {
                         if class.is_empty() {
                             return Ok(cohomology::zero());
                         }
-                        let adams = self.model.adams(input.ty)?;
-                        let representative = adams.representative(&mut self.model, &class)?;
+                        let is_may = self.model.kind(input.ty).may_grade().is_some();
+                        let representative = if is_may {
+                            self.model
+                                .may_page(input.ty)?
+                                .representative(&mut self.model, &class)?
+                        } else {
+                            self.model
+                                .adams(input.ty)?
+                                .representative(&mut self.model, &class)?
+                        };
+                        let project = if is_may { may::class } else { adams::class };
                         let words = profile.restrict(&mut self.model, &representative)?;
-                        adams::class(&mut self.model, expr.ty, &words)
+                        project(&mut self.model, expr.ty, &words)
                     }
                     _ => unreachable!(),
                 }
@@ -759,6 +773,9 @@ impl Checker<'_> {
                 self.model.map_cobar_type(source, target, s, t)
             }
             TypeForm::May(r, s, t, f) => self.model.may_type(r, s, t, f),
+            TypeForm::MayAn(n, r, s, t, f) => {
+                self.model.profile_may_type(Profile::An(n), r, s, t, f)
+            }
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
@@ -838,7 +855,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) => cobar::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MapMay(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -894,22 +911,21 @@ impl Checker<'_> {
                 let value = self.expr(*value)?;
                 let kind = self.model.kind(value.ty);
                 let target = Profile::An(n);
-                let (source, s, t) =
-                    kind.cobar_grade()
-                        .or_else(|| kind.ext_grade())
-                        .ok_or_else(|| {
-                            self.invalid_operand(&value, "resA", "a cobar cochain or Ext class")
-                        })?;
-                if !source.can_restrict_to(target) {
-                    return Err(Error::new(
-                        span,
-                        "resA cannot restrict from a smaller Steenrod algebra",
-                    ));
-                }
-                let ty = if kind.cobar_grade().is_some() {
+                let ty = if let Some((source, r, s, t, f)) = kind.may_grade() {
+                    require_restriction(source, target, span)?;
+                    self.model.profile_may_type(target, r, s, t, f)?
+                } else if let Some((source, s, t)) = kind.cobar_grade() {
+                    require_restriction(source, target, span)?;
                     self.model.profile_cobar_type(target, s, t)?
-                } else {
+                } else if let Some((source, s, t)) = kind.ext_grade() {
+                    require_restriction(source, target, span)?;
                     self.model.profile_ext_type(target, s, t)?
+                } else {
+                    return Err(self.invalid_operand(
+                        &value,
+                        "resA",
+                        "a cobar cochain or Ext class, or a May class",
+                    ));
                 };
                 Ok((ty, TypedForm::RestrictAlgebra(target, Box::new(value))))
             }
@@ -955,6 +971,12 @@ impl Checker<'_> {
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MayAnGenerator(n, r, s, t, f, index, at) => {
+                let ty = self.model.profile_may_type(Profile::An(n), r, s, t, f)?;
+                let rank = self.model.may_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -966,8 +988,8 @@ impl Checker<'_> {
                 let ty = if let Kind::MapCobar(source, target, s, t) = *self.model.kind(value.ty) {
                     self.model.map_may_type(source, target, r, s, t, f)?
                 } else {
-                    let (s, t) = self.cobar_bidegree(&value, "mayClass")?;
-                    self.model.may_type(r, s, t, f)?
+                    let (profile, s, t) = self.profile_cobar_bidegree(&value, "mayClass")?;
+                    self.model.profile_may_type(profile, r, s, t, f)?
                 };
                 Ok((ty, TypedForm::Cobar(CobarOp::MayClass, Box::new(value))))
             }
@@ -1412,11 +1434,15 @@ impl Checker<'_> {
             .map_may_type(source, target, spec.r, spec.s, spec.t, spec.f)
     }
 
-    fn may_degree(&self, value: &TypedExpr, op: &str) -> Result<(usize, usize, usize, usize)> {
-        match *self.model.kind(value.ty) {
-            Kind::May(r, s, t, f) => Ok((r, s, t, f)),
-            _ => Err(self.invalid_operand(value, op, "a May page class")),
-        }
+    fn may_degree(
+        &self,
+        value: &TypedExpr,
+        op: &str,
+    ) -> Result<(Profile, usize, usize, usize, usize)> {
+        self.model
+            .kind(value.ty)
+            .may_grade()
+            .ok_or_else(|| self.invalid_operand(value, op, "a May page class"))
     }
 
     fn cobar_result(
@@ -1452,8 +1478,8 @@ impl Checker<'_> {
                 if let Kind::MapMay(source, target, _, s, t, _) = *self.model.kind(argument.ty) {
                     return self.model.map_cobar_type(source, target, s, t);
                 }
-                let (_, s, t, _) = self.may_degree(argument, name)?;
-                return self.model.cobar_type(s, t);
+                let (profile, _, s, t, _) = self.may_degree(argument, name)?;
+                return self.model.profile_cobar_type(profile, s, t);
             }
             CobarOp::MayDifferential => {
                 if let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(argument.ty) {
@@ -1461,10 +1487,10 @@ impl Checker<'_> {
                     let f = checked_degree(f, r, name, span)?;
                     return self.model.map_may_type(source, target, r, s, t, f);
                 }
-                let (r, s, t, f) = self.may_degree(argument, name)?;
+                let (profile, r, s, t, f) = self.may_degree(argument, name)?;
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
-                return self.model.may_type(r, s, t, f);
+                return self.model.profile_may_type(profile, r, s, t, f);
             }
             _ => {}
         }
@@ -1565,6 +1591,7 @@ impl Checker<'_> {
                         | Kind::MapExt(..)
                         | Kind::MapMay(..)
                         | Kind::May(..)
+                        | Kind::MayAn(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
                 ) {
@@ -1700,8 +1727,9 @@ impl Checker<'_> {
                 }
             }
             BinaryOp::MayMul => {
-                let (r, s, t, f) = self.may_degree(left, "mayMul")?;
-                let (page, u, v, g) = self.may_degree(right, "mayMul")?;
+                let (profile, r, s, t, f) = self.may_degree(left, "mayMul")?;
+                let (other, page, u, v, g) = self.may_degree(right, "mayMul")?;
+                require_profile(profile, other, "mayMul", right.span)?;
                 if r != page {
                     return Err(Error::new(
                         right.span,
@@ -1711,7 +1739,7 @@ impl Checker<'_> {
                 let s = checked_degree(s, u, "mayMul", span)?;
                 let t = checked_degree(t, v, "mayMul", span)?;
                 let f = checked_degree(f, g, "mayMul", span)?;
-                self.model.may_type(r, s, t, f)
+                self.model.profile_may_type(profile, r, s, t, f)
             }
             BinaryOp::Act => {
                 let operation = self.operation_degree(left, "act")?;
@@ -1892,6 +1920,16 @@ impl Checker<'_> {
 fn checked_degree(left: usize, right: usize, op: &str, span: Span) -> Result<usize> {
     left.checked_add(right)
         .ok_or_else(|| Error::new(span, format!("{op} degree is out of range")))
+}
+
+fn require_restriction(source: Profile, target: Profile, span: Span) -> Result<()> {
+    if source.can_restrict_to(target) {
+        return Ok(());
+    }
+    Err(Error::new(
+        span,
+        "resA cannot restrict from a smaller Steenrod algebra",
+    ))
 }
 
 fn require_profile(left: Profile, right: Profile, op: &str, span: Span) -> Result<()> {

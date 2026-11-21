@@ -8,6 +8,7 @@ use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::linear::{xor, Basis};
 use crate::model::{Model, TypeId, Value};
+use crate::profile::Profile;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
@@ -292,6 +293,7 @@ impl<T: Hash + Eq> Rows<T> {
 }
 
 struct Sphere {
+    profile: Profile,
     t: usize,
 }
 
@@ -303,15 +305,15 @@ impl FilteredComplex for Sphere {
         if s > self.t || f > self.t - s || (s == 0 && self.t != 0) {
             return Ok(Vec::new());
         }
-        cobar::basis(model, s, self.t, MAX_BASIS_WORDS)
+        self.profile.basis(model, s, self.t, MAX_BASIS_WORDS)
     }
 
     fn differential(&mut self, model: &mut Model, word: &Word) -> Result<Vec<Word>> {
-        cobar::differential_word(model, word)
+        self.profile.differential_word(model, word)
     }
 
     fn differential_support(&mut self, model: &mut Model, words: &[Word]) -> Result<Vec<Word>> {
-        cobar::differential_support(model, words)
+        self.profile.differential_support(model, words)
     }
 
     fn filtration(&self, word: &Word) -> Result<usize> {
@@ -324,15 +326,28 @@ impl FilteredComplex for Sphere {
 }
 
 pub(crate) struct MayPage {
+    profile: Profile,
     s: usize,
     t: usize,
     page: FilteredPage<Sphere>,
 }
 
 impl MayPage {
-    pub(crate) fn build(model: &mut Model, r: usize, s: usize, t: usize, f: usize) -> Result<Self> {
-        let page = FilteredPage::build(model, &mut Sphere { t }, r, s, f)?;
-        Ok(Self { s, t, page })
+    pub(crate) fn build(
+        model: &mut Model,
+        profile: Profile,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<Self> {
+        let page = FilteredPage::build(model, &mut Sphere { profile, t }, r, s, f)?;
+        Ok(Self {
+            profile,
+            s,
+            t,
+            page,
+        })
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -346,7 +361,11 @@ impl MayPage {
                 return Err(Error::plain("cobar chain has the wrong May bidegree"));
             }
         }
-        self.page.project(model, &mut Sphere { t: self.t }, words)
+        let mut sphere = Sphere {
+            profile: self.profile,
+            t: self.t,
+        };
+        self.page.project(model, &mut sphere, words)
     }
 
     pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Vec<Word>> {
@@ -372,8 +391,9 @@ pub(crate) fn differential(
     if coordinates.is_empty() {
         return Ok(Value::Class([].into()));
     }
-    let lift = model.may_page(source)?.representative(model, coordinates)?;
-    let image = cobar::differential_support(model, &lift)?;
+    let page = model.may_page(source)?;
+    let lift = page.representative(model, coordinates)?;
+    let image = page.profile.differential_support(model, &lift)?;
     class(model, target, &image)
 }
 

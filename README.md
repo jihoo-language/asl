@@ -56,6 +56,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `MapMay(X, Y, r, s, t, f)` | The discrete space of algebraic May page classes of bivariant cobar morphisms. |
 | `MapCobar(X, Y, s, t)` | The discrete space of length-`s` bivariant cobar cochains of signed internal degree `t`. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
+| `MayAn(n, r, s, t, f)` | The corresponding May page for the finite Steenrod subalgebra `A(n)`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
 | `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
@@ -188,6 +189,14 @@ Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomia
 `zero[May(r, s, t, f)]` and `add(x, y)` use the vector space structure in a fixed page component. For $r\ge1$, projection identifies lifts that differ by an $(r-1)$-cycle in $F^{f+1}$ or a cobar boundary in $F^f$ with a primitive in $F^{\max(0,f-r+1)}$. The computation stabilizes separately in each internal degree. The stabilized groups are the associated graded groups of `Ext(s, t)` for the induced filtration.
 
 Run `nix run path:. -- examples/may.asl` to compute $d_1(h_{2,0})=h_1h_0$ and the nonzero $d_3$ of a corrected $b_{2,0}$ lift in internal degree 6. The page ranks record the effect on the source and target. A second program computes a nonzero $d_7$ in internal degree 12 and checks that both page components vanish on $E_8$. [First and third differentials](examples/may.asl) · [Seventh differential](examples/may-seventh.asl)
+
+### May pages over finite Steenrod subalgebras
+
+`MayAn(n, r, s, t, f)` applies the same filtered construction to `CobarAn(n, s, t)` and stabilizes to the associated graded of `ExtAn(n, s, t)`. The statement `mayandim[n, r, s, t, f];` prints the rank, and `mayangen[n, r, s, t, f, i]` gives basis generator `i` starting at zero. Use `mayClass[r, f]` and `mayRep` to pass between classes and finite-profile cobar lifts. The operations `mayD` and `mayMul` preserve the profile. A product takes two classes on the same page over the same subalgebra.
+
+On a scalar May class, `resA[n]` induces restriction to `A(n)` in the same page and degrees. It restricts the cobar lift along the dual Hopf quotient and projects to the target page. Surviving words keep their May indices, so restriction commutes with page differentials and products. Restricting through an intermediate subalgebra gives the direct restriction.
+
+The example computes the nonzero full $d_7$ on $b_{2,0}^2$. Its restriction in `A(1)` has zero $d_7$ and survives to the nonzero class $v_1^4$ in `ExtAn(1, 4, 12)`. Restriction to `A(0)` kills the class. [Finite-profile May example](examples/profile-may.asl)
 
 ## Transferred homotopy operations on Ext
 
@@ -384,6 +393,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
+| `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
 | `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
 | `mapmaydim[X, Y, r, s, t, f];` | Print the dimension of a bivariant May page component over 𝔽₂. |
