@@ -15,7 +15,7 @@ pub(crate) struct MapMayPage {
     page: FilteredPage<MappingComplex>,
 }
 
-struct MappingComplex {
+pub(crate) struct MappingComplex {
     source: TypeId,
     target: TypeId,
     t: i64,
@@ -23,7 +23,7 @@ struct MappingComplex {
 }
 
 impl MappingComplex {
-    fn new(model: &mut Model, source: TypeId, target: TypeId, t: i64) -> Result<Self> {
+    pub(crate) fn new(model: &mut Model, source: TypeId, target: TypeId, t: i64) -> Result<Self> {
         Ok(Self {
             source,
             target,

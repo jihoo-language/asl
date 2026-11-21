@@ -221,6 +221,14 @@ For result length $N$, the calculation takes increasing subsets $U\subseteq\{0,\
 
 `extSq[k](x)` applies cup-$(s-k)$ to a canonical representative of $x$ and itself, then takes the class in bidegree $(s+k,2t)$. It works on `Ext` and `ExtAn`. The result is independent of the representative. Indices above $s$ give zero. The top square is the Yoneda square. Here $\mathrm{Sq}^0$ is Frobenius on the Milnor exponents, so $\mathrm{Sq}^0(h_i)=h_{i+1}$ in the full algebra. The example computes the nonzero intermediate square $\mathrm{Sq}^1(h_0h_2)=h_0^2h_3$. [Cobar squares example](examples/cobar-squares.asl)
 
+### Corrected cochain squares and May lifts
+
+On a length-`s` binary cobar cochain `a`, write $i=s-k$. The expression `cNakamura[k](a)` computes $N^k(a)=a\smile_i a+a\smile_{i+1}da$ and has bidegree $(s+k,2t)$. It satisfies $dN^k(a)=N^k(da)$ on arbitrary cochains. At $k=0$ it squares every factor, at $k=s+1$ it gives `concat(a, cobarD(a))`, and higher indices give zero. On a closed input its class is `extSq[k](extClass(a))`. It also works over a finite binary Steenrod profile.
+
+`mayLiftTo[r, f](a)` takes `a` in $F^f$ and solves by deterministic linear reduction for a correction in $F^{f+1}$. The corrected cochain has differential in $F^{f+r}$, and its filtration-`f` terms agree with the input. The operation returns the original cochain if it already meets the condition and reports an obstruction if no correction exists. It works on `Cobar`, `CobarAn`, and `MapCobar`.
+
+Starting from $u=[\xi_2]$, the example computes $b=N^1(u)$ and $c=N^2(b)$. The differential of $b$ gives $d_3$. The raw $c$ satisfies the $E_6$ condition. Correcting it to satisfy the $E_7$ condition exhibits the nonzero $d_7$. Its restriction to $A(1)$ lifts to a closed representative of $v_1^4$. [Corrected square and May lift example](examples/nakamura-may.asl)
+
 ## The algebraic May spectral sequence
 
 Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomial, count the set bits of each exponent and multiply that count by the corresponding generator weight. The weight $M$ of a cobar word is the sum over its factors. In internal degree $t$, the decreasing filtration $F^f$ is spanned by words with $t-M\ge f$. The cobar differential preserves this filtration, and concatenation adds filtration indices. The associated graded complex is page $E_0$. Its differential preserves $f$, and $d_r$ increases $s$ by one and $f$ by $r$, preserving $t$. [May, *The cohomology of restricted Lie algebras and of Hopf algebras*](https://doi.org/10.1016/0021-8693(66)90009-3)

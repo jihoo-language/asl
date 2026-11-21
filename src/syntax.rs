@@ -177,6 +177,8 @@ pub(crate) enum ExprForm {
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
     ExtSquare(usize, Box<ParsedExpr>),
+    Nakamura(usize, Box<ParsedExpr>),
+    MayLiftTo(usize, usize, Box<ParsedExpr>),
     HigherRestriction(usize, Vec<ParsedExpr>),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
     MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
@@ -1227,6 +1229,20 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::ExtSquare(k, Box::new(value)), depth);
+                }
+                if name.text == "cNakamura" && self.eat(Token::LBracket)? {
+                    let (k, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::Nakamura(k, Box::new(value)), depth);
+                }
+                if name.text == "mayLiftTo" && self.eat(Token::LBracket)? {
+                    let (r, f) = self.bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::MayLiftTo(r, f, Box::new(value)), depth);
                 }
                 if name.text == "resHigher" && self.eat(Token::LBracket)? {
                     let (n, _) = self.number()?;

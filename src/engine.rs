@@ -17,8 +17,10 @@ use crate::map_may;
 use crate::map_system;
 use crate::map_transfer;
 use crate::may;
+use crate::may_lift;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
+use crate::nakamura;
 use crate::observations::{betti, homotopy};
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext;
@@ -116,6 +118,8 @@ enum TypedForm {
     RestrictAlgebra(Profile, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
+    Nakamura(usize, Box<TypedExpr>),
+    MayLiftTo(usize, usize, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
@@ -661,6 +665,17 @@ impl Engine {
                     unreachable!()
                 };
                 cobar_squares::square(&mut self.model, input.ty, expr.ty, *k, &class)
+            }
+            TypedForm::Nakamura(k, input) => {
+                let (profile, s, _) = self.model.kind(input.ty).cobar_grade().unwrap();
+                let Value::Cobar(words) = self.eval(input)? else {
+                    unreachable!()
+                };
+                nakamura::apply(&mut self.model, profile, *k, s, &words)
+            }
+            TypedForm::MayLiftTo(r, f, input) => {
+                let cochain = self.eval(input)?;
+                may_lift::evaluate(&mut self.model, input.ty, *r, *f, cochain)
             }
             TypedForm::MapExtInduced(function) => {
                 let Value::Map(table) = self.eval(function)? else {
@@ -1210,6 +1225,25 @@ impl Checker<'_> {
                 let (length, degree) = cobar_squares::square_bidegree(k, s, t)?;
                 let ty = self.model.profile_ext_type(profile, length, degree)?;
                 Ok((ty, TypedForm::ExtSquare(k, Box::new(value))))
+            }
+            ExprForm::Nakamura(k, value) => {
+                let value = self.expr(*value)?;
+                let (profile, s, t) = self.profile_cobar_bidegree(&value, "cNakamura")?;
+                let (s, t) = nakamura::bidegree(k, s, t)?;
+                let ty = self.model.profile_cobar_type(profile, s, t)?;
+                Ok((ty, TypedForm::Nakamura(k, Box::new(value))))
+            }
+            ExprForm::MayLiftTo(r, f, value) => {
+                let value = self.expr(*value)?;
+                let kind = self.model.kind(value.ty);
+                if kind.cobar_grade().is_none() && !matches!(kind, Kind::MapCobar(..)) {
+                    return Err(self.invalid_operand(
+                        &value,
+                        "mayLiftTo",
+                        "a mod-two cobar cochain",
+                    ));
+                }
+                Ok((value.ty, TypedForm::MayLiftTo(r, f, Box::new(value))))
             }
             ExprForm::XExtGenerator(base, s, t, index, at) => {
                 let base = self.ty(base)?;

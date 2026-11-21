@@ -280,14 +280,14 @@ impl<C: FilteredComplex> FilteredPage<C> {
 }
 
 // Number only terms that occur in the differential's projected rows.
-struct Rows<T> {
+pub(crate) struct Rows<T> {
     indices: HashMap<T, usize>,
     cells: usize,
     name: &'static str,
 }
 
 impl<T: Hash + Eq> Rows<T> {
-    fn new(name: &'static str) -> Self {
+    pub(crate) fn new(name: &'static str) -> Self {
         Self {
             indices: HashMap::new(),
             cells: 0,
@@ -295,7 +295,12 @@ impl<T: Hash + Eq> Rows<T> {
         }
     }
 
-    fn coordinate(&mut self, model: &mut Model, term_cells: usize, term: T) -> Result<usize> {
+    pub(crate) fn coordinate(
+        &mut self,
+        model: &mut Model,
+        term_cells: usize,
+        term: T,
+    ) -> Result<usize> {
         let size = 1 + term_cells;
         model.spend(size)?;
         let next = self.indices.len();
@@ -310,9 +315,15 @@ impl<T: Hash + Eq> Rows<T> {
     }
 }
 
-struct Sphere {
+pub(crate) struct Sphere {
     profile: Profile,
     t: usize,
+}
+
+impl Sphere {
+    pub(crate) fn new(profile: Profile, t: usize) -> Self {
+        Self { profile, t }
+    }
 }
 
 impl FilteredComplex for Sphere {
@@ -432,7 +443,7 @@ pub(crate) fn multiply(
     class(model, target, &words)
 }
 
-fn sort_support(model: &mut Model, support: &mut [usize]) -> Result<()> {
+pub(crate) fn sort_support(model: &mut Model, support: &mut [usize]) -> Result<()> {
     model.spend(support.len() * (1 + support.len().max(1).ilog2() as usize))?;
     support.sort_unstable();
     Ok(())
@@ -449,7 +460,7 @@ pub(crate) fn filtration(t: usize, word: &Word) -> usize {
     t - weight
 }
 
-fn check_storage(cells: usize, name: &str) -> Result<()> {
+pub(crate) fn check_storage(cells: usize, name: &str) -> Result<()> {
     if cells > MAX_PIVOT_CELLS {
         return Err(Error::plain(format!(
             "{name} calculation exceeds the storage limit"
