@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
@@ -24,6 +25,11 @@ impl Grade {
             .s
             .checked_sub(1)
             .ok_or_else(|| Error::plain("rvkD requires positive Koszul homological degree"))?;
+        Ok(Self { s, ..self.clone() })
+    }
+
+    pub(crate) fn primitive(&self) -> Result<Self> {
+        let s = self.s.checked_add(1).ok_or_else(grade_limit)?;
         Ok(Self { s, ..self.clone() })
     }
 
@@ -81,7 +87,7 @@ pub(crate) fn term(
 ) -> Result<Support> {
     let normal = ideal.normal(model, coefficient)?;
     model.spend(rv_poly::cells(&normal))?;
-    finish(
+    persist(
         model,
         normal
             .iter()
@@ -97,7 +103,7 @@ pub(crate) fn cells(support: &[Term]) -> usize {
         .map_or(0, |term| (2 + term.powers.len()) * support.len())
 }
 
-fn finish(model: &mut Model, terms: Vec<Term>) -> Result<Support> {
+pub(crate) fn persist(model: &mut Model, terms: Vec<Term>) -> Result<Support> {
     model.allocate(cells(&terms))?;
     Ok(terms.into())
 }
@@ -112,13 +118,18 @@ pub(crate) fn compare(
 }
 
 pub(crate) fn add(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Support> {
+    let result = sum_terms(model, left, right)?;
+    persist(model, result)
+}
+
+pub(crate) fn sum_terms(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Vec<Term>> {
     model.spend(cells(left) + cells(right))?;
-    finish(model, xor_sorted(left, right))
+    Ok(xor_sorted(left, right))
 }
 
 pub(crate) fn differential(model: &mut Model, ideal: &Ideal, support: &[Term]) -> Result<Support> {
     let terms = differential_terms(model, ideal, support)?;
-    finish(model, terms)
+    persist(model, terms)
 }
 
 fn differential_terms(model: &mut Model, ideal: &Ideal, support: &[Term]) -> Result<Vec<Term>> {
@@ -151,6 +162,16 @@ pub(crate) fn product(
     left: &[Term],
     right: &[Term],
 ) -> Result<Support> {
+    let terms = product_terms(model, ideal, left, right)?;
+    persist(model, terms)
+}
+
+pub(crate) fn product_terms(
+    model: &mut Model,
+    ideal: &Ideal,
+    left: &[Term],
+    right: &[Term],
+) -> Result<Vec<Term>> {
     let mut terms = BTreeSet::new();
     for a in left {
         for b in right {
@@ -167,8 +188,7 @@ pub(crate) fn product(
             }
         }
     }
-    let result = normal_terms(model, ideal, terms)?;
-    finish(model, result)
+    normal_terms(model, ideal, terms)
 }
 
 fn toggle(model: &mut Model, terms: &mut BTreeSet<Term>, term: Term) -> Result<()> {
@@ -414,6 +434,29 @@ fn standard_search(
 pub(crate) struct Tor {
     slice: Slice,
     quotient: QuotientBasis,
+    preimages: OnceCell<BoundaryPreimages>,
+}
+
+struct BoundaryPreimages {
+    source: Slice,
+    images: Basis,
+}
+
+fn boundary_basis(
+    model: &mut Model,
+    ideal: &Ideal,
+    source: &Slice,
+    target: &Slice,
+    track: bool,
+) -> Result<Basis> {
+    let mut basis = Basis::default();
+    for index in 0..source.len() {
+        let support = differential_terms(model, ideal, &[source.term(index)])?;
+        let column = target.encode(model, &support)?;
+        let witness = if track { vec![index] } else { Vec::new() };
+        basis.insert_with_witness(model, column, witness)?;
+    }
+    Ok(basis)
 }
 
 impl Tor {
@@ -435,18 +478,17 @@ impl Tor {
         };
         check_storage(slice.cells() + incoming.cells() + outgoing.cells())?;
 
-        let mut boundaries = Basis::default();
-        for index in 0..incoming.len() {
-            let support = differential_terms(model, ideal, &[incoming.term(index)])?;
-            let column = slice.encode(model, &support)?;
-            boundaries.insert(model, column)?;
-        }
+        let boundaries = boundary_basis(model, ideal, &incoming, &slice, false)?;
         let quotient = QuotientBasis::build(model, boundaries, slice.len(), |model, index| {
             let support = differential_terms(model, ideal, &[slice.term(index)])?;
             outgoing.encode(model, &support)
         })?;
         model.allocate(slice.cells())?;
-        Ok(Self { slice, quotient })
+        Ok(Self {
+            slice,
+            quotient,
+            preimages: OnceCell::new(),
+        })
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -472,12 +514,109 @@ impl Tor {
         Err(Error::plain("rvTorClass requires a Koszul cycle"))
     }
 
-    pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Support> {
-        let coordinates = self.quotient.representative(model, class)?;
-        let support = coordinates
-            .into_iter()
-            .map(|i| self.slice.term(i))
-            .collect();
-        finish(model, support)
+    pub(crate) fn is_boundary(
+        &self,
+        model: &mut Model,
+        ideal: &Ideal,
+        support: &[Term],
+    ) -> Result<bool> {
+        if support.is_empty() {
+            return Ok(true);
+        }
+        if self.slice.len() == 0 {
+            // The only nonempty input in this case is in the acyclic part of
+            // the Koszul complex over the polynomial ring itself.
+            return Ok(differential_terms(model, ideal, support)?.is_empty());
+        }
+        let coordinates = self.slice.encode(model, support)?;
+        self.quotient.is_boundary(model, coordinates)
     }
+
+    pub(crate) fn primitive(
+        &self,
+        model: &mut Model,
+        ideal: &Ideal,
+        grade: &Grade,
+        support: &[Term],
+    ) -> Result<Option<Vec<Term>>> {
+        if support.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        if self.slice.len() == 0 {
+            if !self.is_boundary(model, ideal, support)? {
+                return Ok(None);
+            }
+            return Ok(Some(polynomial_primitive(model, support)?));
+        }
+        let coordinates = self.slice.encode(model, support)?;
+        let preimages = if let Some(preimages) = self.preimages.get() {
+            preimages
+        } else {
+            if !self.quotient.is_boundary(model, coordinates.clone())? {
+                return Ok(None);
+            }
+            let source_grade = grade.primitive()?;
+            let source = Slice::build(model, ideal, source_grade.s, source_grade.t, MAX_BASIS)?;
+            let images = boundary_basis(model, ideal, &source, &self.slice, true)?;
+            model.allocate(source.cells() + images.cells())?;
+            self.preimages
+                .get_or_init(|| BoundaryPreimages { source, images })
+        };
+        let (remainder, witness) =
+            preimages
+                .images
+                .reduce_with_witness(model, coordinates, Vec::new())?;
+        Ok(remainder.is_empty().then(|| {
+            witness
+                .into_iter()
+                .map(|index| preimages.source.term(index))
+                .collect()
+        }))
+    }
+
+    pub(crate) fn representative_terms(
+        &self,
+        model: &mut Model,
+        class: &[usize],
+    ) -> Result<Vec<Term>> {
+        let coordinates = self.quotient.representative(model, class)?;
+        Ok(coordinates
+            .into_iter()
+            .map(|index| self.slice.term(index))
+            .collect())
+    }
+
+    pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Support> {
+        let support = self.representative_terms(model, class)?;
+        persist(model, support)
+    }
+}
+
+fn polynomial_primitive(model: &mut Model, support: &[Term]) -> Result<Vec<Term>> {
+    // Each multigraded summand of positive weight is contracted using its
+    // first active variable: divide by x_i and insert e_i if it is absent.
+    let mut preimage = BTreeSet::new();
+    for term in support {
+        model.spend(1 + term.powers.len())?;
+        for (index, &power) in term.powers.iter().enumerate() {
+            let bit = 1usize << index;
+            if term.wedge & bit != 0 {
+                break;
+            }
+            if power != 0 {
+                let mut powers = term.powers.to_vec();
+                powers[index] -= 1;
+                toggle(
+                    model,
+                    &mut preimage,
+                    Term {
+                        wedge: term.wedge | bit,
+                        powers: powers.into(),
+                    },
+                )?;
+                break;
+            }
+        }
+    }
+    Ok(preimage.into_iter().collect())
 }

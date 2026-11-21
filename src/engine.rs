@@ -46,6 +46,7 @@ use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
 use crate::rv_poly;
 use crate::rv_scheme;
+use crate::rv_t_bracket;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -94,6 +95,7 @@ enum CobarOp {
     MapClass,
     MapRepresentative,
     RvKoszulDifferential,
+    RvKoszulPrimitive,
     RvTorClass,
     RvTorRepresentative,
     QDifferential,
@@ -130,6 +132,7 @@ impl CobarOp {
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
             "rvkD" => Some(Self::RvKoszulDifferential),
+            "rvkPrimitive" => Some(Self::RvKoszulPrimitive),
             "rvTorClass" => Some(Self::RvTorClass),
             "rvTorRep" => Some(Self::RvTorRepresentative),
             "qD" => Some(Self::QDifferential),
@@ -159,6 +162,12 @@ struct DefiningEntry {
 enum ScalarField {
     ModTwo(Profile),
     Odd(Prime, Profile),
+}
+
+#[derive(Clone, Copy)]
+enum ClassBracketFamily {
+    Map,
+    Koszul,
 }
 
 enum TypedForm {
@@ -199,7 +208,8 @@ enum TypedForm {
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     MapSystem(map_system::Operation, usize, Vec<DefiningEntry>),
     OddSystem(odd_massey::Operation, usize, Vec<DefiningEntry>),
-    MapBracket {
+    ClassBracket {
+        family: ClassBracketFamily,
         target: TypeId,
         inputs: Vec<TypedExpr>,
         query: Option<Box<TypedExpr>>,
@@ -1035,6 +1045,26 @@ impl Engine {
                         &terms,
                     )?))
                 }
+                (CobarOp::RvKoszulPrimitive, Value::RVKoszul(terms)) => {
+                    if terms.is_empty() {
+                        return Ok(Value::RVKoszul([].into()));
+                    }
+                    let Kind::RVKoszul(grade) = self.model.kind(input.ty) else {
+                        unreachable!();
+                    };
+                    let grade = grade.clone();
+                    let ideal = self.model.rv_ideal_named(&grade.ideal).unwrap();
+                    let group = self.model.rv_complex_type(grade.clone(), true)?;
+                    let primitive = self
+                        .model
+                        .rv_tor(group)?
+                        .primitive(&mut self.model, &ideal, &grade, &terms)?
+                        .ok_or_else(|| Error::plain("rvkPrimitive requires a Koszul boundary"))?;
+                    Ok(Value::RVKoszul(rv_koszul::persist(
+                        &mut self.model,
+                        primitive,
+                    )?))
+                }
                 (CobarOp::RvTorClass, Value::RVKoszul(terms)) => {
                     let Kind::RVTor(grade) = self.model.kind(expr.ty) else {
                         unreachable!();
@@ -1525,7 +1555,8 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 odd_massey::evaluate(&mut self.model, *arity, &entries, expr.ty, *operation)
             }
-            TypedForm::MapBracket {
+            TypedForm::ClassBracket {
+                family,
                 target,
                 inputs,
                 query,
@@ -1540,11 +1571,29 @@ impl Engine {
                     .iter()
                     .map(&mut eval_class)
                     .collect::<Result<Vec<_>>>()?;
-                if let Some(query) = query {
-                    let (_, coordinates) = eval_class(query)?;
-                    map_bracket::member(&mut self.model, *target, &inputs, &coordinates)
-                } else {
-                    map_bracket::predicate(&mut self.model, *target, &inputs)
+                let query = query
+                    .as_deref()
+                    .map(eval_class)
+                    .transpose()?
+                    .map(|(_, class)| class);
+                match (family, query) {
+                    (ClassBracketFamily::Map, Some(query)) => {
+                        map_bracket::member(&mut self.model, *target, &inputs, &query)
+                    }
+                    (ClassBracketFamily::Map, None) => {
+                        map_bracket::predicate(&mut self.model, *target, &inputs)
+                    }
+                    (ClassBracketFamily::Koszul, Some(query)) => rv_t_bracket::member(
+                        &mut self.model,
+                        *target,
+                        inputs.as_slice().try_into().unwrap(),
+                        &query,
+                    ),
+                    (ClassBracketFamily::Koszul, None) => rv_t_bracket::predicate(
+                        &mut self.model,
+                        *target,
+                        inputs.as_slice().try_into().unwrap(),
+                    ),
                 }
             }
             TypedForm::DefiningSystem {
@@ -2597,6 +2646,7 @@ impl Checker<'_> {
             ExprForm::Bracket(inputs) => self.bracket(inputs, span),
             ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
             ExprForm::HigherRestriction(n, inputs) => self.higher_restriction(n, inputs, span),
+            ExprForm::RvTBracket(operation, inputs) => self.rv_t_bracket(operation, inputs),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
             ExprForm::MapSystem(operation, inputs, witnesses) => {
@@ -2668,6 +2718,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = odd_massey::Operation::from_name(&name.text) {
                             return self.odd_system(operation, vec![*argument], Vec::new(), span);
+                        }
+                        if let Some(operation) = rv_t_bracket::Operation::from_name(&name.text) {
+                            return self.rv_t_bracket(operation, vec![*argument]);
                         }
                         if let Some(operation) = map_bracket::Operation::from_name(&name.text) {
                             return self.map_bracket(operation, vec![*argument]);
@@ -2795,17 +2848,62 @@ impl Checker<'_> {
             inputs.iter().map(|input| input.ty),
             operation.name(),
         )?;
+        self.class_bracket(
+            ClassBracketFamily::Map,
+            target,
+            inputs,
+            query,
+            operation.name(),
+        )
+    }
+
+    fn rv_t_bracket(
+        &mut self,
+        operation: rv_t_bracket::Operation,
+        mut inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        operation.require_arity(inputs.len())?;
+        let query = match operation {
+            rv_t_bracket::Operation::Predicate => None,
+            rv_t_bracket::Operation::Membership => inputs.pop(),
+        };
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let [a, b, c] = inputs.as_slice() else {
+            unreachable!();
+        };
+        let target = rv_t_bracket::result_type(self.model, [a.ty, b.ty, c.ty], operation.name())?;
+        self.class_bracket(
+            ClassBracketFamily::Koszul,
+            target,
+            inputs,
+            query,
+            operation.name(),
+        )
+    }
+
+    fn class_bracket(
+        &mut self,
+        family: ClassBracketFamily,
+        target: TypeId,
+        inputs: Vec<TypedExpr>,
+        query: Option<ParsedExpr>,
+        name: &str,
+    ) -> Result<(TypeId, TypedForm)> {
         let range = self.model.named("S").unwrap();
         let (ty, query) = if let Some(query) = query {
             let query = self.expr(query)?;
-            self.require_type(target, &query, operation.name())?;
+            self.require_type(target, &query, name)?;
             (range, Some(Box::new(query)))
         } else {
             (self.model.arrow(target, range)?, None)
         };
         Ok((
             ty,
-            TypedForm::MapBracket {
+            TypedForm::ClassBracket {
+                family,
                 target,
                 inputs,
                 query,
@@ -3441,12 +3539,17 @@ impl Checker<'_> {
                 let f = checked_degree(f, r, name, span)?;
                 return self.model.ce_type(n, r, s, t, f);
             }
-            CobarOp::RvKoszulDifferential | CobarOp::RvTorClass | CobarOp::RvTorRepresentative => {
+            CobarOp::RvKoszulDifferential
+            | CobarOp::RvKoszulPrimitive
+            | CobarOp::RvTorClass
+            | CobarOp::RvTorRepresentative => {
                 let underlying_tor = matches!(op, CobarOp::RvTorRepresentative);
-                let mut grade = self.rv_complex_grade(argument, underlying_tor, name)?;
-                if matches!(op, CobarOp::RvKoszulDifferential) {
-                    grade = grade.differential()?;
-                }
+                let grade = self.rv_complex_grade(argument, underlying_tor, name)?;
+                let grade = match op {
+                    CobarOp::RvKoszulDifferential => grade.differential()?,
+                    CobarOp::RvKoszulPrimitive => grade.primitive()?,
+                    _ => grade,
+                };
                 return self
                     .model
                     .rv_complex_type(grade, matches!(op, CobarOp::RvTorClass));

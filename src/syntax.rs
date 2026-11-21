@@ -7,6 +7,7 @@ use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
+use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -371,6 +372,7 @@ pub(crate) enum ExprForm {
     PowerDef(Vec<ParsedExpr>),
     Bracket(Vec<ParsedExpr>),
     Transfer(TransferOp, Vec<ParsedExpr>),
+    RvTBracket(RvTBracketOp, Vec<ParsedExpr>),
     MapBracket(MapBracketOp, Vec<ParsedExpr>),
     MapSystem(MapSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     OddSystem(OddSystemOp, Vec<ParsedExpr>, Vec<Witness>),
@@ -1663,6 +1665,7 @@ impl<'src> Parser<'src> {
             if let ExprForm::Name(name) = &head.kind {
                 if matches!(name.text.as_str(), "massey" | "powerdef" | "bracket")
                     || TransferOp::from_name(&name.text).is_some()
+                    || RvTBracketOp::from_name(&name.text).is_some()
                     || MapBracketOp::from_name(&name.text).is_some()
                     || MapSystemOp::from_name(&name.text).is_some()
                     || OddSystemOp::from_name(&name.text).is_some()
@@ -1739,6 +1742,9 @@ impl<'src> Parser<'src> {
         }
         if let Some(operation) = TransferOp::from_name(&name.text) {
             return expr(span, ExprForm::Transfer(operation, arguments), depth);
+        }
+        if let Some(operation) = RvTBracketOp::from_name(&name.text) {
+            return expr(span, ExprForm::RvTBracket(operation, arguments), depth);
         }
         if let Some(operation) = MapBracketOp::from_name(&name.text) {
             return expr(span, ExprForm::MapBracket(operation, arguments), depth);

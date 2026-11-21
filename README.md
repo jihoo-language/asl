@@ -573,6 +573,14 @@ For a declared rank ideal $J\subset S=\mathbb F_2[x_i:i\in I]$, `RVKoszul(J, s, 
 
 For the complete intersection $(xy+z^2,x^2+yz)$, the two classes in $(1,2)$ multiply to the generator at $(2,4)$. The example also multiplies a cycle by a nonzero chain boundary and verifies that the product is a boundary. For $(x^2,xy,y^2)$ the ranks in $(1,2)$ and $(2,3)$ are three and two, and all products of positive homological degree vanish. [Syzygies example](examples/rank-syzygies.asl)
 
+### Triple Massey products in Tor
+
+`rvTBracket(a,b,c)` returns the predicate for the triple Massey product of three `RVTor` classes over the same ideal. If either adjacent product is nonzero in Tor, the predicate is empty. Otherwise the interpreter chooses cycle representatives $A,B,C$ and solves $dU=AB$, $dV=BC$. The class of $AV+UC$ lies in homological degree $s_a+s_b+s_c+1$ and internal degree $t_a+t_b+t_c$. All possible values form its coset modulo $a\operatorname{Tor}_{s_b+s_c+1,t_b+t_c}+\operatorname{Tor}_{s_a+s_b+1,t_a+t_b}c$.
+
+`rvTInBracket(a,b,c,x)` tests membership using this linear span directly. `rvkPrimitive(w)` returns a chosen chain whose differential is the supplied boundary $w$, raising homological degree by one. It reports an error if $w$ has no such primitive.
+
+In the flag Stanley–Reisner example with ideal $(x_1x_2,x_3x_4,x_5x_6,x_1x_3,x_4x_5)$, the classes of $x_1e_2$, $x_3e_4$, and $x_5e_6$ have a triple product with exactly one value, the nonzero class of $x_1x_5e_2e_3e_4e_6$. The first adjacent product is zero at the chain level and the second is $d(x_5e_3e_4e_6)$. Both indeterminacy groups are in $(3,4)$ and vanish. [Tor Massey example](examples/rank-massey.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.
