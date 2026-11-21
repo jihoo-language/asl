@@ -47,6 +47,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
+| `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
 | `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
@@ -154,6 +155,23 @@ Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates 
 `extClass(c)` takes a closed cobar cochain in bidegree `(s, t)` to its class in `Ext(s, t)`. `extRep(x)` returns a deterministic closed representative of `x`. For a cobar boundary of positive length, `extPrimitive(c)` returns a deterministic `p` with `cobarD(p) == c`. `yoneda(x, y)` multiplies classes by concatenating their representatives and taking the result's class. Classes of the same bidegree support `add` and `zero[Ext(s, t)]`.
 
 Run `nix run path:. -- examples/adams-e2.asl` to compute $h_0h_1=0$ and $h_1^3=h_0^2h_2\ne0$. [Adams E₂ example](examples/adams-e2.asl)
+
+## The algebraic May spectral sequence
+
+Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomial, count the set bits of each exponent and multiply that count by the corresponding generator weight. The weight $M$ of a cobar word is the sum over its factors. In internal degree $t$, the decreasing filtration $F^f$ is spanned by words with $t-M\ge f$. The cobar differential preserves this filtration, and concatenation adds filtration indices. The associated graded complex is page $E_0$. Its differential preserves $f$, and $d_r$ increases $s$ by one and $f$ by $r$, preserving $t$. [May, *The cohomology of restricted Lie algebras and of Hopf algebras*](https://doi.org/10.1016/0021-8693(66)90009-3)
+
+| Expression or statement | Result |
+| --- | --- |
+| `maydim[r, s, t, f];` | Prints the rank of the page component. |
+| `maygen[r, s, t, f, i]` | Returns generator `i` of a deterministic basis, indexed from zero. |
+| `mayClass[r, f](c)` | Projects a cobar cochain in $F^f$ whose differential lies in $F^{f+r}$. |
+| `mayRep(x)` | Returns a deterministic cobar lift of the page class. |
+| `mayD(x)` | Evaluates $d_r$ on the page class. |
+| `mayMul(x, y)` | Multiplies two classes on the same page, adding their cobar lengths, internal degrees, and filtration indices. |
+
+`zero[May(r, s, t, f)]` and `add(x, y)` use the vector space structure in a fixed page component. For $r\ge1$, projection identifies lifts that differ by an $(r-1)$-cycle in $F^{f+1}$ or a cobar boundary in $F^f$ with a primitive in $F^{\max(0,f-r+1)}$. The computation stabilizes separately in each internal degree. The stabilized groups are the associated graded groups of `Ext(s, t)` for the induced filtration.
+
+Run `nix run path:. -- examples/may.asl` to compute $d_1(h_{2,0})=h_1h_0$ and the nonzero $d_3$ of a corrected $b_{2,0}$ lift in internal degree 6. The page ranks record the effect on the source and target. A second program computes a nonzero $d_7$ in internal degree 12 and checks that both page components vanish on $E_8$. [First and third differentials](examples/may.asl) · [Seventh differential](examples/may-seventh.asl)
 
 ## Suspension and stable degrees
 

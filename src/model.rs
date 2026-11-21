@@ -6,6 +6,7 @@ use crate::adams::Adams;
 use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::error::{Error, Result};
+use crate::may::MayPage;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 
@@ -30,6 +31,7 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     Ext(usize, usize),
+    May(usize, usize, usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
     Bar(usize),
@@ -84,6 +86,7 @@ struct TypeInfo {
     elements: Option<Rc<[Value]>>,
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
+    may_page: Option<Rc<MayPage>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
     inhabited: bool,
@@ -172,7 +175,9 @@ impl Model {
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
             Kind::Cobar(s, t) | Kind::Ext(s, t) if s > t || (s == 0 && t != 0) => 1,
             Kind::Cobar(s, t) | Kind::Ext(s, t) if s == t => 2,
-            Kind::Cobar(..) | Kind::Ext(..) => usize::MAX,
+            Kind::May(_, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
+            Kind::May(_, s, t, _) if s == t => 2,
+            Kind::Cobar(..) | Kind::Ext(..) | Kind::May(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -185,6 +190,7 @@ impl Model {
             elements: None,
             cohomology: None,
             adams: None,
+            may_page: None,
             cardinality_bound,
             heights: [None; 2],
             inhabited,
@@ -218,6 +224,7 @@ impl Model {
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::Ext(..)
+                | Kind::May(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
@@ -327,6 +334,10 @@ impl Model {
         self.inhabited_type(Kind::Ext(s, t), 0)
     }
 
+    pub(crate) fn may_type(&mut self, r: usize, s: usize, t: usize, f: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::May(r, s, t, f), 0)
+    }
+
     pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
         if modulus < 2 {
             return Err(Error::plain("cyclic modulus must be at least 2"));
@@ -384,6 +395,18 @@ impl Model {
         };
         let data = Rc::new(Adams::build(self, s, t)?);
         self.types[ty.0].adams = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn may_page(&mut self, ty: TypeId) -> Result<Rc<MayPage>> {
+        if let Some(data) = &self.types[ty.0].may_page {
+            return Ok(data.clone());
+        }
+        let Kind::May(r, s, t, f) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(MayPage::build(self, r, s, t, f)?);
+        self.types[ty.0].may_page = Some(data.clone());
         Ok(data)
     }
 
@@ -452,6 +475,7 @@ impl Model {
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::Ext(..)
+            | Kind::May(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
             | Kind::CyclicH2(..) => 1,
@@ -566,6 +590,7 @@ impl Model {
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
+            &Kind::May(r, s, t, f) => out.push(&format!("May({r}, {s}, {t}, {f})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
@@ -794,6 +819,10 @@ impl Model {
                 }
                 Kind::Ext(..) => {
                     let rank = self.adams(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::May(..) => {
+                    let rank = self.may_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,

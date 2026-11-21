@@ -7,6 +7,7 @@ use crate::cobar;
 use crate::cohomology;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
+use crate::may;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::steenrod;
@@ -39,6 +40,9 @@ enum CobarOp {
     Class,
     Representative,
     Primitive,
+    MayClass,
+    MayRepresentative,
+    MayDifferential,
 }
 
 impl CobarOp {
@@ -48,6 +52,8 @@ impl CobarOp {
             "extClass" => Some(Self::Class),
             "extRep" => Some(Self::Representative),
             "extPrimitive" => Some(Self::Primitive),
+            "mayRep" => Some(Self::MayRepresentative),
+            "mayD" => Some(Self::MayDifferential),
             _ => None,
         }
     }
@@ -180,6 +186,11 @@ impl Engine {
                 let rank = self.model.adams(ty)?.rank();
                 format!("extdim[{s}, {t}] = {rank}")
             }
+            StatementForm::MayDimension(r, s, t, f) => {
+                let ty = self.model.may_type(r, s, t, f)?;
+                let rank = self.model.may_page(ty)?.rank();
+                format!("maydim[{r}, {s}, {t}, {f}] = {rank}")
+            }
             StatementForm::Homotopy(left, right) => {
                 let (left_expr, right_expr) = self.comparable_exprs(left, right, "homotopy")?;
                 if !matches!(self.model.kind(left_expr.ty), Kind::Arrow(..)) {
@@ -246,6 +257,9 @@ impl Engine {
                     (BinaryOp::Yoneda, Value::Class(a), Value::Class(b)) => {
                         adams::yoneda(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
+                    (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
+                        may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
                     (BinaryOp::Add, Value::Bar(a), Value::Bar(b)) => {
                         cyclic::add(&mut self.model, &a, &b)
                     }
@@ -283,6 +297,21 @@ impl Engine {
                 }
                 (CobarOp::Class, Value::Cobar(words)) => {
                     adams::class(&mut self.model, expr.ty, &words)
+                }
+                (CobarOp::MayClass, Value::Cobar(words)) => {
+                    may::class(&mut self.model, expr.ty, &words)
+                }
+                (CobarOp::MayDifferential, Value::Class(class)) => {
+                    may::differential(&mut self.model, input.ty, &class, expr.ty)
+                }
+                (CobarOp::MayRepresentative, Value::Class(class)) => {
+                    if class.is_empty() {
+                        return Ok(cobar::zero());
+                    }
+                    let page = self.model.may_page(input.ty)?;
+                    let words = page.representative(&mut self.model, &class)?;
+                    self.model.allocate(words.len())?;
+                    Ok(Value::Cobar(words.into()))
                 }
                 (CobarOp::Representative, Value::Class(class)) => {
                     if class.is_empty() {
@@ -509,6 +538,7 @@ impl Checker<'_> {
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::Ext(s, t) => self.model.ext_type(s, t),
+            TypeForm::May(r, s, t, f) => self.model.may_type(r, s, t, f),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
@@ -587,14 +617,16 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) => cohomology::zero(),
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::May(..) => {
+                        cohomology::zero()
+                    }
                     Kind::Bar(_) => Value::Bar([].into()),
                     Kind::CyclicH2(_) => Value::CyclicClass(false),
                     _ => {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, May, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -617,6 +649,18 @@ impl Checker<'_> {
                 let rank = self.model.adams(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MayGenerator(r, s, t, f, index, at) => {
+                let ty = self.model.may_type(r, s, t, f)?;
+                let rank = self.model.may_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MayClass(r, f, value) => {
+                let value = self.expr(*value)?;
+                let (s, t) = self.cobar_bidegree(&value, "mayClass")?;
+                let ty = self.model.may_type(r, s, t, f)?;
+                Ok((ty, TypedForm::Cobar(CobarOp::MayClass, Box::new(value))))
             }
             ExprForm::Cyclic(modulus, at, form) => {
                 let ty = self
@@ -958,6 +1002,13 @@ impl Checker<'_> {
         }
     }
 
+    fn may_degree(&self, value: &TypedExpr, op: &str) -> Result<(usize, usize, usize, usize)> {
+        match *self.model.kind(value.ty) {
+            Kind::May(r, s, t, f) => Ok((r, s, t, f)),
+            _ => Err(self.invalid_operand(value, op, "a May page class")),
+        }
+    }
+
     fn cobar_result(
         &mut self,
         op: &CobarOp,
@@ -965,9 +1016,22 @@ impl Checker<'_> {
         name: &str,
         span: Span,
     ) -> Result<TypeId> {
-        if matches!(op, CobarOp::Representative) {
-            let (s, t) = self.ext_bidegree(argument, name)?;
-            return self.model.cobar_type(s, t);
+        match op {
+            CobarOp::Representative => {
+                let (s, t) = self.ext_bidegree(argument, name)?;
+                return self.model.cobar_type(s, t);
+            }
+            CobarOp::MayRepresentative => {
+                let (_, s, t, _) = self.may_degree(argument, name)?;
+                return self.model.cobar_type(s, t);
+            }
+            CobarOp::MayDifferential => {
+                let (r, s, t, f) = self.may_degree(argument, name)?;
+                let s = checked_degree(s, 1, name, span)?;
+                let f = checked_degree(f, r, name, span)?;
+                return self.model.may_type(r, s, t, f);
+            }
+            _ => {}
         }
         let (s, t) = self.cobar_bidegree(argument, name)?;
         match op {
@@ -979,7 +1043,7 @@ impl Checker<'_> {
                 })?;
                 self.model.cobar_type(previous, t)
             }
-            CobarOp::Representative => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -1023,13 +1087,14 @@ impl Checker<'_> {
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
                         | Kind::Ext(..)
+                        | Kind::May(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
                 ) {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, May class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -1054,6 +1119,20 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "yoneda", span)?;
                 let degree = checked_degree(t, v, "yoneda", span)?;
                 self.model.ext_type(length, degree)
+            }
+            BinaryOp::MayMul => {
+                let (r, s, t, f) = self.may_degree(left, "mayMul")?;
+                let (page, u, v, g) = self.may_degree(right, "mayMul")?;
+                if r != page {
+                    return Err(Error::new(
+                        right.span,
+                        "mayMul requires classes on the same page",
+                    ));
+                }
+                let s = checked_degree(s, u, "mayMul", span)?;
+                let t = checked_degree(t, v, "mayMul", span)?;
+                let f = checked_degree(f, g, "mayMul", span)?;
+                self.model.may_type(r, s, t, f)
             }
             BinaryOp::Act => {
                 let operation = self.operation_degree(left, "act")?;
