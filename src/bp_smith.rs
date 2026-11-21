@@ -104,6 +104,130 @@ pub(crate) fn primary_factors(
     }
 }
 
+enum RowOperation {
+    Swap(usize, usize),
+    Subtract {
+        destination: usize,
+        source: usize,
+        factor: u64,
+    },
+}
+
+pub(crate) struct PrimaryFrame {
+    echelon: ModularMatrix,
+    diagonal: Vec<(u64, u64)>,
+    unit_count: usize,
+}
+
+pub(crate) struct Projector {
+    modulus: u64,
+    weights: Vec<(usize, u64)>,
+}
+
+impl Projector {
+    pub(crate) fn cells(&self) -> usize {
+        1 + 2 * self.weights.len()
+    }
+
+    pub(crate) fn evaluate(&self, model: &mut Model, vector: &[i128]) -> Result<i128> {
+        model.spend(self.weights.len())?;
+        let modulus = u128::from(self.modulus);
+        let mut sum = 0u128;
+        for &(row, weight) in &self.weights {
+            let coefficient = vector[row].rem_euclid(i128::from(self.modulus)) as u128;
+            let product = u128::from(weight) * coefficient % modulus;
+            sum = (sum + product) % modulus;
+        }
+        Ok(sum as i128)
+    }
+}
+
+impl PrimaryFrame {
+    pub(crate) fn build(
+        model: &mut Model,
+        matrix: &Matrix,
+        prime: u32,
+        rank: usize,
+        torsion: &[i128],
+    ) -> Result<Self> {
+        if rank > matrix.rows.min(matrix.columns) || torsion.len() > rank {
+            return Err(incompatible_rank());
+        }
+        let largest = u64::try_from(*torsion.last().ok_or_else(incompatible_rank)?)
+            .map_err(|_| frame_precision())?;
+        // Dividing an exact integral image by one of its invariant factors
+        // loses precision by at most that factor. Start with the square of
+        // the largest so the resulting cycle still has certain coordinates.
+        let modulus = largest.checked_mul(largest).ok_or_else(frame_precision)?;
+        let mut echelon = ModularMatrix::new(model, matrix, u64::from(prime), modulus)?;
+        echelon.permutation = Some((0..matrix.columns).collect());
+        echelon.operations = Some(Vec::new());
+        let unit_count = rank - torsion.len();
+        let mut diagonal = Vec::with_capacity(rank);
+        for expected in std::iter::repeat_n(1, unit_count).chain(torsion.iter().copied()) {
+            let pivot = diagonal.len();
+            let (row, column, divisor) = echelon
+                .find_pivot(model, pivot)?
+                .ok_or_else(incompatible_rank)?;
+            if i128::from(divisor) != expected {
+                return Err(incompatible_rank());
+            }
+            echelon.swap_pivot(model, pivot, row, column)?;
+            let inverse = echelon.clear_column(model, pivot, divisor)?;
+            diagonal.push((divisor, inverse));
+        }
+        Ok(Self {
+            echelon,
+            diagonal,
+            unit_count,
+        })
+    }
+
+    pub(crate) fn lift(&self, model: &mut Model, generator: usize) -> Result<Vec<i128>> {
+        let pivot = self.unit_count + generator;
+        let mut rhs = vec![0; self.echelon.rows];
+        rhs[pivot] = self.echelon.entries[pivot * self.echelon.columns + pivot];
+        // The unnormalized pivot on the right makes the pivot coefficient
+        // of this preimage equal to one.
+        self.echelon.solution(model, &self.diagonal, &rhs)
+    }
+
+    pub(crate) fn projector(&self, model: &mut Model, generator: usize) -> Result<Projector> {
+        let pivot = self.unit_count + generator;
+        let (modulus, inverse) = self.diagonal[pivot];
+        let mut weights = vec![0; self.echelon.rows];
+        weights[pivot] = inverse % modulus;
+        let operations = self.echelon.operations.as_ref().unwrap();
+        model.spend(weights.len() + operations.len())?;
+        // A coordinate functional acts on the row operations in reverse.
+        for operation in operations.iter().rev() {
+            match *operation {
+                RowOperation::Swap(a, b) => weights.swap(a, b),
+                RowOperation::Subtract {
+                    destination,
+                    source,
+                    factor,
+                } => {
+                    let product = multiply_modulo(factor % modulus, weights[destination], modulus);
+                    weights[source] = subtract_modulo(weights[source], product, modulus);
+                }
+            }
+        }
+        Ok(Projector {
+            modulus,
+            weights: weights
+                .into_iter()
+                .enumerate()
+                .filter(|&(_, weight)| weight != 0)
+                .collect(),
+        })
+    }
+}
+
+fn frame_precision() -> Error {
+    Error::plain("BP Ext coordinate precision exceeds the u64 modulus limit")
+}
+
 struct ModularMatrix {
     entries: Vec<u64>,
     rows: usize,
@@ -112,6 +236,7 @@ struct ModularMatrix {
     modulus: u64,
     rhs: Option<Vec<u64>>,
     permutation: Option<Vec<usize>>,
+    operations: Option<Vec<RowOperation>>,
 }
 
 fn primary_diagonal(
@@ -167,7 +292,7 @@ pub(crate) fn modular_preimage(
         let inverse = reduced.clear_column(model, pivot, divisor)?;
         diagonal.push((divisor, inverse));
     }
-    reduced.solution(model, &diagonal)
+    reduced.solution(model, &diagonal, reduced.rhs.as_ref().unwrap())
 }
 
 impl ModularMatrix {
@@ -185,12 +310,17 @@ impl ModularMatrix {
             modulus,
             rhs: None,
             permutation: None,
+            operations: None,
         })
     }
 
-    fn solution(self, model: &mut Model, diagonal: &[(u64, u64)]) -> Result<Vec<i128>> {
-        let rhs = self.rhs.as_ref().unwrap();
-        let permutation = self.permutation.unwrap();
+    fn solution(
+        &self,
+        model: &mut Model,
+        diagonal: &[(u64, u64)],
+        rhs: &[u64],
+    ) -> Result<Vec<i128>> {
+        let permutation = self.permutation.as_ref().unwrap();
         let rank = diagonal.len();
         model.spend(rhs.len() + self.columns)?;
         if rhs[rank..].iter().any(|&residue| residue != 0) {
@@ -212,7 +342,7 @@ impl ModularMatrix {
             coordinates[row] = multiply_modulo(residual / divisor, inverse, self.modulus / divisor);
         }
         let mut result = vec![0; self.columns];
-        for (position, value) in permutation.into_iter().zip(coordinates) {
+        for (&position, value) in permutation.iter().zip(coordinates) {
             result[position] = if value <= self.modulus / 2 {
                 i128::from(value)
             } else {
@@ -266,6 +396,7 @@ impl ModularMatrix {
             if let Some(rhs) = &mut self.rhs {
                 rhs.swap(pivot, row);
             }
+            self.record(RowOperation::Swap(pivot, row))?;
         }
         if column != pivot {
             let first = if self.permutation.is_some() { 0 } else { pivot };
@@ -307,10 +438,27 @@ impl ModularMatrix {
                 let product = multiply_modulo(factor, rhs[pivot], self.modulus);
                 rhs[row] = subtract_modulo(rhs[row], product, self.modulus);
             }
+            self.record(RowOperation::Subtract {
+                destination: row,
+                source: pivot,
+                factor,
+            })?;
         }
         // Clearing the pivot row by column operations would leave the
         // trailing block unchanged, since the pivot column below it is zero.
         Ok(inverse)
+    }
+
+    fn record(&mut self, operation: RowOperation) -> Result<()> {
+        if let Some(operations) = &mut self.operations {
+            if operations.len() >= MAX_PIVOT_CELLS / 4 {
+                return Err(Error::plain(
+                    "BP Ext coordinate operations exceed the storage limit",
+                ));
+            }
+            operations.push(operation);
+        }
+        Ok(())
     }
 }
 
@@ -383,5 +531,40 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(image[0].rem_euclid(16), 4);
         assert_eq!(image[1].rem_euclid(16), 12);
+    }
+
+    #[test]
+    fn primary_frame_inverts_different_nonunit_pivots() {
+        let mut model = Model::new();
+        let matrix = Matrix {
+            rows: 2,
+            columns: 2,
+            entries: vec![6, 9, 3, 9],
+        };
+        let frame = PrimaryFrame::build(&mut model, &matrix, 3, 2, &[3, 9])
+            .unwrap_or_else(|error| panic!("{error}"));
+        for (i, factor) in [3, 9].into_iter().enumerate() {
+            let preimage = frame
+                .lift(&mut model, i)
+                .unwrap_or_else(|error| panic!("{error}"));
+            let mut cycle = matrix
+                .apply(&mut model, &preimage)
+                .unwrap_or_else(|error| panic!("{error}"));
+            for coordinate in &mut cycle {
+                assert_eq!(*coordinate % factor, 0);
+                *coordinate /= factor;
+            }
+            for j in 0..2 {
+                let projector = frame
+                    .projector(&mut model, j)
+                    .unwrap_or_else(|error| panic!("{error}"));
+                assert_eq!(
+                    projector
+                        .evaluate(&mut model, &cycle)
+                        .unwrap_or_else(|error| panic!("{error}")),
+                    i128::from(i == j)
+                );
+            }
+        }
     }
 }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::adams::Adams;
+use crate::bp_classes;
 use crate::bp_page;
 use crate::ce::CePage;
 use crate::cobar;
@@ -85,6 +86,7 @@ pub(crate) enum Kind {
     RVPoly(q_koszul::Indices, usize),
     BP(bp::Shape),
     BPPage(bp_page::Grade),
+    BPExt(bp_classes::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -171,6 +173,7 @@ pub(crate) enum Value {
     JetClass(jet_page::Coordinates),
     RVPoly(Polynomial),
     BP(Rc<bp_polynomial::Polynomial>),
+    BPExt(bp_classes::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -212,6 +215,7 @@ struct TypeInfo {
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
     odd_ext: Option<Rc<OddExt>>,
+    bp_ext: Option<Rc<bp_classes::Cohomology>>,
     odd_ext_rank: Option<usize>,
     odd_page: Option<Rc<OddPage>>,
     bp_page: Option<Rc<bp_page::Page>>,
@@ -439,7 +443,7 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
-            Kind::RVPoly(..) | Kind::BP(..) => usize::MAX,
+            Kind::RVPoly(..) | Kind::BP(..) | Kind::BPExt(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -453,6 +457,7 @@ impl Model {
             cohomology: None,
             adams: None,
             odd_ext: None,
+            bp_ext: None,
             odd_ext_rank: None,
             odd_page: None,
             bp_page: None,
@@ -526,6 +531,7 @@ impl Model {
                 | Kind::RVTor(..)
                 | Kind::RVPoly(..)
                 | Kind::BP(..)
+                | Kind::BPExt(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -927,6 +933,23 @@ impl Model {
 
     pub(crate) fn bp_page_type(&mut self, grade: bp_page::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::BPPage(grade), 0)
+    }
+
+    pub(crate) fn bp_ext_type(&mut self, grade: bp_classes::Grade) -> Result<TypeId> {
+        grade.shape.require_integral("BPExt")?;
+        self.inhabited_type(Kind::BPExt(grade), 0)
+    }
+
+    pub(crate) fn bp_ext(&mut self, ty: TypeId) -> Result<Rc<bp_classes::Cohomology>> {
+        if let Some(group) = &self.types[ty.0].bp_ext {
+            return Ok(group.clone());
+        }
+        let Kind::BPExt(grade) = self.types[ty.0].kind else {
+            unreachable!()
+        };
+        let group = Rc::new(bp_classes::Cohomology::build(self, grade)?);
+        self.types[ty.0].bp_ext = Some(group.clone());
+        Ok(group)
     }
 
     pub(crate) fn bp_type(&mut self, shape: bp::Shape) -> Result<TypeId> {
@@ -1443,6 +1466,7 @@ impl Model {
             | Kind::RVTor(..)
             | Kind::RVPoly(..)
             | Kind::BP(..)
+            | Kind::BPExt(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1604,6 +1628,10 @@ impl Model {
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
             Kind::BPPage(grade) => out.push(&grade.to_string()),
+            Kind::BPExt(grade) => out.push(&format!(
+                "BPExt({}, {}, {}, {})",
+                grade.shape.prime, grade.shape.height, grade.shape.arrows, grade.t,
+            )),
             Kind::JetPage(grade) => {
                 out.push("JetPage(")?;
                 self.write_jet_diagram(out, grade.chain.diagram)?;
@@ -1734,6 +1762,13 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::BPExt(left), Value::BPExt(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(true);
+                }
+                self.spend(left.len().min(right.len()))?;
+                Ok(left == right)
+            }
             (Value::BP(left), Value::BP(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
@@ -1838,6 +1873,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::BPExt(left), Value::BPExt(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.iter().rev().cmp(right.iter().rev()))
             }
             (Value::BP(left), Value::BP(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -2029,6 +2071,7 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::BP(..) => return Err(Error::plain("cannot enumerate a BP polynomial ring")),
+                Kind::BPExt(..) => self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?,
                 Kind::RVKoszul(ref grade) => {
                     let grade = grade.clone();
                     let ideal = self.rv_ideals[&grade.ideal].clone();
@@ -2446,6 +2489,24 @@ impl Model {
                         out.push(&format!("{coefficient} "))?;
                     }
                     write_odd_word(out, p, word)?;
+                }
+                out.push("}")
+            }
+            Value::BPExt(support) => {
+                self.spend(support.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if support.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, &(generator, coefficient)) in support.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    if coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    out.push(&format!("g{generator}"))?;
                 }
                 out.push("}")
             }

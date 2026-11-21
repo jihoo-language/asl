@@ -336,6 +336,14 @@ At $p=3$, take $a=t$ and $w=v_1t+t^2$. Then $dw=a\smile a$ and the chosen triple
 
 At $p=2$ the arity-one group in degree eight is cyclic of order eight at height one and of order sixteen at height two. The height-two class $d(v_1^4+8v_1v_2)/16$ generates the latter group. At $p=3$ and height two in degree twelve, the arity-one and arity-two groups have orders nine and three. [Integral BP Ext example](examples/bp-ext.asl)
 
+### First-class BP Ext classes and products
+
+`BPExt(p, n, a, t)` is the discrete additive group of that cohomology. `bpextgen[p, n, a, t, j]` selects a generator in invariant-factor order, starting at zero. `bpExtClass[t](f)` sends a homogeneous closed normalized integral cochain to its exact class, and `bpExtRep(x)` gives a deterministic normalized representative. Projection of the representative returns `x`. The modular coordinate frame uses a modulus equal to the square of the largest invariant factor and checks the modulus bound. Integer multiplication `bpScale[k](x)`, addition, and `bpNeg` reduce torsion coordinates modulo their invariant factors.
+
+`bpCup(x, y)` multiplies classes at a common prime and height by the Alexander–Whitney product on their representatives and projects to the sum of their arities and internal degrees. `BPExt(p, n, 0, 0)` is the free group $\mathbb Z$, with the generator one as the cup unit and checked signed integer coefficients. Finite groups can be enumerated within the usual limit. The free group gives an enumeration error when used as a domain for an operation that enumerates all its elements.
+
+The example checks that $[t_1]^2$ is nonzero of order two, enumerates all four classes in `BPExt(2, 2, 2, 8)`, and identifies the signed Massey representative at $p=3$ with $-\beta$ in integral Ext. [BP Ext ring example](examples/bp-ext-ring.asl)
+
 ### Bockstein and algebraic Novikov pages
 
 `bpBockdim[p, n, r, a, t, f];` and `bpNovdim[p, n, r, a, t, f];` give dimensions over $\mathbb F_p$ on page `r`, in normalized cobar degree `a`, internal degree `t`, and filtration `f`. The Bockstein calculation filters the integral normalized cobar by powers of $p$. The Novikov calculation uses powers of the invariant ideal $(p,v_1,\ldots,v_n)$. For a monomial of Novikov weight $w$, the sum of the source $v_i$ exponents, membership in $F^f$ means its coefficient is divisible by $p^{\max(0,f-w)}$. The Bockstein calculation uses $w=0$ for every monomial.

@@ -59,15 +59,15 @@ use crate::rv_t_transfer;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
-    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, JetHomSpec, JetOp, JetPageSpec, JetPathArg,
-    Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp, RvSchemeOp, Statement,
+    BinaryOp, BpExtOp, ClassForm, CyclicForm, Entries, ExprForm, JetHomSpec, JetOp, JetPageSpec,
+    JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec, RvIdealOp, RvSchemeOp, Statement,
     StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock;
-use crate::{bp, bp_ext, bp_polynomial::Polynomial as BpPolynomial};
+use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial};
 
 pub(crate) struct Engine {
     model: Model,
@@ -201,6 +201,7 @@ enum TypedForm {
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
+    BpExtOperation(BpExtOp, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
@@ -911,11 +912,17 @@ impl Engine {
                     (BinaryOp::Add, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::BPExt(a), Value::BPExt(b)) => {
+                        bp_classes::add(&mut self.model, expr.ty, &a, &b)
+                    }
                     (BinaryOp::Add, Value::BP(a), Value::BP(b)) => {
                         self.model.spend(a.cells())?;
                         let mut result = (*a).clone();
                         result.add_assign(&mut self.model, &b, false)?;
                         self.persist_bp(expr.ty, result)
+                    }
+                    (BinaryOp::BpCup, Value::BPExt(a), Value::BPExt(b)) => {
+                        bp_classes::cup(&mut self.model, (left.ty, &a), (right.ty, &b), expr.ty)
                     }
                     (BinaryOp::BpCup, Value::BP(a), Value::BP(b)) => {
                         let (&Kind::BP(l), &Kind::BP(r)) =
@@ -1508,6 +1515,18 @@ impl Engine {
                 };
                 odd_ext::persist(&mut self.model, output)
             }
+            TypedForm::BpExtOperation(operation, input) => match (*operation, self.eval(input)?) {
+                (BpExtOp::Class(_), Value::BP(cycle)) => {
+                    bp_classes::class(&mut self.model, expr.ty, &cycle)
+                }
+                (BpExtOp::Representative, Value::BPExt(support)) => {
+                    bp_classes::representative(&mut self.model, input.ty, &support)
+                }
+                (BpExtOp::Scale(scalar), Value::BPExt(support)) => {
+                    bp_classes::scale(&mut self.model, input.ty, &support, scalar)
+                }
+                _ => unreachable!(),
+            },
             TypedForm::BpOperation(operation, shape, input) => {
                 let Value::BP(polynomial) = self.eval(input)? else {
                     unreachable!()
@@ -2143,6 +2162,10 @@ impl Checker<'_> {
                 let grade = self.bp_page_grade(mode, spec)?;
                 self.model.bp_page_type(grade)
             }
+            TypeForm::BPExt(spec, t) => {
+                let grade = self.bp_ext_grade(spec, t)?;
+                self.model.bp_ext_type(grade)
+            }
             TypeForm::BP(spec, depth) => {
                 let mut shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
                 if let Some(depth) = depth {
@@ -2262,6 +2285,7 @@ impl Checker<'_> {
                     Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::BP(..) => bp::zero(),
+                    Kind::BPExt(..) => bp_classes::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -2799,8 +2823,50 @@ impl Checker<'_> {
                     TypedForm::BpMassey(layout, inputs),
                 ))
             }
+            ExprForm::BpExtGenerator(spec, t, index, at) => {
+                let grade = self.bp_ext_grade(spec, t)?;
+                let ty = self.model.bp_ext_type(grade)?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bpextgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
+                ))
+            }
+            ExprForm::BpExtOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = match operation {
+                    BpExtOp::Class(t) => {
+                        let shape = self.bp_shape(&input, "bpExtClass")?;
+                        shape.require_integral("bpExtClass")?;
+                        self.model.bp_ext_type(bp_classes::Grade { shape, t })?
+                    }
+                    BpExtOp::Representative => {
+                        let grade = self.bp_ext_operand(&input, "bpExtRep")?;
+                        self.model.bp_type(grade.shape)?
+                    }
+                    BpExtOp::Scale(_) => {
+                        self.bp_ext_operand(&input, "bpScale")?;
+                        input.ty
+                    }
+                };
+                Ok((ty, TypedForm::BpExtOperation(operation, Box::new(input))))
+            }
             ExprForm::BpOperation(operation, input) => {
                 let input = self.expr(*input)?;
+                if matches!(operation, bp::Operation::Negate)
+                    && matches!(self.model.kind(input.ty), Kind::BPExt(..))
+                {
+                    return Ok((
+                        input.ty,
+                        TypedForm::BpExtOperation(BpExtOp::Scale(-1), Box::new(input)),
+                    ));
+                }
                 let shape = self.bp_shape(&input, operation.name())?;
                 let ty = self.model.bp_type(operation.target(shape)?)?;
                 Ok((
@@ -3810,6 +3876,18 @@ impl Checker<'_> {
         })
     }
 
+    fn bp_ext_grade(&mut self, spec: crate::syntax::BpSpec, t: usize) -> Result<bp_classes::Grade> {
+        let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
+        Ok(bp_classes::Grade { shape, t })
+    }
+
+    fn bp_ext_operand(&self, value: &TypedExpr, name: &str) -> Result<bp_classes::Grade> {
+        let Kind::BPExt(grade) = *self.model.kind(value.ty) else {
+            return Err(self.invalid_operand(value, name, "a BPExt class"));
+        };
+        Ok(grade)
+    }
+
     fn bp_shape(&self, value: &TypedExpr, name: &str) -> Result<bp::Shape> {
         match self.model.kind(value.ty) {
             Kind::BP(shape) => Ok(*shape),
@@ -4250,6 +4328,7 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::BP(..)
+                        | Kind::BPExt(..)
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
                         | Kind::RVLaurent(..)
@@ -4359,6 +4438,13 @@ impl Checker<'_> {
                 self.model.xext_type(base, length, degree)
             }
             BinaryOp::BpCup => {
+                if matches!(self.model.kind(left.ty), Kind::BPExt(..))
+                    || matches!(self.model.kind(right.ty), Kind::BPExt(..))
+                {
+                    let left = self.bp_ext_operand(left, "bpCup")?;
+                    let right = self.bp_ext_operand(right, "bpCup")?;
+                    return self.model.bp_ext_type(left.cup(right)?);
+                }
                 let left = self.bp_shape(left, "bpCup")?;
                 let right = self.bp_shape(right, "bpCup")?;
                 self.model.bp_type(left.cup(right)?)

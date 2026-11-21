@@ -42,7 +42,11 @@ pub(crate) fn group(model: &mut Model, shape: Shape, t: usize) -> Result<Group> 
     Ok(Group { free: 0, torsion })
 }
 
-fn incoming_basis(model: &mut Model, shape: Shape, t: usize) -> Result<(Vec<Monomial>, usize)> {
+pub(crate) fn incoming_basis(
+    model: &mut Model,
+    shape: Shape,
+    t: usize,
+) -> Result<(Vec<Monomial>, usize)> {
     let mut rank = 0usize;
     for arrows in 0..shape.arrows {
         let dimension = basis(model, Shape { arrows, ..shape }, t)?.len();
@@ -245,7 +249,12 @@ fn order_overflow() -> Error {
     Error::plain("BP integral class order or its multiple exceeds the signed i128 range")
 }
 
-fn validate_cycle(model: &mut Model, shape: Shape, t: usize, cycle: &Polynomial) -> Result<()> {
+pub(crate) fn validate_cycle(
+    model: &mut Model,
+    shape: Shape,
+    t: usize,
+    cycle: &Polynomial,
+) -> Result<()> {
     let weight = unit_weight(shape.prime, t).ok_or_else(wrong_weight)?;
     let weights = weights(shape, weight);
     for (monomial, _) in cycle.terms() {
