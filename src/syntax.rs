@@ -27,6 +27,7 @@ pub(crate) enum TypeForm {
     XExt(Box<ParsedType>, usize, usize),
     MapCobar(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
+    MapMay(MapMaySpec),
     May(usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
@@ -34,6 +35,15 @@ pub(crate) enum TypeForm {
     CyclicH2(usize),
     Product(Box<ParsedType>, Box<ParsedType>),
     Arrow(Box<ParsedType>, Box<ParsedType>),
+}
+
+pub(crate) struct MapMaySpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) r: usize,
+    pub(crate) s: usize,
+    pub(crate) t: i64,
+    pub(crate) f: usize,
 }
 
 pub(crate) struct ParsedExpr {
@@ -126,6 +136,7 @@ pub(crate) enum ExprForm {
     MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
     MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
     MapExtIdentity(ParsedType),
+    MapMayGenerator(MapMaySpec, usize, Span),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
     Suspension(ParsedType, SuspensionForm),
@@ -162,6 +173,7 @@ pub(crate) enum StatementForm {
     ExtDimension(usize, usize),
     XExtDimension(ParsedType, usize, usize),
     MapExtDimension(ParsedType, ParsedType, usize, i64),
+    MapMayDimension(MapMaySpec),
     MayDimension(usize, usize, usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
@@ -519,6 +531,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::MapExtDimension(source, target, s, t)
             }
+            Token::Word("mapmaydim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.map_may_spec(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MapMayDimension(spec)
+            }
             Token::Word("maydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -552,15 +571,39 @@ impl<'src> Parser<'src> {
         Ok((base, s, t))
     }
 
-    fn map_bidegree(&mut self, nest: usize) -> Result<(ParsedType, ParsedType, usize, i64)> {
+    fn map_endpoints(&mut self, nest: usize) -> Result<(ParsedType, ParsedType)> {
         let source = self.ty(nest + 1)?;
         self.expect(Token::Comma)?;
         let target = self.ty(nest + 1)?;
         self.expect(Token::Comma)?;
+        Ok((source, target))
+    }
+
+    fn map_bidegree(&mut self, nest: usize) -> Result<(ParsedType, ParsedType, usize, i64)> {
+        let (source, target) = self.map_endpoints(nest)?;
         let (s, _) = self.number()?;
         self.expect(Token::Comma)?;
         let t = self.signed_degree()?;
         Ok((source, target, s, t))
+    }
+
+    fn map_may_spec(&mut self, nest: usize) -> Result<MapMaySpec> {
+        let (source, target) = self.map_endpoints(nest)?;
+        let (r, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let t = self.signed_degree()?;
+        self.expect(Token::Comma)?;
+        let (f, _) = self.number()?;
+        Ok(MapMaySpec {
+            source: Box::new(source),
+            target: Box::new(target),
+            r,
+            s,
+            t,
+            f,
+        })
     }
 
     fn map_generator(&mut self, nest: usize) -> Result<MapGenerator> {
@@ -647,6 +690,12 @@ impl<'src> Parser<'src> {
                 TypeForm::MapExt(source, target, s, t)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "MapMay" && self.eat(Token::LParen)? {
+            let spec = self.map_may_spec(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = spec.source.depth.max(spec.target.depth) + 1;
+            return ty(span, TypeForm::MapMay(spec), depth);
         }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
@@ -952,6 +1001,13 @@ impl<'src> Parser<'src> {
                     let base = self.ty(nest + 1)?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapExtIdentity(base), 0);
+                }
+                if name.text == "mapmaygen" && self.eat(Token::LBracket)? {
+                    let spec = self.map_may_spec(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MapMayGenerator(spec, index, at), 0);
                 }
                 if name.text == "maygen" && self.eat(Token::LBracket)? {
                     let (r, s, t, f) = self.may_degree()?;

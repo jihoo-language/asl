@@ -11,14 +11,15 @@ use crate::error::{Error, Result, Span};
 use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
+use crate::map_may;
 use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::steenrod;
 use crate::syntax::{
-    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, ParsedExpr, ParsedType, Statement,
-    StatementForm, SuspensionForm, TypeForm, Witness,
+    BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType,
+    Statement, StatementForm, SuspensionForm, TypeForm, Witness,
 };
 use crate::transfer;
 
@@ -224,6 +225,18 @@ impl Engine {
                     self.model.type_name(target),
                 )
             }
+            StatementForm::MapMayDimension(spec) => {
+                let ty = self.checker().map_may_type(spec)?;
+                let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let rank = self.model.map_may(ty)?.rank();
+                format!(
+                    "mapmaydim[{}, {}, {r}, {s}, {t}, {f}] = {rank}",
+                    self.model.type_name(source),
+                    self.model.type_name(target),
+                )
+            }
             StatementForm::MayDimension(r, s, t, f) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -305,7 +318,12 @@ impl Engine {
                         comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
                     }
                     (BinaryOp::MapExtCompose, Value::Class(g), Value::Class(f)) => {
-                        map_ext::compose(&mut self.model, (left.ty, &g), (right.ty, &f), expr.ty)
+                        let compose = if matches!(self.model.kind(expr.ty), Kind::MapMay(..)) {
+                            map_may::compose
+                        } else {
+                            map_ext::compose
+                        };
+                        compose(&mut self.model, (left.ty, &g), (right.ty, &f), expr.ty)
                     }
                     (BinaryOp::MapExtCompose, Value::MapCobar(g), Value::MapCobar(f)) => Ok(
                         Value::MapCobar(map_cochain::compose(&mut self.model, &g, &f)?),
@@ -382,10 +400,21 @@ impl Engine {
                 (CobarOp::MayClass, Value::Cobar(words)) => {
                     may::class(&mut self.model, expr.ty, &words)
                 }
+                (CobarOp::MayClass, Value::MapCobar(terms)) => {
+                    map_may::class(&mut self.model, expr.ty, &terms)
+                }
                 (CobarOp::MayDifferential, Value::Class(class)) => {
-                    may::differential(&mut self.model, input.ty, &class, expr.ty)
+                    if matches!(self.model.kind(input.ty), Kind::MapMay(..)) {
+                        map_may::differential(&mut self.model, input.ty, &class, expr.ty)
+                    } else {
+                        may::differential(&mut self.model, input.ty, &class, expr.ty)
+                    }
                 }
                 (CobarOp::MayRepresentative, Value::Class(class)) => {
+                    if matches!(self.model.kind(input.ty), Kind::MapMay(..)) {
+                        let terms = map_may::representative(&mut self.model, input.ty, &class)?;
+                        return Ok(Value::MapCobar(terms));
+                    }
                     if class.is_empty() {
                         return Ok(cobar::zero());
                     }
@@ -671,6 +700,7 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::MapMay(spec) => self.map_may_type(spec),
             TypeForm::MapExt(source, target, s, t) => {
                 let source = self.ty(*source)?;
                 let target = self.ty(*target)?;
@@ -761,7 +791,7 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MapMay(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -770,7 +800,7 @@ impl Checker<'_> {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, MapCobar, Ext, XExt, MapExt, May, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, MapCobar, Ext, XExt, MapExt, May, MapMay, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -843,6 +873,12 @@ impl Checker<'_> {
                 let ty = self.model.map_cobar_type(source_ty, target_ty, s, t)?;
                 Ok((ty, TypedForm::MapWord(source, target, Box::new(input))))
             }
+            ExprForm::MapMayGenerator(spec, index, at) => {
+                let ty = self.map_may_type(spec)?;
+                let rank = self.model.map_may(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -851,8 +887,12 @@ impl Checker<'_> {
             }
             ExprForm::MayClass(r, f, value) => {
                 let value = self.expr(*value)?;
-                let (s, t) = self.cobar_bidegree(&value, "mayClass")?;
-                let ty = self.model.may_type(r, s, t, f)?;
+                let ty = if let Kind::MapCobar(source, target, s, t) = *self.model.kind(value.ty) {
+                    self.model.map_may_type(source, target, r, s, t, f)?
+                } else {
+                    let (s, t) = self.cobar_bidegree(&value, "mayClass")?;
+                    self.model.may_type(r, s, t, f)?
+                };
                 Ok((ty, TypedForm::Cobar(CobarOp::MayClass, Box::new(value))))
             }
             ExprForm::Cyclic(modulus, at, form) => {
@@ -1263,6 +1303,13 @@ impl Checker<'_> {
         }
     }
 
+    fn map_may_type(&mut self, spec: MapMaySpec) -> Result<TypeId> {
+        let source = self.ty(*spec.source)?;
+        let target = self.ty(*spec.target)?;
+        self.model
+            .map_may_type(source, target, spec.r, spec.s, spec.t, spec.f)
+    }
+
     fn may_degree(&self, value: &TypedExpr, op: &str) -> Result<(usize, usize, usize, usize)> {
         match *self.model.kind(value.ty) {
             Kind::May(r, s, t, f) => Ok((r, s, t, f)),
@@ -1296,10 +1343,18 @@ impl Checker<'_> {
                 return self.model.cobar_type(s, t);
             }
             CobarOp::MayRepresentative => {
+                if let Kind::MapMay(source, target, _, s, t, _) = *self.model.kind(argument.ty) {
+                    return self.model.map_cobar_type(source, target, s, t);
+                }
                 let (_, s, t, _) = self.may_degree(argument, name)?;
                 return self.model.cobar_type(s, t);
             }
             CobarOp::MayDifferential => {
+                if let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(argument.ty) {
+                    let s = checked_degree(s, 1, name, span)?;
+                    let f = checked_degree(f, r, name, span)?;
+                    return self.model.map_may_type(source, target, r, s, t, f);
+                }
                 let (r, s, t, f) = self.may_degree(argument, name)?;
                 let s = checked_degree(s, 1, name, span)?;
                 let f = checked_degree(f, r, name, span)?;
@@ -1386,6 +1441,7 @@ impl Checker<'_> {
                         | Kind::Ext(..)
                         | Kind::XExt(..)
                         | Kind::MapExt(..)
+                        | Kind::MapMay(..)
                         | Kind::May(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
@@ -1393,7 +1449,7 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, MapCobar cochain, Ext class, XExt class, MapExt class, May class, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, MapCobar cochain, Ext class, XExt class, MapExt class, May class, MapMay class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -1458,6 +1514,31 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
+                if let Kind::MapMay(middle, target, r, gs, gt, gf) = *self.model.kind(left.ty) {
+                    let Kind::MapMay(source, inner_target, page, fs, ft, ff) =
+                        *self.model.kind(right.ty)
+                    else {
+                        return Err(self.invalid_operand(right, "ecomp", "a MapMay class"));
+                    };
+                    if r != page {
+                        return Err(Error::new(
+                            right.span,
+                            "ecomp requires MapMay classes on the same page",
+                        ));
+                    }
+                    if inner_target != middle {
+                        return Err(Error::new(
+                            right.span,
+                            "ecomp requires composable MapMay endpoints",
+                        ));
+                    }
+                    let s = checked_degree(fs, gs, "ecomp", span)?;
+                    let t = ft.checked_add(gt).ok_or_else(|| {
+                        Error::new(span, "ecomp signed internal degree is out of range")
+                    })?;
+                    let f = checked_degree(ff, gf, "ecomp", span)?;
+                    return self.model.map_may_type(source, target, r, s, t, f);
+                }
                 let raw = matches!(self.model.kind(left.ty), Kind::MapCobar(..));
                 let bidegree = if raw {
                     Self::map_cobar_bidegree

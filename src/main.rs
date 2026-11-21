@@ -11,6 +11,7 @@ mod linear;
 mod map_bracket;
 mod map_cochain;
 mod map_ext;
+mod map_may;
 mod may;
 mod milnor;
 mod model;
@@ -39,7 +40,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, extdim, xextdim, mapextdim, maydim, and homotopy statements print to standard output.
+The show, card, betti, extdim, xextdim, mapextdim, maydim, mapmaydim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 

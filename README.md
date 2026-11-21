@@ -51,6 +51,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
 | `MapExt(X, Y, s, t)` | The discrete space of mod-two Adams $E_2$ classes for stable maps from `X` to `Y`, with disjoint basepoints. |
+| `MapMay(X, Y, r, s, t, f)` | The discrete space of algebraic May page classes of bivariant cobar morphisms. |
 | `MapCobar(X, Y, s, t)` | The discrete space of length-`s` bivariant cobar cochains of signed internal degree `t`. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
@@ -241,6 +242,16 @@ For the chosen cobar representatives $F,G,H$, the interpreter finds primitives $
 
 On `One` the algebraic triple Massey product $\langle h_0,h_1,h_0\rangle$ consists of the nonzero class $h_1^2$. The construction uses Adams $E_2$ classes and cobar primitives. A topological Toda bracket uses stable maps and their nullhomotopies. [Algebraic triple Massey example](examples/map-massey.asl)
 
+## May pages for bivariant cobar morphisms
+
+`MapMay(X, Y, r, s, t, f)` applies the algebraic May construction to `MapCobar(X, Y, s, t)`. A term that sends a degree-`q` source generator to a word tensored with a degree-`p` target generator has word degree $d=q+t-p$. Its filtration is $f=d-M$, where $M$ is the May weight of the word. Splitting a word and appending or prepending the endpoint coactions preserve the decreasing filtration. At each signed internal degree `t`, the filtration is finite and the stabilized page is the associated graded of `MapExt(X, Y, s, t)`.
+
+`mapmaydim[X, Y, r, s, t, f];` prints a rank, and `mapmaygen[X, Y, r, s, t, f, i]` gives basis generator `i` starting at zero. Apply `mayClass[r, f](c)` to a `MapCobar` cochain satisfying the page cycle condition. Then `mayRep(x)` gives its canonical `MapCobar` lift, and `mayD(x)` raises `s` by one and `f` by `r`. The usual `zero`, `add`, and equality operate in each page component.
+
+On a fixed page `r`, `ecomp(g, f)` composes classes with matching endpoints and adds their lengths, signed internal degrees, and filtrations. The page differentials satisfy the Leibniz identity. A finite-space map `u` induces a filtration-zero class on each page via `mayClass[r, 0](eRep(emap(u)))`.
+
+The example detects the projective plane’s Steenrod coaction at both the source and the target on $E_0$. It checks functorial composition and shows two stabilized slices whose ranks sum to a signed `MapExt` rank. With both endpoints `One`, the pages recover scalar May. [Bivariant May example](examples/map-may.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
@@ -352,6 +363,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
 | `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
+| `mapmaydim[X, Y, r, s, t, f];` | Print the dimension of a bivariant May page component over 𝔽₂. |
 | `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 
 A homotopy step uses a single direction across the whole domain, so it requires `f(x) ≤ g(x)` for every `x`, or the reverse inequality for every `x`. In the triangle example, any endomorphism above the identity must fix all three maximal edges. Each vertex is the unique common lower bound of its two incident edges, so it too is fixed. The dual argument handles endomorphisms below the identity. This isolates the identity in `Circle -> Circle` and explains the `no` printed for the rotation. [Stong, *Finite Topological Spaces*, §3–4](https://webhomes.maths.ed.ac.uk/~v1ranick/papers/stong2.pdf)
