@@ -123,6 +123,20 @@ A declaration `shcomplex K {F,d,G,e,H};` puts the listed sheaves in successive s
 
 `ShHyper(K,n)` is total hypercohomology. The same `shD`, `shClass`, `shRep`, and `shScale` operations apply to the total complex and its classes. `shhyperdim[K,n];` prints its rank and `shhypergen[K,n,i]` returns a canonical basis class. On the six-point model of the sphere, the example compares two complexes whose stalk cohomology sheaves are constant in degrees zero and one. The split example has hypercohomology ranks $1,1,1,1$ in total degrees zero through three. The nonsplit example has ranks $1,0,0,1$. [Sheaf hypercohomology example](examples/sheaf-hypercohomology.asl)
 
+### The sheaf hypercohomology spectral sequence
+
+`ShE(K,r,p,q)` is the page-$r$ group for the filtration of `ShTot(K,p+q)` by Roos degree. `shedim[K,r,p,q];` prints its rank and `shegen[K,r,p,q,i]` returns a basis class. Page zero carries the signed stalk differential. Page one is the Roos complex on stalk cohomology, so page two is $H^p(X;H^q(K))$. `shED(z)` has target bidegree $(p+r,q-r+1)$. A signed stalk degree $q$ outside the complex gives a zero group.
+
+`shEClass[r,p](z)` projects a total cochain of filtration at least $p$ when $Dz$ has filtration at least $p+r$. Its stalk degree is inferred from the total degree. `shERep(x)` recovers a corrected total representative. `shELiftTo[r,p](z)` keeps the terms of degree $p$ and solves for terms in higher Roos degrees to meet the same cycle condition. It returns the input when the condition already holds and reports an obstruction when no correction exists. These computations use sparse finite filtration windows over the prime field.
+
+`shENext(x)` sends a $d_r$-cycle to its next-page class. `shEPrev(y)` uses the canonical total representative to select an earlier-page cycle, so `shENext(shEPrev(y)) == y` when $r>0$ on the source of `shEPrev`. Incoming boundaries map to zero under `shENext`.
+
+The transgression generator builds a length-$r$ complex on a $2r+2$-point model of the $r$-sphere. One entry in a restriction matrix distinguishes the split and twisted versions. In the twisted version the class in bidegree $(0,r-1)$ survives to page $r$, where $d_r$ maps it nontrivially to $(r,0)$. Both groups then vanish. Set `untwisted=1` to recover the split version, where they survive. The generator supports larger declarations within the interpreter's limits. Over $\mathbb F_3$ the twisted and split examples both run through page seven under the default limits. [Transgression generator](examples/sheaf-transgression.awk)
+
+```sh
+awk -v r=6 -v prime=3 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
+```
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

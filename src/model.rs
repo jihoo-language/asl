@@ -60,6 +60,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_hyper;
+use crate::sheaf_page;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -120,6 +121,7 @@ pub(crate) enum Kind {
     QModule(String),
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
+    SheafPage(Rc<str>, sheaf_page::Grade),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
@@ -475,7 +477,12 @@ impl Model {
             {
                 1
             }
-            Kind::Sheaf(..) | Kind::SheafComplex(..) => usize::MAX,
+            Kind::SheafPage(ref name, grade)
+                if !grade.has_leading(&self.sheaf_complexes[name.as_ref()]) =>
+            {
+                1
+            }
+            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) => usize::MAX,
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -705,6 +712,7 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
+                | Kind::SheafPage(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
@@ -877,6 +885,23 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::SheafComplex(form, name, degree), 0)
+    }
+
+    pub(crate) fn sheaf_page_type(
+        &mut self,
+        name: &Label,
+        grade: sheaf_page::Grade,
+    ) -> Result<TypeId> {
+        self.sheaf_complex(name)?;
+        self.known_sheaf_page_type(name.text.as_str().into(), grade)
+    }
+
+    pub(crate) fn known_sheaf_page_type(
+        &mut self,
+        name: Rc<str>,
+        grade: sheaf_page::Grade,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::SheafPage(name, grade), 0)
     }
 
     pub(crate) fn q_endpoint_named(&self, name: &str) -> Option<TypeId> {
@@ -2210,6 +2235,7 @@ impl Model {
             Kind::Cohomology(..)
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
+            | Kind::SheafPage(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
@@ -2378,6 +2404,10 @@ impl Model {
             Kind::SheafComplex(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.total_name()))
             }
+            Kind::SheafPage(name, grade) => out.push(&format!(
+                "ShE({name}, {}, {}, {})",
+                grade.r, grade.p, grade.q
+            )),
             &Kind::Star(base, center) => {
                 out.push("Star(")?;
                 self.write_type(out, base, 0)?;
@@ -3336,6 +3366,13 @@ impl Model {
                             odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
                         }
                     }
+                }
+                Kind::SheafPage(ref name, grade) => {
+                    let data = self
+                        .sheaf_complex_named(name)
+                        .expect("registered sheaf complex");
+                    let rank = data.page(self, grade)?.rank();
+                    odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
                 Kind::RhoLoc(grade) => {

@@ -91,6 +91,9 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_hyper::{self, NamedSheaf};
+use crate::sheaf_page::{
+    self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
+};
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::RvHHSpec;
@@ -367,6 +370,18 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
+    SheafPageOperation(
+        SheafPageOp,
+        Rc<sheaf_hyper::Complex>,
+        SheafPageGrade,
+        Box<TypedExpr>,
+    ),
+    SheafPageLift(
+        SheafPageLift,
+        Rc<sheaf_hyper::Complex>,
+        SheafPageGrade,
+        Box<TypedExpr>,
+    ),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
@@ -474,6 +489,14 @@ impl Engine {
                 let complex = sheaf_hyper::Complex::build(&mut self.model, components, maps)?;
                 self.model.define_sheaf_complex(name.text, complex);
                 return Ok(None);
+            }
+            StatementForm::SheafPageDimension(name, grade) => {
+                let complex = self.model.sheaf_complex(&name)?;
+                let rank = complex.page(&mut self.model, grade)?.rank();
+                format!(
+                    "shedim[{}, {}, {}, {}] = {rank}",
+                    name.text, grade.r, grade.p, grade.q
+                )
             }
             StatementForm::SheafHyperDimension(name, degree) => {
                 let data = self.model.sheaf_complex(&name)?;
@@ -1698,7 +1721,7 @@ impl Engine {
                     .expect("registered sheaf")
                     .prime
             }
-            Kind::SheafComplex(_, name, _) => self
+            Kind::SheafComplex(_, name, _) | Kind::SheafPage(name, _) => self
                 .model
                 .sheaf_complex_named(name)
                 .expect("registered sheaf complex")
@@ -1886,7 +1909,9 @@ impl Engine {
                             | Kind::PMay(p, ..)
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
-                            Kind::Sheaf(..) | Kind::SheafComplex(..) => self.sheaf_prime(expr.ty),
+                            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) => {
+                                self.sheaf_prime(expr.ty)
+                            }
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                             Kind::BPVPage(grade) => grade.prime(),
                             Kind::BPModExt(grade) => grade.prime(),
@@ -3345,6 +3370,25 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::SheafPageOperation(operation, complex, grade, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                sheaf_page::apply(&mut self.model, complex, *grade, *operation, &coordinates)
+            }
+            TypedForm::SheafPageLift(operation, complex, grade, input) => {
+                let Value::SheafC(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match operation {
+                    SheafPageLift::Class => {
+                        sheaf_page::class(&mut self.model, complex, *grade, &terms)
+                    }
+                    SheafPageLift::Correct => {
+                        sheaf_page::correct(&mut self.model, complex, *grade, &terms)
+                    }
+                }
+            }
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
                 let (cochains, cohomology) = data.data();
@@ -3741,6 +3785,7 @@ impl Checker<'_> {
             TypeForm::RhoBock(grade) => self.model.rho_page_type(grade),
             TypeForm::RhoLoc(grade) => self.model.rho_loc_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
+            TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
             }
@@ -4017,6 +4062,7 @@ impl Checker<'_> {
                     Kind::RMCobar(..) => real_motivic::zero(),
                     Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
+                    Kind::SheafPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) =>
                         odd_ext::zero(),
                     Kind::RhoBock(..) => cohomology::zero(),
@@ -4359,8 +4405,83 @@ impl Checker<'_> {
                         .known_sheaf_type(SheafForm::Cochain, component.name.clone(), p)?;
                 Ok((ty, TypedForm::SheafPart(data, q, Box::new(input))))
             }
+            ExprForm::SheafPageGenerator(name, grade, index) => {
+                let complex = self.model.sheaf_complex(&name)?;
+                let rank = complex.page(self.model, grade)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        name.span,
+                        format!("sheaf page generator {index} is out of range for rank {rank}"),
+                    ));
+                }
+                let ty = self.model.sheaf_page_type(&name, grade)?;
+                let value = odd_ext::persist(self.model, vec![(index, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafPageLift(operation, r, p, input) => {
+                let input = self.expr(*input)?;
+                let Kind::SheafComplex(SheafForm::Cochain, name, total) = self.model.kind(input.ty)
+                else {
+                    return Err(self.invalid_operand(&input, operation.name(), "a ShTot cochain"));
+                };
+                let name = name.clone();
+                let grade = SheafPageGrade::from_total(r, p, *total);
+                let complex = self
+                    .model
+                    .sheaf_complex_named(&name)
+                    .expect("registered sheaf complex");
+                let ty = match operation {
+                    SheafPageLift::Class => self.model.known_sheaf_page_type(name, grade)?,
+                    SheafPageLift::Correct => input.ty,
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafPageLift(operation, complex, grade, Box::new(input)),
+                ))
+            }
+            ExprForm::SheafPageOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::SheafPage(name, grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, operation.name(), "a ShE class"));
+                };
+                let name = name.clone();
+                let grade = *grade;
+                let complex = self
+                    .model
+                    .sheaf_complex_named(&name)
+                    .expect("registered sheaf complex");
+                let ty = match operation {
+                    SheafPageOp::Differential => {
+                        self.model.known_sheaf_page_type(name, grade.outgoing()?)?
+                    }
+                    SheafPageOp::Representative => self.model.known_sheaf_complex_type(
+                        SheafForm::Cochain,
+                        name,
+                        grade.total()?,
+                    )?,
+                    SheafPageOp::Next => self.model.known_sheaf_page_type(name, grade.next()?)?,
+                    SheafPageOp::Previous => {
+                        self.model.known_sheaf_page_type(name, grade.previous()?)?
+                    }
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafPageOperation(operation, complex, grade, Box::new(input)),
+                ))
+            }
             ExprForm::SheafOperation(operation, input) => {
                 let input = self.expr(*input)?;
+                if let (SheafOp::Scale(scalar), Kind::SheafPage(name, _)) =
+                    (operation, self.model.kind(input.ty))
+                {
+                    let prime = self
+                        .model
+                        .sheaf_complex_named(name)
+                        .expect("registered sheaf complex")
+                        .prime();
+                    let scalar = sheaf::residue(prime, scalar) as usize;
+                    return Ok((input.ty, TypedForm::PScale(prime, scalar, Box::new(input))));
+                }
                 let cochain_type = match self.model.kind(input.ty) {
                     Kind::SheafComplex(..) => "a ShTot cochain",
                     _ => "a ShC cochain or ShTot cochain",
@@ -7520,6 +7641,7 @@ impl Checker<'_> {
                         | Kind::MExt(..)
                         | Kind::Sheaf(..)
                         | Kind::SheafComplex(..)
+                        | Kind::SheafPage(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)

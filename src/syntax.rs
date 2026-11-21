@@ -22,6 +22,7 @@ use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
+use crate::sheaf_page::{Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp};
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -46,6 +47,7 @@ pub(crate) enum TypeForm {
     Cohomology(Box<ParsedType>, usize),
     Sheaf(SheafForm, Label, usize),
     SheafComplex(SheafForm, Label, usize),
+    SheafPage(Label, SheafPageGrade),
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
@@ -517,6 +519,9 @@ pub(crate) enum ExprForm {
     SheafEmbed(Label, usize, Box<ParsedExpr>),
     SheafPart(usize, Box<ParsedExpr>),
     SheafHyperGenerator(Label, usize, usize),
+    SheafPageGenerator(Label, SheafPageGrade, usize),
+    SheafPageOperation(SheafPageOp, Box<ParsedExpr>),
+    SheafPageLift(SheafPageLift, usize, usize, Box<ParsedExpr>),
     SheafOperation(SheafOp, Box<ParsedExpr>),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
@@ -685,6 +690,7 @@ pub(crate) enum StatementForm {
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
     SheafComplex(Label, Vec<Label>),
     SheafHyperDimension(Label, usize),
+    SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
@@ -1219,6 +1225,15 @@ impl<'src> Parser<'src> {
         Ok(crate::q_module::Presentation { generators, rules })
     }
 
+    fn sheaf_page_grade(&mut self) -> Result<SheafPageGrade> {
+        let r = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let p = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let q = self.signed_wide("a signed stalk degree", "sheaf page stalk degree")?;
+        Ok(SheafPageGrade { r, p, q })
+    }
+
     fn sheaf_matrix(&mut self) -> Result<Vec<i64>> {
         self.expect(Token::LBracket)?;
         let mut entries = Vec::new();
@@ -1337,6 +1352,15 @@ impl<'src> Parser<'src> {
                 }
                 self.expect(Token::RBrace)?;
                 StatementForm::SheafComplex(name, entries)
+            }
+            Token::Word("shedim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let grade = self.sheaf_page_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafPageDimension(name, grade)
             }
             Token::Word("shhyperdim") => {
                 self.advance()?;
@@ -2764,6 +2788,13 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if name.text == "ShE" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let grade = self.sheaf_page_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SheafPage(name, grade), 0);
+        }
         if matches!(name.text.as_str(), "ShTot" | "ShHyper") && self.eat(Token::LParen)? {
             let form = if name.text == "ShTot" {
                 SheafForm::Cochain
@@ -4187,6 +4218,53 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::SheafPart(q, Box::new(input)), depth);
+                }
+                if name.text == "shegen" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let grade = self.sheaf_page_grade()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SheafPageGenerator(complex, grade, index), 0);
+                }
+                if matches!(name.text.as_str(), "shEClass" | "shELiftTo")
+                    && self.eat(Token::LBracket)?
+                {
+                    let operation = if name.text == "shEClass" {
+                        SheafPageLift::Class
+                    } else {
+                        SheafPageLift::Correct
+                    };
+                    let r = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let p = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafPageLift(operation, r, p, Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "shED" => Some(SheafPageOp::Differential),
+                        "shERep" => Some(SheafPageOp::Representative),
+                        "shENext" => Some(SheafPageOp::Next),
+                        "shEPrev" => Some(SheafPageOp::Previous),
+                        _ => None,
+                    };
+                    if let Some(operation) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::SheafPageOperation(operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "shhypergen" && self.eat(Token::LBracket)? {
                     let complex = self.label()?;

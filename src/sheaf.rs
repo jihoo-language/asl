@@ -62,7 +62,7 @@ pub(crate) struct Cover {
     pub(crate) entries: Vec<i64>,
 }
 
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Generator {
     pub(crate) vertical: usize,
     pub(crate) chain: Rc<[usize]>,
@@ -731,6 +731,17 @@ impl Layer {
         self.cells += layer.cells;
         self.blocks.extend(layer.blocks);
         Ok(())
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
+    pub(crate) fn vertical_start(&self, q: usize) -> usize {
+        let index = self.blocks.partition_point(|block| block.vertical < q);
+        self.blocks
+            .get(index)
+            .map_or(self.size, |block| block.start)
     }
 
     pub(crate) fn generator(&self, index: usize) -> Generator {

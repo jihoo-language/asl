@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
@@ -6,6 +8,7 @@ use crate::odd_cobar::Prime;
 use crate::sheaf::{
     self, Cochain, Cochains, Cohomology, Generator, Layer, Matrix, Sheaf, Sink, Term,
 };
+use crate::sheaf_page::{Grade, Page};
 use crate::syntax::Label;
 
 #[derive(Clone)]
@@ -176,6 +179,7 @@ pub(crate) struct Complex {
     maps: Vec<Rc<Map>>,
     pub(crate) height: usize,
     pub(crate) cohomology: Cohomology,
+    pages: RefCell<BTreeMap<Grade, Rc<Page>>>,
 }
 
 impl Complex {
@@ -238,7 +242,48 @@ impl Complex {
             maps: maps.into_iter().map(|(_, map)| map).collect(),
             height,
             cohomology: Cohomology::default(),
+            pages: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    pub(crate) fn component_at(&self, degree: usize) -> Option<&NamedSheaf> {
+        self.components.get(degree)
+    }
+
+    pub(crate) fn page(&self, model: &mut Model, grade: Grade) -> Result<Rc<Page>> {
+        if let Some(page) = self.pages.borrow().get(&grade) {
+            return Ok(page.clone());
+        }
+        let page = Rc::new(Page::build(model, self, grade)?);
+        model.allocate(1)?;
+        self.pages.borrow_mut().insert(grade, page.clone());
+        Ok(page)
+    }
+
+    pub(crate) fn layer_window(
+        &self,
+        model: &mut Model,
+        degree: usize,
+        lo: usize,
+        hi: usize,
+        limit: usize,
+    ) -> Result<Layer> {
+        let mut layer = Layer::default();
+        if degree >= self.height || lo > hi {
+            return Ok(layer);
+        }
+        let first = degree.saturating_sub(hi);
+        let last = degree
+            .checked_sub(lo)
+            .map(|q| q.min(self.components.len() - 1));
+        if let Some(last) = last.filter(|&last| first <= last) {
+            for (q, component) in (first..=last).zip(&self.components[first..=last]) {
+                model.spend(1)?;
+                let part = component.sheaf.layer(model, degree - q, limit)?;
+                layer.append_layer(model, part, q, limit)?;
+            }
+        }
+        Ok(layer)
     }
 
     pub(crate) fn component(&self, degree: usize) -> Result<&NamedSheaf> {
@@ -322,20 +367,6 @@ impl Cochains for Complex {
     }
 
     fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer> {
-        let mut layer = Layer::default();
-        if degree >= self.height {
-            return Ok(layer);
-        }
-        for (q, component) in self
-            .components
-            .iter()
-            .enumerate()
-            .take_while(|(q, _)| *q <= degree)
-        {
-            model.spend(1)?;
-            let part = component.sheaf.layer(model, degree - q, limit)?;
-            layer.append_layer(model, part, q, limit)?;
-        }
-        Ok(layer)
+        self.layer_window(model, degree, 0, degree, limit)
     }
 }

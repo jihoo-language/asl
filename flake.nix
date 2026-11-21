@@ -116,6 +116,26 @@
           fi
           test ! -s rejected.asl
         '';
+
+        sheaf-transgression = pkgs.runCommand "asl-sheaf-transgression" {
+          nativeBuildInputs = [ (package pkgs) pkgs.gawk ];
+        } ''
+          set -o pipefail
+          {
+            awk -v r=6 -v prime=3 -f ${./examples/sheaf-transgression.awk} | asl -
+            awk -v r=6 -v prime=3 -v untwisted=1 -f ${./examples/sheaf-transgression.awk} | asl -
+          } > "$out"
+          diff -u - "$out" <<'EXPECTED'
+          shedim[K, 2, 0, 5] = 1
+          ShE(K, 6, 6, 0){2*g0}
+          shedim[K, 7, 0, 5] = 0
+          shedim[K, 7, 6, 0] = 0
+          shedim[K, 2, 0, 5] = 1
+          ShE(K, 6, 6, 0){0}
+          shedim[K, 7, 0, 5] = 1
+          shedim[K, 7, 6, 0] = 1
+          EXPECTED
+        '';
       });
     };
 }
