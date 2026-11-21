@@ -1,4 +1,5 @@
 mod bracket;
+mod cobar;
 mod cohomology;
 mod complex;
 mod cyclic;

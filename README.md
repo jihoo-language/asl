@@ -45,6 +45,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `Star(X, p)` | The principal open consisting of points `q` with `p ≤ q`, with the inherited order. |
 | `H(X, k)` | The discrete space of degree-`k` cohomology classes of the order complex of `X`, with coefficients in 𝔽₂. |
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
+| `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
 | `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
@@ -129,6 +130,21 @@ $$
 Run `nix run path:. -- examples/adem.asl` to see the seven terms in the normal form of $\mathrm{Sq}^{128}\mathrm{Sq}^{128}$. The interpreter reduces this product directly, so expressions in `A(256)` remain usable even though that graded piece exceeds the 4,096-point enumeration limit. [Adem example](examples/adem.asl)
 
 `act(theta, u)` evaluates an operation on a class. For `u` of degree $n$, $\mathrm{Sq}^0 u = u$, $\mathrm{Sq}^n u = u \smile u$, and $\mathrm{Sq}^i u = 0$ for $i>n$. For $0<i<n$ the interpreter takes a cocycle representative $c$, computes $c \smile_{n-i} c$ on ordered simplices and reduces the answer modulo coboundaries. A formally nonzero operation can therefore evaluate to zero on a given input. [Medina-Mardones, *New formulas for cup-i products and fast computation of Steenrod squares*](https://arxiv.org/abs/2105.08025)
+
+## The normalized cobar algebra
+
+The dual mod-two Steenrod algebra is $\mathbb F_2[\xi_1,\xi_2,\ldots]$ with $|\xi_i|=2^i-1$. In a literal such as `cword{[2], [0, 1]}`, each bracket lists the exponents of one monomial in order from $\xi_1$ onward. This word is $[\xi_1^2\mid\xi_2]$ in `Cobar(2, 5)`. Each factor has positive degree, and trailing zero exponents may be omitted. The empty word `cword{}` is the tensor unit in `Cobar(0, 0)`.
+
+`add(a, b)` adds cochains of equal bidegree over $\mathbb F_2$, and `zero[Cobar(s, t)]` gives the zero cochain. `concat(a, b)` concatenates words bilinearly, adding their lengths and internal degrees. `cobarD(a)` replaces each factor in turn by its reduced coproduct and sums the results. It increases the length by one and preserves internal degree. The coproduct is multiplicative and uses $\Delta(\xi_n)=\sum_{i=0}^n \xi_{n-i}^{2^i}\otimes\xi_i$ with $\xi_0=1$. The reduced coproduct omits the two terms with a unit factor.
+
+```text
+let xi2 = cword{[0, 1]};
+let d = \x : Cobar(1, 3) => cobarD(x);
+assert d(xi2) == cword{[2], [1]};
+assert cobarD(d(xi2)) == zero[Cobar(3, 3)];
+```
+
+Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates all cochains of that bidegree and is subject to the finite enumeration limit. Run `nix run path:. -- examples/cobar.asl` for coproduct, unit, and derivation checks. [Cobar example](examples/cobar.asl)
 
 ## Suspension and stable degrees
 
@@ -234,7 +250,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 
 | Statement | Result |
 | --- | --- |
-| `show e;` | Print a point, cohomology class, Steenrod operation, pair or function table. |
+| `show e;` | Print a point, cohomology class, Steenrod operation, cobar cochain, pair or function table. |
 | `assert e == f;` | Check extensional equality at a common type. Success is silent. |
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |

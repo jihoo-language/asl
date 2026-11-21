@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::bracket;
+use crate::cobar;
 use crate::cohomology;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
@@ -38,6 +39,7 @@ enum TypedForm {
     Point(usize),
     Constant(Value),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
+    CobarDifferential(Box<TypedExpr>),
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
@@ -210,6 +212,12 @@ impl Engine {
                     (BinaryOp::Add, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
+                        cobar::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Concat, Value::Cobar(a), Value::Cobar(b)) => {
+                        cobar::concat(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::Bar(a), Value::Bar(b)) => {
                         cyclic::add(&mut self.model, &a, &b)
                     }
@@ -240,6 +248,12 @@ impl Engine {
                     }
                     _ => unreachable!(),
                 }
+            }
+            TypedForm::CobarDifferential(input) => {
+                let Value::Cobar(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cobar::differential(&mut self.model, &input)
             }
             TypedForm::Equator => {
                 let Kind::Arrow(base, _) = *self.model.kind(expr.ty) else {
@@ -438,6 +452,7 @@ impl Checker<'_> {
                 self.model.cohomology_type(base, degree)
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
+            TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
@@ -525,6 +540,7 @@ impl Checker<'_> {
                 let ty = self.ty(ty)?;
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
+                    Kind::Cobar(..) => cobar::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) => cohomology::zero(),
                     Kind::Bar(_) => Value::Bar([].into()),
                     Kind::CyclicH2(_) => Value::CyclicClass(false),
@@ -532,7 +548,7 @@ impl Checker<'_> {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -544,6 +560,11 @@ impl Checker<'_> {
                 let ty = self.model.operation_type(degree)?;
                 let square = steenrod::square(self.model, degree)?;
                 Ok((ty, TypedForm::Constant(square)))
+            }
+            ExprForm::CobarWord(factors) => {
+                let ((s, t), value) = cobar::literal(self.model, factors)?;
+                let ty = self.model.cobar_type(s, t)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::Cyclic(modulus, at, form) => {
                 let ty = self
@@ -611,6 +632,15 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Lambda(Box::new(body))))
             }
             ExprForm::Call(function, argument) => {
+                if matches!(&function.kind, ExprForm::Name(name) if name.text == "cobarD")
+                    && self.unbound("cobarD")
+                {
+                    let argument = self.expr(*argument)?;
+                    let (s, t) = self.cobar_bidegree(&argument, "cobarD")?;
+                    let s = checked_degree(s, 1, "cobarD", span)?;
+                    let ty = self.model.cobar_type(s, t)?;
+                    return Ok((ty, TypedForm::CobarDifferential(Box::new(argument))));
+                }
                 if matches!(&function.kind, ExprForm::Name(name) if name.text == "susp")
                     && self.unbound("susp")
                 {
@@ -862,6 +892,13 @@ impl Checker<'_> {
         }
     }
 
+    fn cobar_bidegree(&self, value: &TypedExpr, op: &str) -> Result<(usize, usize)> {
+        match *self.model.kind(value.ty) {
+            Kind::Cobar(s, t) => Ok((s, t)),
+            _ => Err(self.invalid_operand(value, op, "a cobar cochain")),
+        }
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -886,13 +923,14 @@ impl Checker<'_> {
                     Kind::Cohomology(..)
                         | Kind::Stable(..)
                         | Kind::Operations(..)
+                        | Kind::Cobar(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
                 ) {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -903,6 +941,13 @@ impl Checker<'_> {
                 let right = self.operation_degree(right, "mul")?;
                 let degree = checked_degree(left, right, "mul", span)?;
                 self.model.operation_type(degree)
+            }
+            BinaryOp::Concat => {
+                let (s, t) = self.cobar_bidegree(left, "concat")?;
+                let (u, v) = self.cobar_bidegree(right, "concat")?;
+                let length = checked_degree(s, u, "concat", span)?;
+                let degree = checked_degree(t, v, "concat", span)?;
+                self.model.cobar_type(length, degree)
             }
             BinaryOp::Act => {
                 let operation = self.operation_degree(left, "act")?;

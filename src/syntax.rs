@@ -20,6 +20,7 @@ pub(crate) enum TypeForm {
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
     Operations(usize),
+    Cobar(usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
     Bar(usize),
@@ -43,6 +44,7 @@ pub(crate) enum BinaryOp {
     Pull,
     Mul,
     Act,
+    Concat,
 }
 
 impl BinaryOp {
@@ -53,6 +55,7 @@ impl BinaryOp {
             "pull" => Some(Self::Pull),
             "mul" => Some(Self::Mul),
             "act" => Some(Self::Act),
+            "concat" => Some(Self::Concat),
             _ => None,
         }
     }
@@ -89,6 +92,7 @@ pub(crate) enum ExprForm {
     Class(ParsedType, usize, ClassForm),
     Zero(ParsedType),
     Square(usize),
+    CobarWord(Vec<(Vec<usize>, Span)>),
     Suspension(ParsedType, SuspensionForm),
     Shift(usize, Box<ParsedExpr>),
     Cyclic(usize, Span, CyclicForm),
@@ -480,7 +484,7 @@ impl<'src> Parser<'src> {
         let name = self.label()?;
         if matches!(
             name.text.as_str(),
-            "A" | "Bar" | "H2" | "H" | "Susp" | "Stable"
+            "A" | "Bar" | "H2" | "H" | "Susp" | "Stable" | "Cobar"
         ) && self.eat(Token::LParen)?
         {
             let (kind, depth) = if matches!(name.text.as_str(), "A" | "Bar" | "H2") {
@@ -491,6 +495,11 @@ impl<'src> Parser<'src> {
                     _ => TypeForm::Operations(degree),
                 };
                 (kind, 0)
+            } else if name.text == "Cobar" {
+                let (s, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (t, _) = self.number()?;
+                (TypeForm::Cobar(s, t), 0)
             } else {
                 let base = self.ty(nest + 1)?;
                 let depth = base.depth + 1;
@@ -698,6 +707,27 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "cword" && self.eat(Token::LBrace)? {
+                    let mut factors = Vec::new();
+                    while self.token() != Token::RBrace {
+                        let at = self.span();
+                        self.expect(Token::LBracket)?;
+                        let mut exponents = Vec::new();
+                        while self.token() != Token::RBracket {
+                            exponents.push(self.number()?.0);
+                            if !self.eat(Token::Comma)? {
+                                break;
+                            }
+                        }
+                        self.expect(Token::RBracket)?;
+                        factors.push((exponents, at));
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::CobarWord(factors), 0);
+                }
                 if matches!(name.text.as_str(), "bar" | "binom" | "carry")
                     && self.eat(Token::LBracket)?
                 {

@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::error::{Error, Result};
 use crate::steenrod::{self, Word};
@@ -26,6 +27,7 @@ pub(crate) enum Kind {
     Arrow(TypeId, TypeId),
     Cohomology(TypeId, usize),
     Operations(usize),
+    Cobar(usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
     Bar(usize),
@@ -39,6 +41,7 @@ pub(crate) enum Value {
     Map(Rc<[Value]>),
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
+    Cobar(Rc<[cobar::Word]>),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -164,6 +167,9 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
+            Kind::Cobar(s, t) if s > t || (s == 0 && t != 0) => 1,
+            Kind::Cobar(s, t) if s == t => 2,
+            Kind::Cobar(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -206,6 +212,7 @@ impl Model {
             self.kind(ty),
             Kind::Cohomology(..)
                 | Kind::Operations(..)
+                | Kind::Cobar(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
@@ -305,6 +312,10 @@ impl Model {
 
     pub(crate) fn operation_type(&mut self, degree: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::Operations(degree), 0)
+    }
+
+    pub(crate) fn cobar_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::Cobar(s, t), 0)
     }
 
     pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
@@ -418,6 +429,7 @@ impl Model {
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
             | Kind::Operations(..)
+            | Kind::Cobar(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
             | Kind::CyclicH2(..) => 1,
@@ -530,6 +542,7 @@ impl Model {
                 out.push(&format!(", {degree})"))
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
+            &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
@@ -592,6 +605,9 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || steenrod::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::Cobar(left), Value::Cobar(right)) => Ok(
+                Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
+            ),
             (Value::Suspension(left), Value::Suspension(right)) => {
                 use SuspensionPoint::{Equator, North, South};
                 match (left, right) {
@@ -647,6 +663,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     steenrod::compare(self, left, right)
+                }
+            }
+            (Value::Cobar(left), Value::Cobar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    cobar::compare(self, left, right)
                 }
             }
             (Value::Suspension(left), Value::Suspension(right)) => {
@@ -747,6 +770,12 @@ impl Model {
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::Cobar(s, t) => {
+                    let basis = cobar::basis(self, s, t, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
+                }
                 Kind::Bar(modulus) => self.enumerate_supports(1, modulus - 1, Value::Bar)?,
                 Kind::CyclicH2(modulus) => {
                     let count = 2 - (modulus & 1);
@@ -798,7 +827,7 @@ impl Model {
         &mut self,
         first: usize,
         rank: usize,
-        value: fn(Rc<[usize]>) -> Value,
+        value: impl Fn(Rc<[usize]>) -> Value,
     ) -> Result<Vec<Value>> {
         let count = support_space_size(rank);
         self.check_element_limit(count)?;
@@ -964,6 +993,34 @@ impl Model {
                         }
                         out.push(&format!("Sq^{degree}"))?;
                     }
+                }
+                out.push("}")
+            }
+            Value::Cobar(words) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if words.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, word) in words.iter().rev().enumerate() {
+                    if index > 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push("cword{")?;
+                    for (index, factor) in word.iter().enumerate() {
+                        if index > 0 {
+                            out.push(", ")?;
+                        }
+                        out.push("[")?;
+                        for (index, exponent) in factor.iter().enumerate() {
+                            if index > 0 {
+                                out.push(", ")?;
+                            }
+                            out.push(&exponent.to_string())?;
+                        }
+                        out.push("]")?;
+                    }
+                    out.push("}")?;
                 }
                 out.push("}")
             }
