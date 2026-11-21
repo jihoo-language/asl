@@ -1027,6 +1027,16 @@ The length-one part of the differential is the unit with the nonzero twentieth t
 
 For the exterior generator example, the induced operator in weight $N>0$ from degree $2N-1$ to $2N$ is nonzero precisely when $N$ is odd. In the Flag example the dimensions at degrees four, five and six are one, three and two. The $m_3$ term in the differential of $1[a|b|c]$ identifies two different representatives of the nonzero Connes image of the degree-four class. [Hochschild homology example](examples/rank-hochhom.asl)
 
+#### Finite negative cyclic homology
+
+`RVNCChain(J,N,b,[mu])` is the degree-$b$, weight-$\mu$ part of the negative cyclic complex modulo $u^N$, for $N\ge1$. The variable $u$ has homological degree $-2$ and leaves the weight unchanged. The differential `rvNCd` is $d+uB$. Its square vanishes by the mixed-complex identities. In degree $b$ the coefficient of $u^j$ comes from ordinary Hochschild degree $b+2j$.
+
+Use `rvNCTerm[N,j](x)` to insert an ordinary Hochschild chain as the coefficient of $u^j$, and `rvNCPart[j](z)` to read it. The power $j$ is below $N$. The homology is `RVNC(J,N,b,[mu])`. Use `rvNCClass` on a cycle and `rvNCRep` for a chosen representative. The query `rvNCdim[J,N,b,[mu]];` prints the dimension, and `rvNCgen[J,N,b,[mu],k]` selects a basis class.
+
+On chains and homology, `rvNCU[k]` multiplies by $u^k$ and lowers $b$ by $2k$. Components with powers at least $N$ vanish. The map `rvNCTruncate[M]` to $1\le M\le N$ discards all components of powers at least $M$. At $N=1$ the constant coefficient identifies the complex with ordinary Hochschild chains. These are individual finite truncations.
+
+For the exterior generator, odd weight $n$ leaves the two classes represented by $1[e|\cdots|e]$ at $u^0$ and $e[e|\cdots|e]$ at $u^{N-1}$. In even positive weight every power of both words survives, for total dimension $2N$. [Finite negative cyclic example](examples/rank-negative.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

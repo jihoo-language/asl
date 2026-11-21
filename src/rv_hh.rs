@@ -452,12 +452,20 @@ fn eligible_factors(model: &mut Model, grade: &Grade, b: usize) -> Result<Vec<Fa
 }
 
 pub(crate) fn basis(model: &mut Model, grade: &Grade, limit: usize) -> Result<Vec<Word>> {
-    let Ok(b) = usize::try_from(grade.b) else {
-        return Ok(Vec::new());
-    };
-    if b > rv_poly::degree(&grade.weight)?.saturating_mul(2) {
+    basis_at(model, grade, grade.b.into(), limit)
+}
+
+pub(crate) fn basis_at(
+    model: &mut Model,
+    grade: &Grade,
+    degree: i128,
+    limit: usize,
+) -> Result<Vec<Word>> {
+    let bound = 2 * rv_poly::degree(&grade.weight)? as i128;
+    if degree < 0 || degree > bound {
         return Ok(Vec::new());
     }
+    let b = usize::try_from(degree).map_err(|_| degree_limit())?;
     let factors = eligible_factors(model, grade, b)?;
     let mut remaining = grade.weight.to_vec();
     let mut degree = b;

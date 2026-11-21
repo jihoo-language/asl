@@ -1,0 +1,24 @@
+rvideal Exterior[[0]] { rvmon[[0]]{1} };
+let one = rvmtorgen[Exterior,0,[0],0];
+let e = rvmtorgen[Exterior,1,[1],0];
+
+let low = rvHHWord(e,e,e);
+let high = rvHHWord(one,e,e,e);
+let start = rvNCTerm[4,0](low);
+let first_boundary = rvNCTerm[4,1](high);
+assert rvNCd(start) == first_boundary;
+assert rvNCPart[0](first_boundary) == zero[RVHHChain(Exterior,4,[3])];
+assert rvNCPart[1](first_boundary) == high;
+assert rvNCClass(first_boundary) == zero[RVNC(Exterior,4,4,[3])];
+let top = rvNCClass(rvNCTerm[4,0](high));
+let bottom = rvNCClass(rvNCTerm[4,3](low));
+assert top == rvNCgen[Exterior,4,6,[3],0];
+assert bottom == rvNCgen[Exterior,4,-1,[3],0];
+assert rvNCU[1](top) == zero[RVNC(Exterior,4,4,[3])];
+assert rvNCU[1](bottom) == zero[RVNC(Exterior,4,-3,[3])];
+assert rvNCTruncate[3](bottom) == zero[RVNC(Exterior,3,-1,[3])];
+assert rvNCTruncate[3](top) == rvNCgen[Exterior,3,6,[3],0];
+assert rvNCClass(rvNCRep(top)) == top;
+assert rvNCClass(rvNCRep(bottom)) == bottom;
+show rvNCRep(top);
+show rvNCRep(bottom);

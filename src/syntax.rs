@@ -76,6 +76,7 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
+    RVNegativeCyclic(RvNCSpec, bool),
     RVHochschild(RvHHSpec, bool),
     RVBarCobar(RvBarSpec),
     RVBarDual(RvBarSpec),
@@ -111,6 +112,7 @@ pub(crate) enum RvIdealOp {
     Witness(usize),
 }
 
+pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type RvHHSpec = (Label, i64, Vec<usize>);
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
@@ -513,6 +515,10 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvNCGenerator(RvNCSpec, usize, Span),
+    RvNCTerm(usize, usize, Box<ParsedExpr>),
+    RvNCPart(usize, Box<ParsedExpr>),
+    RvNCTransfer(crate::rv_negative::Transfer, Box<ParsedExpr>),
     RvHHGenerator(RvHHSpec, usize, Span),
     RvPathGenerator(RvBarSpec, usize, Span),
     RvBarEGenerator(RvBarPageSpec, usize, Span),
@@ -649,6 +655,7 @@ pub(crate) enum StatementForm {
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
     RvBarPath(Label, Label, Vec<Vec<usize>>),
+    RvNCDimension(RvNCSpec),
     RvHHDimension(RvHHSpec),
     RvPathDimension(RvBarSpec),
     RvBarPageDimension(RvBarPageSpec),
@@ -951,6 +958,17 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let w = self.signed_number("motivic weight")?;
         Ok(MotivicGrade { s, t, w })
+    }
+
+    fn rv_nc_spec(&mut self) -> Result<RvNCSpec> {
+        let ideal = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let b = self.signed_degree()?;
+        self.expect(Token::Comma)?;
+        let weight = self.exponents()?;
+        Ok((ideal, length, b, weight))
     }
 
     fn rv_hh_spec(&mut self) -> Result<RvHHSpec> {
@@ -1739,6 +1757,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBrace)?;
                 StatementForm::RvBarPath(name, ideal, steps)
             }
+            Token::Word("rvNCdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_nc_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvNCDimension(spec)
+            }
             Token::Word("rvHHdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -2469,6 +2494,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
+        if matches!(name.text.as_str(), "RVNCChain" | "RVNC") && self.eat(Token::LParen)? {
+            let spec = self.rv_nc_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::RVNegativeCyclic(spec, name.text == "RVNC"),
+                0,
+            );
+        }
         if matches!(name.text.as_str(), "RVHHChain" | "RVHH") && self.eat(Token::LParen)? {
             let spec = self.rv_hh_spec()?;
             self.expect(Token::RParen)?;
@@ -2924,6 +2958,46 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvNCgen" && self.eat(Token::LBracket)? {
+                    let spec = self.rv_nc_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvNCGenerator(spec, index, at), 0);
+                }
+                if name.text == "rvNCTerm" && self.eat(Token::LBracket)? {
+                    let length = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let power = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvNCTerm(length, power, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvNCU" | "rvNCPart" | "rvNCTruncate")
+                    && self.eat(Token::LBracket)?
+                {
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let op = match name.text.as_str() {
+                        "rvNCPart" => ExprForm::RvNCPart(index, Box::new(input)),
+                        "rvNCU" => ExprForm::RvNCTransfer(
+                            crate::rv_negative::Transfer::Shift(index),
+                            Box::new(input),
+                        ),
+                        _ => ExprForm::RvNCTransfer(
+                            crate::rv_negative::Transfer::Truncate(index),
+                            Box::new(input),
+                        ),
+                    };
+                    return expr(span, op, depth);
+                }
                 if name.text == "rvHHgen" && self.eat(Token::LBracket)? {
                     let spec = self.rv_hh_spec()?;
                     self.expect(Token::Comma)?;

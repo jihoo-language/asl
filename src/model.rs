@@ -48,6 +48,7 @@ use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwhecke;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
+use crate::rv_negative;
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_satake;
 use crate::rv_sphhecke;
@@ -149,6 +150,8 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVBarE(rv_bar_page::Grade),
+    RVNCChain(rv_negative::Grade),
+    RvNegativeCyclic(rv_negative::Grade),
     RvHochschild(rv_hh::Grade),
     RVHHChain(rv_hh::Grade),
     RVBarCobar(rv_bar::Grade),
@@ -255,6 +258,7 @@ pub(crate) enum Value {
     RVSphHecke(rv_sphhecke::Support),
     RVSatake(rv_satake::Support),
     JetHom(jet_hom::Support),
+    RVNCChain(rv_negative::Support),
     RVHHChain(rv_hh::Support),
     RVBarCobar(rv_barcobar::Support),
     RVBar(rv_bar::Support),
@@ -349,6 +353,7 @@ pub(crate) struct Model {
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
+    rv_negative_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_negative::Term>>>,
     rv_hh_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_hh::Word>>>,
     rv_path_ext: HashMap<TypeId, Rc<rv_bar_dual::Ext>>,
     rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
@@ -376,6 +381,7 @@ impl Model {
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
+            rv_negative_homology: HashMap::new(),
             rv_hh_homology: HashMap::new(),
             rv_path_ext: HashMap::new(),
             rv_bar_pages: HashMap::new(),
@@ -567,6 +573,7 @@ impl Model {
             {
                 1
             }
+            Kind::RVNCChain(..) | Kind::RvNegativeCyclic(..) => usize::MAX,
             Kind::RVBarCobar(..) | Kind::RVHHChain(..) | Kind::RvHochschild(..) => usize::MAX,
             Kind::RVBar(..) | Kind::RVBarE(..) | Kind::RVBarDual(..) | Kind::RVPathExt(..) => {
                 usize::MAX
@@ -683,6 +690,8 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVBarE(..)
+                | Kind::RVNCChain(..)
+                | Kind::RvNegativeCyclic(..)
                 | Kind::RvHochschild(..)
                 | Kind::RVHHChain(..)
                 | Kind::RVBarCobar(..)
@@ -1081,6 +1090,35 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_negative_type(
+        &mut self,
+        grade: rv_negative::Grade,
+        homology: bool,
+    ) -> Result<TypeId> {
+        let kind = if homology {
+            Kind::RvNegativeCyclic(grade)
+        } else {
+            Kind::RVNCChain(grade)
+        };
+        self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn rv_negative_homology(
+        &mut self,
+        ty: TypeId,
+    ) -> Result<Rc<rv_hh_homology::Slice<rv_negative::Term>>> {
+        if let Some(homology) = self.rv_negative_homology.get(&ty) {
+            return Ok(homology.clone());
+        }
+        let Kind::RvNegativeCyclic(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let homology = Rc::new(rv_negative::build(self, &grade)?);
+        self.rv_negative_homology.insert(ty, homology.clone());
+        Ok(homology)
     }
 
     pub(crate) fn rv_hh_class_type(&mut self, grade: rv_hh::Grade) -> Result<TypeId> {
@@ -1993,6 +2031,8 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVBarE(..)
+            | Kind::RVNCChain(..)
+            | Kind::RvNegativeCyclic(..)
             | Kind::RvHochschild(..)
             | Kind::RVHHChain(..)
             | Kind::RVBarCobar(..)
@@ -2174,6 +2214,17 @@ impl Model {
                 grade.chain.b,
                 grade.length,
             )),
+            Kind::RVNCChain(grade) | Kind::RvNegativeCyclic(grade) => {
+                let name = if matches!(self.kind(ty), Kind::RVNCChain(_)) {
+                    "RVNCChain"
+                } else {
+                    "RVNC"
+                };
+                out.push(&format!(
+                    "{name}({}, {}, {}, {:?})",
+                    grade.ordinary.ideal, grade.length, grade.ordinary.b, grade.ordinary.weight
+                ))
+            }
             Kind::RvHochschild(grade) => out.push(&format!(
                 "RVHH({}, {}, {:?})",
                 grade.ideal, grade.b, grade.weight
@@ -2408,6 +2459,8 @@ impl Model {
             (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
+            (Value::RVNCChain(left), Value::RVNCChain(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_negative::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHHChain(left), Value::RVHHChain(right)) => Ok(
                 Rc::ptr_eq(left, right) || rv_hh::compare(self, left, right)? == Ordering::Equal
             ),
@@ -2559,6 +2612,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     left.compare(self, right)
+                }
+            }
+            (Value::RVNCChain(left), Value::RVNCChain(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_negative::compare(self, left, right)
                 }
             }
             (Value::RVHHChain(left), Value::RVHHChain(right)) => {
@@ -2811,6 +2871,23 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RVNCChain(ref grade) => {
+                    let grade = grade.clone();
+                    let basis = rv_negative::basis(
+                        self,
+                        &grade,
+                        grade.ordinary.b.into(),
+                        MAX_ELEMENTS.ilog2() as usize,
+                    )?;
+                    self.allocate(basis.iter().map(rv_negative::term_cells).sum())?;
+                    self.enumerate_supports(0, basis.len(), |class| {
+                        Value::RVNCChain(class.iter().map(|&i| basis[i].clone()).collect())
+                    })?
+                }
+                Kind::RvNegativeCyclic(..) => {
+                    let rank = self.rv_negative_homology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::RvHochschild(..) => {
                     let rank = self.rv_hh_homology(ty)?.rank();
@@ -3466,6 +3543,21 @@ impl Model {
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
+            Value::RVNCChain(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push(&format!("u^{} * ", term.power))?;
+                    write_hh_word(out, &term.word)?;
+                }
+                out.push("}")
+            }
             Value::RVHHChain(words) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
@@ -3476,15 +3568,7 @@ impl Model {
                     if index != 0 {
                         out.push(" + ")?;
                     }
-                    write_hh_factor(out, &word[0])?;
-                    out.push("[")?;
-                    for (index, factor) in word[1..].iter().enumerate() {
-                        if index != 0 {
-                            out.push(" | ")?;
-                        }
-                        write_hh_factor(out, factor)?;
-                    }
-                    out.push("]")?;
+                    write_hh_word(out, word)?;
                 }
                 out.push("}")
             }
@@ -3843,6 +3927,18 @@ impl Model {
         }
         Ok(true)
     }
+}
+
+fn write_hh_word(out: &mut Text, word: &rv_hh::Word) -> Result<()> {
+    write_hh_factor(out, &word[0])?;
+    out.push("[")?;
+    for (index, factor) in word[1..].iter().enumerate() {
+        if index != 0 {
+            out.push(" | ")?;
+        }
+        write_hh_factor(out, factor)?;
+    }
+    out.push("]")
 }
 
 fn write_hh_factor(out: &mut Text, factor: &rv_hh::Factor) -> Result<()> {
