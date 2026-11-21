@@ -44,6 +44,7 @@ mod rank_jets;
 mod rank_variety;
 mod restriction_transfer;
 mod rv_arithmetic;
+mod rv_field;
 mod rv_hom;
 mod rv_ideal;
 mod rv_koszul;

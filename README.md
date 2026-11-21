@@ -513,6 +513,16 @@ The TwistedCusp action block has determinant $y^6+x^2y^3z+x^4z^2$. Its dimension
 
 Over $\mathbb F_4$ at $(1,3,1)$, the Cusp generators give $[b_2]=3[b_1]$ and $[b_3]=2[b_1]$, with $[b_1]$ nonzero. All three classes vanish at $(2,3,1)$. [Specialization example](examples/rv-specialization.asl)
 
+### Frobenius, field extension, and trace on maps
+
+`rvFrob[k](f)` sends each affine coordinate and each coefficient of an `RVHom` map through $x\mapsto x^{2^k}$. It preserves identities and composition and agrees with applying Frobenius to the point before specialization.
+
+`rvExtend[modulus, root](f)` embeds the field of `f` in the field given by `modulus`. The value `root` is encoded in the larger field and must satisfy the source field's polynomial. The smaller degree must divide the larger degree. `rvDescend[modulus, root](f)` uses the indicated embedding of the smaller field into the field of `f`. It recovers the affine point and the map coefficients in the smaller field. Each must belong to the image of the embedding. The interpreter recovers preimages by binary elimination on the powers of `root`.
+
+`rvTrace[modulus, root](f)` uses the same embedding as descent and requires the affine point to lie in the smaller field. It applies the relative field trace $a\mapsto\sum_{j=0}^{[L:K]-1}a^{|K|^j}$ to each map coefficient before expressing it in the smaller field. The basis coordinates agree under field extension because the ordered elimination uses the same leading coordinates and normalization commutes with the embedding. Thus trace is additive, satisfies the projection formula with maps extended from the smaller field, and composes down a tower of fields.
+
+For modulus 7 embedded in modulus 19 using root 6, the cusp point $(1,3,1)$ becomes $(1,7,1)$. The trace of the encoded scalar 2 from modulus 19 to modulus 7 is 1, and the trace of the identity is zero because the extension has degree two. [Field descent example](examples/rv-descent.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

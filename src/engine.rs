@@ -39,6 +39,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_field;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
@@ -169,6 +170,7 @@ enum TypedForm {
     QRestrict(Box<TypedExpr>),
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVSpecialize(Box<TypedExpr>),
+    RVField(rv_field::Map, Box<TypedExpr>),
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
@@ -1124,6 +1126,12 @@ impl Engine {
                 Value::JetHom(value) => jet_hom::scale(&mut self.model, *field, &value, *scalar),
                 _ => unreachable!(),
             },
+            TypedForm::RVField(map, input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                map.apply(&mut self.model, &value)
+            }
             TypedForm::RVSpecialize(input) => {
                 let value = self.eval(input)?;
                 rv_hom::specialize(&mut self.model, input.ty, value, expr.ty)
@@ -2174,6 +2182,14 @@ impl Checker<'_> {
                 };
                 field.check_element(scalar)?;
                 Ok((input.ty, TypedForm::RVScale(field, scalar, Box::new(input))))
+            }
+            ExprForm::RVField(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, operation.name(), "an RVHom map"));
+                };
+                let (ty, map) = rv_field::plan(self.model, grade.clone(), operation)?;
+                Ok((ty, TypedForm::RVField(map, Box::new(input))))
             }
             ExprForm::RVSpecialize(modulus, point, input) => {
                 let input = self.expr(*input)?;

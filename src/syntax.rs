@@ -317,6 +317,7 @@ pub(crate) enum ExprForm {
     RVGenerator(RankVarietySpec, usize, Span),
     RVIdentity(ParsedType, Vec<usize>, usize, Vec<usize>),
     RVSpecialize(usize, Vec<usize>, Box<ParsedExpr>),
+    RVField(crate::rv_field::Operation, Box<ParsedExpr>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
@@ -2181,6 +2182,30 @@ impl<'src> Parser<'src> {
                         ExprForm::RVIdentity(base, selected, modulus, point),
                         0,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrob" | "rvExtend" | "rvDescend" | "rvTrace"
+                ) && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_field::Operation;
+                    let (parameter, _) = self.number()?;
+                    let operation = if name.text == "rvFrob" {
+                        Operation::Frobenius(parameter)
+                    } else {
+                        self.expect(Token::Comma)?;
+                        let (root, _) = self.number()?;
+                        match name.text.as_str() {
+                            "rvExtend" => Operation::Extend(parameter, root),
+                            "rvDescend" => Operation::Descend(parameter, root),
+                            "rvTrace" => Operation::Trace(parameter, root),
+                            _ => unreachable!(),
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RVField(operation, Box::new(input)), depth);
                 }
                 if name.text == "rvSpec" && self.eat(Token::LBracket)? {
                     let (modulus, _) = self.number()?;

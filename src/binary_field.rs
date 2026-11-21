@@ -117,6 +117,23 @@ impl BinaryField {
         output
     }
 
+    pub(crate) fn frobenius(
+        self,
+        model: &mut Model,
+        mut value: usize,
+        iterations: usize,
+    ) -> Result<usize> {
+        debug_assert!(value < self.order);
+        if value > 1 {
+            let iterations = iterations % self.degree;
+            model.spend(iterations * self.degree)?;
+            for _ in 0..iterations {
+                value = self.multiply(value, value);
+            }
+        }
+        Ok(value)
+    }
+
     pub(crate) fn inverse(self, model: &mut Model, value: usize) -> Result<usize> {
         debug_assert!(value != 0 && value < self.order);
         self.power(model, value, (self.order - 2) as u128)
@@ -146,6 +163,116 @@ impl BinaryField {
             exponent >>= 1;
         }
         Ok(output)
+    }
+}
+
+pub(crate) struct Embedding {
+    small: BinaryField,
+    large: BinaryField,
+    powers: Vec<usize>,
+    pivots: Vec<(usize, usize)>,
+}
+
+impl Embedding {
+    pub(crate) fn new(
+        model: &mut Model,
+        small: BinaryField,
+        large: BinaryField,
+        root: usize,
+    ) -> Result<Self> {
+        if !large.degree.is_multiple_of(small.degree) {
+            return Err(Error::plain(
+                "field embedding requires the smaller degree to divide the larger degree",
+            ));
+        }
+        large.check_element(root)?;
+        model.spend((1 + small.degree) * large.degree)?;
+        let mut value = 0;
+        for degree in (0..=small.degree).rev() {
+            value = large.multiply(value, root) ^ ((small.modulus >> degree) & 1);
+        }
+        if value != 0 {
+            return Err(Error::plain(
+                "field embedding root does not satisfy the smaller modulus",
+            ));
+        }
+
+        let mut powers = Vec::with_capacity(small.degree);
+        let mut pivots = vec![(0, 0); large.degree];
+        let mut power = 1usize;
+        for degree in 0..small.degree {
+            powers.push(power);
+            let mut image = power;
+            let mut preimage = 1 << degree;
+            while image != 0 {
+                model.spend(1)?;
+                let row = &mut pivots[image.ilog2() as usize];
+                if row.0 == 0 {
+                    *row = (image, preimage);
+                    break;
+                }
+                image ^= row.0;
+                preimage ^= row.1;
+            }
+            if image == 0 {
+                return Err(Error::plain("field embedding basis is linearly dependent"));
+            }
+            model.spend(large.degree)?;
+            power = large.multiply(power, root);
+        }
+        model.allocate(powers.len() + 2 * pivots.len())?;
+        Ok(Self {
+            small,
+            large,
+            powers,
+            pivots,
+        })
+    }
+
+    pub(crate) fn small(&self) -> BinaryField {
+        self.small
+    }
+
+    pub(crate) fn large(&self) -> BinaryField {
+        self.large
+    }
+
+    pub(crate) fn image(&self, model: &mut Model, mut value: usize) -> Result<usize> {
+        debug_assert!(value < self.small.order);
+        model.spend(value.count_ones() as usize)?;
+        let mut image = 0;
+        while value != 0 {
+            image ^= self.powers[value.trailing_zeros() as usize];
+            value &= value - 1;
+        }
+        Ok(image)
+    }
+
+    pub(crate) fn preimage(&self, model: &mut Model, mut value: usize) -> Result<Option<usize>> {
+        debug_assert!(value < self.large.order);
+        let mut preimage = 0;
+        while value != 0 {
+            model.spend(1)?;
+            let (image, witness) = self.pivots[value.ilog2() as usize];
+            if image == 0 {
+                return Ok(None);
+            }
+            value ^= image;
+            preimage ^= witness;
+        }
+        Ok(Some(preimage))
+    }
+
+    pub(crate) fn trace(&self, model: &mut Model, mut value: usize) -> Result<usize> {
+        let mut trace = value;
+        for _ in 1..self.large.degree / self.small.degree {
+            model.spend(1)?;
+            value = self.large.frobenius(model, value, self.small.degree)?;
+            trace ^= value;
+        }
+        self.preimage(model, trace)?.ok_or_else(|| {
+            Error::plain("relative field trace did not land in the specified subfield")
+        })
     }
 }
 
