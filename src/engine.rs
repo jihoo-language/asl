@@ -210,6 +210,7 @@ enum TypedForm {
     BpOperation(bp::Operation, bp::Shape, Box<TypedExpr>),
     BpExtOperation(BpExtOp, Box<TypedExpr>),
     BpMassey(bp::Massey, Vec<TypedExpr>),
+    BpRaise(Box<TypedExpr>),
     BpPageClass(Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
     RvMComponent(Box<TypedExpr>),
@@ -1606,6 +1607,59 @@ impl Engine {
                 let value = self.eval(input)?;
                 q_koszul::restrict(&mut self.model, input.ty, value, expr.ty)
             }
+            TypedForm::BpRaise(input) => {
+                let value = self.eval(input)?;
+                if input.ty == expr.ty {
+                    return Ok(value);
+                }
+                match value {
+                    Value::BP(polynomial) => {
+                        let (&Kind::BP(from), &Kind::BP(to)) =
+                            (self.model.kind(input.ty), self.model.kind(expr.ty))
+                        else {
+                            unreachable!()
+                        };
+                        let output = bp::reindex_height(
+                            &mut self.model,
+                            from.height,
+                            to.height,
+                            &polynomial,
+                        )?;
+                        bp::persist(&mut self.model, output)
+                    }
+                    Value::OddClass(class) => {
+                        if class.is_empty() {
+                            return Ok(odd_ext::zero());
+                        }
+                        let source = self.model.bp_page(input.ty)?;
+                        let target = self.model.bp_page(expr.ty)?;
+                        let class = source.raise(&mut self.model, &target, &class)?;
+                        odd_ext::persist(&mut self.model, class)
+                    }
+                    Value::BPExt(class) => {
+                        if class.is_empty() {
+                            return Ok(bp_classes::zero());
+                        }
+                        let (&Kind::BPExt(from), &Kind::BPExt(to)) =
+                            (self.model.kind(input.ty), self.model.kind(expr.ty))
+                        else {
+                            unreachable!()
+                        };
+                        let cycle = self
+                            .model
+                            .bp_ext(input.ty)?
+                            .representative(&mut self.model, &class)?;
+                        let output = bp::reindex_height(
+                            &mut self.model,
+                            from.shape.height,
+                            to.shape.height,
+                            &cycle,
+                        )?;
+                        bp_classes::class(&mut self.model, expr.ty, &output)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::BpMassey(layout, inputs) => {
                 let values = inputs
                     .iter()
@@ -2971,6 +3025,28 @@ impl Checker<'_> {
                     self.model.bp_page_type(operation.target(grade)?)?
                 };
                 Ok((ty, TypedForm::BpPageOperation(operation, Box::new(input))))
+            }
+            ExprForm::BpRaise(height, input) => {
+                let input = self.expr(*input)?;
+                let ty = match *self.model.kind(input.ty) {
+                    Kind::BP(shape) => self.model.bp_type(shape.raise(height)?)?,
+                    Kind::BPPage(mut grade) => {
+                        grade.shape = grade.shape.raise(height)?;
+                        self.model.bp_page_type(grade)?
+                    }
+                    Kind::BPExt(mut grade) => {
+                        grade.shape = grade.shape.raise(height)?;
+                        self.model.bp_ext_type(grade)?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "bpRaise",
+                            "a BP cochain, page class, or BPExt class",
+                        ))
+                    }
+                };
+                Ok((ty, TypedForm::BpRaise(Box::new(input))))
             }
             ExprForm::BpMassey(inputs) => {
                 let inputs = inputs

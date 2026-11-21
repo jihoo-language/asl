@@ -40,18 +40,26 @@ impl Shape {
             n if n < 2 || n % 2 == 0 => return Err(Error::plain("BP requires a prime")),
             n => Prime::new(model, n)?.get(),
         };
+        Self {
+            prime,
+            height: 0,
+            arrows: 0,
+            depth: 0,
+        }
+        .raise(height)?
+        .with_arrows(arrows)
+    }
+
+    pub(crate) fn raise(self, height: usize) -> Result<Self> {
+        if height < self.height {
+            return Err(Error::plain("bpRaise cannot decrease the BP height"));
+        }
         if height > MAX_HEIGHT {
             return Err(Error::plain(format!(
                 "BP height exceeds the limit of {MAX_HEIGHT}"
             )));
         }
-        Self {
-            prime,
-            height,
-            arrows: 0,
-            depth: 0,
-        }
-        .with_arrows(arrows)
+        Ok(Self { height, ..self })
     }
 
     pub(crate) fn quotient(self, depth: usize) -> Result<Self> {
@@ -150,6 +158,24 @@ pub(crate) fn persist(model: &mut Model, polynomial: Polynomial) -> Result<Value
 
 pub(crate) fn zero() -> Value {
     Value::BP(Rc::new(Polynomial::default()))
+}
+
+// Widen or narrow the offsets of the source and arrow slots. At lower
+// width this retains the component involving only lower-height variables.
+pub(crate) fn reindex_height(
+    model: &mut Model,
+    source_width: usize,
+    target_width: usize,
+    input: &Polynomial,
+) -> Result<Polynomial> {
+    if source_width == 0 || source_width == target_width {
+        model.spend(input.cells())?;
+        return Ok(input.clone());
+    }
+    input.reindex(model, |index| {
+        let level = index % source_width;
+        (level < target_width).then(|| (index / source_width) * target_width + level)
+    })
 }
 
 // A Hazewinkel log polynomial has an integral numerator and a denominator

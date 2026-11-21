@@ -294,6 +294,23 @@ impl Page {
         target.project(model, coordinates, self.common + other.common)
     }
 
+    pub(crate) fn raise(
+        &self,
+        model: &mut Model,
+        target: &Self,
+        class: &[Coordinate],
+    ) -> Result<Vec<Coordinate>> {
+        let representative = self.representative(model, class, false)?;
+        let widened = bp::reindex_height(
+            model,
+            self.grade.shape.height,
+            target.grade.shape.height,
+            &representative,
+        )?;
+        let coordinates = bp_ext::coordinates(model, &widened, &target.monomials)?;
+        target.project(model, coordinates, self.common)
+    }
+
     pub(crate) fn previous(
         &self,
         model: &mut Model,

@@ -394,6 +394,7 @@ pub(crate) enum ExprForm {
     BpExtOperation(BpExtOp, Box<ParsedExpr>),
     BpExtGenerator(BpSpec, usize, usize, Span),
     BpMassey(Vec<ParsedExpr>),
+    BpRaise(usize, Box<ParsedExpr>),
     BpPageGenerator(BpPageMode, BpPageSpec, usize, Span),
     BpPageClass(BpPageMode, (usize, usize, usize), Box<ParsedExpr>),
     BpPageOperation(Label, BpPageMode, BpPageOp, Box<ParsedExpr>),
@@ -2233,6 +2234,13 @@ impl<'src> Parser<'src> {
                             depth,
                         );
                     }
+                }
+                if name.text == "bpRaise" && self.eat(Token::LBracket)? {
+                    let (height, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::BpRaise(height, Box::new(input)), depth);
                 }
                 if name.text == "bpMassey" && self.eat(Token::LParen)? {
                     let arguments = self.arguments(nest)?;
