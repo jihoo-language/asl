@@ -5,6 +5,7 @@ use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
+use crate::model::DiffFamily;
 use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
@@ -71,7 +72,7 @@ pub(crate) enum TypeForm {
     RVBarDual(RvBarSpec),
     RVPathExt(RvBarSpec),
     RVBar(RvBarSpec),
-    ASDiff(Label, usize),
+    CurveDiff(DiffFamily, Label, usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPThick(BpSpec, usize, usize),
@@ -513,9 +514,9 @@ pub(crate) enum ExprForm {
     RvGenerator(Label, usize, Span),
     RvOscMinor(Label, usize, Vec<usize>),
     RvFrobeniusWronskian(Label, usize),
-    RvAsOmega(Label, usize, usize),
-    RvAsDiffScale(usize, Box<ParsedExpr>),
-    RvAsCartier(Box<ParsedExpr>),
+    RvOmega(DiffFamily, Label, usize, usize),
+    RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
+    RvCartier(DiffFamily, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -1311,7 +1312,8 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 "rvWittBreaks" | "rvWittGenus" | "rvWittPoints" | "rvWittLPolynomial"
-                | "rvWittNewton" | "rvWittCharacterL",
+                | "rvWittNewton" | "rvWittCharacterL" | "rvWittGaps" | "rvWittBasis"
+                | "rvWittCartierRank" | "rvWittaNumber",
             ) => {
                 let operation = self.token();
                 self.advance()?;
@@ -1327,6 +1329,13 @@ impl<'src> Parser<'src> {
                     Token::Word("rvWittLPolynomial") => WittQuery::LPolynomial,
                     Token::Word("rvWittNewton") => WittQuery::Newton,
                     Token::Word("rvWittCharacterL") => WittQuery::CharacterL,
+                    Token::Word("rvWittGaps") => WittQuery::Gaps,
+                    Token::Word("rvWittBasis") => WittQuery::Basis,
+                    Token::Word("rvWittCartierRank") => {
+                        self.expect(Token::Comma)?;
+                        WittQuery::CartierRank(self.number()?.0)
+                    }
+                    Token::Word("rvWittaNumber") => WittQuery::ANumber,
                     _ => unreachable!(),
                 };
                 self.expect(Token::RBracket)?;
@@ -2250,12 +2259,17 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
-        if name.text == "ASDiff" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "ASDiff" | "WittDiff") && self.eat(Token::LParen)? {
+            let family = if name.text == "WittDiff" {
+                DiffFamily::Witt
+            } else {
+                DiffFamily::ArtinSchreier
+            };
             let cover = self.label()?;
             self.expect(Token::Comma)?;
             let modulus = self.number()?.0;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::ASDiff(cover, modulus), 0);
+            return ty(span, TypeForm::CurveDiff(family, cover, modulus), 0);
         }
         if name.text == "RVPoly" && self.eat(Token::LParen)? {
             let selected = self.exponents()?;
@@ -3081,30 +3095,51 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
                 }
-                if name.text == "rvASOmega" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvASOmega" | "rvWittOmega")
+                    && self.eat(Token::LBracket)?
+                {
+                    let family = if name.text == "rvWittOmega" {
+                        DiffFamily::Witt
+                    } else {
+                        DiffFamily::ArtinSchreier
+                    };
                     let cover = self.label()?;
                     self.expect(Token::Comma)?;
                     let modulus = self.number()?.0;
                     self.expect(Token::Comma)?;
                     let index = self.number()?.0;
                     self.expect(Token::RBracket)?;
-                    return expr(span, ExprForm::RvAsOmega(cover, modulus, index), 0);
+                    return expr(span, ExprForm::RvOmega(family, cover, modulus, index), 0);
                 }
-                if name.text == "rvASDiffScale" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvASDiffScale" | "rvWittDiffScale")
+                    && self.eat(Token::LBracket)?
+                {
+                    let family = if name.text == "rvWittDiffScale" {
+                        DiffFamily::Witt
+                    } else {
+                        DiffFamily::ArtinSchreier
+                    };
                     let scalar = self.number()?.0;
                     self.expect(Token::RBracket)?;
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(
                         span,
-                        ExprForm::RvAsDiffScale(scalar, Box::new(input)),
+                        ExprForm::RvDiffScale(family, scalar, Box::new(input)),
                         depth,
                     );
                 }
-                if name.text == "rvASCartier" && self.token() == Token::LParen {
+                if matches!(name.text.as_str(), "rvASCartier" | "rvWittCartier")
+                    && self.token() == Token::LParen
+                {
+                    let family = if name.text == "rvWittCartier" {
+                        DiffFamily::Witt
+                    } else {
+                        DiffFamily::ArtinSchreier
+                    };
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
-                    return expr(span, ExprForm::RvAsCartier(Box::new(input)), depth);
+                    return expr(span, ExprForm::RvCartier(family, Box::new(input)), depth);
                 }
                 if name.text == "rvFrobWronskian" && self.eat(Token::LBracket)? {
                     let curve = self.label()?;

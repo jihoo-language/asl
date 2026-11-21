@@ -3,11 +3,14 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::binary_field::BinaryField;
+use crate::binary_linear::{self, Entry};
 use crate::error::{Error, Result};
-use crate::model::Model;
+use crate::model::{Model, Value};
+use crate::rv_as_cartier;
 use crate::rv_as_cover::{affine_value, integral_l_polynomial, point_count_field};
 use crate::rv_newton;
 use crate::rv_poly::{self, Polynomial};
+use crate::rv_witt_cartier::{Cartier, Semigroup};
 
 type Gaussian = (i128, i128);
 
@@ -19,6 +22,10 @@ pub(crate) enum Query {
     LPolynomial,
     Newton,
     CharacterL,
+    Gaps,
+    Basis,
+    CartierRank(usize),
+    ANumber,
 }
 
 impl Query {
@@ -30,6 +37,10 @@ impl Query {
             Self::LPolynomial => "rvWittLPolynomial",
             Self::Newton => "rvWittNewton",
             Self::CharacterL => "rvWittCharacterL",
+            Self::Gaps => "rvWittGaps",
+            Self::Basis => "rvWittBasis",
+            Self::CartierRank(_) => "rvWittCartierRank",
+            Self::ANumber => "rvWittaNumber",
         }
     }
 }
@@ -42,6 +53,7 @@ pub(crate) struct Cover {
     traces: RefCell<BTreeMap<usize, [usize; 4]>>,
     l_polynomial: RefCell<Option<Rc<[i128]>>>,
     character_l: RefCell<Option<Rc<[Gaussian]>>>,
+    cartier: RefCell<Option<Rc<Cartier>>>,
 }
 
 impl Cover {
@@ -77,6 +89,7 @@ impl Cover {
             traces: RefCell::new(BTreeMap::new()),
             l_polynomial: RefCell::new(None),
             character_l: RefCell::new(None),
+            cartier: RefCell::new(None),
         })
     }
 
@@ -97,8 +110,75 @@ impl Cover {
                 )
             }
             Query::CharacterL => format!("{:?}", self.character_l(model)?),
+            Query::Gaps => format!("{:?}", self.semigroup().gaps(model)?),
+            Query::Basis => format!("{:?}", self.semigroup().basis(model)?),
+            Query::CartierRank(power) => {
+                let rank = self.cartier_rank(model, power)?;
+                return Ok(format!("rvWittCartierRank[{name}, {power}] = {rank}"));
+            }
+            Query::ANumber => (self.genus - self.cartier_rank(model, 1)?).to_string(),
         };
         Ok(format!("{}[{name}] = {value}", query.name()))
+    }
+
+    pub(crate) fn genus(&self) -> usize {
+        self.genus
+    }
+
+    fn semigroup(&self) -> Semigroup {
+        Semigroup::new(self.breaks[0], self.breaks[1], self.genus)
+    }
+
+    fn cartier(&self, model: &mut Model) -> Result<Rc<Cartier>> {
+        if let Some(cartier) = self.cartier.borrow().as_ref() {
+            return Ok(cartier.clone());
+        }
+        let cartier = Rc::new(Cartier::build(model, self.semigroup(), &self.f, &self.g)?);
+        *self.cartier.borrow_mut() = Some(cartier.clone());
+        Ok(cartier)
+    }
+
+    pub(crate) fn omega(&self, model: &mut Model, index: usize) -> Result<Value> {
+        if index >= self.genus {
+            return Err(Error::plain(format!(
+                "rvWittOmega index {index} is out of range for genus {}",
+                self.genus
+            )));
+        }
+        Ok(Value::CurveDiff(binary_linear::persist(
+            model,
+            vec![(index, 1)],
+        )?))
+    }
+
+    pub(crate) fn apply_cartier(
+        &self,
+        model: &mut Model,
+        field: BinaryField,
+        input: &[Entry],
+    ) -> Result<Value> {
+        if input.is_empty() {
+            return Ok(Value::CurveDiff([].into()));
+        }
+        let cartier = self.cartier(model)?;
+        rv_as_cartier::from_columns(model, field, input, |model, index| {
+            cartier.column(model, index)
+        })
+    }
+
+    fn cartier_rank(&self, model: &mut Model, power: usize) -> Result<usize> {
+        if power == 0 {
+            return Ok(self.genus);
+        }
+        // The one ramified pole gives p-rank zero for this cyclic 2-cover.
+        // Therefore Cartier is nilpotent, with nilpotence index at most g.
+        if power >= self.genus {
+            return Ok(0);
+        }
+        let cartier = self.cartier(model)?;
+        rv_as_cartier::power_rank(model, self.genus, power, |model, index| {
+            cartier.column(model, index)
+        })
     }
 
     fn points(&self, model: &mut Model, extension: usize) -> Result<usize> {

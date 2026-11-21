@@ -809,6 +809,16 @@ The deck generator $(y,z)\mapsto(y+1,z+y)$ has order four. The single pole at in
 
 `rvWittCharacterL[W];` gives the degree-$(u-1)$ Artin factor for $\chi(a,b)=i^{a+2b}$ on $W_2(\mathbb F_2)$. Each coefficient pair `(a, b)` represents $a+bi$. The quartic numerator is the product of this factor, its complex conjugate, and the $L$-polynomial of the quadratic subcover $y^2+y=f(x)$. For $f=x$ and $g=0$ the character factor is $1+(1+i)T$ and the quartic numerator is $1+2T+2T^2$. The point counts at higher extension degrees in the example give independent checks on these polynomials. [Artin–Schreier–Witt cover example](examples/rank-witt.asl)
 
+#### Quartic Witt differentials and the Weierstrass semigroup
+
+Let $m,u$ be the upper jumps of a declared quartic Witt cover and $b_2=2u-m$ its second lower jump. The quadratic subfield has $\operatorname{ord}_\infty(x)=-2$ and $\operatorname{ord}_\infty(y)=-m$. Rewrite the second equation as $w^2+w=A(x)+B(x)y$, starting with $w=z$. Whenever the leading term is an even pole $2a$ from $A$, add $x^{a/2}$ to $w$ if $a$ is even, or $x^{(a-m)/2}y$ if $a$ is odd. The final leading pole in that subfield is odd and has order $b_2$.
+
+The pole orders of $x,y,w$ on the quartic curve are $4,2m,b_2$. The four monomials $1,y,w,yw$ give a free basis over $\mathbb F_2[x]$ with different pole orders modulo four, so the Weierstrass semigroup is $\langle4,2m,b_2\rangle$. Use `rvWittGaps[W];` to list its gaps. Since $\operatorname{div}(dx)=(2g-2)\infty$, `rvWittBasis[W];` prints the triples $(a,b,c)$ for holomorphic $x^a y^b w^c\,dx$ in increasing order of $4a+2mb+b_2c$, with $b,c\in\{0,1\}$.
+
+`WittDiff(W,P)` is the space of holomorphic differentials over the binary field with modulus `P`. `rvWittOmega[W,P,j]` makes basis element $j$, numbered from zero, and `rvWittDiffScale[c](v)` scales its coordinates. `rvWittCartier(v)` takes the square root of each coefficient and applies Cartier to the basis elements. For $H\,dx$, it computes $D_xH$ in the normal form and recovers its square root by removing successive leading poles. `rvWittCartierRank[W,k];` prints the rank of the $k$-th iterate and `rvWittaNumber[W];` prints $g$ minus its rank for $k=1$. A single ramified pole gives $p$-rank zero.
+
+For $f=x^3$ and $g(x)=0$, the genus is six and the Cartier ranks are $6,4,3,2,1,0$. The basis contains a Cartier chain from $w\,dx$ through $xy\,dx$, $y\,dx$, $x\,dx$, and $dx$. [Witt holomorphic differential example](examples/rank-witt-cartier.asl)
+
 
 ### Koszul syzygies and their products
 

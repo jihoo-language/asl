@@ -63,6 +63,42 @@ const MAX_SHOWN_BYTES: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct TypeId(usize);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DiffFamily {
+    ArtinSchreier,
+    Witt,
+}
+
+impl DiffFamily {
+    pub(crate) fn type_name(self) -> &'static str {
+        match self {
+            Self::ArtinSchreier => "ASDiff",
+            Self::Witt => "WittDiff",
+        }
+    }
+
+    pub(crate) fn operand(self) -> &'static str {
+        match self {
+            Self::ArtinSchreier => "an ASDiff differential",
+            Self::Witt => "a WittDiff differential",
+        }
+    }
+
+    pub(crate) fn scale_name(self) -> &'static str {
+        match self {
+            Self::ArtinSchreier => "rvASDiffScale",
+            Self::Witt => "rvWittDiffScale",
+        }
+    }
+
+    pub(crate) fn cartier_name(self) -> &'static str {
+        match self {
+            Self::ArtinSchreier => "rvASCartier",
+            Self::Witt => "rvWittCartier",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     Space(String),
@@ -90,7 +126,7 @@ pub(crate) enum Kind {
     QKoszul(Grade),
     QExt(Grade),
     RVHom(rv_hom::Grade),
-    ASDiff(Rc<str>, BinaryField),
+    CurveDiff(DiffFamily, Rc<str>, BinaryField),
     RVLaurent(rv_hom::Grade),
     RVIwHecke(usize),
     JetHom(jet_hom::Grade),
@@ -193,7 +229,7 @@ pub(crate) enum Value {
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
-    ASDiff(rv_hom::Support),
+    CurveDiff(Rc<[binary_linear::Entry]>),
     RVLaurent(rv_laurent::Support),
     RVIwHecke(rv_iwhecke::Support),
     JetHom(jet_hom::Support),
@@ -495,8 +531,8 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
-            Kind::ASDiff(ref name, field) => {
-                let genus = self.rv_as_covers[name.as_ref()].genus();
+            Kind::CurveDiff(family, ref name, field) => {
+                let genus = self.curve_genus(family, name);
                 field
                     .order()
                     .saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
@@ -588,7 +624,7 @@ impl Model {
                 | Kind::JetPage(..)
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
-                | Kind::ASDiff(..)
+                | Kind::CurveDiff(..)
                 | Kind::RVLaurent(..)
                 | Kind::RVIwHecke(..)
                 | Kind::VKoszul(..)
@@ -1181,10 +1217,33 @@ impl Model {
         self.rv_witt_covers.insert(name, Rc::new(cover));
     }
 
-    pub(crate) fn rv_as_diff_type(&mut self, name: &Label, modulus: usize) -> Result<TypeId> {
-        self.rv_as_cover(name)?;
+    pub(crate) fn rv_witt_cover_named(&self, name: &str) -> Option<Rc<RvWittCover>> {
+        self.rv_witt_covers.get(name).cloned()
+    }
+
+    fn curve_genus(&self, family: DiffFamily, name: &str) -> usize {
+        match family {
+            DiffFamily::ArtinSchreier => self.rv_as_covers[name].genus(),
+            DiffFamily::Witt => self.rv_witt_covers[name].genus(),
+        }
+    }
+
+    pub(crate) fn rv_curve_diff_type(
+        &mut self,
+        family: DiffFamily,
+        name: &Label,
+        modulus: usize,
+    ) -> Result<TypeId> {
+        match family {
+            DiffFamily::ArtinSchreier => {
+                self.rv_as_cover(name)?;
+            }
+            DiffFamily::Witt => {
+                self.rv_witt_cover(name)?;
+            }
+        }
         let field = BinaryField::new(self, modulus)?;
-        self.inhabited_type(Kind::ASDiff(name.text.as_str().into(), field), 0)
+        self.inhabited_type(Kind::CurveDiff(family, name.text.as_str().into(), field), 0)
     }
 
     pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {
@@ -1725,7 +1784,7 @@ impl Model {
             | Kind::JetPage(..)
             | Kind::QExt(..)
             | Kind::RVHom(..)
-            | Kind::ASDiff(..)
+            | Kind::CurveDiff(..)
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
             | Kind::VKoszul(..)
@@ -1945,7 +2004,11 @@ impl Model {
                     ))
                 }
             }
-            Kind::ASDiff(name, field) => out.push(&format!("ASDiff({name}, {})", field.modulus())),
+            Kind::CurveDiff(family, name, field) => out.push(&format!(
+                "{}({name}, {})",
+                family.type_name(),
+                field.modulus()
+            )),
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::BP(shape) => out.push(&shape.to_string()),
             Kind::BPHeight(grade) => out.push(&format!(
@@ -2134,7 +2197,7 @@ impl Model {
             (Value::RVLaurent(left), Value::RVLaurent(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_laurent::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHom(left), Value::RVHom(right))
-            | (Value::ASDiff(left), Value::ASDiff(right))
+            | (Value::CurveDiff(left), Value::CurveDiff(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_hom::compare(self, left, right)? == Ordering::Equal)
@@ -2290,7 +2353,7 @@ impl Model {
                 rv_laurent::compare(self, left, right)
             }
             (Value::RVHom(left), Value::RVHom(right))
-            | (Value::ASDiff(left), Value::ASDiff(right))
+            | (Value::CurveDiff(left), Value::CurveDiff(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -2443,9 +2506,9 @@ impl Model {
                     }
                     vec![rv_laurent::zero()]
                 }
-                Kind::ASDiff(ref name, field) => {
-                    let genus = self.rv_as_covers[name.as_ref()].genus();
-                    binary_linear::elements(self, field, genus, MAX_ELEMENTS, Value::ASDiff)?
+                Kind::CurveDiff(family, ref name, field) => {
+                    let genus = self.curve_genus(family, name);
+                    binary_linear::elements(self, field, genus, MAX_ELEMENTS, Value::CurveDiff)?
                 }
                 Kind::RVHom(ref grade) => {
                     let field = grade.field;
@@ -3119,8 +3182,8 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::RVHom(support) | Value::JetClass(support) | Value::ASDiff(support) => {
-                let symbol = if matches!(value, Value::ASDiff(_)) {
+            Value::RVHom(support) | Value::JetClass(support) | Value::CurveDiff(support) => {
+                let symbol = if matches!(value, Value::CurveDiff(_)) {
                     "omega"
                 } else {
                     "g"

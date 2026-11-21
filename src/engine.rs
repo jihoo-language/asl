@@ -27,7 +27,7 @@ use crate::map_transfer;
 use crate::may;
 use crate::may_lift;
 use crate::milnor;
-use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
+use crate::model::{DiffFamily, Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::motivic;
 use crate::nakamura;
 use crate::observations::{betti, homotopy};
@@ -270,8 +270,9 @@ enum TypedForm {
     RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
     RvInMinors(TypeId, q_koszul::Indices, usize, Box<TypedExpr>),
     RvIdeal(RvIdealOp, Rc<RvIdeal>, Box<TypedExpr>),
-    AsDiffScale(BinaryField, usize, Box<TypedExpr>),
+    DiffScale(BinaryField, usize, Box<TypedExpr>),
     AsCartier(Rc<RvAsCover>, BinaryField, Box<TypedExpr>),
+    WittCartier(Rc<RvWittCover>, BinaryField, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
     Nakamura(usize, Box<TypedExpr>),
@@ -1532,13 +1533,13 @@ impl Engine {
                     (BinaryOp::Add, Value::RVLaurent(a), Value::RVLaurent(b)) => {
                         rv_laurent::add(&mut self.model, &a, &b)
                     }
-                    (BinaryOp::Add, Value::ASDiff(a), Value::ASDiff(b)) => {
-                        let Kind::ASDiff(_, field) = *self.model.kind(expr.ty) else {
+                    (BinaryOp::Add, Value::CurveDiff(a), Value::CurveDiff(b)) => {
+                        let Kind::CurveDiff(_, _, field) = *self.model.kind(expr.ty) else {
                             unreachable!()
                         };
                         let coordinates =
                             binary_linear::add_multiple(&mut self.model, field, &a, &b, 1)?;
-                        Ok(Value::ASDiff(binary_linear::persist(
+                        Ok(Value::CurveDiff(binary_linear::persist(
                             &mut self.model,
                             coordinates,
                         )?))
@@ -2427,21 +2428,27 @@ impl Engine {
                     coefficient,
                 )?))
             }
-            TypedForm::AsDiffScale(field, scalar, input) => {
-                let Value::ASDiff(coordinates) = self.eval(input)? else {
+            TypedForm::DiffScale(field, scalar, input) => {
+                let Value::CurveDiff(coordinates) = self.eval(input)? else {
                     unreachable!()
                 };
                 let scaled = binary_linear::scaled(&mut self.model, *field, &coordinates, *scalar)?;
-                Ok(Value::ASDiff(binary_linear::persist(
+                Ok(Value::CurveDiff(binary_linear::persist(
                     &mut self.model,
                     scaled,
                 )?))
             }
             TypedForm::AsCartier(cover, field, input) => {
-                let Value::ASDiff(coordinates) = self.eval(input)? else {
+                let Value::CurveDiff(coordinates) = self.eval(input)? else {
                     unreachable!()
                 };
                 rv_as_cartier::apply(&mut self.model, cover, *field, &coordinates)
+            }
+            TypedForm::WittCartier(cover, field, input) => {
+                let Value::CurveDiff(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cover.apply_cartier(&mut self.model, *field, &coordinates)
             }
             TypedForm::RvIdeal(op, ideal, input) => {
                 let Value::RVPoly(original) = self.eval(input)? else {
@@ -3106,7 +3113,9 @@ impl Checker<'_> {
                 let grade = self.rv_koszul_grade(spec)?;
                 self.model.rv_complex_type(grade, homology)
             }
-            TypeForm::ASDiff(cover, modulus) => self.model.rv_as_diff_type(&cover, modulus),
+            TypeForm::CurveDiff(family, cover, modulus) => {
+                self.model.rv_curve_diff_type(family, &cover, modulus)
+            }
             TypeForm::RVPoly(selected, degree) => {
                 let selected = q_koszul::indices(self.model, selected)?;
                 self.model.rv_poly_type(selected, degree)
@@ -3218,7 +3227,7 @@ impl Checker<'_> {
                     Kind::RVKoszul(..) => Value::RVKoszul([].into()),
                     Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
-                    Kind::ASDiff(..) => Value::ASDiff([].into()),
+                    Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
                     Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => bp_classes::zero(),
@@ -4326,44 +4335,68 @@ impl Checker<'_> {
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
             }
-            ExprForm::RvAsOmega(name, modulus, index) => {
-                let ty = self.model.rv_as_diff_type(&name, modulus)?;
-                let cover = self.model.rv_as_cover(&name)?;
-                let value = rv_as_cartier::omega(self.model, &cover, index)?;
+            ExprForm::RvOmega(family, name, modulus, index) => {
+                let ty = self.model.rv_curve_diff_type(family, &name, modulus)?;
+                let value = match family {
+                    DiffFamily::ArtinSchreier => {
+                        let cover = self.model.rv_as_cover(&name)?;
+                        rv_as_cartier::omega(self.model, &cover, index)?
+                    }
+                    DiffFamily::Witt => {
+                        let cover = self.model.rv_witt_cover(&name)?;
+                        cover.omega(self.model, index)?
+                    }
+                };
                 Ok((ty, TypedForm::Constant(value)))
             }
-            ExprForm::RvAsDiffScale(scalar, input) => {
+            ExprForm::RvDiffScale(family, scalar, input) => {
                 let input = self.expr(*input)?;
-                let Kind::ASDiff(_, field) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvASDiffScale",
-                        "an ASDiff differential",
-                    ));
+                let field = match *self.model.kind(input.ty) {
+                    Kind::CurveDiff(actual, _, field) if actual == family => field,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            family.scale_name(),
+                            family.operand(),
+                        ))
+                    }
                 };
                 field.check_element(scalar)?;
                 Ok((
                     input.ty,
-                    TypedForm::AsDiffScale(field, scalar, Box::new(input)),
+                    TypedForm::DiffScale(field, scalar, Box::new(input)),
                 ))
             }
-            ExprForm::RvAsCartier(input) => {
+            ExprForm::RvCartier(family, input) => {
                 let input = self.expr(*input)?;
-                let Kind::ASDiff(name, field) = self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvASCartier",
-                        "an ASDiff differential",
-                    ));
+                let (name, field) = match self.model.kind(input.ty) {
+                    Kind::CurveDiff(actual, name, field) if *actual == family => (name, *field),
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            family.cartier_name(),
+                            family.operand(),
+                        ))
+                    }
                 };
-                let cover = self
-                    .model
-                    .rv_as_cover_named(name)
-                    .expect("registered Artin–Schreier cover");
-                Ok((
-                    input.ty,
-                    TypedForm::AsCartier(cover, *field, Box::new(input)),
-                ))
+                let ty = input.ty;
+                let form = match family {
+                    DiffFamily::ArtinSchreier => {
+                        let cover = self
+                            .model
+                            .rv_as_cover_named(name)
+                            .expect("registered Artin–Schreier cover");
+                        TypedForm::AsCartier(cover, field, Box::new(input))
+                    }
+                    DiffFamily::Witt => {
+                        let cover = self
+                            .model
+                            .rv_witt_cover_named(name)
+                            .expect("registered Witt cover");
+                        TypedForm::WittCartier(cover, field, Box::new(input))
+                    }
+                };
+                Ok((ty, form))
             }
             ExprForm::RvFrobeniusWronskian(name, exponent) => {
                 let curve = self.model.rv_curve(&name)?;
@@ -5905,7 +5938,7 @@ impl Checker<'_> {
                         | Kind::RVTor(..)
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
-                        | Kind::ASDiff(..)
+                        | Kind::CurveDiff(..)
                         | Kind::BP(..)
                         | Kind::BPRel(..)
                         | Kind::BPExt(..)

@@ -1,10 +1,9 @@
 use crate::binary_field::BinaryField;
-use crate::binary_linear::{self, Entry};
+use crate::binary_linear::{self, check_storage, Entry};
 use crate::error::{Error, Result};
 use crate::linear::{self, Basis};
 use crate::model::{Model, Value};
 use crate::rv_as_cover::Cover;
-use crate::rv_ideal::check_storage;
 use crate::rv_poly::Polynomial;
 
 pub(crate) fn omega(model: &mut Model, cover: &Cover, index: usize) -> Result<Value> {
@@ -14,7 +13,7 @@ pub(crate) fn omega(model: &mut Model, cover: &Cover, index: usize) -> Result<Va
             cover.genus()
         )));
     }
-    Ok(Value::ASDiff(binary_linear::persist(
+    Ok(Value::CurveDiff(binary_linear::persist(
         model,
         vec![(index, 1)],
     )?))
@@ -27,19 +26,30 @@ pub(crate) fn apply(
     input: &[Entry],
 ) -> Result<Value> {
     if input.is_empty() {
-        return Ok(Value::ASDiff([].into()));
+        return Ok(Value::CurveDiff([].into()));
     }
     let denominator = cover.cartier_denominator(model)?;
+    from_columns(model, field, input, |model, index| {
+        column(model, &denominator, index, cover.genus())
+    })
+}
+
+pub(crate) fn from_columns(
+    model: &mut Model,
+    field: BinaryField,
+    input: &[Entry],
+    mut column: impl FnMut(&mut Model, usize) -> Result<Vec<usize>>,
+) -> Result<Value> {
     let mut result = Vec::new();
     for &(index, coefficient) in input {
-        let vector: Vec<_> = column(model, &denominator, index, cover.genus())?
+        let vector: Vec<_> = column(model, index)?
             .into_iter()
             .map(|coordinate| (coordinate, 1))
             .collect();
         let root = field.frobenius(model, coefficient, field.degree() - 1)?;
         result = binary_linear::add_multiple(model, field, &result, &vector, root)?;
     }
-    Ok(Value::ASDiff(binary_linear::persist(model, result)?))
+    Ok(Value::CurveDiff(binary_linear::persist(model, result)?))
 }
 
 pub(crate) fn rank(model: &mut Model, cover: &Cover, power: usize) -> Result<usize> {
@@ -53,13 +63,24 @@ pub(crate) fn rank(model: &mut Model, cover: &Cover, power: usize) -> Result<usi
         return Ok(monomial_rank(genus, monomial[0], power));
     }
 
+    power_rank(model, genus, power, |model, index| {
+        column(model, &denominator, index, genus)
+    })
+}
+
+pub(crate) fn power_rank(
+    model: &mut Model,
+    genus: usize,
+    power: usize,
+    mut column: impl FnMut(&mut Model, usize) -> Result<Vec<usize>>,
+) -> Result<usize> {
     model.spend(genus)?;
     let mut matrix_cells = genus;
     let mut previous_cells = genus.saturating_mul(2);
     check_storage(matrix_cells.saturating_add(previous_cells))?;
     let mut matrix = Vec::with_capacity(genus);
     for index in 0..genus {
-        let coefficients = column(model, &denominator, index, genus)?;
+        let coefficients = column(model, index)?;
         matrix_cells += coefficients.len();
         check_storage(matrix_cells + previous_cells)?;
         matrix.push(coefficients);
