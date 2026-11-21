@@ -6,6 +6,7 @@ use crate::binary_field::BinaryField;
 use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::rv_as_cartier;
+use crate::rv_as_derham;
 use crate::rv_curve::{affine_form, affine_gcd, binary_remainder};
 use crate::rv_newton;
 use crate::rv_poly::{self, Polynomial};
@@ -19,6 +20,7 @@ pub(crate) enum Query {
     Newton,
     CartierRank(usize),
     ANumber,
+    FinalType,
 }
 
 impl Query {
@@ -31,6 +33,7 @@ impl Query {
             Self::Newton => "rvASNewton",
             Self::CartierRank(_) => "rvASCartierRank",
             Self::ANumber => "rvASaNumber",
+            Self::FinalType => "rvASEO",
         }
     }
 }
@@ -118,6 +121,14 @@ impl Cover {
         self.genus
     }
 
+    pub(crate) fn polynomial_chart(&self) -> Result<&Polynomial> {
+        if is_one(&self.denominator) {
+            Ok(&self.numerator)
+        } else {
+            Err(Error::plain("Artin–Schreier de Rham requires a one-pole polynomial cover with affine denominator 1"))
+        }
+    }
+
     pub(crate) fn cartier_denominator(&self, model: &mut Model) -> Result<Polynomial> {
         if let Some(denominator) = self.cartier_denominator.borrow().as_ref() {
             return Ok(denominator.clone());
@@ -143,6 +154,7 @@ impl Cover {
                 return Ok(format!("rvASCartierRank[{name}, {power}] = {rank}"));
             }
             Query::ANumber => (self.genus - rv_as_cartier::rank(model, self, 1)?).to_string(),
+            Query::FinalType => format!("{:?}", rv_as_derham::final_type(model, self)?),
             Query::LPolynomial => format!("{:?}", self.l_polynomial(model)?),
             Query::Newton => {
                 let polynomial = self.l_polynomial(model)?;

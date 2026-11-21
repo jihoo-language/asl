@@ -146,6 +146,8 @@ pub(crate) enum Kind {
     QExt(Grade),
     RVHom(rv_hom::Grade),
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
+    ASDeRham(Rc<str>, BinaryField),
+    BinaryScalar(BinaryField),
     RVLaurent(rv_hom::Grade),
     RVIwHecke(usize),
     RVSphHecke(usize),
@@ -262,6 +264,8 @@ pub(crate) enum Value {
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
     CurveDiff(Rc<[binary_linear::Entry]>),
+    ASDeRham(Rc<[binary_linear::Entry]>),
+    BinaryScalar(usize),
     RVLaurent(rv_laurent::Support),
     RVIwHecke(rv_iwhecke::Support),
     RVSphHecke(rv_sphhecke::Support),
@@ -614,6 +618,13 @@ impl Model {
             Kind::RVKoszul(..) | Kind::RVTor(..) => usize::MAX,
             Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
             Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
+            Kind::ASDeRham(ref name, field) => {
+                let dimension = 2 * self.rv_as_covers[name.as_ref()].genus();
+                field
+                    .order()
+                    .saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
+            }
+            Kind::BinaryScalar(field) => field.order(),
             Kind::CurveDiff(family, ref name, field) => {
                 let genus = self.curve_genus(family, name);
                 field
@@ -718,6 +729,8 @@ impl Model {
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
                 | Kind::CurveDiff(..)
+                | Kind::ASDeRham(..)
+                | Kind::BinaryScalar(..)
                 | Kind::RVLaurent(..)
                 | Kind::RVIwHecke(..)
                 | Kind::RVSphHecke(..)
@@ -1602,6 +1615,26 @@ impl Model {
         }
     }
 
+    pub(crate) fn binary_scalar_type(&mut self, field: BinaryField) -> Result<TypeId> {
+        self.inhabited_type(Kind::BinaryScalar(field), 0)
+    }
+
+    pub(crate) fn rv_as_derham_type(&mut self, name: &Label, modulus: usize) -> Result<TypeId> {
+        self.rv_as_cover(name)?;
+        let field = BinaryField::new(self, modulus)?;
+        self.rv_as_derham_field(name.text.as_str().into(), field)
+            .map_err(|error| error.at(name.span))
+    }
+
+    pub(crate) fn rv_as_derham_field(
+        &mut self,
+        name: Rc<str>,
+        field: BinaryField,
+    ) -> Result<TypeId> {
+        self.rv_as_covers[name.as_ref()].polynomial_chart()?;
+        self.inhabited_type(Kind::ASDeRham(name, field), 0)
+    }
+
     pub(crate) fn rv_curve_diff_type(
         &mut self,
         family: DiffFamily,
@@ -2196,6 +2229,8 @@ impl Model {
             | Kind::QExt(..)
             | Kind::RVHom(..)
             | Kind::CurveDiff(..)
+            | Kind::ASDeRham(..)
+            | Kind::BinaryScalar(..)
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
@@ -2467,6 +2502,10 @@ impl Model {
                     ))
                 }
             }
+            Kind::ASDeRham(name, field) => {
+                out.push(&format!("ASDeRham({name}, {})", field.modulus()))
+            }
+            Kind::BinaryScalar(field) => out.push(&format!("BinaryScalar({})", field.modulus())),
             Kind::CurveDiff(family, name, field) => out.push(&format!(
                 "{}({name}, {})",
                 family.type_name(),
@@ -2610,6 +2649,7 @@ impl Model {
     pub(crate) fn leq(&mut self, ty: TypeId, left: &Value, right: &Value) -> Result<bool> {
         self.spend(1)?;
         match (left, right) {
+            (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left == right),
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
@@ -2689,6 +2729,7 @@ impl Model {
                 || rv_laurent::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHom(left), Value::RVHom(right))
             | (Value::CurveDiff(left), Value::CurveDiff(right))
+            | (Value::ASDeRham(left), Value::ASDeRham(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_hom::compare(self, left, right)? == Ordering::Equal)
@@ -2747,6 +2788,7 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
+            (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left.cmp(right)),
             (Value::Class(left), Value::Class(right)) | (Value::Bar(left), Value::Bar(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -2892,6 +2934,7 @@ impl Model {
             }
             (Value::RVHom(left), Value::RVHom(right))
             | (Value::CurveDiff(left), Value::CurveDiff(right))
+            | (Value::ASDeRham(left), Value::ASDeRham(right))
             | (Value::JetClass(left), Value::JetClass(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -3059,6 +3102,17 @@ impl Model {
                         ));
                     }
                     vec![rv_laurent::zero()]
+                }
+                Kind::ASDeRham(ref name, field) => {
+                    let dimension = 2 * self.rv_as_covers[name.as_ref()].genus();
+                    binary_linear::elements(self, field, dimension, MAX_ELEMENTS, Value::ASDeRham)?
+                }
+                Kind::BinaryScalar(field) => {
+                    let size = field.order();
+                    self.check_element_limit(size)?;
+                    self.spend(size)?;
+                    self.allocate(size)?;
+                    (0..size).map(Value::BinaryScalar).collect()
                 }
                 Kind::CurveDiff(family, ref name, field) => {
                     let genus = self.curve_genus(family, name);
@@ -4000,6 +4054,36 @@ impl Model {
                     out.push(&format!("g{}", term.coordinate))?;
                 }
                 out.push("}")
+            }
+            Value::ASDeRham(support) => {
+                let Kind::ASDeRham(name, _) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let genus = self.rv_as_covers[name.as_ref()].genus();
+                self.spend(support.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if support.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, &(coordinate, coefficient)) in support.iter().enumerate() {
+                    if i != 0 {
+                        out.push(" + ")?;
+                    }
+                    if coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    if coordinate < genus {
+                        out.push(&format!("alpha{coordinate}"))?;
+                    } else {
+                        out.push(&format!("eta{}", coordinate - genus + 1))?;
+                    }
+                }
+                out.push("}")
+            }
+            Value::BinaryScalar(coefficient) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{coefficient}}}"))
             }
             Value::RVHom(support) | Value::JetClass(support) | Value::CurveDiff(support) => {
                 let symbol = if matches!(value, Value::CurveDiff(_)) {

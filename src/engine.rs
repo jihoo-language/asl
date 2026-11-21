@@ -52,6 +52,7 @@ use crate::rho_bock;
 use crate::rv_arithmetic;
 use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
+use crate::rv_as_derham;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -342,6 +343,12 @@ enum TypedForm {
     RvInMinors(TypeId, q_koszul::Indices, usize, Box<TypedExpr>),
     RvIdeal(RvIdealOp, Rc<RvIdeal>, Box<TypedExpr>),
     DiffScale(BinaryField, usize, Box<TypedExpr>),
+    AsDeRhamOperation(
+        rv_as_derham::Operation,
+        Rc<RvAsCover>,
+        BinaryField,
+        Box<TypedExpr>,
+    ),
     AsCartier(Rc<RvAsCover>, BinaryField, Box<TypedExpr>),
     WittCartier(Rc<RvWittCover>, BinaryField, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
@@ -1898,6 +1905,30 @@ impl Engine {
                     (BinaryOp::Add, Value::RVLaurent(a), Value::RVLaurent(b)) => {
                         rv_laurent::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::AsDeRhamPair, Value::ASDeRham(a), Value::ASDeRham(b)) => {
+                        let Kind::ASDeRham(name, field) = self.model.kind(left.ty) else {
+                            unreachable!()
+                        };
+                        let field = *field;
+                        let cover = self
+                            .model
+                            .rv_as_cover_named(name)
+                            .expect("registered Artin–Schreier cover");
+                        rv_as_derham::pair(&mut self.model, &cover, field, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::ASDeRham(a), Value::ASDeRham(b)) => {
+                        let Kind::ASDeRham(_, field) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let sum = binary_linear::add_multiple(&mut self.model, field, &a, &b, 1)?;
+                        Ok(Value::ASDeRham(binary_linear::persist(
+                            &mut self.model,
+                            sum,
+                        )?))
+                    }
+                    (BinaryOp::Add, Value::BinaryScalar(a), Value::BinaryScalar(b)) => {
+                        Ok(Value::BinaryScalar(a ^ b))
+                    }
                     (BinaryOp::Add, Value::CurveDiff(a), Value::CurveDiff(b)) => {
                         let Kind::CurveDiff(_, _, field) = *self.model.kind(expr.ty) else {
                             unreachable!()
@@ -3091,6 +3122,10 @@ impl Engine {
                     scaled,
                 )?))
             }
+            TypedForm::AsDeRhamOperation(operation, cover, field, input) => {
+                let value = self.eval(input)?;
+                rv_as_derham::apply(&mut self.model, cover, *field, *operation, value)
+            }
             TypedForm::AsCartier(cover, field, input) => {
                 let Value::CurveDiff(coordinates) = self.eval(input)? else {
                     unreachable!()
@@ -3846,6 +3881,11 @@ impl Checker<'_> {
                 let grade = self.rv_koszul_grade(spec)?;
                 self.model.rv_complex_type(grade, homology)
             }
+            TypeForm::ASDeRham(cover, modulus) => self.model.rv_as_derham_type(&cover, modulus),
+            TypeForm::BinaryScalar(modulus) => {
+                let field = BinaryField::new(self.model, modulus)?;
+                self.model.binary_scalar_type(field)
+            }
             TypeForm::CurveDiff(family, cover, modulus) => {
                 self.model.rv_curve_diff_type(family, &cover, modulus)
             }
@@ -3972,6 +4012,8 @@ impl Checker<'_> {
                     Kind::RVKoszul(..) => Value::RVKoszul([].into()),
                     Kind::RVTor(..) => cohomology::zero(),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
+                    Kind::ASDeRham(..) => Value::ASDeRham([].into()),
+                    Kind::BinaryScalar(..) => Value::BinaryScalar(0),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -5597,6 +5639,52 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
+            }
+            ExprForm::BinaryScalar(modulus, coefficient) => {
+                let field = BinaryField::new(self.model, modulus)?;
+                field.check_element(coefficient)?;
+                let ty = self.model.binary_scalar_type(field)?;
+                Ok((ty, TypedForm::Constant(Value::BinaryScalar(coefficient))))
+            }
+            ExprForm::AsDeRhamGen(name, modulus, index, at) => {
+                let ty = self.model.rv_as_derham_type(&name, modulus)?;
+                let cover = self.model.rv_as_cover(&name)?;
+                let value = rv_as_derham::generator(self.model, cover.genus(), index)
+                    .map_err(|error| error.at(at))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::AsDeRhamOperation(operation, input) => {
+                use rv_as_derham::Operation::{Frobenius, Include, Scale, Verschiebung};
+                let input = self.expr(*input)?;
+                let name = operation.name();
+                let (curve, field) = match (operation, self.model.kind(input.ty)) {
+                    (Include, Kind::CurveDiff(DiffFamily::ArtinSchreier, curve, field))
+                    | (Frobenius | Verschiebung | Scale(_), Kind::ASDeRham(curve, field)) => {
+                        (curve.clone(), *field)
+                    }
+                    (Include, _) => {
+                        return Err(self.invalid_operand(&input, name, "an ASDiff differential"))
+                    }
+                    _ => return Err(self.invalid_operand(&input, name, "an ASDeRham class")),
+                };
+                if let Scale(coefficient) = operation {
+                    field.check_element(coefficient)?;
+                }
+                let cover = self
+                    .model
+                    .rv_as_cover_named(&curve)
+                    .expect("registered Artin–Schreier cover");
+                let ty = if matches!(operation, Include) {
+                    self.model
+                        .rv_as_derham_field(curve, field)
+                        .map_err(|error| error.at(input.span))?
+                } else {
+                    input.ty
+                };
+                Ok((
+                    ty,
+                    TypedForm::AsDeRhamOperation(operation, cover, field, Box::new(input)),
+                ))
             }
             ExprForm::RvOmega(family, name, modulus, index) => {
                 let ty = self.model.rv_curve_diff_type(family, &name, modulus)?;
@@ -7362,6 +7450,8 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
+                        | Kind::ASDeRham(..)
+                        | Kind::BinaryScalar(..)
                         | Kind::BP(..)
                         | Kind::BPRel(..)
                         | Kind::BPExt(..)
@@ -7504,6 +7594,14 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "xaction", span)?;
                 let degree = checked_degree(t, v, "xaction", span)?;
                 self.model.xext_type(base, length, degree)
+            }
+            BinaryOp::AsDeRhamPair => {
+                let op = "rvASDeRhamPair";
+                let Kind::ASDeRham(_, field) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(left, op, "an ASDeRham class"));
+                };
+                self.require_type(left.ty, right, op)?;
+                self.model.binary_scalar_type(field)
             }
             BinaryOp::BpCup => {
                 if matches!(self.model.kind(left.ty), Kind::BPExt(..))

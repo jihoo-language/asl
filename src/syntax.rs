@@ -88,6 +88,8 @@ pub(crate) enum TypeForm {
     RVPathExt(RvBarSpec),
     RVBar(RvBarSpec),
     CurveDiff(DiffFamily, Label, usize),
+    ASDeRham(Label, usize),
+    BinaryScalar(usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPThick(BpSpec, usize, usize),
@@ -361,6 +363,7 @@ pub(crate) enum BinaryOp {
     RvMultiply,
     RvBCMul,
     RvBarPair,
+    AsDeRhamPair,
     RvPathCup,
     RvKoszulProduct,
     RvTorProduct,
@@ -388,6 +391,7 @@ impl BinaryOp {
             "rvMul" => Some(Self::RvMultiply),
             "rvBCMul" => Some(Self::RvBCMul),
             "rvBarPair" => Some(Self::RvBarPair),
+            "rvASDeRhamPair" => Some(Self::AsDeRhamPair),
             "rvPathCup" => Some(Self::RvPathCup),
             "rvkProd" => Some(Self::RvKoszulProduct),
             "rvTorProd" => Some(Self::RvTorProduct),
@@ -607,6 +611,9 @@ pub(crate) enum ExprForm {
     RvGenerator(Label, usize, Span),
     RvOscMinor(Label, usize, Vec<usize>),
     RvFrobeniusWronskian(Label, usize),
+    AsDeRhamGen(Label, usize, usize, Span),
+    BinaryScalar(usize, usize),
+    AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     RvOmega(DiffFamily, Label, usize, usize),
     RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
     RvCartier(DiffFamily, Box<ParsedExpr>),
@@ -1737,7 +1744,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton"
-                | "rvASCartierRank" | "rvASaNumber",
+                | "rvASCartierRank" | "rvASaNumber" | "rvASEO",
             ) => {
                 let operation = self.token();
                 self.advance()?;
@@ -1757,6 +1764,7 @@ impl<'src> Parser<'src> {
                         AsQuery::CartierRank(self.number()?.0)
                     }
                     Token::Word("rvASaNumber") => AsQuery::ANumber,
+                    Token::Word("rvASEO") => AsQuery::FinalType,
                     _ => unreachable!(),
                 };
                 self.expect(Token::RBracket)?;
@@ -2753,6 +2761,18 @@ impl<'src> Parser<'src> {
             let degree = self.number()?.0;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Sheaf(form, sheaf, degree), 0);
+        }
+        if name.text == "ASDeRham" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::Comma)?;
+            let modulus = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASDeRham(cover, modulus), 0);
+        }
+        if name.text == "BinaryScalar" && self.eat(Token::LParen)? {
+            let modulus = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BinaryScalar(modulus), 0);
         }
         if matches!(name.text.as_str(), "ASDiff" | "WittDiff") && self.eat(Token::LParen)? {
             let family = if name.text == "WittDiff" {
@@ -3788,6 +3808,50 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvASDeRhamGen" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let modulus = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsDeRhamGen(cover, modulus, index, at), 0);
+                }
+                if name.text == "rvFieldElt" && self.eat(Token::LBracket)? {
+                    let (modulus, scalar) = self.bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::BinaryScalar(modulus, scalar), 0);
+                }
+                if name.text == "rvASDeRhamScale" && self.eat(Token::LBracket)? {
+                    let scalar = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let operation = crate::rv_as_derham::Operation::Scale(scalar);
+                    return expr(
+                        span,
+                        ExprForm::AsDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvASF" | "rvASV" | "rvASDeRhamIncl")
+                    && self.token() == Token::LParen
+                {
+                    use crate::rv_as_derham::Operation;
+                    let operation = match name.text.as_str() {
+                        "rvASF" => Operation::Frobenius,
+                        "rvASV" => Operation::Verschiebung,
+                        "rvASDeRhamIncl" => Operation::Include,
+                        _ => unreachable!(),
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
                 }
                 if matches!(name.text.as_str(), "rvASOmega" | "rvWittOmega")
                     && self.eat(Token::LBracket)?

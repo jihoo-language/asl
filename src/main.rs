@@ -61,6 +61,7 @@ mod rho_bock;
 mod rv_arithmetic;
 mod rv_as_cartier;
 mod rv_as_cover;
+mod rv_as_derham;
 mod rv_bar;
 mod rv_bar_dual;
 mod rv_bar_page;

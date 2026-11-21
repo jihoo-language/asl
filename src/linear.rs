@@ -26,6 +26,14 @@ impl Basis {
         self.pivots.contains_key(&coordinate)
     }
 
+    pub(crate) fn rank(&self) -> usize {
+        self.pivots.len()
+    }
+
+    pub(crate) fn vectors(&self) -> impl Iterator<Item = &[usize]> {
+        self.pivots.values().map(|row| row.image.as_ref())
+    }
+
     pub(crate) fn vector(&self, coordinate: usize) -> Option<&[usize]> {
         self.pivots.get(&coordinate).map(|row| row.image.as_ref())
     }

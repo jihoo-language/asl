@@ -902,6 +902,14 @@ For a declared cover with finite denominator $q(x)$ and pole radical $R(x)$, put
 
 For $y^2+y=x^5$, Cartier sends $\omega_1$ to $\omega_0$ and has square zero. The $a$-number is one. For $y^2+y=x^9$ the ranks are $4,2,1,0$ and the $a$-number is two. For $y^2+y=x+1/x$, Cartier fixes $\omega_0$. [Cartier operator example](examples/rank-cartier.asl)
 
+#### De Rham cohomology of a polynomial Artin–Schreier cover
+
+For a declared cover $y^2+y=f(x)$ with affine denominator $1$ and $\deg(f)=2g+1$, `ASDeRham(C,P)` is its $2g$-dimensional first de Rham cohomology over the binary field with modulus `P`. The Čech basis starts with $\alpha_i=x^i\,dx$ for $0\le i<g$, then uses $\eta_j$ for $1\le j\le g$. The lift $\eta_j$ has overlap function $h=y/x^j$, form $[f'x^{-j}]_{\ge0}\,dx$ on the affine chart, and that form plus $dh$ on the other chart. `rvASDeRhamGen[C,P,i]` selects a basis coordinate in this order, starting at zero. `rvASDeRhamIncl(x)` includes `ASDiff(C,P)` in this basis.
+
+Use `zero`, `add`, and `rvASDeRhamScale[c](x)` for vector operations. Frobenius `rvASF(x)` squares scalar coefficients, and Verschiebung `rvASV(x)` takes their square roots. On the included holomorphic differentials, Verschiebung agrees with `rvASCartier`. `rvASDeRhamPair(x,y)` evaluates the alternating cup pairing in `BinaryScalar(P)`. Use `rvFieldElt[P,c]` for a field element with the same bit encoding used for differential coefficients. The basis pairing is $\langle\alpha_i,\eta_j\rangle=\delta_{i,j-1}$ and $\langle\eta_i,\eta_j\rangle=(i+j\bmod 2)[x^{i+j}]f$.
+
+`rvASEO[C];` computes the Ekedahl–Oort final type by closing the zero and full de Rham spaces under $V$ and $F^{-1}$ and using the ranks of $V$ along this canonical flag. The final type for the polynomial covers is $\nu_i=\lfloor i/2\rfloor$ for $1\le i\le g$. The flag computation uses bounded sparse elimination. The example has a nonzero pairing between two $\eta$ basis classes, and checks semilinearity and the Cartier restriction over $\mathbb F_8$. [Artin–Schreier de Rham example](examples/rank-as-derham.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.
