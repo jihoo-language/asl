@@ -40,6 +40,7 @@ use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hh;
+use crate::rv_hh_homology;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwhecke;
@@ -141,6 +142,7 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVBarE(rv_bar_page::Grade),
+    RvHochschild(rv_hh::Grade),
     RVHHChain(rv_hh::Grade),
     RVBarCobar(rv_bar::Grade),
     RVBarDual(rv_bar::Grade),
@@ -330,6 +332,7 @@ pub(crate) struct Model {
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
+    rv_hh_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_hh::Word>>>,
     rv_path_ext: HashMap<TypeId, Rc<rv_bar_dual::Ext>>,
     rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
     rv_bar_ids: HashMap<String, rv_bar::PathId>,
@@ -355,6 +358,7 @@ impl Model {
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
+            rv_hh_homology: HashMap::new(),
             rv_path_ext: HashMap::new(),
             rv_bar_pages: HashMap::new(),
             rv_bar_ids: HashMap::new(),
@@ -540,7 +544,7 @@ impl Model {
             {
                 1
             }
-            Kind::RVBarCobar(..) | Kind::RVHHChain(..) => usize::MAX,
+            Kind::RVBarCobar(..) | Kind::RVHHChain(..) | Kind::RvHochschild(..) => usize::MAX,
             Kind::RVBar(..) | Kind::RVBarE(..) | Kind::RVBarDual(..) | Kind::RVPathExt(..) => {
                 usize::MAX
             }
@@ -651,6 +655,7 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVBarE(..)
+                | Kind::RvHochschild(..)
                 | Kind::RVHHChain(..)
                 | Kind::RVBarCobar(..)
                 | Kind::RVBarDual(..)
@@ -1002,6 +1007,26 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_hh_class_type(&mut self, grade: rv_hh::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RvHochschild(grade), 0)
+    }
+
+    pub(crate) fn rv_hh_homology(
+        &mut self,
+        ty: TypeId,
+    ) -> Result<Rc<rv_hh_homology::Slice<rv_hh::Word>>> {
+        if let Some(homology) = self.rv_hh_homology.get(&ty) {
+            return Ok(homology.clone());
+        }
+        let Kind::RvHochschild(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let homology = Rc::new(rv_hh_homology::build(self, &grade)?);
+        self.rv_hh_homology.insert(ty, homology.clone());
+        Ok(homology)
     }
 
     pub(crate) fn rv_hh_type(&mut self, grade: rv_hh::Grade) -> Result<TypeId> {
@@ -1870,6 +1895,7 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVBarE(..)
+            | Kind::RvHochschild(..)
             | Kind::RVHHChain(..)
             | Kind::RVBarCobar(..)
             | Kind::RVBarDual(..)
@@ -2043,6 +2069,10 @@ impl Model {
                 grade.r,
                 grade.chain.b,
                 grade.length,
+            )),
+            Kind::RvHochschild(grade) => out.push(&format!(
+                "RVHH({}, {}, {:?})",
+                grade.ideal, grade.b, grade.weight
             )),
             Kind::RVHHChain(grade) => out.push(&format!(
                 "RVHHChain({}, {}, {:?})",
@@ -2643,6 +2673,10 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RvHochschild(..) => {
+                    let rank = self.rv_hh_homology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::RVHHChain(ref grade) => {
                     let grade = grade.clone();

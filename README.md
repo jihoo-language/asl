@@ -979,6 +979,12 @@ awk -v hh=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
 
 The length-one part of the differential is the unit with the nonzero twentieth transferred product in its bar, in degree $39$ and weight $(1,\ldots,1)$ on forty variables. The two remaining terms come from multiplication by the unit at the cyclic ends. The generator checks the full differential and its Connes image at arity twenty. It also checks the second Hochschild differential through arity nine within the standard computation limits.
 
+#### Hochschild homology and the induced Connes operator
+
+`RVHH(J,b,[mu])` is the homology of the normalized Hochschild differential in degree $b$ and weight $\mu$. Use `rvHHdim[J,b,[mu]];` for its dimension and `rvHHgen[J,b,[mu],k]` for a generator of the computed basis. `rvHHClass(x)` checks that the chain $x$ is a cycle and reduces modulo the incoming boundaries. `rvHHRep` gives a chosen cycle representative. The Connes operator also acts on these classes, raising $b$ by one. The identity $dB+Bd=0$ sends cycles to cycles and boundaries to boundaries, so the result is independent of the representative.
+
+For the exterior generator example, the induced operator in weight $N>0$ from degree $2N-1$ to $2N$ is nonzero precisely when $N$ is odd. In the Flag example the dimensions at degrees four, five and six are one, three and two. The $m_3$ term in the differential of $1[a|b|c]$ identifies two different representatives of the nonzero Connes image of the degree-four class. [Hochschild homology example](examples/rank-hochhom.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

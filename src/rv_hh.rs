@@ -38,7 +38,7 @@ impl Grade {
     }
 }
 
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Factor {
     pub(crate) weight: Monomial,
     pub(crate) s: usize,
@@ -216,7 +216,7 @@ impl Sum {
     }
 }
 
-struct Products<'a> {
+pub(crate) struct Differential<'a> {
     ideal: Rc<str>,
     squarefree: Option<&'a [usize]>,
     width: usize,
@@ -225,8 +225,8 @@ struct Products<'a> {
     cells: usize,
 }
 
-impl<'a> Products<'a> {
-    fn new(model: &mut Model, grade: &Grade, ideal: &'a Ideal) -> Result<Self> {
+impl<'a> Differential<'a> {
+    pub(crate) fn new(model: &mut Model, grade: &Grade, ideal: &'a Ideal) -> Result<Self> {
         Ok(Self {
             ideal: grade.ideal.clone(),
             squarefree: ideal.squarefree_masks(model)?,
@@ -311,56 +311,59 @@ impl<'a> Products<'a> {
         self.cache.insert(factors.into(), result.clone());
         Ok(result)
     }
+
+    pub(crate) fn apply(&mut self, model: &mut Model, words: &[Word]) -> Result<Vec<Word>> {
+        let mut result = Sum::default();
+        for word in words {
+            let len = word.len();
+            model.spend(1 + self.width)?;
+            let coefficient_is_unit = word[0].unit();
+            for start in 0..len {
+                let mut block = Vec::new();
+                block.push(word[start].clone());
+                for size in 2..=len {
+                    model.spend(1)?;
+                    let end = start + size;
+                    block.push(word[(end - 1) % len].clone());
+                    let wraps = end > len;
+                    let contains_unit = coefficient_is_unit && (start == 0 || wraps);
+                    let factors: Word = if contains_unit {
+                        if size > 2 {
+                            continue;
+                        }
+                        let other = if start == 0 { &word[1] } else { &word[start] };
+                        [other.clone()].into()
+                    } else {
+                        self.evaluate(model, &block)?
+                    };
+                    for factor in factors.iter() {
+                        let mut term = Vec::with_capacity(len + 1 - size);
+                        if start == 0 {
+                            term.push(factor.clone());
+                            term.extend_from_slice(&word[end..]);
+                        } else if wraps {
+                            term.push(factor.clone());
+                            term.extend_from_slice(&word[end - len..start]);
+                        } else {
+                            term.extend_from_slice(&word[..start]);
+                            term.push(factor.clone());
+                            term.extend_from_slice(&word[end..]);
+                        }
+                        result.toggle(model, term)?;
+                    }
+                }
+            }
+        }
+        Ok(result.finish())
+    }
 }
 
 pub(crate) fn differential(model: &mut Model, grade: &Grade, words: &[Word]) -> Result<Vec<Word>> {
-    let mut result = Sum::default();
     if words.is_empty() {
         return Ok(Vec::new());
     }
     let ideal = model.rv_ideal_named(&grade.ideal).unwrap();
-    let mut products = Products::new(model, grade, &ideal)?;
-    for word in words {
-        let len = word.len();
-        model.spend(1 + grade.weight.len())?;
-        let coefficient_is_unit = word[0].unit();
-        for start in 0..len {
-            let mut block = Vec::new();
-            block.push(word[start].clone());
-            for size in 2..=len {
-                model.spend(1)?;
-                let end = start + size;
-                block.push(word[(end - 1) % len].clone());
-                let wraps = end > len;
-                let contains_unit = coefficient_is_unit && (start == 0 || wraps);
-                let factors: Word = if contains_unit {
-                    if size > 2 {
-                        continue;
-                    }
-                    let other = if start == 0 { &word[1] } else { &word[start] };
-                    [other.clone()].into()
-                } else {
-                    products.evaluate(model, &block)?
-                };
-                for factor in factors.iter() {
-                    let mut term = Vec::with_capacity(len + 1 - size);
-                    if start == 0 {
-                        term.push(factor.clone());
-                        term.extend_from_slice(&word[end..]);
-                    } else if wraps {
-                        term.push(factor.clone());
-                        term.extend_from_slice(&word[end - len..start]);
-                    } else {
-                        term.extend_from_slice(&word[..start]);
-                        term.push(factor.clone());
-                        term.extend_from_slice(&word[end..]);
-                    }
-                    result.toggle(model, term)?;
-                }
-            }
-        }
-    }
-    Ok(result.finish())
+    Differential::new(model, grade, &ideal)?.apply(model, words)
 }
 
 pub(crate) fn connes(model: &mut Model, grade: &Grade, words: &[Word]) -> Result<Vec<Word>> {

@@ -58,6 +58,7 @@ use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
 use crate::rv_hh;
+use crate::rv_hh_homology;
 use crate::rv_hochster;
 use crate::rv_hodge;
 use crate::rv_hom;
@@ -81,6 +82,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
+use crate::syntax::RvHHSpec;
 use crate::syntax::{
     BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
     JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
@@ -127,6 +129,8 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvHHClass,
+    RvHHRep,
     RvHHd,
     RvConnesB,
     RvBCDesuspend,
@@ -180,6 +184,8 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvHHClass" => Some(Self::RvHHClass),
+            "rvHHRep" => Some(Self::RvHHRep),
             "rvHHd" => Some(Self::RvHHd),
             "rvConnesB" => Some(Self::RvConnesB),
             "rvBCDesuspend" => Some(Self::RvBCDesuspend),
@@ -995,6 +1001,15 @@ impl Engine {
             StatementForm::RvBarPath(name, ideal, steps) => {
                 self.model.define_rv_bar_path(name, ideal, steps)?;
                 return Ok(None);
+            }
+            StatementForm::RvHHDimension(spec) => {
+                let grade = self.checker().rv_hh_grade(spec)?;
+                let ty = self.model.rv_hh_class_type(grade.clone())?;
+                let rank = self.model.rv_hh_homology(ty)?.rank();
+                format!(
+                    "rvHHdim[{}, {}, {:?}] = {rank}",
+                    grade.ideal, grade.b, grade.weight
+                )
             }
             StatementForm::RvPathDimension(spec) => {
                 let grade = self.checker().rv_bar_grade(spec)?;
@@ -1830,6 +1845,15 @@ impl Engine {
                     let terms =
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
+                }
+                (CobarOp::RvHHClass, Value::RVHHChain(terms)) => {
+                    rv_hh_homology::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::RvHHRep, Value::Class(class)) => Ok(Value::RVHHChain(
+                    rv_hh_homology::representative(&mut self.model, input.ty, &class)?,
+                )),
+                (CobarOp::RvConnesB, Value::Class(class)) => {
+                    rv_hh_homology::connes(&mut self.model, input.ty, &class, expr.ty)
                 }
                 (CobarOp::RvHHd | CobarOp::RvConnesB, Value::RVHHChain(terms)) => {
                     let Kind::RVHHChain(grade) = self.model.kind(input.ty) else {
@@ -3282,11 +3306,13 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
-            TypeForm::RVHHChain(ideal, b, weight) => {
-                let basis = self.model.rv_ideal(&ideal)?;
-                let koszul =
-                    rv_koszul::Grade::local(self.model, &basis, ideal.text.into(), 0, weight)?;
-                self.model.rv_hh_type(rv_hh::Grade::from_tor(koszul, b))
+            TypeForm::RVHochschild(spec, homology) => {
+                let grade = self.rv_hh_grade(spec)?;
+                if homology {
+                    self.model.rv_hh_class_type(grade)
+                } else {
+                    self.model.rv_hh_type(grade)
+                }
             }
             TypeForm::RVBarCobar(spec) => {
                 let grade = self.rv_bar_grade(spec)?;
@@ -3420,6 +3446,7 @@ impl Checker<'_> {
                     Kind::JetPage(..) => jet_page::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVBarE(..) => cohomology::zero(),
+                    Kind::RvHochschild(..) => cohomology::zero(),
                     Kind::RVHHChain(..) => Value::RVHHChain([].into()),
                     Kind::RVBarCobar(..) => Value::RVBarCobar([].into()),
                     Kind::RVPathExt(..) => cohomology::zero(),
@@ -4489,6 +4516,13 @@ impl Checker<'_> {
                 field.check_point(&point, selected.len(), "rvVanish")?;
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvHHGenerator(spec, index, at) => {
+                let grade = self.rv_hh_grade(spec)?;
+                let ty = self.model.rv_hh_class_type(grade)?;
+                let rank = self.model.rv_hh_homology(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::RvPathGenerator(spec, index, at) => {
                 let grade = self.rv_bar_grade(spec)?;
@@ -5723,6 +5757,12 @@ impl Checker<'_> {
         })
     }
 
+    fn rv_hh_grade(&mut self, (ideal, b, weight): RvHHSpec) -> Result<rv_hh::Grade> {
+        let basis = self.model.rv_ideal(&ideal)?;
+        let koszul = rv_koszul::Grade::local(self.model, &basis, ideal.text.into(), 0, weight)?;
+        Ok(rv_hh::Grade::from_tor(koszul, b))
+    }
+
     fn rv_bar_grade(&self, spec: RvBarSpec) -> Result<rv_bar::Grade> {
         let path = self.model.rv_bar_path_id(&spec.path)?;
         self.model
@@ -5996,16 +6036,31 @@ impl Checker<'_> {
                     _ => self.model.rv_bar_type(grade.chain),
                 };
             }
-            CobarOp::RvHHd | CobarOp::RvConnesB => {
-                let Kind::RVHHChain(grade) = self.model.kind(argument.ty) else {
-                    return Err(self.invalid_operand(argument, name, "an RVHHChain"));
+            CobarOp::RvHHd | CobarOp::RvConnesB | CobarOp::RvHHClass | CobarOp::RvHHRep => {
+                return match (op, self.model.kind(argument.ty)) {
+                    (CobarOp::RvHHd, Kind::RVHHChain(grade)) => {
+                        self.model.rv_hh_type(grade.differential()?)
+                    }
+                    (CobarOp::RvConnesB, Kind::RVHHChain(grade)) => {
+                        self.model.rv_hh_type(grade.connes()?)
+                    }
+                    (CobarOp::RvConnesB, Kind::RvHochschild(grade)) => {
+                        self.model.rv_hh_class_type(grade.connes()?)
+                    }
+                    (CobarOp::RvHHClass, Kind::RVHHChain(grade)) => {
+                        self.model.rv_hh_class_type(grade.clone())
+                    }
+                    (CobarOp::RvHHRep, Kind::RvHochschild(grade)) => {
+                        self.model.rv_hh_type(grade.clone())
+                    }
+                    (CobarOp::RvConnesB, _) => {
+                        Err(self.invalid_operand(argument, name, "an RVHHChain or RVHH class"))
+                    }
+                    (CobarOp::RvHHRep, _) => {
+                        Err(self.invalid_operand(argument, name, "an RVHH class"))
+                    }
+                    _ => Err(self.invalid_operand(argument, name, "an RVHHChain")),
                 };
-                let target = if matches!(op, CobarOp::RvHHd) {
-                    grade.differential()?
-                } else {
-                    grade.connes()?
-                };
-                return self.model.rv_hh_type(target);
             }
             CobarOp::RvBCDesuspend => {
                 let Kind::RVBar(grade) = *self.model.kind(argument.ty) else {
@@ -6303,6 +6358,7 @@ impl Checker<'_> {
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
                         | Kind::RVBarE(..)
+                        | Kind::RvHochschild(..)
                         | Kind::RVHHChain(..)
                         | Kind::RVBarCobar(..)
                         | Kind::RVBarDual(..)
