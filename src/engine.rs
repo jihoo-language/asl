@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::adams;
+use crate::binary_field::BinaryField;
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
@@ -35,6 +36,7 @@ use crate::q_koszul::{self, Grade};
 use crate::q_module;
 use crate::rank_variety;
 use crate::restriction_transfer;
+use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::{
@@ -153,6 +155,9 @@ enum TypedForm {
     QRestrict(Box<TypedExpr>),
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
+    RvHasse(Vec<usize>, Box<TypedExpr>),
+    RvVanish(BinaryField, Vec<usize>, Box<TypedExpr>),
+    RvInMinors(TypeId, q_koszul::Indices, usize, Box<TypedExpr>),
     CobarCup(Profile, usize, Box<TypedExpr>, Box<TypedExpr>),
     ExtSquare(usize, Box<TypedExpr>),
     Nakamura(usize, Box<TypedExpr>),
@@ -351,6 +356,11 @@ impl Engine {
                     self.model.type_name(target),
                 )
             }
+            StatementForm::RvMinors(spec, size) => {
+                let base = self.checker().q_endpoint(*spec.base)?;
+                let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                self.model.show_rv_minors(base, selected, size)?
+            }
             StatementForm::RankVariety(spec) => {
                 let source = self.checker().q_endpoint(*spec.source)?;
                 let target = self.checker().q_endpoint(*spec.target)?;
@@ -531,6 +541,20 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::Operation(a), Value::Operation(b)) => {
                         steenrod::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::RVPoly(a), Value::RVPoly(b)) => {
+                        let polynomial = rv_poly::add(&mut self.model, &a, &b)?;
+                        Ok(Value::RVPoly(rv_poly::persist(
+                            &mut self.model,
+                            polynomial,
+                        )?))
+                    }
+                    (BinaryOp::RvMultiply, Value::RVPoly(a), Value::RVPoly(b)) => {
+                        let polynomial = rv_poly::multiply(&mut self.model, &a, &b)?;
+                        Ok(Value::RVPoly(rv_poly::persist(
+                            &mut self.model,
+                            polynomial,
+                        )?))
                     }
                     (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::add(&mut self.model, &a, &b)
@@ -841,6 +865,31 @@ impl Engine {
             TypedForm::QRestrict(input) => {
                 let value = self.eval(input)?;
                 q_koszul::restrict(&mut self.model, input.ty, value, expr.ty)
+            }
+            TypedForm::RvHasse(orders, input) => {
+                let Value::RVPoly(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let result = rv_poly::hasse(&mut self.model, &polynomial, orders)?;
+                Ok(Value::RVPoly(rv_poly::persist(&mut self.model, result)?))
+            }
+            TypedForm::RvVanish(field, point, input) => {
+                let Value::RVPoly(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
+                Ok(Value::Point(usize::from(vanishes)))
+            }
+            TypedForm::RvInMinors(base, selected, size, input) => {
+                let Value::RVPoly(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if polynomial.is_empty() {
+                    return Ok(Value::Point(1));
+                }
+                let basis = self.model.rv_minors(*base, selected.clone(), *size)?;
+                let contained = basis.contains(&mut self.model, polynomial)?;
+                Ok(Value::Point(usize::from(contained)))
             }
             TypedForm::VShift(k, input) => {
                 let value = self.eval(input)?;
@@ -1305,6 +1354,10 @@ impl Checker<'_> {
                 self.model.v_ext_type(grade)
             }
             TypeForm::VBock(spec) => self.vbock_type(spec),
+            TypeForm::RVPoly(selected, degree) => {
+                let selected = q_koszul::indices(self.model, selected)?;
+                self.model.rv_poly_type(selected, degree)
+            }
             TypeForm::MapMay(spec) => self.map_may_type(spec),
             TypeForm::MapExt(source, target, s, t) => {
                 let source = self.ty(*source)?;
@@ -1403,6 +1456,7 @@ impl Checker<'_> {
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
+                    Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -1704,6 +1758,66 @@ impl Checker<'_> {
                 let rank = self.model.q_ext(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RvMonomial(selected, powers) => {
+                let selected = q_koszul::indices(self.model, selected)?;
+                if selected.len() != powers.len() {
+                    return Err(Error::new(
+                        span,
+                        "rvmon requires one exponent per selected primitive",
+                    ));
+                }
+                let ty = self
+                    .model
+                    .rv_poly_type(selected, rv_poly::degree(&powers)?)?;
+                let polynomial = rv_poly::persist(self.model, rv_poly::monomial(powers))?;
+                Ok((ty, TypedForm::Constant(Value::RVPoly(polynomial))))
+            }
+            ExprForm::RvMinor(spec, rows, columns) => {
+                let base = self.q_endpoint(*spec.base)?;
+                let selected = q_koszul::indices(self.model, spec.selected)?;
+                let polynomial = rv_poly::minor(self.model, base, &selected, &rows, &columns)?;
+                let ty = self.model.rv_poly_type(selected, rows.len())?;
+                let polynomial = rv_poly::persist(self.model, polynomial)?;
+                Ok((ty, TypedForm::Constant(Value::RVPoly(polynomial))))
+            }
+            ExprForm::RvHasse(orders, input) => {
+                let input = self.expr(*input)?;
+                let (selected, degree) = self.rv_poly_grade(&input, "rvHasse")?;
+                if orders.len() != selected.len() {
+                    return Err(Error::new(
+                        span,
+                        "rvHasse requires one order per selected primitive",
+                    ));
+                }
+                let degree = degree
+                    .checked_sub(rv_poly::degree(&orders)?)
+                    .ok_or_else(|| {
+                        Error::new(span, "rvHasse total order exceeds the polynomial degree")
+                    })?;
+                let ty = self.model.rv_poly_type(selected, degree)?;
+                Ok((ty, TypedForm::RvHasse(orders, Box::new(input))))
+            }
+            ExprForm::RvVanish(modulus, point, input) => {
+                let input = self.expr(*input)?;
+                let (selected, _) = self.rv_poly_grade(&input, "rvVanish")?;
+                let field = BinaryField::new(self.model, modulus)?;
+                field.check_point(&point, selected.len(), "rvVanish")?;
+                let ty = self.model.named("S").unwrap();
+                Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
+            }
+            ExprForm::RvInMinors(spec, size, input) => {
+                let base = self.q_endpoint(*spec.base)?;
+                let selected = q_koszul::indices(self.model, spec.selected)?;
+                self.model.check_q_endpoints(base, base, &selected)?;
+                let input = self.expr(*input)?;
+                let expected = self.model.rv_poly_type(selected.clone(), size)?;
+                self.require_type(expected, &input, "rvInMinors")?;
+                let ty = self.model.named("S").unwrap();
+                Ok((
+                    ty,
+                    TypedForm::RvInMinors(base, selected, size, Box::new(input)),
+                ))
             }
             ExprForm::VBockGenerator(spec, index, at) => {
                 let ty = self.vbock_type(spec)?;
@@ -2460,6 +2574,13 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_poly_grade(&self, value: &TypedExpr, name: &str) -> Result<(q_koszul::Indices, usize)> {
+        match self.model.kind(value.ty) {
+            Kind::RVPoly(selected, degree) => Ok((selected.clone(), *degree)),
+            _ => Err(self.invalid_operand(value, name, "an RVPoly polynomial")),
+        }
+    }
+
     fn q_endpoint(&mut self, ty: ParsedType) -> Result<TypeId> {
         if let TypeForm::Name(name) = &ty.kind {
             if let Some(base) = self.model.q_endpoint_named(&name.text) {
@@ -2779,6 +2900,7 @@ impl Checker<'_> {
                         | Kind::CobarAn(..)
                         | Kind::MapCobar(..)
                         | Kind::QKoszul(..)
+                        | Kind::RVPoly(..)
                         | Kind::QExt(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
@@ -2884,6 +3006,18 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "xaction", span)?;
                 let degree = checked_degree(t, v, "xaction", span)?;
                 self.model.xext_type(base, length, degree)
+            }
+            BinaryOp::RvMultiply => {
+                let (selected, s) = self.rv_poly_grade(left, "rvMul")?;
+                let (other, t) = self.rv_poly_grade(right, "rvMul")?;
+                if selected != other {
+                    return Err(Error::new(
+                        span,
+                        "rvMul requires the same selected primitives",
+                    ));
+                }
+                let degree = checked_degree(s, t, "rvMul", span)?;
+                self.model.rv_poly_type(selected, degree)
             }
             BinaryOp::XMap => {
                 let Kind::Arrow(domain, range) = *self.model.kind(left.ty) else {

@@ -1,3 +1,4 @@
+use crate::comodule::Generator;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
@@ -47,6 +48,7 @@ pub(crate) enum TypeForm {
     VKoszul(QSpec<i64>),
     VExt(QSpec<i64>),
     VBock(VBockSpec),
+    RVPoly(Vec<usize>, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -56,6 +58,11 @@ pub(crate) enum TypeForm {
     CyclicH2(usize),
     Product(Box<ParsedType>, Box<ParsedType>),
     Arrow(Box<ParsedType>, Box<ParsedType>),
+}
+
+pub(crate) struct RvMatrixSpec {
+    pub(crate) base: Box<ParsedType>,
+    pub(crate) selected: Vec<usize>,
 }
 
 pub(crate) struct RankVarietySpec {
@@ -118,6 +125,7 @@ pub(crate) enum BinaryOp {
     MayMul,
     CeMul,
     MilnorPair,
+    RvMultiply,
 }
 
 impl BinaryOp {
@@ -136,6 +144,7 @@ impl BinaryOp {
             "mayMul" => Some(Self::MayMul),
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
+            "rvMul" => Some(Self::RvMultiply),
             _ => None,
         }
     }
@@ -239,6 +248,11 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvMonomial(Vec<usize>, Vec<usize>),
+    RvMinor(RvMatrixSpec, Vec<Generator>, Vec<Generator>),
+    RvHasse(Vec<usize>, Box<ParsedExpr>),
+    RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
+    RvInMinors(RvMatrixSpec, usize, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -295,6 +309,7 @@ pub(crate) enum StatementForm {
     MapMayDimension(MapMaySpec),
     QExtDimension(QSpec),
     RankVariety(RankVarietySpec),
+    RvMinors(RvMatrixSpec, usize),
     VExtDimension(QSpec<i64>),
     VBars(BarFamilySpec),
     VBarDimension(QSpec<i64>),
@@ -576,14 +591,18 @@ impl<'src> Parser<'src> {
 
     fn exponents(&mut self) -> Result<Vec<usize>> {
         self.expect(Token::LBracket)?;
+        self.unsigned_list(Token::RBracket)
+    }
+
+    fn unsigned_list(&mut self, closing: Token<'src>) -> Result<Vec<usize>> {
         let mut exponents = Vec::new();
-        while self.token() != Token::RBracket {
+        while self.token() != closing {
             exponents.push(self.number()?.0);
             if !self.eat(Token::Comma)? {
                 break;
             }
         }
-        self.expect(Token::RBracket)?;
+        self.expect(closing)?;
         Ok(exponents)
     }
 
@@ -728,6 +747,14 @@ impl<'src> Parser<'src> {
                 let (source, target, s, t) = self.map_bidegree(0)?;
                 self.expect(Token::RBracket)?;
                 StatementForm::MapExtDimension(source, target, s, t)
+            }
+            Token::Word("rvminors") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_matrix(0)?;
+                let (size, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvMinors(spec, size)
             }
             Token::Word("rvdim" | "rvspectrum") => {
                 let affine = self.token() == Token::Word("rvdim");
@@ -875,6 +902,33 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (s, t) = self.bidegree()?;
         Ok((base, s, t))
+    }
+
+    fn rv_matrix(&mut self, nest: usize) -> Result<RvMatrixSpec> {
+        let base = self.ty(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let selected = self.exponents()?;
+        self.expect(Token::Comma)?;
+        Ok(RvMatrixSpec {
+            base: Box::new(base),
+            selected,
+        })
+    }
+
+    fn rv_coordinates(&mut self) -> Result<Vec<Generator>> {
+        self.expect(Token::LBracket)?;
+        let mut result = Vec::new();
+        while self.token() != Token::RBracket {
+            self.expect(Token::LParen)?;
+            let (degree, index) = self.bidegree()?;
+            self.expect(Token::RParen)?;
+            result.push(Generator { degree, index });
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(result)
     }
 
     fn map_endpoints(&mut self, nest: usize) -> Result<(ParsedType, ParsedType)> {
@@ -1134,6 +1188,13 @@ impl<'src> Parser<'src> {
                 TypeForm::VExt(spec)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "RVPoly" && self.eat(Token::LParen)? {
+            let selected = self.exponents()?;
+            self.expect(Token::Comma)?;
+            let (degree, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPoly(selected, degree), 0);
         }
         if name.text == "VBock" && self.eat(Token::LParen)? {
             let spec = self.vbock_spec(nest)?;
@@ -1457,6 +1518,52 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if name.text == "rvmon" && self.eat(Token::LBracket)? {
+                    let selected = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let powers = self.unsigned_list(Token::RBrace)?;
+                    return expr(span, ExprForm::RvMonomial(selected, powers), 0);
+                }
+                if name.text == "rvMinor" && self.eat(Token::LBracket)? {
+                    let spec = self.rv_matrix(nest)?;
+                    let rows = self.rv_coordinates()?;
+                    self.expect(Token::Comma)?;
+                    let columns = self.rv_coordinates()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvMinor(spec, rows, columns), 0);
+                }
+                if name.text == "rvHasse" && self.eat(Token::LBracket)? {
+                    let orders = self.unsigned_list(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvHasse(orders, Box::new(input)), depth);
+                }
+                if name.text == "rvVanish" && self.eat(Token::LBracket)? {
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let point = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvVanish(modulus, point, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvInMinors" && self.eat(Token::LBracket)? {
+                    let spec = self.rv_matrix(nest)?;
+                    let (size, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvInMinors(spec, size, Box::new(input)),
+                        depth,
+                    );
+                }
                 if name.text == "milnor" && self.eat(Token::LBrace)? {
                     let exponents = self.exponents()?;
                     self.expect(Token::RBrace)?;

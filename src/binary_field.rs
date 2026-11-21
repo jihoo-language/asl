@@ -42,6 +42,26 @@ impl BinaryField {
         self.order
     }
 
+    pub(crate) fn check_point(
+        self,
+        coefficients: &[usize],
+        expected: usize,
+        name: &str,
+    ) -> Result<()> {
+        if coefficients.len() != expected {
+            return Err(Error::plain(format!(
+                "{name} requires one field coefficient per selected primitive"
+            )));
+        }
+        if let Some(value) = coefficients.iter().find(|&&value| value >= self.order) {
+            return Err(Error::plain(format!(
+                "field coefficient {value} is out of range for F{}",
+                self.order
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn degree(self) -> usize {
         self.degree
     }

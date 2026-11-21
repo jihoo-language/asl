@@ -38,6 +38,7 @@ mod q_koszul;
 mod q_module;
 mod rank_variety;
 mod restriction_transfer;
+mod rv_poly;
 mod steenrod;
 mod syntax;
 mod transfer;
@@ -65,7 +66,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvspectrum, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, extdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvspectrum, rvminors, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 

@@ -15,24 +15,25 @@ type Column = Vec<Entry>;
 
 // An entry records the row and the parameter multiplying it. The underlying
 // Q_i matrices are binary, and weighting them produces a field-valued column.
-struct Endpoint {
-    columns: Vec<Column>,
+pub(crate) struct Endpoint {
+    pub(crate) columns: Vec<Column>,
+    groups: BTreeMap<usize, (usize, usize)>,
 }
 
 impl Endpoint {
-    fn build(model: &mut Model, base: TypeId, selected: &[usize]) -> Result<Self> {
+    pub(crate) fn build(model: &mut Model, base: TypeId, selected: &[usize]) -> Result<Self> {
         let groups = q_koszul::margolis_groups(model, base)?;
         let mut offsets = BTreeMap::new();
         let mut size = 0;
         for &(degree, rank) in &groups {
             model.spend(1)?;
-            offsets.insert(degree, size);
+            offsets.insert(degree, (size, rank));
             size += rank;
             check_storage(size)?;
         }
         let mut complex = Complex::new(model, base, base, selected)?;
         let mut columns = Vec::with_capacity(size);
-        let mut cells = size + 2 * offsets.len();
+        let mut cells = size + 3 * offsets.len();
         check_storage(cells)?;
         for (degree, rank) in groups {
             for index in 0..rank {
@@ -43,7 +44,7 @@ impl Endpoint {
                     let Some(lower) = degree.checked_sub(q_koszul::weight(primitive)) else {
                         continue;
                     };
-                    let Some(&offset) = offsets.get(&lower) else {
+                    let Some(&(offset, _)) = offsets.get(&lower) else {
                         continue;
                     };
                     let image = complex.margolis_image(model, base, primitive, lower, generator)?;
@@ -58,7 +59,19 @@ impl Endpoint {
                 columns.push(column);
             }
         }
-        Ok(Self { columns })
+        Ok(Self {
+            columns,
+            groups: offsets,
+        })
+    }
+
+    pub(crate) fn coordinate(&self, generator: Generator) -> Option<usize> {
+        let &(offset, rank) = self.groups.get(&generator.degree)?;
+        if generator.index < rank {
+            Some(offset + generator.index)
+        } else {
+            None
+        }
     }
 
     fn dimension(&self, model: &mut Model, field: BinaryField, point: &[usize]) -> Result<usize> {
@@ -191,17 +204,7 @@ pub(crate) fn dimension(
 ) -> Result<usize> {
     let field = BinaryField::new(model, modulus)?;
     model.check_q_endpoints(source, target, selected)?;
-    if selected.len() != point.len() {
-        return Err(Error::plain(
-            "rvdim requires one field coefficient per selected primitive",
-        ));
-    }
-    if let Some(value) = point.iter().find(|&&value| value >= field.order()) {
-        return Err(Error::plain(format!(
-            "field coefficient {value} is out of range for F{}",
-            field.order()
-        )));
-    }
+    field.check_point(point, selected.len(), "rvdim")?;
     let (active, coefficients): (Vec<_>, Vec<_>) = selected
         .iter()
         .copied()

@@ -21,6 +21,7 @@ use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
+use crate::rv_poly::{self, Minors, Polynomial};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -66,6 +67,7 @@ pub(crate) enum Kind {
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
+    RVPoly(q_koszul::Indices, usize),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -145,6 +147,7 @@ pub(crate) enum Value {
     OddClass(Rc<[Coordinate]>),
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
+    RVPoly(Polynomial),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -202,11 +205,14 @@ struct TypeInfo {
     depth: usize,
 }
 
+type MinorsKey = (TypeId, q_koszul::Indices, usize);
+
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
+    minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     work: usize,
     storage: usize,
 }
@@ -218,6 +224,7 @@ impl Model {
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
+            minor_bases: HashMap::new(),
             work: MAX_WORK,
             storage: MAX_STORAGE,
         };
@@ -381,6 +388,9 @@ impl Model {
                 1
             }
             Kind::VKoszul(..) | Kind::VExt(..) | Kind::VBock(..) => usize::MAX,
+            Kind::RVPoly(ref selected, d) if selected.is_empty() && d != 0 => 1,
+            Kind::RVPoly(ref selected, d) if selected.len() < 2 || d == 0 => 2,
+            Kind::RVPoly(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -454,6 +464,7 @@ impl Model {
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
+                | Kind::RVPoly(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -768,6 +779,53 @@ impl Model {
         v_koszul::top(&grade.selected)?;
         let depth = self.koszul_depth(&grade);
         self.inhabited_type(Kind::VExt(grade), depth)
+    }
+
+    pub(crate) fn rv_poly_type(
+        &mut self,
+        selected: q_koszul::Indices,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVPoly(selected, degree), 0)
+    }
+
+    pub(crate) fn rv_minors(
+        &mut self,
+        base: TypeId,
+        selected: q_koszul::Indices,
+        size: usize,
+    ) -> Result<Rc<Minors>> {
+        let key = (base, selected, size);
+        if let Some(basis) = self.minor_bases.get(&key) {
+            return Ok(basis.clone());
+        }
+        let basis = Rc::new(Minors::build(self, key.0, &key.1, key.2)?);
+        self.allocate(3 + basis.storage())?;
+        self.minor_bases.insert(key, basis.clone());
+        Ok(basis)
+    }
+
+    pub(crate) fn show_rv_minors(
+        &mut self,
+        base: TypeId,
+        selected: q_koszul::Indices,
+        size: usize,
+    ) -> Result<String> {
+        let basis = self.rv_minors(base, selected.clone(), size)?;
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!(
+            "rvminors[{}, {selected:?}, {size}] = [",
+            self.type_name(base)
+        ))?;
+        for (i, polynomial) in basis.polynomials().enumerate() {
+            if i != 0 {
+                out.push(", ")?;
+            }
+            self.spend(rv_poly::cells(polynomial))?;
+            write_rv_polynomial(&mut out, &selected, polynomial)?;
+        }
+        out.push("]")?;
+        Ok(out.string)
     }
 
     pub(crate) fn vbock_type(&mut self, grade: vbock::Grade) -> Result<TypeId> {
@@ -1132,6 +1190,7 @@ impl Model {
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
+            | Kind::RVPoly(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1279,6 +1338,7 @@ impl Model {
                 self.write_type(out, target, 0)?;
                 out.push(&format!(", {r}, {s}, {t}, {f})"))
             }
+            Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
             Kind::VKoszul(grade) => self.write_koszul_type(out, "VKoszul", grade),
@@ -1379,6 +1439,10 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::RVPoly(left), Value::RVPoly(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || rv_poly::compare(self, left, right)? == Ordering::Equal)
+            }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || q_koszul::compare(self, left, right)? == Ordering::Equal)
@@ -1460,6 +1524,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::RVPoly(left), Value::RVPoly(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_poly::compare(self, left, right)
+                }
             }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1595,6 +1666,17 @@ impl Model {
                 Kind::VBock(..) => {
                     let rank = self.vbock_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RVPoly(ref selected, degree) => {
+                    let basis = rv_poly::basis(
+                        self,
+                        selected.len(),
+                        degree,
+                        MAX_ELEMENTS.ilog2() as usize,
+                    )?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::RVPoly(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
                 }
                 Kind::QKoszul(ref grade) => {
                     let grade = grade.clone();
@@ -1963,6 +2045,15 @@ impl Model {
                 }
                 out.push("}")
             }
+            Value::RVPoly(polynomial) => {
+                self.spend(rv_poly::cells(polynomial))?;
+                let Kind::RVPoly(selected, degree) = self.kind(ty) else {
+                    unreachable!()
+                };
+                out.push(&format!("RVPoly({selected:?}, {degree}){{"))?;
+                write_rv_polynomial(out, selected, polynomial)?;
+                out.push("}")
+            }
             Value::QKoszul(terms) => {
                 let selected = match self.kind(ty) {
                     Kind::QKoszul(grade) => &grade.selected,
@@ -2146,6 +2237,35 @@ fn write_odd_word(out: &mut Text, p: Prime, word: &odd_cobar::Word) -> Result<()
         out.push(")")?;
     }
     out.push("}")
+}
+
+fn write_rv_polynomial(out: &mut Text, selected: &[usize], polynomial: &Polynomial) -> Result<()> {
+    if polynomial.is_empty() {
+        return out.push("0");
+    }
+    for (i, term) in polynomial.iter().enumerate() {
+        if i != 0 {
+            out.push(" + ")?;
+        }
+        let mut constant = true;
+        for (&primitive, &power) in selected.iter().zip(term.iter()) {
+            if power == 0 {
+                continue;
+            }
+            if !constant {
+                out.push("*")?;
+            }
+            out.push(&format!("x{primitive}"))?;
+            if power != 1 {
+                out.push(&format!("^{power}"))?;
+            }
+            constant = false;
+        }
+        if constant {
+            out.push("1")?;
+        }
+    }
+    Ok(())
 }
 
 fn write_number_list(out: &mut Text, numbers: &[usize]) -> Result<()> {

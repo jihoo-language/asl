@@ -486,6 +486,14 @@ The bits of `modulus` encode the coefficients of an irreducible polynomial over 
 
 For the example module, the determinant of the three-by-three action block is $\lambda_1^3+\lambda_0^2\lambda_2$. In the chart $\lambda_2=1$, the equation parametrizes as $(\lambda_0,\lambda_1)=(r^3,r^2)$. At a nonzero point the inverse parameter is $r=\lambda_0/\lambda_1$. The cusp has Margolis dimension four, and the remaining $q-1$ affine curve points and the one point at infinity have dimension two over $\mathbb F_q$. The other $q^2$ projective points have dimension zero. [Rank variety example](examples/rank-variety.asl)
 
+### Symbolic rank equations
+
+`RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.
+
+`rvMinor[X, I, rows, columns]` computes a minor of the universal operator $\sum_i x_iQ_i$ on $H_*(X)$, with the grading forgotten. Each coordinate is a `(degree, index)` pair, with index starting at zero in that degree. The two lists must have the same size, with distinct coordinates within each list. The empty minor is one. `rvminors[X, I, k];` prints the reduced linear basis of the span of the size-`k` minors. This basis generates the determinantal ideal for rank less than `k`, and `rvInMinors[X, I, k](p)` tests membership in its degree-`k` component.
+
+For the Cusp module the size-three minors span $x_1^3+x_0^2x_2$. Its first Hasse derivatives are $0$, $x_1^2$, and $x_0^2$, giving the unique projective singular point $[0:0:1]$. The second Hasse derivative in $x_0$ is $x_2$. The same equation detects rank loss at points over both $\mathbb F_4$ and $\mathbb F_8$. [Symbolic rank equations example](examples/rank-equations.asl)
+
 
 ### Rank-two localized torsion bars
 
