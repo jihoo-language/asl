@@ -21,6 +21,7 @@ pub(crate) enum TypeForm {
     Cohomology(Box<ParsedType>, usize),
     Operations(usize),
     Cobar(usize, usize),
+    Ext(usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
     Bar(usize),
@@ -45,6 +46,7 @@ pub(crate) enum BinaryOp {
     Mul,
     Act,
     Concat,
+    Yoneda,
 }
 
 impl BinaryOp {
@@ -56,6 +58,7 @@ impl BinaryOp {
             "mul" => Some(Self::Mul),
             "act" => Some(Self::Act),
             "concat" => Some(Self::Concat),
+            "yoneda" => Some(Self::Yoneda),
             _ => None,
         }
     }
@@ -93,6 +96,7 @@ pub(crate) enum ExprForm {
     Zero(ParsedType),
     Square(usize),
     CobarWord(Vec<(Vec<usize>, Span)>),
+    ExtGenerator(usize, usize, usize, Span),
     Suspension(ParsedType, SuspensionForm),
     Shift(usize, Box<ParsedExpr>),
     Cyclic(usize, Span, CyclicForm),
@@ -122,6 +126,7 @@ pub(crate) enum StatementForm {
     Card(ParsedExpr),
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
+    ExtDimension(usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
 
@@ -427,6 +432,13 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::Betti(self.ty(0)?)
             }
+            Token::Word("extdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (s, t) = self.bidegree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::ExtDimension(s, t)
+            }
             Token::Word("homotopy") => {
                 self.advance()?;
                 let left = self.expr(0)?;
@@ -437,6 +449,13 @@ impl<'src> Parser<'src> {
         };
         self.expect(Token::Semi)?;
         Ok(Some(Statement { span, kind }))
+    }
+
+    fn bidegree(&mut self) -> Result<(usize, usize)> {
+        let (s, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (t, _) = self.number()?;
+        Ok((s, t))
     }
 
     fn ty(&mut self, nest: usize) -> Result<ParsedType> {
@@ -484,7 +503,7 @@ impl<'src> Parser<'src> {
         let name = self.label()?;
         if matches!(
             name.text.as_str(),
-            "A" | "Bar" | "H2" | "H" | "Susp" | "Stable" | "Cobar"
+            "A" | "Bar" | "H2" | "H" | "Susp" | "Stable" | "Cobar" | "Ext"
         ) && self.eat(Token::LParen)?
         {
             let (kind, depth) = if matches!(name.text.as_str(), "A" | "Bar" | "H2") {
@@ -495,11 +514,13 @@ impl<'src> Parser<'src> {
                     _ => TypeForm::Operations(degree),
                 };
                 (kind, 0)
-            } else if name.text == "Cobar" {
-                let (s, _) = self.number()?;
-                self.expect(Token::Comma)?;
-                let (t, _) = self.number()?;
-                (TypeForm::Cobar(s, t), 0)
+            } else if matches!(name.text.as_str(), "Cobar" | "Ext") {
+                let (s, t) = self.bidegree()?;
+                let kind = match name.text.as_str() {
+                    "Cobar" => TypeForm::Cobar(s, t),
+                    _ => TypeForm::Ext(s, t),
+                };
+                (kind, 0)
             } else {
                 let base = self.ty(nest + 1)?;
                 let depth = base.depth + 1;
@@ -727,6 +748,13 @@ impl<'src> Parser<'src> {
                     }
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::CobarWord(factors), 0);
+                }
+                if name.text == "extgen" && self.eat(Token::LBracket)? {
+                    let (s, t) = self.bidegree()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::ExtGenerator(s, t, index, at), 0);
                 }
                 if matches!(name.text.as_str(), "bar" | "binom" | "carry")
                     && self.eat(Token::LBracket)?

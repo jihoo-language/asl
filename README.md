@@ -46,6 +46,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `H(X, k)` | The discrete space of degree-`k` cohomology classes of the order complex of `X`, with coefficients in 𝔽₂. |
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
+| `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
 | `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
@@ -145,6 +146,14 @@ assert cobarD(d(xi2)) == zero[Cobar(3, 3)];
 ```
 
 Sparse operations work directly on words. A lambda over `Cobar(s, t)` tabulates all cochains of that bidegree and is subject to the finite enumeration limit. Run `nix run path:. -- examples/cobar.asl` for coproduct, unit, and derivation checks. [Cobar example](examples/cobar.asl)
+
+## The Adams E₂ page
+
+`Ext(s, t)` is $H^s(\mathrm{Cobar}(*,t),d)$, the classical mod-two Adams $E_2$ page of the sphere. The corresponding stem is $t-s$. ASL uses sparse elimination over $\mathbb F_2$ on cobar differentials. `extdim[s, t];` prints the rank, and `extgen[s, t, i]` selects the $i$th generator in the computed basis, starting from zero.
+
+`extClass(c)` takes a closed cobar cochain in bidegree `(s, t)` to its class in `Ext(s, t)`. `extRep(x)` returns a deterministic closed representative of `x`. For a cobar boundary of positive length, `extPrimitive(c)` returns a deterministic `p` with `cobarD(p) == c`. `yoneda(x, y)` multiplies classes by concatenating their representatives and taking the result's class. Classes of the same bidegree support `add` and `zero[Ext(s, t)]`.
+
+Run `nix run path:. -- examples/adams-e2.asl` to compute $h_0h_1=0$ and $h_1^3=h_0^2h_2\ne0$. [Adams E₂ example](examples/adams-e2.asl)
 
 ## Suspension and stable degrees
 
@@ -250,10 +259,11 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 
 | Statement | Result |
 | --- | --- |
-| `show e;` | Print a point, cohomology class, Steenrod operation, cobar cochain, pair or function table. |
+| `show e;` | Print a point, cohomology class, Steenrod operation, cobar cochain, Ext class, pair or function table. |
 | `assert e == f;` | Check extensional equality at a common type. Success is silent. |
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
+| `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
 | `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 
 A homotopy step uses a single direction across the whole domain, so it requires `f(x) ≤ g(x)` for every `x`, or the reverse inequality for every `x`. In the triangle example, any endomorphism above the identity must fix all three maximal edges. Each vertex is the unique common lower bound of its two incident edges, so it too is fixed. The dual argument handles endomorphisms below the identity. This isolates the identity in `Circle -> Circle` and explains the `no` printed for the rotation. [Stong, *Finite Topological Spaces*, §3–4](https://webhomes.maths.ed.ac.uk/~v1ranick/papers/stong2.pdf)

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::adams;
 use crate::bracket;
 use crate::cobar;
 use crate::cohomology;
@@ -33,13 +34,32 @@ struct TypedExpr {
     kind: TypedForm,
 }
 
+enum CobarOp {
+    Differential,
+    Class,
+    Representative,
+    Primitive,
+}
+
+impl CobarOp {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "cobarD" => Some(Self::Differential),
+            "extClass" => Some(Self::Class),
+            "extRep" => Some(Self::Representative),
+            "extPrimitive" => Some(Self::Primitive),
+            _ => None,
+        }
+    }
+}
+
 enum TypedForm {
     Global(usize),
     Local(usize),
     Point(usize),
     Constant(Value),
     Binary(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
-    CobarDifferential(Box<TypedExpr>),
+    Cobar(CobarOp, Box<TypedExpr>),
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
@@ -155,6 +175,11 @@ impl Engine {
                 let ranks = betti(&mut self.model, ty)?;
                 format!("betti({}) = {ranks:?}", self.model.type_name(ty))
             }
+            StatementForm::ExtDimension(s, t) => {
+                let ty = self.model.ext_type(s, t)?;
+                let rank = self.model.adams(ty)?.rank();
+                format!("extdim[{s}, {t}] = {rank}")
+            }
             StatementForm::Homotopy(left, right) => {
                 let (left_expr, right_expr) = self.comparable_exprs(left, right, "homotopy")?;
                 if !matches!(self.model.kind(left_expr.ty), Kind::Arrow(..)) {
@@ -218,6 +243,9 @@ impl Engine {
                     (BinaryOp::Concat, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::concat(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Yoneda, Value::Class(a), Value::Class(b)) => {
+                        adams::yoneda(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
                     (BinaryOp::Add, Value::Bar(a), Value::Bar(b)) => {
                         cyclic::add(&mut self.model, &a, &b)
                     }
@@ -249,12 +277,39 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
-            TypedForm::CobarDifferential(input) => {
-                let Value::Cobar(input) = self.eval(input)? else {
-                    unreachable!()
-                };
-                cobar::differential(&mut self.model, &input)
-            }
+            TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
+                (CobarOp::Differential, Value::Cobar(words)) => {
+                    cobar::differential(&mut self.model, &words)
+                }
+                (CobarOp::Class, Value::Cobar(words)) => {
+                    adams::class(&mut self.model, expr.ty, &words)
+                }
+                (CobarOp::Representative, Value::Class(class)) => {
+                    if class.is_empty() {
+                        return Ok(cobar::zero());
+                    }
+                    let adams = self.model.adams(input.ty)?;
+                    let words = adams.representative(&mut self.model, &class)?;
+                    self.model.allocate(words.len())?;
+                    Ok(Value::Cobar(words.into()))
+                }
+                (CobarOp::Primitive, Value::Cobar(words)) => {
+                    if words.is_empty() {
+                        return Ok(cobar::zero());
+                    }
+                    let Kind::Cobar(s, t) = *self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let ty = self.model.ext_type(s, t)?;
+                    let adams = self.model.adams(ty)?;
+                    let primitive = adams
+                        .primitive(&mut self.model, &words)?
+                        .ok_or_else(|| Error::plain("extPrimitive requires a cobar boundary"))?;
+                    self.model.allocate(primitive.len())?;
+                    Ok(Value::Cobar(primitive.into()))
+                }
+                _ => unreachable!(),
+            },
             TypedForm::Equator => {
                 let Kind::Arrow(base, _) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -453,6 +508,7 @@ impl Checker<'_> {
             }
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
+            TypeForm::Ext(s, t) => self.model.ext_type(s, t),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
@@ -518,17 +574,7 @@ impl Checker<'_> {
                     ClassForm::Zero => cohomology::zero(),
                     ClassForm::Generator(index, at) => {
                         let rank = self.model.cohomology(ty)?.rank();
-                        if index >= rank {
-                            return Err(Error::new(
-                                at,
-                                format!(
-                                    "generator index {index} is out of range for {} of rank {rank}",
-                                    self.model.type_name(ty),
-                                ),
-                            ));
-                        }
-                        self.model.allocate(1)?;
-                        Value::Class([index].into())
+                        self.generator(ty, rank, index, at)?
                     }
                     ClassForm::Cocycle(chains) => {
                         cohomology::literal(self.model, ty, chains, span)?
@@ -541,14 +587,14 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
-                    Kind::Cohomology(..) | Kind::Stable(..) => cohomology::zero(),
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) => cohomology::zero(),
                     Kind::Bar(_) => Value::Bar([].into()),
                     Kind::CyclicH2(_) => Value::CyclicClass(false),
                     _ => {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -564,6 +610,12 @@ impl Checker<'_> {
             ExprForm::CobarWord(factors) => {
                 let ((s, t), value) = cobar::literal(self.model, factors)?;
                 let ty = self.model.cobar_type(s, t)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::ExtGenerator(s, t, index, at) => {
+                let ty = self.model.ext_type(s, t)?;
+                let rank = self.model.adams(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::Cyclic(modulus, at, form) => {
@@ -632,14 +684,14 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Lambda(Box::new(body))))
             }
             ExprForm::Call(function, argument) => {
-                if matches!(&function.kind, ExprForm::Name(name) if name.text == "cobarD")
-                    && self.unbound("cobarD")
-                {
-                    let argument = self.expr(*argument)?;
-                    let (s, t) = self.cobar_bidegree(&argument, "cobarD")?;
-                    let s = checked_degree(s, 1, "cobarD", span)?;
-                    let ty = self.model.cobar_type(s, t)?;
-                    return Ok((ty, TypedForm::CobarDifferential(Box::new(argument))));
+                if let ExprForm::Name(name) = &function.kind {
+                    if let Some(op) =
+                        CobarOp::from_name(&name.text).filter(|_| self.unbound(&name.text))
+                    {
+                        let argument = self.expr(*argument)?;
+                        let ty = self.cobar_result(&op, &argument, &name.text, span)?;
+                        return Ok((ty, TypedForm::Cobar(op, Box::new(argument))));
+                    }
                 }
                 if matches!(&function.kind, ExprForm::Name(name) if name.text == "susp")
                     && self.unbound("susp")
@@ -899,6 +951,52 @@ impl Checker<'_> {
         }
     }
 
+    fn ext_bidegree(&self, value: &TypedExpr, op: &str) -> Result<(usize, usize)> {
+        match *self.model.kind(value.ty) {
+            Kind::Ext(s, t) => Ok((s, t)),
+            _ => Err(self.invalid_operand(value, op, "an Ext class")),
+        }
+    }
+
+    fn cobar_result(
+        &mut self,
+        op: &CobarOp,
+        argument: &TypedExpr,
+        name: &str,
+        span: Span,
+    ) -> Result<TypeId> {
+        if matches!(op, CobarOp::Representative) {
+            let (s, t) = self.ext_bidegree(argument, name)?;
+            return self.model.cobar_type(s, t);
+        }
+        let (s, t) = self.cobar_bidegree(argument, name)?;
+        match op {
+            CobarOp::Differential => self.model.cobar_type(checked_degree(s, 1, name, span)?, t),
+            CobarOp::Class => self.model.ext_type(s, t),
+            CobarOp::Primitive => {
+                let previous = s.checked_sub(1).ok_or_else(|| {
+                    Error::new(span, "extPrimitive requires positive cobar length")
+                })?;
+                self.model.cobar_type(previous, t)
+            }
+            CobarOp::Representative => unreachable!(),
+        }
+    }
+
+    fn generator(&mut self, ty: TypeId, rank: usize, index: usize, at: Span) -> Result<Value> {
+        if index >= rank {
+            return Err(Error::new(
+                at,
+                format!(
+                    "generator index {index} is out of range for {} of rank {rank}",
+                    self.model.type_name(ty),
+                ),
+            ));
+        }
+        self.model.allocate(1)?;
+        Ok(Value::Class([index].into()))
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -924,13 +1022,14 @@ impl Checker<'_> {
                         | Kind::Stable(..)
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
+                        | Kind::Ext(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
                 ) {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -948,6 +1047,13 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "concat", span)?;
                 let degree = checked_degree(t, v, "concat", span)?;
                 self.model.cobar_type(length, degree)
+            }
+            BinaryOp::Yoneda => {
+                let (s, t) = self.ext_bidegree(left, "yoneda")?;
+                let (u, v) = self.ext_bidegree(right, "yoneda")?;
+                let length = checked_degree(s, u, "yoneda", span)?;
+                let degree = checked_degree(t, v, "yoneda", span)?;
+                self.model.ext_type(length, degree)
             }
             BinaryOp::Act => {
                 let operation = self.operation_degree(left, "act")?;

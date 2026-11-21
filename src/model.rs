@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::adams::Adams;
 use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::error::{Error, Result};
@@ -28,6 +29,7 @@ pub(crate) enum Kind {
     Cohomology(TypeId, usize),
     Operations(usize),
     Cobar(usize, usize),
+    Ext(usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
     Bar(usize),
@@ -81,6 +83,7 @@ struct TypeInfo {
     parent_points: Option<Rc<[usize]>>,
     elements: Option<Rc<[Value]>>,
     cohomology: Option<Rc<Cohomology>>,
+    adams: Option<Rc<Adams>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
     inhabited: bool,
@@ -167,9 +170,9 @@ impl Model {
             }
             Kind::Suspension(base) => self.types[base.0].cardinality_bound.saturating_add(2),
             Kind::Cohomology(..) | Kind::Operations(..) | Kind::Stable(..) => usize::MAX,
-            Kind::Cobar(s, t) if s > t || (s == 0 && t != 0) => 1,
-            Kind::Cobar(s, t) if s == t => 2,
-            Kind::Cobar(..) => usize::MAX,
+            Kind::Cobar(s, t) | Kind::Ext(s, t) if s > t || (s == 0 && t != 0) => 1,
+            Kind::Cobar(s, t) | Kind::Ext(s, t) if s == t => 2,
+            Kind::Cobar(..) | Kind::Ext(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -181,6 +184,7 @@ impl Model {
             parent_points,
             elements: None,
             cohomology: None,
+            adams: None,
             cardinality_bound,
             heights: [None; 2],
             inhabited,
@@ -213,6 +217,7 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
+                | Kind::Ext(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
@@ -318,6 +323,10 @@ impl Model {
         self.inhabited_type(Kind::Cobar(s, t), 0)
     }
 
+    pub(crate) fn ext_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::Ext(s, t), 0)
+    }
+
     pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
         if modulus < 2 {
             return Err(Error::plain("cyclic modulus must be at least 2"));
@@ -363,6 +372,18 @@ impl Model {
         };
         let data = Rc::new(Cohomology::build(self, base, degree)?);
         self.types[ty.0].cohomology = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn adams(&mut self, ty: TypeId) -> Result<Rc<Adams>> {
+        if let Some(data) = &self.types[ty.0].adams {
+            return Ok(data.clone());
+        }
+        let Kind::Ext(s, t) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(Adams::build(self, s, t)?);
+        self.types[ty.0].adams = Some(data.clone());
         Ok(data)
     }
 
@@ -430,6 +451,7 @@ impl Model {
             Kind::Cohomology(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
+            | Kind::Ext(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
             | Kind::CyclicH2(..) => 1,
@@ -543,6 +565,7 @@ impl Model {
             }
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
+            &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
@@ -767,6 +790,10 @@ impl Model {
                 Kind::Arrow(domain, range) => self.enumerate_maps(domain, range)?,
                 Kind::Cohomology(..) => {
                     let rank = self.cohomology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::Ext(..) => {
+                    let rank = self.adams(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,

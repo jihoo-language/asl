@@ -14,6 +14,29 @@ pub(crate) type Monomial = Rc<[usize]>;
 pub(crate) type Word = Rc<[Monomial]>;
 type CoproductTerm = (Monomial, Monomial);
 
+// Number rows in encounter order without enumerating an entire codomain.
+#[derive(Default)]
+pub(crate) struct WordRows {
+    indices: HashMap<Word, usize>,
+    cells: usize,
+}
+
+impl WordRows {
+    pub(crate) fn coordinate(&mut self, model: &mut Model, word: Word) -> Result<usize> {
+        let size = 1 + word_cells(&word);
+        model.spend(size)?;
+        let next = self.indices.len();
+        match self.indices.entry(word) {
+            std::collections::hash_map::Entry::Occupied(entry) => Ok(*entry.get()),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                check_storage(self.cells + size)?;
+                self.cells += size;
+                Ok(*entry.insert(next))
+            }
+        }
+    }
+}
+
 pub(crate) fn zero() -> Value {
     Value::Cobar([].into())
 }
@@ -117,8 +140,16 @@ pub(crate) fn concat_words(model: &mut Model, left: &Word, right: &Word) -> Resu
 }
 
 pub(crate) fn concat(model: &mut Model, left: &[Word], right: &[Word]) -> Result<Value> {
+    Ok(Value::Cobar(concat_support(model, left, right)?.into()))
+}
+
+pub(crate) fn concat_support(
+    model: &mut Model,
+    left: &[Word],
+    right: &[Word],
+) -> Result<Vec<Word>> {
     if right.is_empty() {
-        return Ok(zero());
+        return Ok(Vec::new());
     }
     let mut words = Vec::new();
     let mut cells = 0;
@@ -131,7 +162,7 @@ pub(crate) fn concat(model: &mut Model, left: &[Word], right: &[Word]) -> Result
             words.push(concat_words(model, a, b)?);
         }
     }
-    Ok(Value::Cobar(words.into()))
+    Ok(words)
 }
 
 pub(crate) fn differential_word(model: &mut Model, word: &Word) -> Result<Vec<Word>> {
