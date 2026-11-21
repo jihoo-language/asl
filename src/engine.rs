@@ -5,9 +5,10 @@ use crate::adams;
 use crate::bracket;
 use crate::cobar;
 use crate::cohomology;
-use crate::comodule;
+use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
+use crate::map_cochain;
 use crate::map_ext;
 use crate::may;
 use crate::milnor;
@@ -47,6 +48,9 @@ enum CobarOp {
     MayClass,
     MayRepresentative,
     MayDifferential,
+    MapDifferential,
+    MapClass,
+    MapRepresentative,
 }
 
 impl CobarOp {
@@ -58,6 +62,9 @@ impl CobarOp {
             "extPrimitive" => Some(Self::Primitive),
             "mayRep" => Some(Self::MayRepresentative),
             "mayD" => Some(Self::MayDifferential),
+            "eD" => Some(Self::MapDifferential),
+            "eClass" => Some(Self::MapClass),
+            "eRep" => Some(Self::MapRepresentative),
             _ => None,
         }
     }
@@ -72,6 +79,7 @@ enum TypedForm {
     Cobar(CobarOp, Box<TypedExpr>),
     Coact(usize, usize, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
+    MapWord(Generator, Generator, Box<TypedExpr>),
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
@@ -275,6 +283,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::MapCobar(a), Value::MapCobar(b)) => {
+                        Ok(Value::MapCobar(map_cochain::add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Concat, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::concat(&mut self.model, &a, &b)
                     }
@@ -290,6 +301,9 @@ impl Engine {
                     (BinaryOp::MapExtCompose, Value::Class(g), Value::Class(f)) => {
                         map_ext::compose(&mut self.model, (left.ty, &g), (right.ty, &f), expr.ty)
                     }
+                    (BinaryOp::MapExtCompose, Value::MapCobar(g), Value::MapCobar(f)) => Ok(
+                        Value::MapCobar(map_cochain::compose(&mut self.model, &g, &f)?),
+                    ),
                     (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
                         may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
@@ -345,6 +359,20 @@ impl Engine {
                 (CobarOp::Class, Value::Cobar(words)) => {
                     adams::class(&mut self.model, expr.ty, &words)
                 }
+                (CobarOp::MapDifferential, Value::MapCobar(terms)) => {
+                    let Kind::MapCobar(source, target, ..) = *self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let terms = map_cochain::differential(&mut self.model, source, target, &terms)?;
+                    Ok(Value::MapCobar(terms))
+                }
+                (CobarOp::MapClass, Value::MapCobar(terms)) => {
+                    map_cochain::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::MapRepresentative, Value::Class(class)) => {
+                    let terms = map_cochain::representative(&mut self.model, input.ty, &class)?;
+                    Ok(Value::MapCobar(terms))
+                }
                 (CobarOp::MayClass, Value::Cobar(words)) => {
                     may::class(&mut self.model, expr.ty, &words)
                 }
@@ -391,6 +419,13 @@ impl Engine {
                     unreachable!()
                 };
                 map_ext::induced(&mut self.model, function.ty, &table, expr.ty)
+            }
+            TypedForm::MapWord(source, target, input) => {
+                let Value::Cobar(words) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let terms = map_cochain::elementary(&mut self.model, *source, *target, &words)?;
+                Ok(Value::MapCobar(terms))
             }
             TypedForm::Equator => {
                 let Kind::Arrow(base, _) = *self.model.kind(expr.ty) else {
@@ -615,6 +650,11 @@ impl Checker<'_> {
                 let target = self.ty(*target)?;
                 self.model.map_ext_type(source, target, s, t)
             }
+            TypeForm::MapCobar(source, target, s, t) => {
+                let source = self.ty(*source)?;
+                let target = self.ty(*target)?;
+                self.model.map_cobar_type(source, target, s, t)
+            }
             TypeForm::May(r, s, t, f) => self.model.may_type(r, s, t, f),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
@@ -694,6 +734,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
+                    Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) => {
                         cohomology::zero()
                     }
@@ -703,7 +744,7 @@ impl Checker<'_> {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, XExt, MapExt, May, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, MapCobar, Ext, XExt, MapExt, May, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -760,6 +801,21 @@ impl Checker<'_> {
                 let ty = self.model.map_ext_type(base, base, 0, 0)?;
                 let value = map_ext::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MapWord(source, target, input) => {
+                let source_ty = self.ty(source.base)?;
+                let target_ty = self.ty(target.base)?;
+                let input = self.expr(*input)?;
+                let (s, degree) = self.cobar_bidegree(&input, "mword")?;
+                let t = map_cochain::internal_degree(source.degree, target.degree, degree)?;
+                let source =
+                    map_cochain::generator(self.model, source_ty, source.degree, source.index)
+                        .map_err(|error| error.at(source.span))?;
+                let target =
+                    map_cochain::generator(self.model, target_ty, target.degree, target.index)
+                        .map_err(|error| error.at(target.span))?;
+                let ty = self.model.map_cobar_type(source_ty, target_ty, s, t)?;
+                Ok((ty, TypedForm::MapWord(source, target, Box::new(input))))
             }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
                 let ty = self.model.may_type(r, s, t, f)?;
@@ -1162,6 +1218,19 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<TypeId> {
         match op {
+            CobarOp::MapDifferential => {
+                let (source, target, s, t) = self.map_cobar_bidegree(argument, name)?;
+                let s = checked_degree(s, 1, name, span)?;
+                return self.model.map_cobar_type(source, target, s, t);
+            }
+            CobarOp::MapClass => {
+                let (source, target, s, t) = self.map_cobar_bidegree(argument, name)?;
+                return self.model.map_ext_type(source, target, s, t);
+            }
+            CobarOp::MapRepresentative => {
+                let (source, target, s, t) = self.map_ext_bidegree(argument, name)?;
+                return self.model.map_cobar_type(source, target, s, t);
+            }
             CobarOp::Representative => {
                 let (s, t) = self.ext_bidegree(argument, name)?;
                 return self.model.cobar_type(s, t);
@@ -1217,6 +1286,17 @@ impl Checker<'_> {
         }
     }
 
+    fn map_cobar_bidegree(
+        &self,
+        value: &TypedExpr,
+        op: &str,
+    ) -> Result<(TypeId, TypeId, usize, i64)> {
+        match *self.model.kind(value.ty) {
+            Kind::MapCobar(source, target, s, t) => Ok((source, target, s, t)),
+            _ => Err(self.invalid_operand(value, op, "a MapCobar cochain")),
+        }
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -1242,6 +1322,7 @@ impl Checker<'_> {
                         | Kind::Stable(..)
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
+                        | Kind::MapCobar(..)
                         | Kind::Ext(..)
                         | Kind::XExt(..)
                         | Kind::MapExt(..)
@@ -1252,7 +1333,7 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, XExt class, MapExt class, May class, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, MapCobar cochain, Ext class, XExt class, MapExt class, May class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -1317,8 +1398,14 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
-                let (middle, target, gs, gt) = self.map_ext_bidegree(left, "ecomp")?;
-                let (source, inner_target, fs, ft) = self.map_ext_bidegree(right, "ecomp")?;
+                let raw = matches!(self.model.kind(left.ty), Kind::MapCobar(..));
+                let bidegree = if raw {
+                    Self::map_cobar_bidegree
+                } else {
+                    Self::map_ext_bidegree
+                };
+                let (middle, target, gs, gt) = bidegree(self, left, "ecomp")?;
+                let (source, inner_target, fs, ft) = bidegree(self, right, "ecomp")?;
                 if inner_target != middle {
                     return Err(Error::new(
                         right.span,
@@ -1333,7 +1420,11 @@ impl Checker<'_> {
                 let t = ft.checked_add(gt).ok_or_else(|| {
                     Error::new(span, "ecomp signed internal degree is out of range")
                 })?;
-                self.model.map_ext_type(source, target, s, t)
+                if raw {
+                    self.model.map_cobar_type(source, target, s, t)
+                } else {
+                    self.model.map_ext_type(source, target, s, t)
+                }
             }
             BinaryOp::MayMul => {
                 let (r, s, t, f) = self.may_degree(left, "mayMul")?;

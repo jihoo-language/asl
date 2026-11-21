@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::cobar::{self, Word};
 use crate::comodule::{self, Cochains, Generator};
+use crate::complex::xor_sorted;
 use crate::error::{Error, Result};
 use crate::linear::{Basis, QuotientBasis};
 use crate::milnor;
@@ -22,8 +23,10 @@ pub(crate) struct Term {
 }
 
 impl Term {
-    fn cells(&self) -> usize {
-        4 + cobar::word_cells(&self.word)
+    pub(crate) const GENERATOR_CELLS: usize = 4;
+
+    pub(crate) fn cells(&self) -> usize {
+        Self::GENERATOR_CELLS + cobar::word_cells(&self.word)
     }
 }
 
@@ -41,27 +44,10 @@ impl MapAdams {
         s: usize,
         t: i64,
     ) -> Result<Self> {
-        let Some(source_max) = model.height(source, false)?.checked_sub(1) else {
+        let Some(mut complex) = MapCochains::new(model, source, target, t)? else {
             return Ok(Self::default());
         };
-        let Some(target_max) = model.height(target, false)?.checked_sub(1) else {
-            return Ok(Self::default());
-        };
-        let t = i128::from(t);
-        if source_degree_bounds(s, t, source_max, target_max).is_none() {
-            return Ok(Self::default());
-        }
-        let mut complex = MapCochains {
-            source,
-            target,
-            source_max: refine_dimension_bound(model, source, source_max)?,
-            target_max: refine_dimension_bound(model, target, target_max)?,
-            t,
-            source_coactions: HashMap::new(),
-            source_coaction_cells: 0,
-            target_cochains: Cochains::new(target),
-        };
-        let terms = complex.basis(model, s)?;
+        let terms = complex.basis(model, s, MAX_BASIS_TERMS, 0)?;
         if terms.is_empty() {
             return Ok(Self::default());
         }
@@ -121,7 +107,7 @@ impl MapAdams {
     }
 }
 
-struct MapCochains {
+pub(crate) struct MapCochains {
     source: TypeId,
     target: TypeId,
     source_max: usize,
@@ -133,15 +119,54 @@ struct MapCochains {
 }
 
 impl MapCochains {
-    fn basis(&self, model: &mut Model, s: usize) -> Result<Vec<Term>> {
-        let length = s as i128;
+    pub(crate) fn new(
+        model: &mut Model,
+        source: TypeId,
+        target: TypeId,
+        t: i64,
+    ) -> Result<Option<Self>> {
+        let Some(source_max) = model.height(source, false)?.checked_sub(1) else {
+            return Ok(None);
+        };
+        let Some(target_max) = model.height(target, false)?.checked_sub(1) else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            source,
+            target,
+            source_max,
+            target_max,
+            t: i128::from(t),
+            source_coactions: HashMap::new(),
+            source_coaction_cells: 0,
+            target_cochains: Cochains::new(target),
+        }))
+    }
+
+    pub(crate) fn basis(
+        &self,
+        model: &mut Model,
+        s: usize,
+        limit: usize,
+        min_word_degree: usize,
+    ) -> Result<Vec<Term>> {
+        if s == 0 && min_word_degree > 0 {
+            return Ok(Vec::new());
+        }
+        let minimum = s.max(min_word_degree) as i128;
+        let limit = limit.min(MAX_BASIS_TERMS);
+        if source_degree_bounds(s, minimum, self.t, self.source_max, self.target_max).is_none() {
+            return Ok(Vec::new());
+        }
+        let source_max = refine_dimension_bound(model, self.source, self.source_max)?;
+        let target_max = refine_dimension_bound(model, self.target, self.target_max)?;
         let Some((first_source, last_source)) =
-            source_degree_bounds(s, self.t, self.source_max, self.target_max)
+            source_degree_bounds(s, minimum, self.t, source_max, target_max)
         else {
             return Ok(Vec::new());
         };
         let first_target = if s == 0 { first_source + self.t } else { 0 };
-        let last_target = (last_source + self.t - length).min(self.target_max as i128);
+        let last_target = (last_source + self.t - minimum).min(target_max as i128);
 
         let source = graded_ranks(
             model,
@@ -162,7 +187,7 @@ impl MapCochains {
         for (q, source_rank) in source {
             let total = q as i128 + self.t;
             let min = if s == 0 { total } else { 0 };
-            let max = total - length;
+            let max = total - minimum;
             let first = target.partition_point(|&(degree, _)| (degree as i128) < min);
             for &(p, target_rank) in &target[first..] {
                 model.spend(1)?;
@@ -172,7 +197,7 @@ impl MapCochains {
                 let internal = usize::try_from(total - p as i128)
                     .map_err(|_| Error::plain("map cobar word degree is out of range"))?;
                 let copies = source_rank.saturating_mul(target_rank);
-                let available = (MAX_BASIS_TERMS - terms.len()) / copies;
+                let available = (limit - terms.len()) / copies;
                 let words = match catalogue.entry(internal) {
                     Entry::Occupied(entry) => entry.into_mut(),
                     Entry::Vacant(entry) => {
@@ -203,7 +228,7 @@ impl MapCochains {
             }
         }
         model.spend(cells * (1 + terms.len().max(1).ilog2() as usize))?;
-        model.allocate(5 * terms.len())?;
+        model.allocate((Term::GENERATOR_CELLS + 1) * terms.len())?;
         terms.sort_unstable();
         Ok(terms)
     }
@@ -220,7 +245,7 @@ impl MapCochains {
         let Some(previous) = s.checked_sub(1) else {
             return Ok(Vec::new());
         };
-        let source = self.basis(model, previous)?;
+        let source = self.basis(model, previous, MAX_BASIS_TERMS, 0)?;
         for (index, term) in source.iter().enumerate() {
             let image = self.differential(model, term)?;
             let column = term_indices(model, target, &image)?;
@@ -229,7 +254,7 @@ impl MapCochains {
         Ok(source)
     }
 
-    fn differential(&mut self, model: &mut Model, term: &Term) -> Result<Vec<Term>> {
+    pub(crate) fn differential(&mut self, model: &mut Model, term: &Term) -> Result<Vec<Term>> {
         let mut support = Support::default();
         for word in cobar::differential_word(model, &term.word)? {
             support.toggle(
@@ -279,8 +304,9 @@ impl MapCochains {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let mut components = Vec::new();
+                let source_max = refine_dimension_bound(model, self.source, self.source_max)?;
                 for (degree, rank) in
-                    graded_ranks(model, self.source, generator.degree + 1..=self.source_max)?
+                    graded_ranks(model, self.source, generator.degree + 1..=source_max)?
                 {
                     let class = Rc::<[usize]>::from([generator.index]);
                     for index in 0..rank {
@@ -308,6 +334,50 @@ impl MapCochains {
             }
         })
     }
+}
+
+pub(crate) fn basis(
+    model: &mut Model,
+    source: TypeId,
+    target: TypeId,
+    s: usize,
+    t: i64,
+    limit: usize,
+) -> Result<Vec<Term>> {
+    let Some(complex) = MapCochains::new(model, source, target, t)? else {
+        return Ok(Vec::new());
+    };
+    complex.basis(model, s, limit, 0)
+}
+
+pub(crate) fn differential_support(
+    model: &mut Model,
+    source: TypeId,
+    target: TypeId,
+    terms: &[Term],
+) -> Result<Vec<Term>> {
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The internal degree constrains basis enumeration. The differential of
+    // a supplied term requires only its endpoints and word.
+    let Some(mut complex) = MapCochains::new(model, source, target, 0)? else {
+        return Err(Error::plain("map cobar term has an empty endpoint"));
+    };
+    let mut support = Support::default();
+    for term in terms {
+        for image in complex.differential(model, term)? {
+            support.toggle(model, image)?;
+        }
+    }
+    Ok(support.into_vec())
+}
+
+pub(crate) fn add_terms(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Vec<Term>> {
+    model.spend(left.iter().chain(right).map(Term::cells).sum())?;
+    let sum = xor_sorted(left, right);
+    check_storage(sum.iter().map(Term::cells).sum())?;
+    Ok(sum)
 }
 
 pub(crate) fn identity(model: &mut Model, ty: TypeId) -> Result<Value> {
@@ -397,10 +467,16 @@ pub(crate) fn compose_terms(
     Ok(support.into_vec())
 }
 
-fn source_degree_bounds(s: usize, t: i128, source: usize, target: usize) -> Option<(i128, i128)> {
-    // The image of degree q has degree q+t and the word has degree at least s.
+fn source_degree_bounds(
+    s: usize,
+    min_word_degree: i128,
+    t: i128,
+    source: usize,
+    target: usize,
+) -> Option<(i128, i128)> {
+    // The image of degree q has degree q+t and the word has a minimum degree.
     // At length zero the word is the unit, so q+t is a target degree.
-    let first = (s as i128 - t).max(0);
+    let first = (min_word_degree - t).max(0);
     let mut last = source as i128;
     if s == 0 {
         last = last.min(target as i128 - t);
@@ -477,7 +553,11 @@ impl Support {
 
 fn add_cells(cells: &mut usize, size: usize) -> Result<()> {
     *cells += size;
-    if *cells > MAX_COCHAIN_CELLS {
+    check_storage(*cells)
+}
+
+pub(crate) fn check_storage(cells: usize) -> Result<()> {
+    if cells > MAX_COCHAIN_CELLS {
         return Err(Error::plain(
             "map cobar calculation exceeds the storage limit",
         ));

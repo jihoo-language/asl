@@ -7,7 +7,8 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::error::{Error, Result};
-use crate::map_ext::MapAdams;
+use crate::map_cochain;
+use crate::map_ext::{self, MapAdams};
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::steenrod::{self, Word};
@@ -35,6 +36,7 @@ pub(crate) enum Kind {
     Cobar(usize, usize),
     Ext(usize, usize),
     XExt(TypeId, usize, usize),
+    MapCobar(TypeId, TypeId, usize, i64),
     MapExt(TypeId, TypeId, usize, i64),
     May(usize, usize, usize, usize),
     Suspension(TypeId),
@@ -51,6 +53,7 @@ pub(crate) enum Value {
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
+    MapCobar(map_cochain::Support),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
     CyclicClass(bool),
@@ -187,14 +190,17 @@ impl Model {
             Kind::May(_, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
             Kind::May(_, s, t, _) if s == t => 2,
             Kind::XExt(base, s, t) if s > t || !self.types[base.0].inhabited => 1,
-            Kind::MapExt(source, target, ..)
+            Kind::MapExt(source, target, ..) | Kind::MapCobar(source, target, ..)
                 if !self.types[source.0].inhabited || !self.types[target.0].inhabited =>
             {
                 1
             }
-            Kind::Cobar(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) => {
-                usize::MAX
-            }
+            Kind::Cobar(..)
+            | Kind::Ext(..)
+            | Kind::XExt(..)
+            | Kind::MapCobar(..)
+            | Kind::MapExt(..)
+            | Kind::May(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -244,6 +250,7 @@ impl Model {
                 | Kind::Cobar(..)
                 | Kind::Ext(..)
                 | Kind::XExt(..)
+                | Kind::MapCobar(..)
                 | Kind::MapExt(..)
                 | Kind::May(..)
                 | Kind::Stable(..)
@@ -377,6 +384,17 @@ impl Model {
     ) -> Result<TypeId> {
         let depth = self.types[source.0].depth.max(self.types[target.0].depth) + 1;
         self.inhabited_type(Kind::MapExt(source, target, s, t), depth)
+    }
+
+    pub(crate) fn map_cobar_type(
+        &mut self,
+        source: TypeId,
+        target: TypeId,
+        s: usize,
+        t: i64,
+    ) -> Result<TypeId> {
+        let depth = self.types[source.0].depth.max(self.types[target.0].depth) + 1;
+        self.inhabited_type(Kind::MapCobar(source, target, s, t), depth)
     }
 
     pub(crate) fn may_type(&mut self, r: usize, s: usize, t: usize, f: usize) -> Result<TypeId> {
@@ -545,6 +563,7 @@ impl Model {
             | Kind::Cobar(..)
             | Kind::Ext(..)
             | Kind::XExt(..)
+            | Kind::MapCobar(..)
             | Kind::MapExt(..)
             | Kind::May(..)
             | Kind::Stable(..)
@@ -666,8 +685,12 @@ impl Model {
                 self.write_type(out, base, 0)?;
                 out.push(&format!(", {s}, {t})"))
             }
-            &Kind::MapExt(source, target, s, t) => {
-                out.push("MapExt(")?;
+            &Kind::MapExt(source, target, s, t) | &Kind::MapCobar(source, target, s, t) => {
+                out.push(if matches!(self.kind(ty), Kind::MapCobar(..)) {
+                    "MapCobar("
+                } else {
+                    "MapExt("
+                })?;
                 self.write_type(out, source, 0)?;
                 out.push(", ")?;
                 self.write_type(out, target, 0)?;
@@ -739,6 +762,8 @@ impl Model {
             (Value::Cobar(left), Value::Cobar(right)) => Ok(
                 Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
             ),
+            (Value::MapCobar(left), Value::MapCobar(right)) => Ok(Rc::ptr_eq(left, right)
+                || map_cochain::compare(self, left, right)? == Ordering::Equal),
             (Value::Suspension(left), Value::Suspension(right)) => {
                 use SuspensionPoint::{Equator, North, South};
                 match (left, right) {
@@ -801,6 +826,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     cobar::compare(self, left, right)
+                }
+            }
+            (Value::MapCobar(left), Value::MapCobar(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    map_cochain::compare(self, left, right)
                 }
             }
             (Value::Suspension(left), Value::Suspension(right)) => {
@@ -921,6 +953,19 @@ impl Model {
                     let basis = cobar::basis(self, s, t, MAX_ELEMENTS.ilog2() as usize)?;
                     self.enumerate_supports(0, basis.len(), |support| {
                         Value::Cobar(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
+                }
+                Kind::MapCobar(source, target, s, t) => {
+                    let basis =
+                        map_ext::basis(self, source, target, s, t, MAX_ELEMENTS.ilog2() as usize)?;
+                    let rank = basis.len();
+                    // In addition to the shared word references, every
+                    // support entry stores two degree/index pairs.
+                    self.allocate(
+                        map_ext::Term::GENERATOR_CELLS * (support_space_size(rank) / 2) * rank,
+                    )?;
+                    self.enumerate_supports(0, rank, |support| {
+                        Value::MapCobar(support.iter().map(|&index| basis[index].clone()).collect())
                     })?
                 }
                 Kind::Bar(modulus) => self.enumerate_supports(1, modulus - 1, Value::Bar)?,
@@ -1153,21 +1198,36 @@ impl Model {
                     if index > 0 {
                         out.push(" + ")?;
                     }
-                    out.push("cword{")?;
-                    for (index, factor) in word.iter().enumerate() {
-                        if index > 0 {
-                            out.push(", ")?;
-                        }
-                        out.push("[")?;
-                        for (index, exponent) in factor.iter().enumerate() {
-                            if index > 0 {
-                                out.push(", ")?;
-                            }
-                            out.push(&exponent.to_string())?;
-                        }
-                        out.push("]")?;
+                    write_cobar_word(out, word)?;
+                }
+                out.push("}")
+            }
+            Value::MapCobar(terms) => {
+                let Kind::MapCobar(source, target, ..) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, term) in terms.iter().rev().enumerate() {
+                    if index > 0 {
+                        out.push(" + ")?;
                     }
-                    out.push("}")?;
+                    out.push("mword[")?;
+                    self.write_type(out, source, 0)?;
+                    out.push(&format!(
+                        ", {}, {}, ",
+                        term.source.degree, term.source.index
+                    ))?;
+                    self.write_type(out, target, 0)?;
+                    out.push(&format!(
+                        ", {}, {}](",
+                        term.target.degree, term.target.index
+                    ))?;
+                    write_cobar_word(out, &term.word)?;
+                    out.push(")")?;
                 }
                 out.push("}")
             }
@@ -1260,6 +1320,24 @@ impl Model {
         }
         Ok(true)
     }
+}
+
+fn write_cobar_word(out: &mut Text, word: &cobar::Word) -> Result<()> {
+    out.push("cword{")?;
+    for (index, factor) in word.iter().enumerate() {
+        if index > 0 {
+            out.push(", ")?;
+        }
+        out.push("[")?;
+        for (index, exponent) in factor.iter().enumerate() {
+            if index > 0 {
+                out.push(", ")?;
+            }
+            out.push(&exponent.to_string())?;
+        }
+        out.push("]")?;
+    }
+    out.push("}")
 }
 
 fn support_space_size(rank: usize) -> usize {

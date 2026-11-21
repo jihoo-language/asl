@@ -8,6 +8,7 @@ mod cyclic;
 mod engine;
 mod error;
 mod linear;
+mod map_cochain;
 mod map_ext;
 mod may;
 mod milnor;

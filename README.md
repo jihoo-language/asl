@@ -51,6 +51,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
 | `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
 | `MapExt(X, Y, s, t)` | The discrete space of mod-two Adams $E_2$ classes for stable maps from `X` to `Y`, with disjoint basepoints. |
+| `MapCobar(X, Y, s, t)` | The discrete space of length-`s` bivariant cobar cochains of signed internal degree `t`. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
@@ -223,6 +224,14 @@ A cochain basis term $[a_1\mid\cdots\mid a_s]\otimes z$ has internal degree $t=|
 | `ecomp(g, f)` | Compose classes from `X` to `Y` and from `Y` to `Z`, applying `f` first and adding both bidegrees. |
 
 `zero[MapExt(X, Y, s, t)]`, `add`, and equality act in a fixed type. The example composes maps of a two-point space and uses degree $-1$ to send the circle's degree-one homology generator to `One`. [Stable-map Adams E₂ example](examples/map-ext.asl)
+
+### Bivariant cobar cochains
+
+`mword[X, q, i, Y, p, j](u)` sends the homology basis element dual to `gen[X, q, i]` to `u` tensored with the element dual to `gen[Y, p, j]`. It sends every other basis element to zero. For `u : Cobar(s, d)` its type is `MapCobar(X, Y, s, p + d - q)`. These cochains support `add`, `zero`, and equality.
+
+`eD(c)` applies the bivariant differential, raising `s` by one and preserving `t`. `ecomp(g, f)` also composes two `MapCobar` values. It pairs matching intermediate homology coordinates and concatenates the word from `f` followed by the word from `g`. The differential satisfies $d^2=0$ and the Leibniz identity over $\mathbb F_2$.
+
+`eClass(c)` takes a closed cochain to its class in `MapExt` of the same endpoints and bidegree. `eRep(x)` gives the deterministic closed representative of a `MapExt` class, so `eClass(eRep(x)) == x`. The example checks the differential of the projective-plane identity term by term. [Bivariant cobar example](examples/map-cobar.asl)
 
 ## Suspension and stable degrees
 

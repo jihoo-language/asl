@@ -24,6 +24,7 @@ pub(crate) enum TypeForm {
     Cobar(usize, usize),
     Ext(usize, usize),
     XExt(Box<ParsedType>, usize, usize),
+    MapCobar(Box<ParsedType>, Box<ParsedType>, usize, i64),
     MapExt(Box<ParsedType>, Box<ParsedType>, usize, i64),
     May(usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
@@ -103,6 +104,13 @@ pub(crate) struct Witness {
     pub(crate) value: ParsedExpr,
 }
 
+pub(crate) struct MapGenerator {
+    pub(crate) base: ParsedType,
+    pub(crate) degree: usize,
+    pub(crate) index: usize,
+    pub(crate) span: Span,
+}
+
 pub(crate) enum ExprForm {
     Name(Label),
     Point(ParsedType, Label),
@@ -114,6 +122,7 @@ pub(crate) enum ExprForm {
     CobarWord(Vec<(Vec<usize>, Span)>),
     ExtGenerator(usize, usize, usize, Span),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
+    MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
     MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
     MapExtIdentity(ParsedType),
     MayClass(usize, usize, Box<ParsedExpr>),
@@ -552,6 +561,20 @@ impl<'src> Parser<'src> {
         Ok((source, target, s, t))
     }
 
+    fn map_generator(&mut self, nest: usize) -> Result<MapGenerator> {
+        let base = self.ty(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let (degree, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (index, span) = self.number()?;
+        Ok(MapGenerator {
+            base,
+            degree,
+            index,
+            span,
+        })
+    }
+
     fn may_degree(&mut self) -> Result<(usize, usize, usize, usize)> {
         let (r, _) = self.number()?;
         self.expect(Token::Comma)?;
@@ -610,15 +633,18 @@ impl<'src> Parser<'src> {
             let depth = base.depth + 1;
             return ty(span, TypeForm::XExt(Box::new(base), s, t), depth);
         }
-        if name.text == "MapExt" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "MapCobar" | "MapExt") && self.eat(Token::LParen)? {
             let (source, target, s, t) = self.map_bidegree(nest)?;
             self.expect(Token::RParen)?;
             let depth = source.depth.max(target.depth) + 1;
-            return ty(
-                span,
-                TypeForm::MapExt(Box::new(source), Box::new(target), s, t),
-                depth,
-            );
+            let source = Box::new(source);
+            let target = Box::new(target);
+            let kind = if name.text == "MapCobar" {
+                TypeForm::MapCobar(source, target, s, t)
+            } else {
+                TypeForm::MapExt(source, target, s, t)
+            };
+            return ty(span, kind, depth);
         }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
@@ -901,6 +927,19 @@ impl<'src> Parser<'src> {
                         span,
                         ExprForm::MapExtGenerator(source, target, s, t, index, at),
                         0,
+                    );
+                }
+                if name.text == "mword" && self.eat(Token::LBracket)? {
+                    let source = self.map_generator(nest)?;
+                    self.expect(Token::Comma)?;
+                    let target = self.map_generator(nest)?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::MapWord(source, target, Box::new(input)),
+                        depth,
                     );
                 }
                 if name.text == "eid" && self.eat(Token::LBracket)? {
