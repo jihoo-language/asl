@@ -7,7 +7,7 @@ use crate::rv_iwahori::{self, Boundary};
 
 const MAX_CELLS: usize = 300_000;
 
-type Window = Rc<[i128]>;
+pub(crate) type Window = Rc<[i128]>;
 type Polynomial = BTreeMap<i64, i128>;
 
 pub(crate) fn polynomial(model: &mut Model, lower: &[i128], upper: &[i128]) -> Result<Vec<i128>> {
@@ -28,17 +28,47 @@ pub(crate) fn polynomial(model: &mut Model, lower: &[i128], upper: &[i128]) -> R
     if !Boundary::Closure.contains(model, &lower, &upper)? {
         return Ok(vec![0]);
     }
-    let lower_length = rv_iwahori::length(model, &lower)?;
     let upper_length = rv_iwahori::length(model, &upper)?;
-    let difference = upper_length
-        .checked_sub(lower_length)
-        .and_then(|difference| i64::try_from(difference).ok())
-        .ok_or_else(arithmetic_limit)?;
+    let difference = length_difference(model, &lower, upper_length)?;
     let basis = canonical_basis(model, &upper)?;
     let coefficient = basis
         .coefficients
         .get(&lower)
         .ok_or_else(|| Error::plain("comparable affine windows have no Hecke coefficient"))?;
+    to_q(model, difference, coefficient)
+}
+
+fn length_difference(model: &mut Model, lower: &[i128], upper_length: u128) -> Result<i64> {
+    let lower_length = rv_iwahori::length(model, lower)?;
+    upper_length
+        .checked_sub(lower_length)
+        .and_then(|difference| i64::try_from(difference).ok())
+        .ok_or_else(arithmetic_limit)
+}
+
+pub(crate) fn expansion(model: &mut Model, upper: &[i128]) -> Result<Vec<(Window, Vec<i128>)>> {
+    rv_iwahori::validate_window(model, upper)?;
+    let component = rv_iwahori::component(upper)?;
+    let upper = translate(model, upper, component)?;
+    let basis = canonical_basis(model, &upper)?;
+    let upper_length = rv_iwahori::length(model, &upper)?;
+    let mut output = Vec::new();
+    let mut cells = 0;
+    for (window, polynomial) in basis.coefficients {
+        let difference = length_difference(model, &window, upper_length)?;
+        let coefficient = to_q(model, difference, &polynomial)?;
+        cells += window_cells(&window) + 2 * coefficient.len();
+        check_storage(cells)?;
+        let window = window
+            .iter()
+            .map(|&entry| entry.checked_add(component).ok_or_else(arithmetic_limit))
+            .collect::<Result<Vec<_>>>()?;
+        output.push((window.into(), coefficient));
+    }
+    Ok(output)
+}
+
+fn to_q(model: &mut Model, difference: i64, coefficient: &Polynomial) -> Result<Vec<i128>> {
     let mut output = Vec::new();
     for (&power, &value) in coefficient {
         let doubled_degree = difference.checked_sub(power).ok_or_else(arithmetic_limit)?;
@@ -60,7 +90,7 @@ pub(crate) fn polynomial(model: &mut Model, lower: &[i128], upper: &[i128]) -> R
     Ok(output)
 }
 
-fn translate(model: &mut Model, window: &[i128], component: i128) -> Result<Window> {
+pub(crate) fn translate(model: &mut Model, window: &[i128], component: i128) -> Result<Window> {
     model.spend(window.len())?;
     check_storage(2 * window.len())?;
     let result = window
@@ -83,7 +113,7 @@ fn check_storage(cells: usize) -> Result<()> {
     Ok(())
 }
 
-fn descent(window: &[i128], simple: usize) -> Result<bool> {
+pub(crate) fn descent(window: &[i128], simple: usize) -> Result<bool> {
     if let Some(&next) = window.get(simple + 1) {
         Ok(window[simple] > next)
     } else {
@@ -94,7 +124,7 @@ fn descent(window: &[i128], simple: usize) -> Result<bool> {
     }
 }
 
-fn right_simple(model: &mut Model, window: &[i128], simple: usize) -> Result<Window> {
+pub(crate) fn right_simple(model: &mut Model, window: &[i128], simple: usize) -> Result<Window> {
     model.spend(window.len())?;
     let mut result = window.to_vec();
     if simple + 1 < window.len() {
@@ -109,7 +139,7 @@ fn right_simple(model: &mut Model, window: &[i128], simple: usize) -> Result<Win
     Ok(result.into())
 }
 
-fn wall(model: &mut Model, window: &[i128]) -> Result<Option<usize>> {
+pub(crate) fn wall(model: &mut Model, window: &[i128]) -> Result<Option<usize>> {
     if window.len() > 1 {
         for simple in 0..window.len() {
             model.spend(1)?;

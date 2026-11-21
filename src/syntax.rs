@@ -57,6 +57,7 @@ pub(crate) enum TypeForm {
     QExt(QSpec),
     RVHom(RankVarietySpec),
     RVLaurent(RankVarietySpec),
+    RVIwHecke(usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -422,6 +423,10 @@ pub(crate) enum ExprForm {
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
+    HeckeBasis(bool, Vec<i128>),
+    HeckeScalar(usize, usize),
+    HeckeNegate(Box<ParsedExpr>),
+    HeckeProduct(Box<[ParsedExpr; 2]>),
     RVIwAdlv(
         crate::rv_iwahori::Boundary,
         usize,
@@ -555,6 +560,7 @@ pub(crate) enum StatementForm {
     RVHodge(ParsedExpr),
     RVIw(bool, ParsedExpr),
     RVIwKL(Vec<i128>, Vec<i128>),
+    HeckeCoefficient(Option<i128>, Vec<i128>, ParsedExpr),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1075,6 +1081,22 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvHeckeCoeff" | "rvHeckeAt") => {
+                let evaluate = self.token() == Token::Word("rvHeckeAt");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let parameter = if evaluate {
+                    let parameter =
+                        self.signed_wide("a signed Hecke parameter", "Hecke parameter")?;
+                    self.expect(Token::Comma)?;
+                    Some(parameter)
+                } else {
+                    None
+                };
+                let window = self.affine_window()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::HeckeCoefficient(parameter, window, self.paren_expr(0)?)
             }
             Token::Word("rvIwKL") => {
                 self.advance()?;
@@ -2228,6 +2250,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVIwHecke" && self.eat(Token::LParen)? {
+            let (rank, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVIwHecke(rank), 0);
         }
         if matches!(name.text.as_str(), "RVHom" | "RVLaurent") && self.eat(Token::LParen)? {
             let spec = self.rank_variety_spec(nest, true)?;
@@ -3514,6 +3541,32 @@ impl<'src> Parser<'src> {
                         ExprForm::RVAdlv(boundary, modulus, root, mu, Box::new(arguments)),
                         depth,
                     );
+                }
+                if matches!(name.text.as_str(), "rvHeckeT" | "rvHeckeKL")
+                    && self.eat(Token::LBracket)?
+                {
+                    let canonical = name.text == "rvHeckeKL";
+                    let window = self.affine_window()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::HeckeBasis(canonical, window), 0);
+                }
+                if matches!(name.text.as_str(), "rvHeckeId" | "rvHeckeQ")
+                    && self.eat(Token::LBracket)?
+                {
+                    let degree = usize::from(name.text == "rvHeckeQ");
+                    let (rank, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::HeckeScalar(rank, degree), 0);
+                }
+                if name.text == "neg" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::HeckeNegate(Box::new(input)), depth);
+                }
+                if name.text == "rvHeckeMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::HeckeProduct(Box::new(arguments)), depth);
                 }
                 if name.text == "rvU" && self.eat(Token::LBracket)? {
                     let power = self.signed_number("Laurent exponent")?;

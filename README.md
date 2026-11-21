@@ -702,6 +702,16 @@ The interpreter constructs the normalized Hecke expansion $B_w=\sum_x h_{x,w}(v)
 
 `rvIwSchubertKL[[w0,...]](A);` first takes the affine flag position $x$ of the supplied Laurent endomorphism $A$, then reports the affine Schubert intersection-cohomology polynomial $P_{x,w}$. The finite permutation $3412$ gives $P_{e,w}=1+q$. The affine rank-three window $(-4,3,4)$ also gives $1+q$ and has a reduced expression using all three affine simple reflections. [Affine Schubert example](examples/rv-iwkl.asl)
 
+### The generic extended affine Iwahori–Hecke algebra
+
+`RVIwHecke(n)` consists of finite sums $\sum_w c_w(q)T_w$ with signed integer polynomial coefficients and affine permutation windows of rank $n$. Use `rvHeckeT[[w0,...]]` for $T_w$, `rvHeckeId[n]` for $T_e$, and `rvHeckeQ[n]` for $qT_e$. The operations `zero`, `add`, `neg`, and `rvHeckeMul` act on these algebra elements.
+
+The right multiplication rule is $T_xT_s=T_{xs}$ on an ascent and $T_xT_s=qT_{xs}+(q-1)T_x$ on a descent. For a right length-zero rotation $\omega^c$, the new window is $x(j+c)$ using the period rule $x(j+n)=x(j)+n$. The interpreter applies this rotation and then the right simple steps of a reduced expression.
+
+`rvHeckeKL[[w0,...]]` constructs $B_w=\sum_{x\le w}P_{x,w}(q)T_x$ from one cached canonical expansion. This is $q^{\ell(w)/2}$ times the normalized $C'_w$. The statement `rvHeckeCoeff[[x0,...]](h);` prints the coefficient of $T_x$ in ascending powers of $q$. The statement `rvHeckeAt[q,[x0,...]](h);` evaluates the coefficient at the supplied integer.
+
+For finite $\mathrm{GL}_3$ flags over $\mathbb F_q$, these evaluated structure coefficients count intermediate complete flags with the prescribed relative positions. The example computes $T_s^2=qT_e+(q-1)T_s$ and verifies the braid relation and $B_sB_tB_s=B_{sts}+qB_s$ for the two adjacent finite generators. It also checks the noncentral rotation and displays a cubic coefficient in $T_s^4$. [Affine Hecke example](examples/rv-hecke.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

@@ -39,6 +39,7 @@ use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
+use crate::rv_iwhecke;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
 use crate::rv_poly::{self, Minors, Polynomial};
@@ -89,6 +90,7 @@ pub(crate) enum Kind {
     RVHom(rv_hom::Grade),
     ASDiff(Rc<str>, BinaryField),
     RVLaurent(rv_hom::Grade),
+    RVIwHecke(usize),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -191,6 +193,7 @@ pub(crate) enum Value {
     RVHom(rv_hom::Support),
     ASDiff(rv_hom::Support),
     RVLaurent(rv_laurent::Support),
+    RVIwHecke(rv_iwhecke::Support),
     JetHom(jet_hom::Support),
     RVBarCobar(rv_barcobar::Support),
     RVBar(rv_bar::Support),
@@ -468,7 +471,8 @@ impl Model {
             | Kind::JetHom(..)
             | Kind::JetPage(..)
             | Kind::RVHom(..)
-            | Kind::RVLaurent(..) => usize::MAX,
+            | Kind::RVLaurent(..)
+            | Kind::RVIwHecke(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -582,6 +586,7 @@ impl Model {
                 | Kind::RVHom(..)
                 | Kind::ASDiff(..)
                 | Kind::RVLaurent(..)
+                | Kind::RVIwHecke(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1056,6 +1061,10 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn iw_hecke_type(&mut self, rank: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVIwHecke(rank), 0)
     }
 
     pub(crate) fn rv_laurent_type(&mut self, grade: rv_hom::Grade) -> Result<TypeId> {
@@ -1709,6 +1718,7 @@ impl Model {
             | Kind::RVHom(..)
             | Kind::ASDiff(..)
             | Kind::RVLaurent(..)
+            | Kind::RVIwHecke(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -1966,6 +1976,7 @@ impl Model {
             }
             Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
+            Kind::RVIwHecke(rank) => out.push(&format!("RVIwHecke({rank})")),
             Kind::RVHom(grade) | Kind::RVLaurent(grade) => {
                 let name = if matches!(self.kind(ty), Kind::RVHom(..)) {
                     "RVHom("
@@ -2106,6 +2117,8 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::RVIwHecke(left), Value::RVIwHecke(right)) => Ok(Rc::ptr_eq(left, right)
+                || rv_iwhecke::compare(self, left, right)? == Ordering::Equal),
             (Value::RVLaurent(left), Value::RVLaurent(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_laurent::compare(self, left, right)? == Ordering::Equal),
             (Value::RVHom(left), Value::RVHom(right))
@@ -2251,6 +2264,12 @@ impl Model {
                 } else {
                     rv_poly::compare(self, left, right)
                 }
+            }
+            (Value::RVIwHecke(left), Value::RVIwHecke(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                rv_iwhecke::compare(self, left, right)
             }
             (Value::RVLaurent(left), Value::RVLaurent(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -2399,6 +2418,9 @@ impl Model {
                 Kind::MapMay(..) => {
                     let rank = self.map_may(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RVIwHecke(..) => {
+                    return Err(Error::plain("cannot enumerate an affine Hecke algebra"))
                 }
                 Kind::RVLaurent(..) => {
                     let (source, target) = rv_laurent::dimensions(self, ty)?;
@@ -2739,6 +2761,24 @@ impl Model {
         Ok(maps)
     }
 
+    pub(crate) fn show_integer_coefficients(
+        &self,
+        name: &str,
+        coefficients: &[i128],
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(name)?;
+        out.push(" = [")?;
+        for (index, coefficient) in coefficients.iter().enumerate() {
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&coefficient.to_string())?;
+        }
+        out.push("]")?;
+        Ok(out.string)
+    }
+
     pub(crate) fn show(&mut self, ty: TypeId, value: &Value) -> Result<String> {
         let mut out = Text::new(MAX_SHOWN_BYTES);
         self.write_value(&mut out, ty, value)?;
@@ -3001,6 +3041,36 @@ impl Model {
                 };
                 out.push(&format!("RVPoly({selected:?}, {degree}){{"))?;
                 write_rv_polynomial(out, selected, polynomial)?;
+                out.push("}")
+            }
+            Value::RVIwHecke(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                let mut first = true;
+                for term in terms.iter() {
+                    for &(degree, coefficient) in term.coefficient.iter() {
+                        self.spend(1 + term.window.len())?;
+                        if !first {
+                            out.push(if coefficient < 0 { " - " } else { " + " })?;
+                        } else if coefficient < 0 {
+                            out.push("-")?;
+                        }
+                        first = false;
+                        let magnitude = coefficient.unsigned_abs();
+                        if magnitude != 1 {
+                            out.push(&format!("{magnitude}*"))?;
+                        }
+                        match degree {
+                            0 => (),
+                            1 => out.push("q*")?,
+                            degree => out.push(&format!("q^{degree}*"))?,
+                        }
+                        out.push(&format!("T{:?}", term.window))?;
+                    }
+                }
                 out.push("}")
             }
             Value::RVLaurent(terms) => {

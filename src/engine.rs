@@ -60,6 +60,7 @@ use crate::rv_hodge;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwahori;
+use crate::rv_iwhecke;
 use crate::rv_iwkl;
 use crate::rv_koszul;
 use crate::rv_laurent;
@@ -235,6 +236,8 @@ enum TypedForm {
     QRestrict(Box<TypedExpr>),
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
+    HeckeNegate(Box<TypedExpr>),
+    HeckeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
     RVAdlv(rv_hodge::Boundary, usize, Vec<i64>, Box<[TypedExpr; 2]>),
@@ -379,6 +382,36 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::HeckeCoefficient(parameter, window, input) => {
+                let input = self.checker().expr(input)?;
+                let name = if parameter.is_some() {
+                    "rvHeckeAt"
+                } else {
+                    "rvHeckeCoeff"
+                };
+                let Kind::RVIwHecke(rank) = self.model.kind(input.ty) else {
+                    return Err(Error::plain(format!(
+                        "{name} requires an affine Hecke element"
+                    )));
+                };
+                if window.len() != *rank {
+                    return Err(Error::plain(
+                        "Hecke coefficient window rank must match the algebra",
+                    ));
+                }
+                rv_iwahori::validate_window(&mut self.model, &window)?;
+                let Value::RVIwHecke(support) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = rv_iwhecke::coefficient(&mut self.model, &support, &window)?;
+                if let Some(parameter) = parameter {
+                    let result = rv_iwhecke::evaluate(&mut self.model, coefficient, parameter)?;
+                    format!("{name} = {result}")
+                } else {
+                    let result = rv_iwhecke::coefficients(&mut self.model, coefficient)?;
+                    self.model.show_integer_coefficients(name, &result)?
+                }
             }
             StatementForm::RVIwKL(lower, upper) => {
                 let polynomial = rv_iwkl::polynomial(&mut self.model, &lower, &upper)?;
@@ -1491,6 +1524,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVIwHecke(a), Value::RVIwHecke(b)) => {
+                        rv_iwhecke::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVLaurent(a), Value::RVLaurent(b)) => {
                         rv_laurent::add(&mut self.model, &a, &b)
                     }
@@ -1940,6 +1976,20 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::HeckeNegate(input) => {
+                let Value::RVIwHecke(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_iwhecke::neg(&mut self.model, &value)
+            }
+            TypedForm::HeckeProduct(arguments) => {
+                let [left, right] = arguments.as_ref();
+                let values = [self.eval(left)?, self.eval(right)?];
+                let [Value::RVIwHecke(left), Value::RVIwHecke(right)] = values else {
+                    unreachable!()
+                };
+                rv_iwhecke::multiply(&mut self.model, &left, &right)
+            }
             TypedForm::RVLaurentMonomial(power, input) => {
                 let Value::RVHom(value) = self.eval(input)? else {
                     unreachable!()
@@ -2951,6 +3001,7 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVLaurent(spec) => {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_laurent_type(grade)
@@ -3164,6 +3215,7 @@ impl Checker<'_> {
                     Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => bp_classes::zero(),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
+                    Kind::RVIwHecke(..) => rv_iwhecke::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -3522,6 +3574,41 @@ impl Checker<'_> {
                 let ty = self.model.rv_hom_type(grade)?;
                 let value = rv_hom::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::HeckeBasis(canonical, window) => {
+                let ty = self.model.iw_hecke_type(window.len())?;
+                let value = if canonical {
+                    rv_iwhecke::canonical(self.model, &window)?
+                } else {
+                    rv_iwhecke::standard(self.model, window)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::HeckeScalar(rank, degree) => {
+                let ty = self.model.iw_hecke_type(rank)?;
+                let value = rv_iwhecke::scalar(self.model, rank, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::HeckeNegate(input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVIwHecke(..)) {
+                    return Err(self.invalid_operand(&input, "neg", "an affine Hecke element"));
+                }
+                Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::HeckeProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVIwHecke(..)) {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvHeckeMul",
+                        "an affine Hecke element",
+                    ));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvHeckeMul")?;
+                Ok((left.ty, TypedForm::HeckeProduct(Box::new([left, right]))))
             }
             ExprForm::RVLaurentMonomial(power, input) => {
                 let input = self.expr(*input)?;
@@ -5791,6 +5878,7 @@ impl Checker<'_> {
                         | Kind::QExt(..)
                         | Kind::RVHom(..)
                         | Kind::RVLaurent(..)
+                        | Kind::RVIwHecke(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)
