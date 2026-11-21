@@ -1,0 +1,22 @@
+rvideal Exterior[[0]] { rvmon[[0]]{1} };
+let unit = rvmtorgen[Exterior,0,[0],0];
+let e = rvmtorgen[Exterior,1,[1],0];
+let low = rvHHWord(e,e,e);
+let high = rvHHWord(unit,e,e,e);
+let hhLow = rvHHClass(low);
+let hhHigh = rvHHClass(high);
+let hcLow = rvCyclicI(hhLow);
+let hnHigh = rvCyclicClass(rvHNTerm[0](high));
+
+assert hcLow == rvHCgen[Exterior,5,[3],0];
+assert hnHigh == rvHNgen[Exterior,6,[3],0];
+assert rvCyclicS(hcLow) == zero[RVHC(Exterior,3,[3])];
+assert rvCyclicB(hcLow) == hhHigh;
+assert rvCyclicI(hhHigh) == zero[RVHC(Exterior,6,[3])];
+assert rvCyclicD(rvHCTerm[-1](low)) == rvHCTerm[0](high);
+assert rvCyclicRep(hcLow) == rvHCTerm[0](low);
+assert rvCyclicPart[0](rvCyclicRep(hcLow)) == low;
+rvHPdim[Exterior,5,[3]];
+rvHPdim[Exterior,6,[3]];
+show hcLow;
+show hnHigh;

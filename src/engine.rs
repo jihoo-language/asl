@@ -57,6 +57,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::{self, Curve as RvCurve};
+use crate::rv_cyclic_homology;
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
@@ -138,6 +139,11 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvCyclicD,
+    RvCyclicClass,
+    RvCyclicRep,
+    RvCyclicI,
+    RvCyclicB,
     RvNCd,
     RvNCClass,
     RvNCRep,
@@ -196,6 +202,11 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvCyclicD" => Some(Self::RvCyclicD),
+            "rvCyclicClass" => Some(Self::RvCyclicClass),
+            "rvCyclicRep" => Some(Self::RvCyclicRep),
+            "rvCyclicI" => Some(Self::RvCyclicI),
+            "rvCyclicB" => Some(Self::RvCyclicB),
             "rvNCd" => Some(Self::RvNCd),
             "rvNCClass" => Some(Self::RvNCClass),
             "rvNCRep" => Some(Self::RvNCRep),
@@ -315,8 +326,9 @@ enum TypedForm {
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
     BpVPageClass(Box<TypedExpr>),
     BpVPageOperation(bp_vpage::Operation, Box<TypedExpr>),
-    RvNCTerm(usize, Box<TypedExpr>),
-    RvNCPart(usize, Box<TypedExpr>),
+    RvNCTerm(i128, Box<TypedExpr>),
+    RvNCPart(i128, Box<TypedExpr>),
+    RvCyclicShift(rv_cyclic_homology::Shift, Box<TypedExpr>),
     RvNCTransfer(rv_negative::Transfer, Box<TypedExpr>),
     RvHHWord(Vec<TypedExpr>),
     RvHHLength(usize, Box<TypedExpr>),
@@ -1143,6 +1155,24 @@ impl Engine {
             StatementForm::RvBarPath(name, ideal, steps) => {
                 self.model.define_rv_bar_path(name, ideal, steps)?;
                 return Ok(None);
+            }
+            StatementForm::RvCyclicDimension(spec, mode) => {
+                let ordinary = self.checker().rv_hh_grade(spec)?;
+                let ty = self.model.rv_cyclic_type(
+                    rv_cyclic_homology::Grade {
+                        ordinary: ordinary.clone(),
+                        mode,
+                    },
+                    true,
+                )?;
+                let rank = self.model.rv_cyclic_homology(ty)?.rank();
+                format!(
+                    "{}[{}, {}, {:?}] = {rank}",
+                    mode.dimension_name(),
+                    ordinary.ideal,
+                    ordinary.b,
+                    ordinary.weight
+                )
             }
             StatementForm::RvNCDimension(spec) => {
                 let grade = self.checker().rv_negative_grade(spec)?;
@@ -2079,6 +2109,41 @@ impl Engine {
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
                 }
+                (CobarOp::RvCyclicD, Value::RVNCChain(terms)) => {
+                    let Kind::RvCyclicChain(grade) = self.model.kind(input.ty).clone() else {
+                        unreachable!()
+                    };
+                    Ok(Value::RVNCChain(rv_cyclic_homology::differential(
+                        &mut self.model,
+                        &grade,
+                        &terms,
+                    )?))
+                }
+                (CobarOp::RvCyclicClass, Value::RVNCChain(terms)) => {
+                    rv_cyclic_homology::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::RvCyclicRep, Value::Class(class)) => Ok(Value::RVNCChain(
+                    rv_cyclic_homology::representative(&mut self.model, input.ty, &class)?,
+                )),
+                (CobarOp::RvCyclicI, Value::RVHHChain(words)) => Ok(Value::RVNCChain(
+                    rv_negative::term(&mut self.model, 0, &words)?,
+                )),
+                (CobarOp::RvCyclicI, Value::Class(class)) => {
+                    rv_cyclic_homology::include_class(&mut self.model, input.ty, expr.ty, &class)
+                }
+                (CobarOp::RvCyclicB, Value::RVNCChain(terms)) => {
+                    let Kind::RvCyclicChain(grade) = self.model.kind(input.ty).clone() else {
+                        unreachable!()
+                    };
+                    Ok(Value::RVHHChain(rv_cyclic_homology::connes(
+                        &mut self.model,
+                        &grade,
+                        &terms,
+                    )?))
+                }
+                (CobarOp::RvCyclicB, Value::Class(class)) => {
+                    rv_cyclic_homology::connes_class(&mut self.model, input.ty, expr.ty, &class)
+                }
                 (CobarOp::RvNCd, Value::RVNCChain(terms)) => {
                     let Kind::RVNCChain(grade) = self.model.kind(input.ty).clone() else {
                         unreachable!()
@@ -2877,6 +2942,27 @@ impl Engine {
                     &terms,
                 )?))
             }
+            TypedForm::RvCyclicShift(shift, input) => match self.eval(input)? {
+                Value::RVNCChain(terms) => {
+                    let Kind::RvCyclicChain(grade) = self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let mode = grade.mode;
+                    let terms = shift.terms(&mut self.model, mode, &terms)?;
+                    Ok(Value::RVNCChain(rv_negative::persist(
+                        &mut self.model,
+                        terms,
+                    )?))
+                }
+                Value::Class(class) => rv_cyclic_homology::shift_class(
+                    &mut self.model,
+                    *shift,
+                    input.ty,
+                    expr.ty,
+                    &class,
+                ),
+                _ => unreachable!(),
+            },
             TypedForm::RvNCTransfer(operation, input) => match self.eval(input)? {
                 Value::RVNCChain(terms) => {
                     let Kind::RVNCChain(grade) = self.model.kind(expr.ty).clone() else {
@@ -3681,6 +3767,11 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
+            TypeForm::RVUntruncatedCyclic(spec, mode, homology) => {
+                let ordinary = self.rv_hh_grade(spec)?;
+                self.model
+                    .rv_cyclic_type(rv_cyclic_homology::Grade { ordinary, mode }, homology)
+            }
             TypeForm::RVNegativeCyclic(spec, homology) => {
                 let grade = self.rv_negative_grade(spec)?;
                 self.model.rv_negative_type(grade, homology)
@@ -3832,6 +3923,8 @@ impl Checker<'_> {
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVBarE(..) => cohomology::zero(),
                     Kind::RvHochschild(..) => cohomology::zero(),
+                    Kind::RvCyclicChain(..) => Value::RVNCChain([].into()),
+                    Kind::RvCyclicHomology(..) => cohomology::zero(),
                     Kind::RVNCChain(..) => Value::RVNCChain([].into()),
                     Kind::RvNegativeCyclic(..) => cohomology::zero(),
                     Kind::RVHHChain(..) => Value::RVHHChain([].into()),
@@ -5196,6 +5289,38 @@ impl Checker<'_> {
                 let ty = self.model.named("S").unwrap();
                 Ok((ty, TypedForm::RvVanish(field, point, Box::new(input))))
             }
+            ExprForm::RvCyclicGenerator(spec, mode, index, at) => {
+                let ordinary = self.rv_hh_grade(spec)?;
+                let ty = self
+                    .model
+                    .rv_cyclic_type(rv_cyclic_homology::Grade { ordinary, mode }, true)?;
+                let rank = self.model.rv_cyclic_homology(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RvCyclicTerm(mode, power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHHChain(ordinary) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, mode.term_name(), "an RVHHChain"));
+                };
+                let grade = rv_cyclic_homology::Grade::term(ordinary.clone(), mode, power)?;
+                let ty = self.model.rv_cyclic_type(grade, false)?;
+                Ok((ty, TypedForm::RvNCTerm(power.into(), Box::new(input))))
+            }
+            ExprForm::RvCyclicPart(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RvCyclicChain(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvCyclicPart", "a cyclic chain"));
+                };
+                let ty = self.model.rv_hh_type(grade.part(power)?)?;
+                Ok((ty, TypedForm::RvNCPart(power.into(), Box::new(input))))
+            }
+            ExprForm::RvCyclicShift(shift, input) => {
+                let input = self.expr(*input)?;
+                let (grade, homology) = self.cyclic_grade(&input, shift.name())?;
+                let ty = self.model.rv_cyclic_type(shift.target(&grade)?, homology)?;
+                Ok((ty, TypedForm::RvCyclicShift(shift, Box::new(input))))
+            }
             ExprForm::RvNCGenerator(spec, index, at) => {
                 let grade = self.rv_negative_grade(spec)?;
                 let ty = self.model.rv_negative_type(grade, true)?;
@@ -5212,7 +5337,7 @@ impl Checker<'_> {
                     rv_negative::Grade::term(grade.clone(), length, power)?,
                     false,
                 )?;
-                Ok((ty, TypedForm::RvNCTerm(power, Box::new(input))))
+                Ok((ty, TypedForm::RvNCTerm(power as i128, Box::new(input))))
             }
             ExprForm::RvNCPart(power, input) => {
                 let input = self.expr(*input)?;
@@ -5220,7 +5345,7 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(&input, "rvNCPart", "an RVNCChain"));
                 };
                 let ty = self.model.rv_hh_type(grade.part(power)?)?;
-                Ok((ty, TypedForm::RvNCPart(power, Box::new(input))))
+                Ok((ty, TypedForm::RvNCPart(power as i128, Box::new(input))))
             }
             ExprForm::RvNCTransfer(operation, input) => {
                 let input = self.expr(*input)?;
@@ -6488,6 +6613,18 @@ impl Checker<'_> {
         })
     }
 
+    fn cyclic_grade(
+        &self,
+        value: &TypedExpr,
+        name: &str,
+    ) -> Result<(rv_cyclic_homology::Grade, bool)> {
+        match self.model.kind(value.ty) {
+            Kind::RvCyclicChain(grade) => Ok((grade.clone(), false)),
+            Kind::RvCyclicHomology(grade) => Ok((grade.clone(), true)),
+            _ => Err(self.invalid_operand(value, name, "a cyclic chain or class")),
+        }
+    }
+
     fn rv_negative_grade(
         &mut self,
         (ideal, length, b, weight): RvNCSpec,
@@ -6777,6 +6914,47 @@ impl Checker<'_> {
                     CobarOp::RvBarNext => self.model.rv_bar_page_type(grade.next()?),
                     CobarOp::RvBarPrev => self.model.rv_bar_page_type(grade.previous()?),
                     _ => self.model.rv_bar_type(grade.chain),
+                };
+            }
+            CobarOp::RvCyclicD | CobarOp::RvCyclicClass => {
+                let Kind::RvCyclicChain(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a cyclic chain"));
+                };
+                if matches!(op, CobarOp::RvCyclicD) {
+                    return self.model.rv_cyclic_type(grade.differential()?, false);
+                }
+                return self.model.rv_cyclic_type(grade.clone(), true);
+            }
+            CobarOp::RvCyclicRep => {
+                let Kind::RvCyclicHomology(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a cyclic homology class"));
+                };
+                return self.model.rv_cyclic_type(grade.clone(), false);
+            }
+            CobarOp::RvCyclicI => {
+                let (ordinary, homology) = match self.model.kind(argument.ty) {
+                    Kind::RVHHChain(grade) => (grade.clone(), false),
+                    Kind::RvHochschild(grade) => (grade.clone(), true),
+                    _ => {
+                        return Err(self.invalid_operand(
+                            argument,
+                            name,
+                            "an RVHHChain or RVHH class",
+                        ))
+                    }
+                };
+                let mode = rv_cyclic_homology::Mode::Ordinary;
+                return self
+                    .model
+                    .rv_cyclic_type(rv_cyclic_homology::Grade { ordinary, mode }, homology);
+            }
+            CobarOp::RvCyclicB => {
+                let (grade, homology) = self.cyclic_grade(argument, name)?;
+                let result = grade.connes_output()?;
+                return if homology {
+                    self.model.rv_hh_class_type(result)
+                } else {
+                    self.model.rv_hh_type(result)
                 };
             }
             CobarOp::RvNCd | CobarOp::RvNCClass => {
@@ -7121,6 +7299,8 @@ impl Checker<'_> {
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
                         | Kind::RVBarE(..)
+                        | Kind::RvCyclicChain(..)
+                        | Kind::RvCyclicHomology(..)
                         | Kind::RVNCChain(..)
                         | Kind::RvNegativeCyclic(..)
                         | Kind::RvHochschild(..)

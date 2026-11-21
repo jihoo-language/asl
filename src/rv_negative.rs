@@ -52,6 +52,13 @@ impl Grade {
         })
     }
 
+    fn powers(&self) -> Powers {
+        Powers {
+            first: 0,
+            last: self.length as i128 - 1,
+        }
+    }
+
     fn check_power(&self, power: usize) -> Result<()> {
         if power >= self.length {
             return Err(Error::plain(
@@ -109,15 +116,15 @@ impl Transfer {
         let result = match self {
             Self::Shift(power) => support
                 .iter()
-                .take_while(|term| term.power < target.length.saturating_sub(power))
+                .take_while(|term| term.power < target.length.saturating_sub(power) as i128)
                 .map(|term| Term {
-                    power: term.power + power,
+                    power: term.power + power as i128,
                     word: term.word.clone(),
                 })
                 .collect(),
             Self::Truncate(length) => support
                 .iter()
-                .take_while(|term| term.power < length)
+                .take_while(|term| term.power < length as i128)
                 .cloned()
                 .collect(),
         };
@@ -131,17 +138,17 @@ fn degree(b: i128) -> Result<i64> {
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Term {
-    pub(crate) power: usize,
+    pub(crate) power: i128,
     pub(crate) word: Word,
 }
 
 pub(crate) type Support = Rc<[Term]>;
 
 pub(crate) fn term_cells(term: &Term) -> usize {
-    2 + rv_hh::word_cells(&term.word)
+    3 + rv_hh::word_cells(&term.word)
 }
 
-fn cells(support: &[Term]) -> usize {
+pub(crate) fn cells(support: &[Term]) -> usize {
     1 + support.iter().map(term_cells).sum::<usize>()
 }
 
@@ -169,7 +176,7 @@ pub(crate) fn add(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Su
     persist(model, xor_sorted(left, right))
 }
 
-pub(crate) fn term(model: &mut Model, power: usize, support: &[Word]) -> Result<Support> {
+pub(crate) fn term(model: &mut Model, power: i128, support: &[Word]) -> Result<Support> {
     model.spend(support.iter().map(|word| rv_hh::word_cells(word)).sum())?;
     let support = support
         .iter()
@@ -181,7 +188,7 @@ pub(crate) fn term(model: &mut Model, power: usize, support: &[Word]) -> Result<
     persist(model, support)
 }
 
-pub(crate) fn part(model: &mut Model, power: usize, support: &[Term]) -> Result<rv_hh::Support> {
+pub(crate) fn part(model: &mut Model, power: i128, support: &[Term]) -> Result<rv_hh::Support> {
     let start = support.partition_point(|term| term.power < power);
     let end = support.partition_point(|term| term.power <= power);
     model.spend(1 + 2 * support.len().max(1).ilog2() as usize + end - start)?;
@@ -196,12 +203,13 @@ pub(crate) fn part(model: &mut Model, power: usize, support: &[Term]) -> Result<
 
 fn differential_support(
     model: &mut Model,
-    grade: &Grade,
+    ordinary: &HochschildGrade,
+    powers: Powers,
     differential: &mut Differential<'_>,
     terms: &[Term],
 ) -> Result<Vec<Term>> {
     let mut support = Vec::new();
-    let mut pending: Option<(usize, Vec<Word>)> = None;
+    let mut pending: Option<(i128, Vec<Word>)> = None;
     let mut retained = 0;
     for chunk in terms.chunk_by(|a, b| a.power == b.power) {
         let power = chunk[0].power;
@@ -223,8 +231,8 @@ fn differential_support(
             }
         }
         append(&mut support, &mut retained, power, image)?;
-        if power + 1 < grade.length {
-            pending = Some((power + 1, rv_hh::connes(model, &grade.ordinary, &words)?));
+        if powers.includes(power + 1) {
+            pending = Some((power + 1, rv_hh::connes(model, ordinary, &words)?));
         }
     }
     if let Some((p, part)) = pending.take() {
@@ -236,7 +244,7 @@ fn differential_support(
 fn append(
     output: &mut Vec<Term>,
     retained: &mut usize,
-    power: usize,
+    power: i128,
     words: Vec<Word>,
 ) -> Result<()> {
     for word in words {
@@ -248,13 +256,34 @@ fn append(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Powers {
+    pub(crate) first: i128,
+    pub(crate) last: i128,
+}
+
+impl Powers {
+    pub(crate) fn includes(self, exponent: i128) -> bool {
+        self.first <= exponent && exponent <= self.last
+    }
+}
+
 pub(crate) fn differential(model: &mut Model, grade: &Grade, support: &[Term]) -> Result<Support> {
+    differential_in(model, &grade.ordinary, grade.powers(), support)
+}
+
+pub(crate) fn differential_in(
+    model: &mut Model,
+    ordinary: &HochschildGrade,
+    powers: Powers,
+    support: &[Term],
+) -> Result<Support> {
     if support.is_empty() {
         return Ok([].into());
     }
-    let ideal = model.rv_ideal_named(&grade.ordinary.ideal).unwrap();
-    let mut differential = Differential::new(model, &grade.ordinary, &ideal)?;
-    let result = differential_support(model, grade, &mut differential, support)?;
+    let ideal = model.rv_ideal_named(&ordinary.ideal).unwrap();
+    let mut differential = Differential::new(model, ordinary, &ideal)?;
+    let result = differential_support(model, ordinary, powers, &mut differential, support)?;
     persist(model, result)
 }
 
@@ -264,37 +293,67 @@ pub(crate) fn basis(
     total: i128,
     limit: usize,
 ) -> Result<Vec<Term>> {
+    basis_in(model, &grade.ordinary, grade.powers(), total, limit)
+}
+
+pub(crate) fn basis_in(
+    model: &mut Model,
+    ordinary: &HochschildGrade,
+    powers: Powers,
+    total: i128,
+    limit: usize,
+) -> Result<Vec<Term>> {
     let lo = -total.div_euclid(2);
-    let hi = (2 * rv_poly::degree(&grade.ordinary.weight)? as i128 - total).div_euclid(2);
-    let first = lo.max(0);
-    let last = hi.min(grade.length as i128 - 1);
+    let hi = (2 * rv_poly::degree(&ordinary.weight)? as i128 - total).div_euclid(2);
+    let first = lo.max(powers.first);
+    let last = hi.min(powers.last);
     if first > last {
         return Ok(Vec::new());
     }
     let mut terms = Vec::new();
     let mut retained = 0;
-    for power in first as usize..=last as usize {
+    for power in first..=last {
         model.spend(1)?;
-        let original = total + 2 * power as i128;
-        let words = rv_hh::basis_at(model, &grade.ordinary, original, limit - terms.len())?;
+        let original = total + 2 * power;
+        let words = rv_hh::basis_at(model, ordinary, original, limit - terms.len())?;
         append(&mut terms, &mut retained, power, words)?;
     }
     Ok(terms)
 }
 
 pub(crate) fn build(model: &mut Model, grade: &Grade) -> Result<Slice<Term>> {
-    let total = i128::from(grade.ordinary.b);
-    let terms = basis(model, grade, total, MAX_BASIS)?;
-    let ideal = model.rv_ideal_named(&grade.ordinary.ideal).unwrap();
-    let mut differential = Differential::new(model, &grade.ordinary, &ideal)?;
+    reduce_in(
+        model,
+        &grade.ordinary,
+        grade.powers(),
+        "finite negative cyclic homology",
+    )
+}
+
+pub(crate) fn reduce_in(
+    model: &mut Model,
+    ordinary: &HochschildGrade,
+    powers: Powers,
+    label: &'static str,
+) -> Result<Slice<Term>> {
+    let total = i128::from(ordinary.b);
+    let terms = basis_in(model, ordinary, powers, total, MAX_BASIS)?;
+    let ideal = model.rv_ideal_named(&ordinary.ideal).unwrap();
+    let mut differential = Differential::new(model, ordinary, &ideal)?;
     Slice::build(
         model,
         terms,
-        |model| basis(model, grade, total + 1, MAX_BASIS),
+        |model| basis_in(model, ordinary, powers, total + 1, MAX_BASIS),
         term_cells,
-        "finite negative cyclic homology",
+        label,
         |model, term| {
-            differential_support(model, grade, &mut differential, std::slice::from_ref(term))
+            differential_support(
+                model,
+                ordinary,
+                powers,
+                &mut differential,
+                std::slice::from_ref(term),
+            )
         },
     )
 }

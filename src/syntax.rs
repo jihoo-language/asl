@@ -79,6 +79,7 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
+    RVUntruncatedCyclic(RvHHSpec, crate::rv_cyclic_homology::Mode, bool),
     RVNegativeCyclic(RvNCSpec, bool),
     RVHochschild(RvHHSpec, bool),
     RVBarCobar(RvBarSpec),
@@ -549,6 +550,10 @@ pub(crate) enum ExprForm {
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
+    RvCyclicGenerator(RvHHSpec, crate::rv_cyclic_homology::Mode, usize, Span),
+    RvCyclicTerm(crate::rv_cyclic_homology::Mode, i64, Box<ParsedExpr>),
+    RvCyclicPart(i64, Box<ParsedExpr>),
+    RvCyclicShift(crate::rv_cyclic_homology::Shift, Box<ParsedExpr>),
     RvNCGenerator(RvNCSpec, usize, Span),
     RvNCTerm(usize, usize, Box<ParsedExpr>),
     RvNCPart(usize, Box<ParsedExpr>),
@@ -693,6 +698,7 @@ pub(crate) enum StatementForm {
     RankOrbit(usize, Vec<usize>),
     RankArithmetic(RankSeries, RankArithmeticSpec),
     RvBarPath(Label, Label, Vec<Vec<usize>>),
+    RvCyclicDimension(RvHHSpec, crate::rv_cyclic_homology::Mode),
     RvNCDimension(RvNCSpec),
     RvHHDimension(RvHHSpec),
     RvPathDimension(RvBarSpec),
@@ -1877,6 +1883,19 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBrace)?;
                 StatementForm::RvBarPath(name, ideal, steps)
             }
+            Token::Word(name @ ("rvHNdim" | "rvHPdim" | "rvHCdim")) => {
+                use crate::rv_cyclic_homology::Mode;
+                let mode = match name {
+                    "rvHNdim" => Mode::Negative,
+                    "rvHPdim" => Mode::Periodic,
+                    _ => Mode::Ordinary,
+                };
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.rv_hh_spec()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvCyclicDimension(spec, mode)
+            }
             Token::Word("rvNCdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -2619,6 +2638,23 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
+        let cyclic = match name.text.as_str() {
+            "RVHN" | "RVHNChain" => Some(crate::rv_cyclic_homology::Mode::Negative),
+            "RVHP" | "RVHPChain" => Some(crate::rv_cyclic_homology::Mode::Periodic),
+            "RVHC" | "RVHCChain" => Some(crate::rv_cyclic_homology::Mode::Ordinary),
+            _ => None,
+        };
+        if let Some(mode) = cyclic {
+            if self.eat(Token::LParen)? {
+                let spec = self.rv_hh_spec()?;
+                self.expect(Token::RParen)?;
+                return ty(
+                    span,
+                    TypeForm::RVUntruncatedCyclic(spec, mode, !name.text.ends_with("Chain")),
+                    0,
+                );
+            }
+        }
         if matches!(name.text.as_str(), "RVNCChain" | "RVNC") && self.eat(Token::LParen)? {
             let spec = self.rv_nc_spec()?;
             self.expect(Token::RParen)?;
@@ -3095,6 +3131,69 @@ impl<'src> Parser<'src> {
             }
             Token::Word(_) => {
                 let name = self.label()?;
+                if matches!(name.text.as_str(), "rvHNgen" | "rvHPgen" | "rvHCgen")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_cyclic_homology::Mode;
+                    let mode = match name.text.as_str() {
+                        "rvHNgen" => Mode::Negative,
+                        "rvHPgen" => Mode::Periodic,
+                        _ => Mode::Ordinary,
+                    };
+                    let spec = self.rv_hh_spec()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvCyclicGenerator(spec, mode, index, at), 0);
+                }
+                if matches!(name.text.as_str(), "rvHNTerm" | "rvHPTerm" | "rvHCTerm")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_cyclic_homology::Mode;
+                    let mode = match name.text.as_str() {
+                        "rvHNTerm" => Mode::Negative,
+                        "rvHPTerm" => Mode::Periodic,
+                        _ => Mode::Ordinary,
+                    };
+                    let power = self.signed_degree()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvCyclicTerm(mode, power, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvCyclicU" | "rvCyclicPart")
+                    && self.eat(Token::LBracket)?
+                {
+                    let power = self.signed_degree()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let expression = if name.text == "rvCyclicPart" {
+                        ExprForm::RvCyclicPart(power, Box::new(input))
+                    } else {
+                        ExprForm::RvCyclicShift(
+                            crate::rv_cyclic_homology::Shift::Periodic(power),
+                            Box::new(input),
+                        )
+                    };
+                    return expr(span, expression, depth);
+                }
+                if name.text == "rvCyclicS" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RvCyclicShift(
+                            crate::rv_cyclic_homology::Shift::Suspension,
+                            Box::new(input),
+                        ),
+                        depth,
+                    );
+                }
                 if name.text == "rvNCgen" && self.eat(Token::LBracket)? {
                     let spec = self.rv_nc_spec()?;
                     self.expect(Token::Comma)?;

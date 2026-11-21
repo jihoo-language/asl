@@ -42,6 +42,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
+use crate::rv_cyclic_homology;
 use crate::rv_hh;
 use crate::rv_hh_homology;
 use crate::rv_hom::{self, Hom};
@@ -154,6 +155,8 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVBarE(rv_bar_page::Grade),
+    RvCyclicChain(rv_cyclic_homology::Grade),
+    RvCyclicHomology(rv_cyclic_homology::Grade),
     RVNCChain(rv_negative::Grade),
     RvNegativeCyclic(rv_negative::Grade),
     RvHochschild(rv_hh::Grade),
@@ -359,6 +362,7 @@ pub(crate) struct Model {
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
     rv_bar_paths: Vec<(String, Rc<rv_bar::Path>)>,
+    rv_cyclic_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_negative::Term>>>,
     rv_negative_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_negative::Term>>>,
     rv_hh_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_hh::Word>>>,
     rv_path_ext: HashMap<TypeId, Rc<rv_bar_dual::Ext>>,
@@ -390,6 +394,7 @@ impl Model {
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
             rv_bar_paths: Vec::new(),
+            rv_cyclic_homology: HashMap::new(),
             rv_negative_homology: HashMap::new(),
             rv_hh_homology: HashMap::new(),
             rv_path_ext: HashMap::new(),
@@ -589,6 +594,7 @@ impl Model {
             {
                 1
             }
+            Kind::RvCyclicChain(..) | Kind::RvCyclicHomology(..) => usize::MAX,
             Kind::RVNCChain(..) | Kind::RvNegativeCyclic(..) => usize::MAX,
             Kind::RVBarCobar(..) | Kind::RVHHChain(..) | Kind::RvHochschild(..) => usize::MAX,
             Kind::RVBar(..) | Kind::RVBarE(..) | Kind::RVBarDual(..) | Kind::RVPathExt(..) => {
@@ -708,6 +714,8 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVBarE(..)
+                | Kind::RvCyclicChain(..)
+                | Kind::RvCyclicHomology(..)
                 | Kind::RVNCChain(..)
                 | Kind::RvNegativeCyclic(..)
                 | Kind::RvHochschild(..)
@@ -1187,6 +1195,35 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_cyclic_type(
+        &mut self,
+        grade: rv_cyclic_homology::Grade,
+        homology: bool,
+    ) -> Result<TypeId> {
+        let kind = if homology {
+            Kind::RvCyclicHomology(grade)
+        } else {
+            Kind::RvCyclicChain(grade)
+        };
+        self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn rv_cyclic_homology(
+        &mut self,
+        ty: TypeId,
+    ) -> Result<Rc<rv_hh_homology::Slice<rv_negative::Term>>> {
+        if let Some(homology) = self.rv_cyclic_homology.get(&ty) {
+            return Ok(homology.clone());
+        }
+        let Kind::RvCyclicHomology(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let homology = Rc::new(rv_cyclic_homology::build(self, &grade)?);
+        self.rv_cyclic_homology.insert(ty, homology.clone());
+        Ok(homology)
     }
 
     pub(crate) fn rv_negative_type(
@@ -2130,6 +2167,8 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVBarE(..)
+            | Kind::RvCyclicChain(..)
+            | Kind::RvCyclicHomology(..)
             | Kind::RVNCChain(..)
             | Kind::RvNegativeCyclic(..)
             | Kind::RvHochschild(..)
@@ -2321,6 +2360,15 @@ impl Model {
                 grade.chain.b,
                 grade.length,
             )),
+            Kind::RvCyclicChain(grade) | Kind::RvCyclicHomology(grade) => {
+                let name = grade
+                    .mode
+                    .type_name(matches!(self.kind(ty), Kind::RvCyclicHomology(_)));
+                out.push(&format!(
+                    "{name}({}, {}, {:?})",
+                    grade.ordinary.ideal, grade.ordinary.b, grade.ordinary.weight
+                ))
+            }
             Kind::RVNCChain(grade) | Kind::RvNegativeCyclic(grade) => {
                 let name = if matches!(self.kind(ty), Kind::RVNCChain(_)) {
                     "RVNCChain"
@@ -2982,6 +3030,19 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RvCyclicChain(ref grade) => {
+                    let grade = grade.clone();
+                    let basis =
+                        rv_cyclic_homology::basis(self, &grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.allocate(basis.iter().map(rv_negative::term_cells).sum())?;
+                    self.enumerate_supports(0, basis.len(), |class| {
+                        Value::RVNCChain(class.iter().map(|&i| basis[i].clone()).collect())
+                    })?
+                }
+                Kind::RvCyclicHomology(..) => {
+                    let rank = self.rv_cyclic_homology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::RVNCChain(ref grade) => {
                     let grade = grade.clone();
