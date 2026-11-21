@@ -11,6 +11,7 @@ use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rho_bock;
+use crate::rho_localized;
 use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_gauss::Operation as GaussOp;
@@ -50,6 +51,7 @@ pub(crate) enum TypeForm {
     MCobar(MotivicGrade),
     RMCobar(MotivicGrade),
     RhoBock(rho_bock::Grade),
+    RhoLoc(MotivicGrade),
     MExt(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
@@ -271,6 +273,25 @@ pub(crate) struct JetPageSpec {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum RhoLocOp {
+    Localize,
+    Project,
+    Section(i128),
+    Homotopy,
+}
+
+impl RhoLocOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Localize => "rhoLocalize",
+            Self::Project => "rhoProject",
+            Self::Section(_) => "rhoSection",
+            Self::Homotopy => "rhoHomotopy",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum RhoOp {
     Class(usize, usize),
     Representative,
@@ -478,8 +499,10 @@ pub(crate) enum ExprForm {
     RMCobarWord(usize, usize, Vec<FactorLiteral>),
     RhoGenerator(rho_bock::Grade, usize, Span),
     RhoOperation(RhoOp, Box<ParsedExpr>),
+    RhoLocWord(i128, usize, Vec<rho_localized::FactorLiteral>),
+    RhoLocOperation(RhoLocOp, Box<ParsedExpr>),
     TauShift(usize, Box<ParsedExpr>),
-    RhoShift(usize, Box<ParsedExpr>),
+    RhoShift(i128, Box<ParsedExpr>),
     RealComplex(Box<ParsedExpr>),
     Realize(Box<ParsedExpr>),
     PCobarWord(usize, Vec<FactorLiteral>),
@@ -2503,12 +2526,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RhoBock(grade), 0);
         }
-        if matches!(name.text.as_str(), "MCobar" | "MExt" | "RMCobar") && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "MCobar" | "MExt" | "RMCobar" | "RhoLoc")
+            && self.eat(Token::LParen)?
+        {
             let grade = self.motivic_grade()?;
             self.expect(Token::RParen)?;
             let form = match name.text.as_str() {
                 "MCobar" => TypeForm::MCobar(grade),
                 "RMCobar" => TypeForm::RMCobar(grade),
+                "RhoLoc" => TypeForm::RhoLoc(grade),
                 _ => TypeForm::MExt(grade),
             };
             return ty(span, form, 0);
@@ -3951,19 +3977,75 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::CobarWord(factors), 0);
                 }
-                if matches!(name.text.as_str(), "tauShift" | "rhoShift")
-                    && self.eat(Token::LBracket)?
-                {
+                if name.text == "tauShift" && self.eat(Token::LBracket)? {
                     let (power, _) = self.number()?;
                     self.expect(Token::RBracket)?;
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
-                    let form = if name.text == "rhoShift" {
-                        ExprForm::RhoShift(power, Box::new(input))
-                    } else {
-                        ExprForm::TauShift(power, Box::new(input))
+                    return expr(span, ExprForm::TauShift(power, Box::new(input)), depth);
+                }
+                if name.text == "rhoShift" && self.eat(Token::LBracket)? {
+                    let power = self.signed_wide("a signed rho exponent", "rho exponent")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RhoShift(power, Box::new(input)), depth);
+                }
+                if name.text == "rholocword" && self.eat(Token::LBracket)? {
+                    let t = self.signed_wide(
+                        "a signed topological degree",
+                        "rho-localized topological degree",
+                    )?;
+                    self.expect(Token::Comma)?;
+                    let (vertex, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut factors = Vec::new();
+                    while self.token() != Token::RBrace {
+                        let at = self.span();
+                        self.expect(Token::LParen)?;
+                        let (u, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        let xi = self.exponents()?;
+                        self.expect(Token::RParen)?;
+                        factors.push((u, xi, at));
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::RhoLocWord(t, vertex, factors), 0);
+                }
+                if name.text == "rhoSection" && self.eat(Token::LBracket)? {
+                    let t = self.signed_wide(
+                        "a signed topological degree",
+                        "rho-localized topological degree",
+                    )?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RhoLocOperation(RhoLocOp::Section(t), Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "rhoLocalize" => Some(RhoLocOp::Localize),
+                        "rhoProject" => Some(RhoLocOp::Project),
+                        "rhoHomotopy" => Some(RhoLocOp::Homotopy),
+                        _ => None,
                     };
-                    return expr(span, form, depth);
+                    if let Some(operation) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::RhoLocOperation(operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "rhobockgen" && self.eat(Token::LBracket)? {
                     let grade = self.rho_grade()?;

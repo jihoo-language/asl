@@ -513,7 +513,7 @@ pub(crate) fn basis_limit(limit: usize) -> Error {
     ))
 }
 
-fn next_degrees(degrees: &mut [usize]) -> bool {
+pub(crate) fn next_degrees(degrees: &mut [usize]) -> bool {
     let Some(index) = (1..degrees.len()).rev().find(|&index| degrees[index] > 1) else {
         return false;
     };
@@ -524,7 +524,7 @@ fn next_degrees(degrees: &mut [usize]) -> bool {
     true
 }
 
-fn next_choices(factors: &[&[Monomial]], digits: &mut [usize]) -> bool {
+pub(crate) fn next_choices<T>(factors: &[&[T]], digits: &mut [usize]) -> bool {
     for (choices, digit) in factors.iter().zip(digits).rev() {
         *digit += 1;
         if *digit < choices.len() {

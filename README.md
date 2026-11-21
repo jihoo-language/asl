@@ -221,6 +221,16 @@ For example $d\tau=\rho[\tau_0]$ and $d(\tau^2)=\rho^2[\tau_0^2]$, with the latt
 
 The leading word of $d_1(\tau)$ is $\rho[\tau_0]$. For $k\ge1$ the leading word of $d_{2^k}(\tau^{2^k})$ is $\rho^{2^k}\tau^{2^{k-1}}[\xi_1^{2^{k-1}}]$. The example follows these classes through $d_{16}$, checks that each target is nonzero on its page, and checks that the target maps to zero on the next page. It also corrects the lift of $\rho^2\tau^3[\xi_1]$ by adding $\rho^3\tau^2([\xi_1\tau_0]+[\tau_1])$. [Rho-Bockstein example](examples/rho-bockstein.asl)
 
+### Inverting rho on the real-motivic cobar
+
+`RhoLoc(s, t, w)` is the normalized cobar after inverting $\rho$. Write $T_0=\tau$ for the initial vertex and $U_j=T_j-T_{j-1}$ for the increment across arrow $j$. The literal `rholocword[t,a]{(u,[xi-powers]), ...}` encodes $T_0^a$ followed by factors $U_j^{u_j}\xi^{M_j}$ with classical $\xi$ generators. Each factor has positive degree. If $Q$ is the sum of their classical $\xi$ degrees, then $t-w=a+\sum_j u_j+Q$ and the implied coefficient is $\rho^{2Q-t}$. This leaves a finite basis at each signed tridegree. On localized cochains `rhoShift[k]` accepts signed exponents.
+
+The first coface transports $T_0$ to $T_0+U_1$. Internal cofaces split $U_j$ primitively and use the classical Milnor coproduct on $\xi$. The normalized `cobarD` discards unit arrows. `concat` transports the right coefficient across the left arrows by $T_0\mapsto T_0+\sum U_j$. `rhoLocalize` sends the original real cochains into these coordinates using $\tau_{0,j}=U_j/\rho$ and $\tau_{i+1,j}=(\tau_{i,j}^2+T_j\xi_{i+1,j})/\rho$.
+
+`rhoProject` sets $T_0$ and all $U_j$ to zero, mapping into `Cobar(s,t-w)`. The classical target requires an unsigned degree. `rhoSection[t]` embeds classical words as pure $\xi$ words at topological degree `t`. The maps commute with `cobarD` and `concat`. Writing them as $P$ and $i$, one has $Pi=1$.
+
+On positive-length cochains `rhoHomotopy` gives a homotopy $H$ lowering length by one. A monomial contributes when its initial vertex exponent is zero and its first factor with positive $U_j$ exponent has a unit $\xi$ factor. The homotopy drops that slot and substitutes $T_0+\sum_{k<j}U_k$ for its $U_j$. It satisfies $dH+Hd=1+iP$ and $PH=Hi=H^2=0$ over $\mathbb F_2$. This gives the localized cohomology identification with classical Ext. For example the real arrow $[\tau_0]$ becomes the boundary of the vertex cochain $\rho^{-1}T_0$, and the real arrow $[\xi_1]$ maps to the classical generator in internal degree one. [Explicit rho-localized contraction](examples/rho-localization.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

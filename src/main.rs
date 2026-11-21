@@ -58,6 +58,7 @@ mod rank_variety;
 mod real_motivic;
 mod restriction_transfer;
 mod rho_bock;
+mod rho_localized;
 mod rv_arithmetic;
 mod rv_as_cartier;
 mod rv_as_cover;
