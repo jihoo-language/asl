@@ -44,6 +44,7 @@ use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
+use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
 use crate::rv_hive::{self, Boundary as HiveBoundary};
@@ -160,6 +161,7 @@ pub(crate) enum Kind {
     RVSphHecke(usize),
     RVSatake(usize),
     RVHive(HiveBoundary),
+    RVFusion(rv_fusion::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -279,6 +281,7 @@ pub(crate) enum Value {
     RVSphHecke(rv_sphhecke::Support),
     RVSatake(rv_satake::Support),
     RVHive(rv_hive::Interior),
+    RVFusion(rv_fusion::Support),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
     RVHHChain(rv_hh::Support),
@@ -610,7 +613,8 @@ impl Model {
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
-            | Kind::RVSatake(..) => usize::MAX,
+            | Kind::RVSatake(..)
+            | Kind::RVFusion(..) => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
                     usize::MAX
@@ -761,6 +765,7 @@ impl Model {
                 | Kind::RVSphHecke(..)
                 | Kind::RVSatake(..)
                 | Kind::RVHive(..)
+                | Kind::RVFusion(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1525,6 +1530,10 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn fusion_type(&mut self, grade: rv_fusion::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVFusion(grade), 0)
     }
 
     pub(crate) fn hive_type(&mut self, boundary: HiveBoundary) -> Result<TypeId> {
@@ -2334,6 +2343,7 @@ impl Model {
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..)
             | Kind::RVHive(..)
+            | Kind::RVFusion(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -2678,6 +2688,9 @@ impl Model {
             Kind::RVIwHecke(rank) => out.push(&format!("RVIwHecke({rank})")),
             Kind::RVSphHecke(rank) => out.push(&format!("RVSphHecke({rank})")),
             Kind::RVSatake(rank) => out.push(&format!("RVSatake({rank})")),
+            Kind::RVFusion(grade) => {
+                out.push(&format!("RVFusion({}, {})", grade.rank, grade.level))
+            }
             Kind::RVHive(HiveBoundary([lambda, mu, nu])) => {
                 out.push(&format!("RVHive({lambda:?}, {mu:?}, {nu:?})"))
             }
@@ -2840,6 +2853,9 @@ impl Model {
                 }
                 self.spend(left.len().min(right.len()))?;
                 Ok(left == right)
+            }
+            (Value::RVFusion(left), Value::RVFusion(right)) => {
+                Ok(rv_fusion::compare(self, left, right)?.is_eq())
             }
             (Value::RVSatake(left), Value::RVSatake(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_satake::compare(self, left, right)? == Ordering::Equal),
@@ -3037,6 +3053,9 @@ impl Model {
                 self.spend(left.len().min(right.len()))?;
                 Ok(left.cmp(right))
             }
+            (Value::RVFusion(left), Value::RVFusion(right)) => {
+                rv_fusion::compare(self, left, right)
+            }
             (Value::RVSatake(left), Value::RVSatake(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -3213,6 +3232,9 @@ impl Model {
                 }
                 Kind::RVSphHecke(..) => {
                     return Err(Error::plain("cannot enumerate a spherical Hecke algebra"))
+                }
+                Kind::RVFusion(..) => {
+                    return Err(Error::plain("cannot enumerate a Verlinde fusion ring"));
                 }
                 Kind::RVHive(ref boundary) => {
                     let boundary = boundary.clone();
@@ -4168,6 +4190,18 @@ impl Model {
                     .iter()
                     .map(|term| (term.coweight.as_ref(), term.coefficient.as_ref())),
             ),
+            Value::RVFusion(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, (weight, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1 + weight.len())?;
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{weight:?}: {coefficient}"))?;
+                }
+                out.push("}")
+            }
             Value::RVHive(interior) => {
                 self.spend(interior.len())?;
                 self.write_type(out, ty, 0)?;

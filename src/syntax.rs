@@ -79,6 +79,7 @@ pub(crate) enum TypeForm {
     RVSphHecke(usize),
     RVSatake(usize),
     RVHive(HiveSpec),
+    RVFusion(usize, usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -547,6 +548,11 @@ pub(crate) enum ExprForm {
     SatakeCharacter(bool, Vec<i128>),
     SatakeScalar(usize, i128),
     Hive(HiveSpec, Option<Vec<i128>>),
+    FusionBasis(usize, Vec<i128>),
+    FusionOne(usize, usize),
+    FusionProduct(Box<[ParsedExpr; 2]>),
+    FusionScale(i128, Box<ParsedExpr>),
+    FusionDual(Box<ParsedExpr>),
     SatakeProduct(Box<[ParsedExpr; 2]>),
     RVIwAdlv(
         crate::rv_iwahori::Boundary,
@@ -720,6 +726,7 @@ pub(crate) enum StatementForm {
     SatakeQuery(Option<i128>, Vec<i128>, ParsedExpr),
     HiveReport(HiveSpec, bool),
     HiveVertex(usize, usize, ParsedExpr),
+    FusionCoefficient(Vec<i128>, ParsedExpr),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1508,6 +1515,13 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvFusionCoeff") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let weight = self.signed_tuple("a signed fusion weight", "fusion weight")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::FusionCoefficient(weight, self.paren_expr(0)?)
             }
             Token::Word("rvHiveCount" | "rvHorn") => {
                 let horn = self.token() == Token::Word("rvHorn");
@@ -2960,6 +2974,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVFusion" && self.eat(Token::LParen)? {
+            let (rank, _) = self.number()?;
+            self.expect(Token::Comma)?;
+            let (level, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVFusion(rank, level), 0);
         }
         if name.text == "RVHive" && self.eat(Token::LParen)? {
             let weights = self.hive_spec()?;
@@ -4868,6 +4889,38 @@ impl<'src> Parser<'src> {
                         None
                     };
                     return expr(span, ExprForm::Hive(weights, interior), 0);
+                }
+                if name.text == "rvFusionBasis" && self.eat(Token::LBracket)? {
+                    let (level, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let weight = self.signed_tuple("a signed fusion weight", "fusion weight")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::FusionBasis(level, weight), 0);
+                }
+                if name.text == "rvFusionOne" && self.eat(Token::LBracket)? {
+                    let (rank, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (level, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::FusionOne(rank, level), 0);
+                }
+                if name.text == "rvFusionMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::FusionProduct(Box::new(arguments)), depth);
+                }
+                if name.text == "rvFusionScale" && self.eat(Token::LBracket)? {
+                    let factor =
+                        self.signed_wide("a signed fusion coefficient", "fusion coefficient")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::FusionScale(factor, Box::new(input)), depth);
+                }
+                if name.text == "rvFusionDual" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::FusionDual(Box::new(input)), depth);
                 }
                 if name.text == "rvSphBasis" && self.eat(Token::LBracket)? {
                     let coweight = self.affine_window()?;

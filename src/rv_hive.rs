@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 
-const MAX_RANK: usize = 24;
+pub(crate) const MAX_RANK: usize = 24;
 const MAX_HORN_CELLS: usize = 300_000;
 
 pub(crate) type Interior = Rc<[i128]>;

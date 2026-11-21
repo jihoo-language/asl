@@ -847,6 +847,14 @@ The example also writes the rank-two square $S_{(0,1)}^2$ as $\mathrm{IC}_{(0,2)
 
 For $\lambda=\mu=(0,1,2)$ and $\nu=(1,2,3)$, the two hives give the multiplicity behind the coefficient $2q^2$ in the spherical IC tensor-square calculation. Scaling all three weights by $k$ gives $k+1$ hives. Adding constants $a$ and $b$ to the two input weights and $a+b$ to the output shifts each vertex by $ai+(a+b)j$ and preserves the count. [Hive example](examples/rv-hive.asl)
 
+### Level-dependent Verlinde fusion
+
+`RVFusion(n,k)` is the integral level-$k$ $\mathrm{SU}(n)$ WZW fusion ring. Use `rvFusionBasis[k,[lambda0,...]]` for an irreducible basis element and `rvFusionOne[n,k]` for the unit. The interpreter subtracts the smallest coordinate from the weakly increasing input weight. The resulting largest coordinate must be at most $k$. This identifies determinant translates and leaves just the unit basis element at level zero.
+
+`rvFusionMul(a,b)` multiplies elements at the same rank and level. It counts classical tensor multiplicities in integral hive slices and applies the Kac–Walton affine Weyl fold to each shifted highest weight. Weights on alcove walls contribute zero. The remaining folds contribute with the permutation sign, and basis products have nonnegative coefficients after cancellation. This level-dependent multiplication is distinct from the classical character tensor product computed by the spherical IC basis.
+
+Elements support `zero`, `add`, `neg`, equality, signed integer multiplication by `rvFusionScale[c](a)`, and the contragredient involution `rvFusionDual(a)`. Use `rvFusionCoeff[[lambda0,...]](a);` to read an integer coefficient. The example squares the $\mathrm{SU}(3)$ adjoint class at levels two, three, and four. The level-two result is $1+8$. Level three gives $1+2\cdot 8+10+\overline{10}$, and level four adds $27$. [Verlinde fusion example](examples/rv-verlinde.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

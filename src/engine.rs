@@ -62,6 +62,7 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_descent;
 use crate::rv_field;
+use crate::rv_fusion;
 use crate::rv_gauss;
 use crate::rv_hh;
 use crate::rv_hh_homology;
@@ -318,6 +319,9 @@ enum TypedForm {
     SphericalEmbedding(Box<TypedExpr>),
     SatakeTransform(Box<TypedExpr>),
     SatakeInverse(Box<TypedExpr>),
+    FusionProduct(rv_fusion::Grade, Box<[TypedExpr; 2]>),
+    FusionScale(rv_fusion::Grade, i128, Box<TypedExpr>),
+    FusionDual(rv_fusion::Grade, Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
@@ -582,6 +586,20 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::FusionCoefficient(weight, input) => {
+                let input = self.checker().expr(input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    return Err(Error::new(
+                        input.span,
+                        "rvFusionCoeff requires a fusion element",
+                    ));
+                };
+                let Value::RVFusion(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = rv_fusion::coefficient(&mut self.model, grade, &terms, weight)?;
+                format!("rvFusionCoeff = {coefficient}")
             }
             StatementForm::HiveReport(weights, horn) => {
                 let boundary = rv_hive::Boundary::checked(&mut self.model, weights)?;
@@ -1963,6 +1981,12 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVFusion(a), Value::RVFusion(b)) => {
+                        let Kind::RVFusion(grade) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        rv_fusion::add(&mut self.model, grade, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVSatake(a), Value::RVSatake(b)) => {
                         rv_satake::add(&mut self.model, &a, &b)
                     }
@@ -2646,6 +2670,25 @@ impl Engine {
                     unreachable!()
                 };
                 rv_sphhecke::multiply(&mut self.model, rank, &left, &right)
+            }
+            TypedForm::FusionProduct(grade, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVFusion(a), Value::RVFusion(b)] = values else {
+                    unreachable!()
+                };
+                rv_fusion::multiply(&mut self.model, *grade, &a, &b)
+            }
+            TypedForm::FusionScale(grade, factor, input) => {
+                let Value::RVFusion(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_fusion::scale(&mut self.model, *grade, &terms, *factor)
+            }
+            TypedForm::FusionDual(grade, input) => {
+                let Value::RVFusion(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_fusion::dual(&mut self.model, *grade, &terms)
             }
             TypedForm::SatakeInverse(input) => {
                 let Value::RVSatake(terms) = self.eval(input)? else {
@@ -3909,6 +3952,9 @@ impl Checker<'_> {
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
             TypeForm::RVSatake(rank) => self.model.satake_type(rank),
+            TypeForm::RVFusion(rank, level) => self
+                .model
+                .fusion_type(rv_fusion::Grade::checked(rank, level)?),
             TypeForm::RVHive(weights) => {
                 let boundary = rv_hive::Boundary::checked(self.model, weights)?;
                 self.model.hive_type(boundary)
@@ -4178,6 +4224,7 @@ impl Checker<'_> {
                     Kind::RVIwHecke(..) => rv_iwhecke::zero(),
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVSatake(..) => rv_satake::zero(),
+                    Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -4987,6 +5034,9 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if let Kind::RVFusion(grade) = *self.model.kind(input.ty) {
+                    return Ok((input.ty, TypedForm::FusionScale(grade, -1, Box::new(input))));
+                }
                 if !matches!(
                     self.model.kind(input.ty),
                     Kind::RVIwHecke(..) | Kind::RVSphHecke(..) | Kind::RVSatake(..)
@@ -4994,10 +5044,52 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         &input,
                         "neg",
-                        "an affine Hecke element, a spherical Hecke element, or a Satake polynomial",
+                        "an affine Hecke element, a spherical Hecke element, a Satake polynomial, or a fusion element",
                     ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::FusionBasis(level, weight) => {
+                let grade = rv_fusion::Grade::checked(weight.len(), level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::basis(self.model, grade, weight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::FusionOne(rank, level) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::basis(self.model, grade, vec![0; rank])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::FusionProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let Kind::RVFusion(grade) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(&left, "rvFusionMul", "a fusion element"));
+                };
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvFusionMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::FusionProduct(grade, Box::new([left, right])),
+                ))
+            }
+            ExprForm::FusionScale(factor, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvFusionScale", "a fusion element"));
+                };
+                Ok((
+                    input.ty,
+                    TypedForm::FusionScale(grade, factor, Box::new(input)),
+                ))
+            }
+            ExprForm::FusionDual(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvFusionDual", "a fusion element"));
+                };
+                Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
             }
             ExprForm::Hive(weights, interior) => {
                 let boundary = rv_hive::Boundary::checked(self.model, weights)?;
@@ -7844,6 +7936,7 @@ impl Checker<'_> {
                         | Kind::RVIwHecke(..)
                         | Kind::RVSphHecke(..)
                         | Kind::RVSatake(..)
+                        | Kind::RVFusion(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)
