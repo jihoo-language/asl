@@ -160,6 +160,23 @@ pub(crate) fn class(model: &mut Model, ty: TypeId, words: &[Word]) -> Result<Val
     Ok(Value::Class(coordinates.into()))
 }
 
+pub(crate) fn restrict(
+    model: &mut Model,
+    source_ty: TypeId,
+    class_support: &[usize],
+    target_ty: TypeId,
+) -> Result<Value> {
+    if class_support.is_empty() {
+        return Ok(Value::Class([].into()));
+    }
+    let (profile, _, _) = model.kind(target_ty).ext_grade().unwrap();
+    let representative = model
+        .adams(source_ty)?
+        .representative(model, class_support)?;
+    let words = profile.restrict(model, &representative)?;
+    class(model, target_ty, &words)
+}
+
 pub(crate) fn yoneda(
     model: &mut Model,
     left_ty: TypeId,

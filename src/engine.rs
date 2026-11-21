@@ -20,6 +20,7 @@ use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::page_transition::{self, Direction as PageDirection};
 use crate::profile::Profile;
+use crate::restriction_transfer;
 use crate::steenrod;
 use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType,
@@ -101,7 +102,8 @@ enum TypedForm {
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
-    Transfer(transfer::Operation, Vec<TypedExpr>),
+    Transfer(Profile, transfer::Operation, Vec<TypedExpr>),
+    HigherRestriction(Profile, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     MapSystem(map_system::Operation, usize, Vec<MapSystemEntry>),
     MapBracket {
@@ -492,23 +494,19 @@ impl Engine {
                         self.model.allocate(words.len())?;
                         Ok(Value::Cobar(words.into()))
                     }
+                    Value::Class(class) if self.model.kind(input.ty).may_grade().is_none() => {
+                        adams::restrict(&mut self.model, input.ty, &class, expr.ty)
+                    }
                     Value::Class(class) => {
                         if class.is_empty() {
                             return Ok(cohomology::zero());
                         }
-                        let is_may = self.model.kind(input.ty).may_grade().is_some();
-                        let representative = if is_may {
-                            self.model
-                                .may_page(input.ty)?
-                                .representative(&mut self.model, &class)?
-                        } else {
-                            self.model
-                                .adams(input.ty)?
-                                .representative(&mut self.model, &class)?
-                        };
-                        let project = if is_may { may::class } else { adams::class };
+                        let representative = self
+                            .model
+                            .may_page(input.ty)?
+                            .representative(&mut self.model, &class)?;
                         let words = profile.restrict(&mut self.model, &representative)?;
-                        project(&mut self.model, expr.ty, &words)
+                        may::class(&mut self.model, expr.ty, &words)
                     }
                     _ => unreachable!(),
                 }
@@ -563,20 +561,13 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 bracket::evaluate(&mut self.model, target, &inputs)
             }
-            TypedForm::Transfer(operation, inputs) => {
-                let inputs = inputs
-                    .iter()
-                    .map(|term| {
-                        let Kind::Ext(s, t) = *self.model.kind(term.ty) else {
-                            unreachable!()
-                        };
-                        let Value::Class(coordinates) = self.eval(term)? else {
-                            unreachable!()
-                        };
-                        Ok(((s, t), coordinates))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                transfer::evaluate(&mut self.model, &inputs, *operation)
+            TypedForm::Transfer(profile, operation, inputs) => {
+                let inputs = self.scalar_arguments(inputs)?;
+                transfer::evaluate(&mut self.model, *profile, &inputs, *operation)
+            }
+            TypedForm::HigherRestriction(source, target, inputs) => {
+                let inputs = self.scalar_arguments(inputs)?;
+                restriction_transfer::evaluate(&mut self.model, *source, *target, &inputs)
             }
             TypedForm::MapTransfer(operation, inputs) => {
                 let inputs = inputs
@@ -717,6 +708,19 @@ impl Engine {
             }
             TypedForm::Sew(charts) => self.sew(expr.ty, charts),
         }
+    }
+
+    fn scalar_arguments(&mut self, terms: &[TypedExpr]) -> Result<Vec<transfer::Input>> {
+        terms
+            .iter()
+            .map(|term| {
+                let (_, s, t) = self.model.kind(term.ty).ext_grade().unwrap();
+                let Value::Class(coordinates) = self.eval(term)? else {
+                    unreachable!()
+                };
+                Ok(((s, t), coordinates))
+            })
+            .collect()
     }
 
     fn sew(&mut self, ty: TypeId, charts: &[(usize, TypedExpr)]) -> Result<Value> {
@@ -1049,6 +1053,7 @@ impl Checker<'_> {
             ExprForm::PowerDef(inputs) => self.defining_system(inputs, None, span),
             ExprForm::Bracket(inputs) => self.bracket(inputs, span),
             ExprForm::Transfer(operation, inputs) => self.transfer(operation, inputs),
+            ExprForm::HigherRestriction(n, inputs) => self.higher_restriction(n, inputs, span),
             ExprForm::MapBracket(operation, inputs) => self.map_bracket(operation, inputs),
             ExprForm::MapTransfer(operation, inputs) => self.map_transfer(operation, inputs),
             ExprForm::MapSystem(operation, inputs, witnesses) => {
@@ -1266,19 +1271,61 @@ impl Checker<'_> {
     ) -> Result<(TypeId, TypedForm)> {
         let arity = inputs.len();
         operation.require_arity(arity)?;
-        let mut terms = Vec::with_capacity(arity);
-        let mut degrees = Vec::with_capacity(arity);
-        for input in inputs {
-            let term = self.expr(input)?;
-            degrees.push(self.ext_bidegree(&term, operation.name())?);
-            terms.push(term);
-        }
+        let (profile, terms, degrees) = self.scalar_inputs(operation.name(), inputs)?;
         let (s, t) = operation.bidegree(degrees, arity)?;
         let ty = match operation {
-            transfer::Operation::Product => self.model.ext_type(s, t)?,
-            transfer::Operation::Lift => self.model.cobar_type(s, t)?,
+            transfer::Operation::Product => self.model.profile_ext_type(profile, s, t)?,
+            transfer::Operation::Lift => self.model.profile_cobar_type(profile, s, t)?,
         };
-        Ok((ty, TypedForm::Transfer(operation, terms)))
+        Ok((ty, TypedForm::Transfer(profile, operation, terms)))
+    }
+
+    fn higher_restriction(
+        &mut self,
+        n: usize,
+        inputs: Vec<ParsedExpr>,
+        span: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let arity = inputs.len();
+        let (source, terms, degrees) = self.scalar_inputs("resHigher", inputs)?;
+        let target = Profile::An(n);
+        if !source.can_restrict_to(target) {
+            return Err(Error::new(
+                span,
+                "resHigher cannot restrict from a smaller Steenrod algebra",
+            ));
+        }
+        let (s, t) = restriction_transfer::bidegree(degrees, arity)?;
+        let ty = self.model.profile_ext_type(target, s, t)?;
+        Ok((ty, TypedForm::HigherRestriction(source, target, terms)))
+    }
+
+    fn scalar_inputs(
+        &mut self,
+        operation: &str,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(Profile, Vec<TypedExpr>, Vec<transfer::Bidegree>)> {
+        let arity = inputs.len();
+        let mut terms = Vec::with_capacity(arity);
+        let mut degrees = Vec::with_capacity(arity);
+        let mut source = None;
+        for input in inputs {
+            let term = self.expr(input)?;
+            let (profile, s, t) = self
+                .model
+                .kind(term.ty)
+                .ext_grade()
+                .ok_or_else(|| self.invalid_operand(&term, operation, "an Ext class"))?;
+            if let Some(previous) = source {
+                require_profile(previous, profile, operation, term.span)?;
+            }
+            source = Some(profile);
+            degrees.push((s, t));
+            terms.push(term);
+        }
+        let profile = source
+            .ok_or_else(|| Error::plain(format!("{operation} requires at least one Ext class")))?;
+        Ok((profile, terms, degrees))
     }
 
     fn map_transfer(

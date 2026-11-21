@@ -2,12 +2,14 @@ use std::rc::Rc;
 
 use crate::adams;
 use crate::cobar::{self, Word};
+use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
+use crate::profile::Profile;
 
-type Bidegree = (usize, usize);
-type Input = (Bidegree, Rc<[usize]>);
-type Cochain = Rc<[Word]>;
+pub(crate) type Bidegree = (usize, usize);
+pub(crate) type Input = (Bidegree, Rc<[usize]>);
+type Cochain = Vec<Word>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -47,25 +49,11 @@ impl Operation {
         arity: usize,
     ) -> Result<Bidegree> {
         self.require_arity(arity)?;
-        let name = self.name();
-        let mut s = 0u128;
-        let mut t = 0usize;
-        for (length, degree) in inputs {
-            s += length as u128;
-            t = t
-                .checked_add(degree)
-                .ok_or_else(|| Error::plain(format!("{name} internal degree is out of range")))?;
-        }
         let shift = match self {
             Self::Product => arity - 2,
             Self::Lift => arity - 1,
         };
-        let s = s.checked_sub(shift as u128).ok_or_else(|| {
-            Error::plain(format!("{name} produces a negative cohomological degree"))
-        })?;
-        let s = usize::try_from(s)
-            .map_err(|_| Error::plain(format!("{name} cohomological degree is out of range")))?;
-        Ok((s, t))
+        sum_degrees(inputs, shift, self.name())
     }
 
     fn zero(self) -> Value {
@@ -76,7 +64,33 @@ impl Operation {
     }
 }
 
-pub(crate) fn evaluate(model: &mut Model, inputs: &[Input], operation: Operation) -> Result<Value> {
+pub(crate) fn sum_degrees(
+    inputs: impl IntoIterator<Item = Bidegree>,
+    shift: usize,
+    name: &str,
+) -> Result<Bidegree> {
+    let mut s = 0u128;
+    let mut t = 0usize;
+    for (length, degree) in inputs {
+        s += length as u128;
+        t = t
+            .checked_add(degree)
+            .ok_or_else(|| Error::plain(format!("{name} internal degree is out of range")))?;
+    }
+    let s = s
+        .checked_sub(shift as u128)
+        .ok_or_else(|| Error::plain(format!("{name} produces a negative cohomological degree")))?;
+    let s = usize::try_from(s)
+        .map_err(|_| Error::plain(format!("{name} cohomological degree is out of range")))?;
+    Ok((s, t))
+}
+
+pub(crate) fn evaluate(
+    model: &mut Model,
+    profile: Profile,
+    inputs: &[Input],
+    operation: Operation,
+) -> Result<Value> {
     let arity = inputs.len();
     let (result_s, result_t) =
         operation.bidegree(inputs.iter().map(|&(degree, _)| degree), arity)?;
@@ -92,132 +106,188 @@ pub(crate) fn evaluate(model: &mut Model, inputs: &[Input], operation: Operation
         });
     }
     if let (Operation::Product, [((s, t), left), ((u, v), right)]) = (operation, inputs) {
-        let left_ty = model.ext_type(*s, *t)?;
-        let right_ty = model.ext_type(*u, *v)?;
-        let ty = model.ext_type(result_s, result_t)?;
+        let left_ty = model.profile_ext_type(profile, *s, *t)?;
+        let right_ty = model.profile_ext_type(profile, *u, *v)?;
+        let ty = model.profile_ext_type(profile, result_s, result_t)?;
         return adams::yoneda(model, left_ty, left, right_ty, right, ty);
     }
 
-    let prefix_count = arity.saturating_add(1);
-    let interval_count = arity.saturating_mul(prefix_count) / 2;
-    model.spend(interval_count)?;
-    model.allocate(interval_count.saturating_add(prefix_count))?;
-    let mut prefixes: Vec<Bidegree> = Vec::with_capacity(prefix_count);
-    prefixes.push((0, 0));
-    let mut singletons: Vec<Cochain> = Vec::with_capacity(arity);
-    for &((s, t), ref coordinates) in inputs {
-        let &(prev_s, prev_t) = prefixes.last().unwrap();
-        let sum_s = prev_s
-            .checked_add(s - 1)
-            .ok_or_else(intermediate_overflow)?;
-        let sum_t = prev_t.checked_add(t).ok_or_else(intermediate_overflow)?;
-        prefixes.push((sum_s, sum_t));
-        let ty = model.ext_type(s, t)?;
-        let adams = model.adams(ty)?;
-        let words = adams.representative(model, coordinates)?;
-        model.allocate(words.len())?;
-        singletons.push(Rc::from(words));
-    }
-
-    // Row k stores F on the consecutive intervals of length k + 1.
-    let mut lifts = Vec::with_capacity(arity - 1);
-    lifts.push(singletons);
-    for length in 2..=arity {
-        let mut row = Vec::with_capacity(arity - length + 1);
-        for start in 0..=arity - length {
-            let end = start + length;
-            let s = (prefixes[end].0 - prefixes[start].0)
-                .checked_add(2)
-                .ok_or_else(intermediate_overflow)?;
-            let bidegree = (s, prefixes[end].1 - prefixes[start].1);
-            let mut source: Cochain = [].into();
-            for left_len in 1..length {
-                model.spend(1)?;
-                let right_len = length - left_len;
-                let left = &lifts[left_len - 1][start];
-                let right = &lifts[right_len - 1][start + left_len];
-                if left.is_empty() || right.is_empty() {
-                    continue;
-                }
-                let term = cobar::concat_support(model, left, right)?;
-                source = if source.is_empty() {
-                    term.into()
-                } else {
-                    add(model, &source, &term)?
-                };
-            }
-            if length == arity {
-                return contract(model, bidegree, source, operation);
-            }
-            let Value::Cobar(lift) = contract(model, bidegree, source, Operation::Lift)? else {
-                unreachable!();
-            };
-            row.push(lift);
-        }
-        lifts.push(row);
-    }
-    unreachable!()
-}
-
-fn intermediate_overflow() -> Error {
-    Error::plain("transfer intermediate cobar bidegree is out of range")
-}
-
-fn add(model: &mut Model, left: &Cochain, right: &[Word]) -> Result<Cochain> {
-    if right.is_empty() {
-        return Ok(left.clone());
-    }
-    let Value::Cobar(sum) = cobar::add(model, left, right)? else {
-        unreachable!();
-    };
-    Ok(sum)
-}
-
-fn contract(
-    model: &mut Model,
-    (s, t): Bidegree,
-    source: Cochain,
-    operation: Operation,
-) -> Result<Value> {
-    if source.is_empty() {
-        return Ok(operation.zero());
-    }
-
-    // q = source + P(d source) is closed even when source is not.
-    let differential = cobar::differential_support(model, &source)?;
-    let closed = if differential.is_empty() {
-        source
-    } else {
-        let next_s = s
-            .checked_add(1)
-            .ok_or_else(|| Error::plain("cobar differential degree is out of range"))?;
-        let ty = model.ext_type(next_s, t)?;
-        let next = model.adams(ty)?;
-        let primitive = next
-            .primitive(model, &differential)?
-            .ok_or_else(|| Error::plain("cobar differential has no boundary preimage"))?;
-        add(model, &source, &primitive)?
-    };
-    if closed.is_empty() {
-        return Ok(operation.zero());
-    }
-
-    let ty = model.ext_type(s, t)?;
-    let adams = model.adams(ty)?;
-    let coordinates = adams.project(model, &closed)?;
+    let intervals = Intervals::build(model, profile, inputs, arity - 1)?;
+    let grade = intervals.obstruction_grade(0, arity)?;
+    let source = intervals.obstruction(model, 0, arity)?;
+    let (closed, coordinates) = project(model, profile, grade, &source)?;
     match operation {
         Operation::Product => {
             model.allocate(coordinates.len())?;
             Ok(Value::Class(coordinates.into()))
         }
         Operation::Lift => {
-            let representative = adams.representative(model, &coordinates)?;
-            let boundary = add(model, &closed, &representative)?;
-            let primitive = adams.primitive(model, &boundary)?.ok_or_else(|| {
-                Error::plain("cobar cycle differs from its Ext representative by a nonboundary")
-            })?;
+            let (_, primitive) = split_closed(model, profile, grade, &closed, &coordinates)?;
             model.allocate(primitive.len())?;
             Ok(Value::Cobar(primitive.into()))
         }
     }
+}
+
+pub(crate) struct Intervals {
+    prefixes: Vec<Bidegree>,
+    // Row k stores the lifts of the consecutive intervals of length k + 1.
+    lifts: Vec<Vec<Cochain>>,
+}
+
+impl Intervals {
+    pub(crate) fn build(
+        model: &mut Model,
+        profile: Profile,
+        inputs: &[Input],
+        through: usize,
+    ) -> Result<Self> {
+        let arity = inputs.len();
+        let prefix_count = arity.saturating_add(1);
+        let interval_count = arity.saturating_mul(prefix_count) / 2;
+        model.spend(interval_count)?;
+        let mut cells = interval_count.saturating_add(prefix_count);
+        check_lifts(cells)?;
+        let mut prefixes: Vec<Bidegree> = Vec::with_capacity(prefix_count);
+        prefixes.push((0, 0));
+        let mut singletons = Vec::with_capacity(arity);
+        for &((s, t), ref coordinates) in inputs {
+            let &(prev_s, prev_t) = prefixes.last().unwrap();
+            let sum_s = prev_s
+                .checked_add(s - 1)
+                .ok_or_else(intermediate_overflow)?;
+            let sum_t = prev_t.checked_add(t).ok_or_else(intermediate_overflow)?;
+            prefixes.push((sum_s, sum_t));
+            let ty = model.profile_ext_type(profile, s, t)?;
+            let words = model.adams(ty)?.representative(model, coordinates)?;
+            cells += words.len();
+            check_lifts(cells)?;
+            singletons.push(words);
+        }
+        let mut intervals = Self {
+            prefixes,
+            lifts: vec![singletons],
+        };
+        for length in 2..=through {
+            let mut row = Vec::with_capacity(arity - length + 1);
+            for start in 0..=arity - length {
+                let end = start + length;
+                let grade = intervals.obstruction_grade(start, end)?;
+                let source = intervals.obstruction(model, start, end)?;
+                let (closed, coordinates) = project(model, profile, grade, &source)?;
+                let (_, primitive) = split_closed(model, profile, grade, &closed, &coordinates)?;
+                cells += primitive.len();
+                check_lifts(cells)?;
+                row.push(primitive);
+            }
+            intervals.lifts.push(row);
+        }
+        Ok(intervals)
+    }
+
+    pub(crate) fn grade(&self, start: usize, end: usize) -> Result<Bidegree> {
+        self.shifted_grade(start, end, 1)
+    }
+
+    pub(crate) fn lift(&self, start: usize, end: usize) -> &[Word] {
+        &self.lifts[end - start - 1][start]
+    }
+
+    fn obstruction_grade(&self, start: usize, end: usize) -> Result<Bidegree> {
+        self.shifted_grade(start, end, 2)
+    }
+
+    fn shifted_grade(&self, start: usize, end: usize, shift: usize) -> Result<Bidegree> {
+        let (before_s, before_t) = self.prefixes[start];
+        let (after_s, after_t) = self.prefixes[end];
+        let s = (after_s - before_s)
+            .checked_add(shift)
+            .ok_or_else(intermediate_overflow)?;
+        Ok((s, after_t - before_t))
+    }
+
+    fn obstruction(&self, model: &mut Model, start: usize, end: usize) -> Result<Cochain> {
+        let mut sum = Vec::new();
+        for middle in start + 1..end {
+            model.spend(1)?;
+            let left = self.lift(start, middle);
+            let right = self.lift(middle, end);
+            if left.is_empty() || right.is_empty() {
+                continue;
+            }
+            let term = cobar::concat_temporary(model, left, right)?;
+            sum = if sum.is_empty() {
+                term
+            } else {
+                cobar::add_support(model, &sum, &term)?
+            };
+        }
+        Ok(sum)
+    }
+}
+
+fn check_lifts(cells: usize) -> Result<()> {
+    if cells > MAX_PIVOT_CELLS {
+        return Err(Error::plain(
+            "transfer lift table exceeds the storage limit",
+        ));
+    }
+    Ok(())
+}
+
+fn intermediate_overflow() -> Error {
+    Error::plain("transfer intermediate cobar bidegree is out of range")
+}
+
+// The contraction projects an arbitrary cochain by first closing it with
+// the canonical primitive of its differential.
+pub(crate) fn project(
+    model: &mut Model,
+    profile: Profile,
+    (s, t): Bidegree,
+    source: &[Word],
+) -> Result<(Cochain, Vec<usize>)> {
+    if source.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let differential = profile.differential_support(model, source)?;
+    let closed = if differential.is_empty() {
+        source.to_vec()
+    } else {
+        let next_s = s
+            .checked_add(1)
+            .ok_or_else(|| Error::plain("cobar differential degree is out of range"))?;
+        let ty = model.profile_ext_type(profile, next_s, t)?;
+        let next = model.adams(ty)?;
+        let primitive = next
+            .primitive(model, &differential)?
+            .ok_or_else(|| Error::plain("cobar differential has no boundary preimage"))?;
+        cobar::add_support(model, source, &primitive)?
+    };
+    if closed.is_empty() {
+        return Ok((closed, Vec::new()));
+    }
+    let ty = model.profile_ext_type(profile, s, t)?;
+    let coordinates = model.adams(ty)?.project(model, &closed)?;
+    Ok((closed, coordinates))
+}
+
+pub(crate) fn split_closed(
+    model: &mut Model,
+    profile: Profile,
+    (s, t): Bidegree,
+    closed: &[Word],
+    coordinates: &[usize],
+) -> Result<(Cochain, Cochain)> {
+    if closed.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let ty = model.profile_ext_type(profile, s, t)?;
+    let adams = model.adams(ty)?;
+    let representative = adams.representative(model, coordinates)?;
+    let boundary = cobar::add_support(model, closed, &representative)?;
+    let primitive = adams.primitive(model, &boundary)?.ok_or_else(|| {
+        Error::plain("cobar cycle differs from its Ext representative by a nonboundary")
+    })?;
+    Ok((representative, primitive))
 }

@@ -21,6 +21,7 @@ mod model;
 mod observations;
 mod page_transition;
 mod profile;
+mod restriction_transfer;
 mod steenrod;
 mod syntax;
 mod transfer;

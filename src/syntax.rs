@@ -139,6 +139,7 @@ pub(crate) enum ExprForm {
     ExtGenerator(usize, usize, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
+    HigherRestriction(usize, Vec<ParsedExpr>),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
     MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
     MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
@@ -846,7 +847,7 @@ impl<'src> Parser<'src> {
         Ok(head)
     }
 
-    fn variadic(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
+    fn arguments(&mut self, nest: usize) -> Result<Vec<ParsedExpr>> {
         let mut arguments = Vec::new();
         while self.token() != Token::RParen {
             arguments.push(self.expr(nest + 1)?);
@@ -855,6 +856,11 @@ impl<'src> Parser<'src> {
             }
         }
         self.expect(Token::RParen)?;
+        Ok(arguments)
+    }
+
+    fn variadic(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
+        let mut arguments = self.arguments(nest)?;
         let ExprForm::Name(name) = &head.kind else {
             unreachable!();
         };
@@ -1055,6 +1061,18 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::RestrictAlgebra(n, Box::new(value)), depth);
+                }
+                if name.text == "resHigher" && self.eat(Token::LBracket)? {
+                    let (n, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let inputs = self.arguments(nest)?;
+                    let depth = inputs
+                        .iter()
+                        .map(|input| input.depth + 1)
+                        .max()
+                        .unwrap_or(0);
+                    return expr(span, ExprForm::HigherRestriction(n, inputs), depth);
                 }
                 if name.text == "xextgen" && self.eat(Token::LBracket)? {
                     let (base, s, t) = self.space_bidegree(nest)?;

@@ -204,13 +204,19 @@ The example computes the nonzero full $d_7$ on $b_{2,0}^2$. Its restriction in `
 
 ## Transferred homotopy operations on Ext
 
-`ainfty(a1, ..., an)` gives the operation $m_n$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., an)` gives the component $F_n$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $n\ge 2$ Ext classes. With input bidegrees $(s_i,t_i)$, their result types are `Ext(sum s + 2 - n, sum t)` and `Cobar(sum s + 1 - n, sum t)`, respectively. A negative result degree gives an error. The binary operation is `yoneda`, and the generator of `Ext(0, 0)` is a strict unit.
+`ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.
 
 At fixed internal degree, let $P_s$ send each boundary of cobar length $s$ to its deterministic preimage by sparse elimination on the ordered words of length $s-1$. Write $i$ for `extRep`. For a cochain $c$ of length $s$, form the cycle $q=c+P_{s+1}(dc)$, let $p(c)$ be `extClass(q)`, and put $h(c)=P_s(q+i p(c))$. These maps give the contraction $d h+h d=1+i p$.
 
 Starting with $F_1=i$, ASL computes $U_n=\sum_{j=1}^{n-1} F_j(a_1,\ldots,a_j)F_{n-j}(a_{j+1},\ldots,a_n)$ using cobar concatenation. It returns $m_n=p(U_n)$ and $F_n=h(U_n)$. The correction $P_{s+1}(dc)$ applies even when $U_n$ has nonzero differential. The calculation reuses lifts for each consecutive interval and caches the sparse splittings by bidegree. [Merkulov, *Strongly homotopy algebras of a Kähler manifold*](https://arxiv.org/abs/math/9809172)
 
 The higher operations can depend on the chosen contraction. The Massey product collects classes from defining systems. In this transfer, $m_3(h_0,h_1,h_0)=h_1^2$ and $m_4(h_0,h_1,h_2,h_0)=h_2^2$. The adjacent product $h_2h_0$ obstructs a Massey defining system for the four inputs. The fourth lift is $[\xi_1\xi_3]+[\xi_1^2\xi_2^2]+[\xi_1^5\xi_2]$. Run `nix run path:. -- examples/ext-transfer.asl` to compute both operations and the lift. [Transfer example](examples/ext-transfer.asl)
+
+### Coherent restriction
+
+`resHigher[n](a1, ..., ak)` computes the component $R_k$ of the $A_\infty$ morphism induced by restriction to $\mathcal A(n)$. Its inputs are ordered as for `ainfty` and all use the full algebra or one common $\mathcal A(m)$ with $m\geq n$. The result lies in `ExtAn(n, sum s + 1 - k, sum t)`. The unary component is `resA[n]`, which preserves `yoneda`. For $k>1$, a unit input or an unchanged profile gives zero. ASL restricts canonical lifts of consecutive blocks and applies the target cobar contraction to the resulting tensors.
+
+The example computes $R_3(h_2,h_0^2,h_1^3)=v_1^4$ over $\mathcal A(1)$. The individual restrictions of $h_2$ and $h_1^3$ both vanish. It computes additional nonzero components in arities two and four. [Coherent restriction example](examples/ainfty-restriction.asl)
 
 ## Milnor duality and the homology coaction
 

@@ -98,11 +98,16 @@ pub(crate) fn word_cells(word: &Word) -> usize {
 }
 
 pub(crate) fn add(model: &mut Model, left: &[Word], right: &[Word]) -> Result<Value> {
+    let words = add_support(model, left, right)?;
+    model.allocate(words.len())?;
+    Ok(Value::Cobar(words.into()))
+}
+
+pub(crate) fn add_support(model: &mut Model, left: &[Word], right: &[Word]) -> Result<Vec<Word>> {
     model.spend(left.iter().chain(right).map(word_cells).sum())?;
     let words = xor_sorted(left, right);
     check_storage(words.iter().map(word_cells).sum())?;
-    model.allocate(words.len())?;
-    Ok(Value::Cobar(words.into()))
+    Ok(words)
 }
 
 pub(crate) fn compare(model: &mut Model, left: &[Word], right: &[Word]) -> Result<Ordering> {
@@ -154,6 +159,16 @@ pub(crate) fn concat_support(
     left: &[Word],
     right: &[Word],
 ) -> Result<Vec<Word>> {
+    let words = concat_temporary(model, left, right)?;
+    model.allocate(words.iter().map(word_cells).sum())?;
+    Ok(words)
+}
+
+pub(crate) fn concat_temporary(
+    model: &mut Model,
+    left: &[Word],
+    right: &[Word],
+) -> Result<Vec<Word>> {
     if right.is_empty() {
         return Ok(Vec::new());
     }
@@ -165,7 +180,7 @@ pub(crate) fn concat_support(
         for b in right {
             cells += word_cells(a) + word_cells(b) - 1;
             check_storage(cells)?;
-            words.push(concat_words(model, a, b)?);
+            words.push(concat_word_support(model, a, b)?);
         }
     }
     Ok(words)
