@@ -39,6 +39,7 @@ pub(crate) enum TypeForm {
     MapMay(MapMaySpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
+    CeAn(usize, usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
     Bar(usize),
@@ -77,6 +78,7 @@ pub(crate) enum BinaryOp {
     MapExtCompose,
     XMap,
     MayMul,
+    CeMul,
     MilnorPair,
 }
 
@@ -94,6 +96,7 @@ impl BinaryOp {
             "ecomp" => Some(Self::MapExtCompose),
             "xmap" => Some(Self::XMap),
             "mayMul" => Some(Self::MayMul),
+            "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             _ => None,
         }
@@ -181,6 +184,8 @@ pub(crate) enum ExprForm {
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
     MayAnGenerator(usize, usize, usize, usize, usize, usize, Span),
+    CeGenerator(usize, usize, usize, usize, usize, usize, Span),
+    CeClass(usize, usize, Box<ParsedExpr>),
     Suspension(ParsedType, SuspensionForm),
     Shift(usize, Box<ParsedExpr>),
     Cyclic(usize, Span, CyclicForm),
@@ -224,6 +229,7 @@ pub(crate) enum StatementForm {
     MapMayDimension(MapMaySpec),
     MayDimension(usize, usize, usize, usize),
     MayAnDimension(usize, usize, usize, usize, usize),
+    CeDimension(usize, usize, usize, usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
 
@@ -601,12 +607,16 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::MapMayDimension(spec)
             }
-            Token::Word("mayandim") => {
+            Token::Word(name @ ("mayandim" | "ceandim")) => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
-                let (n, r, s, t, f) = self.may_an_degree()?;
+                let (n, r, s, t, f) = self.profile_page_degree()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::MayAnDimension(n, r, s, t, f)
+                if name == "ceandim" {
+                    StatementForm::CeDimension(n, r, s, t, f)
+                } else {
+                    StatementForm::MayAnDimension(n, r, s, t, f)
+                }
             }
             Token::Word("maydim") => {
                 self.advance()?;
@@ -711,7 +721,7 @@ impl<'src> Parser<'src> {
         })
     }
 
-    fn may_an_degree(&mut self) -> Result<(usize, usize, usize, usize, usize)> {
+    fn profile_page_degree(&mut self) -> Result<(usize, usize, usize, usize, usize)> {
         let (n, _) = self.number()?;
         self.expect(Token::Comma)?;
         let (r, s, t, f) = self.may_degree()?;
@@ -822,10 +832,15 @@ impl<'src> Parser<'src> {
             let depth = spec.source.depth.max(spec.target.depth) + 1;
             return ty(span, TypeForm::MapMay(spec), depth);
         }
-        if name.text == "MayAn" && self.eat(Token::LParen)? {
-            let (n, r, s, t, f) = self.may_an_degree()?;
+        if matches!(name.text.as_str(), "MayAn" | "CEAn") && self.eat(Token::LParen)? {
+            let (n, r, s, t, f) = self.profile_page_degree()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::MayAn(n, r, s, t, f), 0);
+            let kind = if name.text == "CEAn" {
+                TypeForm::CeAn(n, r, s, t, f)
+            } else {
+                TypeForm::MayAn(n, r, s, t, f)
+            };
+            return ty(span, kind, 0);
         }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
@@ -1244,12 +1259,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MapMayGenerator(spec, index, at), 0);
                 }
-                if name.text == "mayangen" && self.eat(Token::LBracket)? {
-                    let (n, r, s, t, f) = self.may_an_degree()?;
+                if matches!(name.text.as_str(), "mayangen" | "ceangen")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (n, r, s, t, f) = self.profile_page_degree()?;
                     self.expect(Token::Comma)?;
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
-                    return expr(span, ExprForm::MayAnGenerator(n, r, s, t, f, index, at), 0);
+                    let kind = if name.text == "ceangen" {
+                        ExprForm::CeGenerator(n, r, s, t, f, index, at)
+                    } else {
+                        ExprForm::MayAnGenerator(n, r, s, t, f, index, at)
+                    };
+                    return expr(span, kind, 0);
                 }
                 if name.text == "maygen" && self.eat(Token::LBracket)? {
                     let (r, s, t, f) = self.may_degree()?;
@@ -1265,12 +1287,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PMayGenerator(p, r, s, t, f, index, at), 0);
                 }
-                if name.text == "mayClass" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "mayClass" | "ceClass")
+                    && self.eat(Token::LBracket)?
+                {
                     let (r, f) = self.bidegree()?;
                     self.expect(Token::RBracket)?;
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
-                    return expr(span, ExprForm::MayClass(r, f, Box::new(value)), depth);
+                    let kind = if name.text == "ceClass" {
+                        ExprForm::CeClass(r, f, Box::new(value))
+                    } else {
+                        ExprForm::MayClass(r, f, Box::new(value))
+                    };
+                    return expr(span, kind, depth);
                 }
                 if matches!(name.text.as_str(), "bar" | "binom" | "carry")
                     && self.eat(Token::LBracket)?

@@ -10,32 +10,70 @@ pub(crate) enum Direction {
     Previous,
 }
 
-impl Direction {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Next => "mayNext",
-            Self::Previous => "mayPrev",
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageFamily {
+    May,
+    Ce,
+}
+
+impl PageFamily {
+    fn name(self, direction: Direction) -> &'static str {
+        match (self, direction) {
+            (Self::May, Direction::Next) => "mayNext",
+            (Self::May, Direction::Previous) => "mayPrev",
+            (Self::Ce, Direction::Next) => "ceNext",
+            (Self::Ce, Direction::Previous) => "cePrev",
         }
     }
 
-    pub(crate) fn result_type(self, model: &mut Model, ty: TypeId) -> Result<TypeId> {
-        if let Kind::PMay(p, r, s, t, f) = *model.kind(ty) {
-            let page = self.target_page(r)?;
-            return model.pmay_type(p, page, s, t, f);
+    fn expected(self) -> &'static str {
+        match self {
+            Self::May => "a May or MapMay class",
+            Self::Ce => "a CEAn class",
         }
-        let mut grade = Grade::from_type(model, ty, self.name())?;
-        grade.page = self.target_page(grade.page)?;
+    }
+}
+
+impl Direction {
+    pub(crate) fn result_type(
+        self,
+        model: &mut Model,
+        ty: TypeId,
+        family: PageFamily,
+    ) -> Result<TypeId> {
+        if family == PageFamily::May {
+            if let Kind::PMay(p, r, s, t, f) = *model.kind(ty) {
+                let page = self.target_page(r, family)?;
+                return model.pmay_type(p, page, s, t, f);
+            }
+        }
+        let grade = Grade::from_type(model, ty)
+            .filter(|grade| grade.family.page_family() == family)
+            .ok_or_else(|| {
+                Error::plain(format!(
+                    "{} requires {}, found {}",
+                    family.name(self),
+                    family.expected(),
+                    model.type_name(ty),
+                ))
+            })?;
+        self.changed_type(model, grade)
+    }
+
+    fn changed_type(self, model: &mut Model, mut grade: Grade) -> Result<TypeId> {
+        grade.page = self.target_page(grade.page, grade.family.page_family())?;
         grade.ty(model)
     }
 
-    fn target_page(self, page: usize) -> Result<usize> {
+    fn target_page(self, page: usize, family: PageFamily) -> Result<usize> {
+        let name = family.name(self);
         match self {
             Self::Next => page
                 .checked_add(1)
-                .ok_or_else(|| Error::plain("mayNext page is out of range")),
+                .ok_or_else(|| Error::plain(format!("{name} page is out of range"))),
             Self::Previous => page
                 .checked_sub(1)
-                .ok_or_else(|| Error::plain("mayPrev requires a page greater than zero")),
+                .ok_or_else(|| Error::plain(format!("{name} requires a page greater than zero"))),
         }
     }
 }
@@ -44,6 +82,7 @@ impl Direction {
 enum Family {
     Scalar(Profile, usize),
     Mapping(TypeId, TypeId, i64),
+    CentralExtension(usize, usize),
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +94,7 @@ struct Grade {
 }
 
 impl Grade {
-    fn from_type(model: &Model, ty: TypeId, op: &str) -> Result<Self> {
+    fn from_type(model: &Model, ty: TypeId) -> Option<Self> {
         let (family, page, length, filtration) = match *model.kind(ty) {
             Kind::MapMay(source, target, page, length, degree, filtration) => (
                 Family::Mapping(source, target, degree),
@@ -63,17 +102,18 @@ impl Grade {
                 length,
                 filtration,
             ),
+            Kind::CeAn(n, page, length, degree, filtration) => (
+                Family::CentralExtension(n, degree),
+                page,
+                length,
+                filtration,
+            ),
             ref kind => {
-                let Some((profile, page, length, degree, filtration)) = kind.may_grade() else {
-                    return Err(Error::plain(format!(
-                        "{op} requires a May or MapMay class, found {}",
-                        model.type_name(ty)
-                    )));
-                };
+                let (profile, page, length, degree, filtration) = kind.may_grade()?;
                 (Family::Scalar(profile, degree), page, length, filtration)
             }
         };
-        Ok(Self {
+        Some(Self {
             family,
             page,
             length,
@@ -94,6 +134,9 @@ impl Grade {
                 degree,
                 self.filtration,
             ),
+            Family::CentralExtension(n, degree) => {
+                model.ce_type(n, self.page, self.length, degree, self.filtration)
+            }
         }
     }
 
@@ -107,10 +150,18 @@ impl Grade {
 }
 
 impl Family {
+    fn page_family(self) -> PageFamily {
+        match self {
+            Self::Scalar(..) | Self::Mapping(..) => PageFamily::May,
+            Self::CentralExtension(..) => PageFamily::Ce,
+        }
+    }
+
     fn rank(self, model: &mut Model, ty: TypeId) -> Result<usize> {
         match self {
             Self::Scalar(..) => Ok(model.may_page(ty)?.rank()),
             Self::Mapping(..) => Ok(model.map_may(ty)?.rank()),
+            Self::CentralExtension(..) => Ok(model.ce_page(ty)?.rank()),
         }
     }
 
@@ -141,6 +192,15 @@ impl Family {
                 };
                 model.map_may(to)?.project(model, &terms)
             }
+            Self::CentralExtension(n, _) => {
+                let words = model.ce_page(from)?.representative(model, class)?;
+                let words = if differentiate {
+                    Profile::An(n).differential_support(model, &words)?
+                } else {
+                    words
+                };
+                model.ce_page(to)?.project(model, &words)
+            }
         }
     }
 }
@@ -148,11 +208,13 @@ impl Family {
 pub(crate) struct Transition {
     page: usize,
     cycles: Basis,
+    name: &'static str,
 }
 
 impl Transition {
     pub(crate) fn build(model: &mut Model, current: TypeId) -> Result<Self> {
-        let grade = Grade::from_type(model, current, "mayNext")?;
+        let grade = Grade::from_type(model, current).unwrap();
+        let name = grade.family.page_family().name(Direction::Next);
         let mut cycles = Basis::default();
         if let Some(incoming) = grade.incoming() {
             let incoming = incoming.ty(model)?;
@@ -165,7 +227,7 @@ impl Transition {
             }
         }
 
-        let next = Direction::Next.result_type(model, current)?;
+        let next = Direction::Next.changed_type(model, grade)?;
         for index in 0..grade.family.rank(model, next)? {
             // The raw next-page lift is already corrected through filtration
             // f+r. Its image on the current page is a cycle. Its witness
@@ -177,15 +239,14 @@ impl Transition {
                 .insert_with_witness(model, earlier, vec![index])?
                 .is_some()
             {
-                return Err(Error::plain(
-                    "May page transition has dependent cycle lifts",
-                ));
+                return Err(Error::plain(format!("{name} has dependent cycle lifts")));
             }
         }
-        model.allocate(1 + cycles.cells())?;
+        model.allocate(2 + cycles.cells())?;
         Ok(Self {
             page: grade.page,
             cycles,
+            name,
         })
     }
 
@@ -196,8 +257,8 @@ impl Transition {
                 .reduce_with_witness(model, class.to_vec(), Vec::new())?;
         if !remainder.is_empty() {
             return Err(Error::plain(format!(
-                "mayNext requires a cycle for d_{}",
-                self.page
+                "{} requires a cycle for d_{}",
+                self.name, self.page,
             )));
         }
         Ok(next)
@@ -222,7 +283,7 @@ pub(crate) fn previous(
     if class.is_empty() {
         return Ok(Value::Class([].into()));
     }
-    let grade = Grade::from_type(model, source, "mayPrev")?;
+    let grade = Grade::from_type(model, source).unwrap();
     let coordinates = grade
         .family
         .lift_coordinates(model, source, target, class, false)?;

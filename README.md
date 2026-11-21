@@ -60,6 +60,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `MapCobar(X, Y, s, t)` | The discrete space of length-`s` bivariant cobar cochains of signed internal degree `t`. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `MayAn(n, r, s, t, f)` | The corresponding May page for the finite Steenrod subalgebra `A(n)`. |
+| `CEAn(n, r, s, t, f)` | The Cartan–Eilenberg page for the central exterior generator of `A(n)`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
 | `Bar(m)` | The discrete space of normalized mod-two 1-cochains of the cyclic group of order `m`. Its points are the functions on residues that vanish at zero. |
@@ -240,6 +241,16 @@ Run `nix run path:. -- examples/may.asl` to compute $d_1(h_{2,0})=h_1h_0$ and th
 On a scalar May class, `resA[n]` induces restriction to `A(n)` in the same page and degrees. It restricts the cobar lift along the dual Hopf quotient and projects to the target page. Surviving words keep their May indices, so restriction commutes with page differentials and products. Restricting through an intermediate subalgebra gives the direct restriction.
 
 The example computes the nonzero full $d_7$ on $b_{2,0}^2$. Its restriction in `A(1)` has zero $d_7$ and survives to the nonzero class $v_1^4$ in `ExtAn(1, 4, 12)`. Restriction to `A(0)` kills the class. [Finite-profile May example](examples/profile-may.asl)
+
+## The Cartan–Eilenberg spectral sequence of A(n)
+
+The central extension $E(Q_n)\to\mathcal A(n)\to\mathcal A(n)//E(Q_n)$ filters the finite-profile cobar complex. In a word of length `s`, let `q` count factors containing $\xi_{n+1}$. This top generator is exterior in $\mathcal A(n)_*$, so its exponent is zero or one in each factor. The base filtration is `f = s - q`. A cobar split either keeps the top generator or replaces it with lower generators, raising `f` by one or two. Concatenation adds filtrations.
+
+`CEAn(n, r, s, t, f)` uses total cobar length `s` and internal degree `t` on page `r`. Page zero is the associated graded complex. Its differential is zero, so page one has the same groups and its differential records the filtration-one splits. Page two is the Ext of the lower-generator truncated Hopf coalgebra tensored with the polynomial algebra on the fiber class $v_n=[\xi_{n+1}]$. Its $d_2(v_n)$ is represented by the reduced coproduct of $\xi_{n+1}$ in the lower generators.
+
+`ceandim[n, r, s, t, f];` prints the rank and `ceangen[n, r, s, t, f, i]` selects generator `i`. `ceClass[r, f]` takes a `CobarAn` cochain satisfying the page cycle condition and `ceRep` returns a corrected lift. `ceD` increases `s` by one and `f` by `r`. `ceMul` multiplies classes on the same page over the same profile. `ceNext` takes a $d_r$-cycle to its next-page class, and `cePrev` uses the chosen lift to represent a class on the previous page.
+
+For $\mathcal A(1)$ the example computes $d_2(v_1)=h_0h_1$ and $d_3(v_1^2)=h_1^3$. The class of $v_1^4$ survives and its closed lift generates `ExtAn(1, 4, 12)`. [Cartan–Eilenberg example](examples/cartan-eilenberg.asl)
 
 ## Transferred homotopy operations on Ext
 
@@ -453,6 +464,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `pmaydim[p, r, s, t, f];` | Print the dimension of `PMay(p, r, s, t, f)` over 𝔽ₚ. |
 | `extandim[n, s, t];` | Print the dimension of `ExtAn(n, s, t)` over 𝔽₂. |
 | `mayandim[n, r, s, t, f];` | Print the dimension of a finite-profile May page component over 𝔽₂. |
+| `ceandim[n, r, s, t, f];` | Print the dimension of a Cartan–Eilenberg page component over 𝔽₂. |
 | `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
 | `mapextdim[X, Y, s, t];` | Print the dimension of `MapExt(X, Y, s, t)` over 𝔽₂. |
 | `mapmaydim[X, Y, r, s, t, f];` | Print the dimension of a bivariant May page component over 𝔽₂. |

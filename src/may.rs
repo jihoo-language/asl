@@ -17,6 +17,7 @@ const MAX_BASIS_WORDS: usize = 32_768;
 // differential preserves the decreasing filtration.
 pub(crate) trait FilteredComplex {
     type Term: Clone + Hash + Ord;
+    const NAME: &'static str = "May";
 
     fn basis(&mut self, model: &mut Model, s: usize, f: usize) -> Result<Vec<Self::Term>>;
     fn differential(&mut self, model: &mut Model, term: &Self::Term) -> Result<Vec<Self::Term>>;
@@ -44,6 +45,16 @@ struct Quotient {
 }
 
 impl<C: FilteredComplex> FilteredPage<C> {
+    pub(crate) fn empty(r: usize, f: usize) -> Self {
+        Self {
+            f,
+            cutoff: f.saturating_add(r),
+            terms: Vec::new(),
+            leading_start: 0,
+            quotient: (r != 0).then(Quotient::default),
+        }
+    }
+
     pub(crate) fn build(
         model: &mut Model,
         complex: &mut C,
@@ -51,13 +62,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
         s: usize,
         f: usize,
     ) -> Result<Self> {
-        let mut page = Self {
-            f,
-            cutoff: f.saturating_add(r),
-            terms: Vec::new(),
-            leading_start: 0,
-            quotient: (r != 0).then(Quotient::default),
-        };
+        let mut page = Self::empty(r, f);
         let mut leading = Vec::new();
         for term in complex.basis(model, s, f)? {
             model.spend(C::cells(&term))?;
@@ -93,7 +98,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
         // In the leading slice of Z_r^f, the kernel of projection is
         // Z_{r-1}^{f+1}. Only the leading parts of boundaries remain to quotient.
         let mut span = self.boundaries(model, complex, r, s)?;
-        let mut rows = Rows::new();
+        let mut rows = Rows::new(C::NAME);
         let mut cycles = Basis::default();
         let mut representatives = Vec::new();
         let mut lift_cells = 0;
@@ -124,7 +129,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
                 .is_none()
             {
                 lift_cells += 1 + lift.len();
-                check_storage(lift_cells + span.cells())?;
+                check_storage(lift_cells + span.cells(), C::NAME)?;
                 representatives.push(lift.into_boxed_slice());
             }
         }
@@ -141,7 +146,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
             return Ok(boundaries);
         }
         let source_filtration = self.f.saturating_sub(r - 1);
-        let mut rows = Rows::new();
+        let mut rows = Rows::new(C::NAME);
         let mut lower_images = Basis::default();
         for source in complex.basis(model, s - 1, source_filtration)? {
             model.spend(C::cells(&source))?;
@@ -172,9 +177,12 @@ impl<C: FilteredComplex> FilteredPage<C> {
     fn leading_coordinate(&self, model: &mut Model, term: &C::Term) -> Result<usize> {
         let leading = &self.terms[self.leading_start..];
         model.spend(C::cells(term) * (1 + leading.len().max(1).ilog2() as usize))?;
-        leading
-            .binary_search(term)
-            .map_err(|_| Error::plain("cobar term is missing from the May filtration slice"))
+        leading.binary_search(term).map_err(|_| {
+            Error::plain(format!(
+                "cobar term is missing from the {} filtration slice",
+                C::NAME
+            ))
+        })
     }
 
     pub(crate) fn rank(&self) -> usize {
@@ -197,9 +205,10 @@ impl<C: FilteredComplex> FilteredPage<C> {
             let term_filtration = complex.filtration(term)?;
             match term_filtration.cmp(&self.f) {
                 Ordering::Less => {
-                    return Err(Error::plain(
-                        "cobar chain lies below the requested May filtration",
-                    ));
+                    return Err(Error::plain(format!(
+                        "cobar chain lies below the requested {} filtration",
+                        C::NAME,
+                    )));
                 }
                 Ordering::Equal => leading.push(self.leading_coordinate(model, term)?),
                 Ordering::Greater => {}
@@ -212,9 +221,10 @@ impl<C: FilteredComplex> FilteredPage<C> {
             for term in complex.differential_support(model, &below_cutoff)? {
                 model.spend(C::cells(&term))?;
                 if complex.filtration(&term)? < self.cutoff {
-                    return Err(Error::plain(
-                        "cobar chain does not satisfy the May page cycle condition",
-                    ));
+                    return Err(Error::plain(format!(
+                        "cobar chain does not satisfy the {} page cycle condition",
+                        C::NAME,
+                    )));
                 }
             }
             let (remainder, coordinates) =
@@ -222,9 +232,10 @@ impl<C: FilteredComplex> FilteredPage<C> {
                     .span
                     .reduce_with_witness(model, leading, Vec::new())?;
             if !remainder.is_empty() {
-                return Err(Error::plain(
-                    "cobar cycle is missing from the May page basis",
-                ));
+                return Err(Error::plain(format!(
+                    "cobar cycle is missing from the {} page basis",
+                    C::NAME,
+                )));
             }
             leading = coordinates;
         }
@@ -242,7 +253,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
                 let lift = quotient
                     .representatives
                     .get(index)
-                    .ok_or_else(generator_range)?;
+                    .ok_or_else(generator_range::<C>)?;
                 support = xor(model, &support, lift)?;
             }
             support
@@ -252,7 +263,12 @@ impl<C: FilteredComplex> FilteredPage<C> {
         };
         let mut terms = Vec::with_capacity(support.len());
         for index in support {
-            terms.push(self.terms.get(index).ok_or_else(generator_range)?.clone());
+            terms.push(
+                self.terms
+                    .get(index)
+                    .ok_or_else(generator_range::<C>)?
+                    .clone(),
+            );
         }
         if self.quotient.is_some() {
             let cells: usize = terms.iter().map(C::cells).sum();
@@ -267,13 +283,15 @@ impl<C: FilteredComplex> FilteredPage<C> {
 struct Rows<T> {
     indices: HashMap<T, usize>,
     cells: usize,
+    name: &'static str,
 }
 
 impl<T: Hash + Eq> Rows<T> {
-    fn new() -> Self {
+    fn new(name: &'static str) -> Self {
         Self {
             indices: HashMap::new(),
             cells: 0,
+            name,
         }
     }
 
@@ -284,7 +302,7 @@ impl<T: Hash + Eq> Rows<T> {
         match self.indices.entry(term) {
             Entry::Occupied(entry) => Ok(*entry.get()),
             Entry::Vacant(entry) => {
-                check_storage(self.cells + size)?;
+                check_storage(self.cells + size, self.name)?;
                 self.cells += size;
                 Ok(*entry.insert(next))
             }
@@ -431,13 +449,15 @@ pub(crate) fn filtration(t: usize, word: &Word) -> usize {
     t - weight
 }
 
-fn check_storage(cells: usize) -> Result<()> {
+fn check_storage(cells: usize, name: &str) -> Result<()> {
     if cells > MAX_PIVOT_CELLS {
-        return Err(Error::plain("May calculation exceeds the storage limit"));
+        return Err(Error::plain(format!(
+            "{name} calculation exceeds the storage limit"
+        )));
     }
     Ok(())
 }
 
-fn generator_range() -> Error {
-    Error::plain("May generator index is out of range")
+fn generator_range<C: FilteredComplex>() -> Error {
+    Error::plain(format!("{} generator index is out of range", C::NAME))
 }

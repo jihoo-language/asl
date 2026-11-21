@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::adams::Adams;
+use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
@@ -53,6 +54,7 @@ pub(crate) enum Kind {
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
+    CeAn(usize, usize, usize, usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
     Bar(usize),
@@ -142,6 +144,7 @@ struct TypeInfo {
     map_ext: Option<Rc<MapAdams>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
+    ce_page: Option<Rc<CePage>>,
     page_transition: Option<Rc<Transition>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
@@ -260,6 +263,12 @@ impl Model {
                 1
             }
             Kind::May(_, s, t, _) | Kind::MayAn(_, _, s, t, _) if s == t => 2,
+            Kind::CeAn(n, _, s, t, f)
+                if f > s || s > t || (n == 0 && f != 0) || (s == 0 && t != 0) =>
+            {
+                1
+            }
+            Kind::CeAn(_, _, s, t, _) if s == t => 2,
             Kind::XExt(base, s, t) if s > t || !self.types[base.0].inhabited => 1,
             Kind::MapExt(source, target, ..) | Kind::MapCobar(source, target, ..)
                 if !self.types[source.0].inhabited || !self.types[target.0].inhabited =>
@@ -274,7 +283,8 @@ impl Model {
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
             | Kind::May(..)
-            | Kind::MayAn(..) => usize::MAX,
+            | Kind::MayAn(..)
+            | Kind::CeAn(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -293,6 +303,7 @@ impl Model {
             map_ext: None,
             map_may: None,
             may_page: None,
+            ce_page: None,
             page_transition: None,
             cardinality_bound,
             heights: [None; 2],
@@ -338,6 +349,7 @@ impl Model {
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
+                | Kind::CeAn(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
@@ -559,6 +571,17 @@ impl Model {
         self.inhabited_type(kind, 0)
     }
 
+    pub(crate) fn ce_type(
+        &mut self,
+        n: usize,
+        r: usize,
+        s: usize,
+        t: usize,
+        f: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::CeAn(n, r, s, t, f), 0)
+    }
+
     pub(crate) fn cyclic_type(&mut self, modulus: usize, cohomology: bool) -> Result<TypeId> {
         if modulus < 2 {
             return Err(Error::plain("cyclic modulus must be at least 2"));
@@ -687,6 +710,18 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn ce_page(&mut self, ty: TypeId) -> Result<Rc<CePage>> {
+        if let Some(page) = &self.types[ty.0].ce_page {
+            return Ok(page.clone());
+        }
+        let Kind::CeAn(n, r, s, t, f) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let page = Rc::new(CePage::build(self, n, r, s, t, f)?);
+        self.types[ty.0].ce_page = Some(page.clone());
+        Ok(page)
+    }
+
     pub(crate) fn page_transition(&mut self, ty: TypeId) -> Result<Rc<Transition>> {
         if let Some(data) = &self.types[ty.0].page_transition {
             return Ok(data.clone());
@@ -772,6 +807,7 @@ impl Model {
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
+            | Kind::CeAn(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
             | Kind::CyclicH2(..) => 1,
@@ -918,6 +954,7 @@ impl Model {
             }
             &Kind::May(r, s, t, f) => out.push(&format!("May({r}, {s}, {t}, {f})")),
             &Kind::MayAn(n, r, s, t, f) => out.push(&format!("MayAn({n}, {r}, {s}, {t}, {f})")),
+            &Kind::CeAn(n, r, s, t, f) => out.push(&format!("CEAn({n}, {r}, {s}, {t}, {f})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
             &Kind::Suspension(base) => {
@@ -1189,6 +1226,10 @@ impl Model {
                 }
                 Kind::May(..) | Kind::MayAn(..) => {
                     let rank = self.may_page(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::CeAn(..) => {
+                    let rank = self.ce_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,

@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::adams;
 use crate::bracket;
+use crate::ce;
 use crate::cobar;
 use crate::cohomology;
 use crate::comodule::{self, Generator};
@@ -22,7 +23,7 @@ use crate::odd_cobar::{self, Prime};
 use crate::odd_ext;
 use crate::odd_massey;
 use crate::odd_may;
-use crate::page_transition::{self, Direction as PageDirection};
+use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
 use crate::restriction_transfer;
 use crate::steenrod;
@@ -59,7 +60,10 @@ enum CobarOp {
     MayClass,
     MayRepresentative,
     MayDifferential,
-    MayTransition(PageDirection),
+    CeClass,
+    CeRepresentative,
+    CeDifferential,
+    PageTransition(PageFamily, PageDirection),
     MapDifferential,
     MapClass,
     MapRepresentative,
@@ -74,8 +78,18 @@ impl CobarOp {
             "extPrimitive" => Some(Self::Primitive),
             "mayRep" => Some(Self::MayRepresentative),
             "mayD" => Some(Self::MayDifferential),
-            "mayNext" => Some(Self::MayTransition(PageDirection::Next)),
-            "mayPrev" => Some(Self::MayTransition(PageDirection::Previous)),
+            "mayNext" => Some(Self::PageTransition(PageFamily::May, PageDirection::Next)),
+            "mayPrev" => Some(Self::PageTransition(
+                PageFamily::May,
+                PageDirection::Previous,
+            )),
+            "ceNext" => Some(Self::PageTransition(PageFamily::Ce, PageDirection::Next)),
+            "cePrev" => Some(Self::PageTransition(
+                PageFamily::Ce,
+                PageDirection::Previous,
+            )),
+            "ceRep" => Some(Self::CeRepresentative),
+            "ceD" => Some(Self::CeDifferential),
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
@@ -284,6 +298,11 @@ impl Engine {
                 let rank = self.model.may_page(ty)?.rank();
                 format!("mayandim[{n}, {r}, {s}, {t}, {f}] = {rank}")
             }
+            StatementForm::CeDimension(n, r, s, t, f) => {
+                let ty = self.model.ce_type(n, r, s, t, f)?;
+                let rank = self.model.ce_page(ty)?.rank();
+                format!("ceandim[{n}, {r}, {s}, {t}, {f}] = {rank}")
+            }
             StatementForm::MayDimension(r, s, t, f) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -403,6 +422,9 @@ impl Engine {
                     (BinaryOp::MayMul, Value::OddClass(a), Value::OddClass(b)) => {
                         odd_may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
+                    (BinaryOp::CeMul, Value::Class(a), Value::Class(b)) => {
+                        ce::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
                     (BinaryOp::Add, Value::Bar(a), Value::Bar(b)) => {
                         cyclic::add(&mut self.model, &a, &b)
                     }
@@ -495,21 +517,38 @@ impl Engine {
                         may::differential(&mut self.model, input.ty, &class, expr.ty)
                     }
                 }
-                (CobarOp::MayTransition(PageDirection::Next), Value::Class(class)) => {
+                (CobarOp::CeClass, Value::Cobar(words)) => {
+                    ce::class(&mut self.model, expr.ty, &words)
+                }
+                (CobarOp::CeDifferential, Value::Class(class)) => {
+                    ce::differential(&mut self.model, input.ty, &class, expr.ty)
+                }
+                (CobarOp::CeRepresentative, Value::Class(class)) => {
+                    if class.is_empty() {
+                        return Ok(cobar::zero());
+                    }
+                    let page = self.model.ce_page(input.ty)?;
+                    let words = page.representative(&mut self.model, &class)?;
+                    self.model.allocate(words.len())?;
+                    Ok(Value::Cobar(words.into()))
+                }
+                (CobarOp::PageTransition(_, PageDirection::Next), Value::Class(class)) => {
                     page_transition::next(&mut self.model, input.ty, &class)
                 }
-                (CobarOp::MayTransition(PageDirection::Previous), Value::Class(class)) => {
+                (CobarOp::PageTransition(_, PageDirection::Previous), Value::Class(class)) => {
                     page_transition::previous(&mut self.model, input.ty, expr.ty, &class)
                 }
                 (CobarOp::MayDifferential, Value::OddClass(class)) => {
                     odd_may::differential(&mut self.model, input.ty, &class, expr.ty)
                 }
-                (CobarOp::MayTransition(PageDirection::Next), Value::OddClass(class)) => {
-                    odd_may::next(&mut self.model, input.ty, &class, expr.ty)
-                }
-                (CobarOp::MayTransition(PageDirection::Previous), Value::OddClass(class)) => {
-                    odd_may::previous(&mut self.model, input.ty, &class, expr.ty)
-                }
+                (
+                    CobarOp::PageTransition(PageFamily::May, PageDirection::Next),
+                    Value::OddClass(class),
+                ) => odd_may::next(&mut self.model, input.ty, &class, expr.ty),
+                (
+                    CobarOp::PageTransition(PageFamily::May, PageDirection::Previous),
+                    Value::OddClass(class),
+                ) => odd_may::previous(&mut self.model, input.ty, &class, expr.ty),
                 (CobarOp::MayRepresentative, Value::OddClass(class)) => {
                     if class.is_empty() {
                         return Ok(odd_cobar::zero());
@@ -940,6 +979,7 @@ impl Checker<'_> {
             TypeForm::MayAn(n, r, s, t, f) => {
                 self.model.profile_may_type(Profile::An(n), r, s, t, f)
             }
+            TypeForm::CeAn(n, r, s, t, f) => self.model.ce_type(n, r, s, t, f),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
             TypeForm::Suspension(base) => {
@@ -1021,7 +1061,7 @@ impl Checker<'_> {
                     Kind::PCobar(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PMay(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -1176,6 +1216,20 @@ impl Checker<'_> {
                 let rank = self.model.may_page(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CeGenerator(n, r, s, t, f, index, at) => {
+                let ty = self.model.ce_type(n, r, s, t, f)?;
+                let rank = self.model.ce_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CeClass(r, f, value) => {
+                let value = self.expr(*value)?;
+                let Kind::CobarAn(n, s, t) = *self.model.kind(value.ty) else {
+                    return Err(self.invalid_operand(&value, "ceClass", "a CobarAn cochain"));
+                };
+                let ty = self.model.ce_type(n, r, s, t, f)?;
+                Ok((ty, TypedForm::Cobar(CobarOp::CeClass, Box::new(value))))
             }
             ExprForm::MayGenerator(r, s, t, f, index, at) => {
                 let ty = self.model.may_type(r, s, t, f)?;
@@ -1816,6 +1870,17 @@ impl Checker<'_> {
             .ok_or_else(|| self.invalid_operand(value, op, "a May page class"))
     }
 
+    fn ce_degree(
+        &self,
+        value: &TypedExpr,
+        op: &str,
+    ) -> Result<(usize, usize, usize, usize, usize)> {
+        match *self.model.kind(value.ty) {
+            Kind::CeAn(n, r, s, t, f) => Ok((n, r, s, t, f)),
+            _ => Err(self.invalid_operand(value, op, "a CEAn class")),
+        }
+    }
+
     fn cobar_result(
         &mut self,
         op: &CobarOp,
@@ -1840,10 +1905,20 @@ impl Checker<'_> {
             }
         }
         match op {
-            CobarOp::MayTransition(direction) => {
+            CobarOp::PageTransition(family, direction) => {
                 return direction
-                    .result_type(self.model, argument.ty)
+                    .result_type(self.model, argument.ty, *family)
                     .map_err(|error| error.at(argument.span));
+            }
+            CobarOp::CeRepresentative => {
+                let (n, _, s, t, _) = self.ce_degree(argument, name)?;
+                return self.model.profile_cobar_type(Profile::An(n), s, t);
+            }
+            CobarOp::CeDifferential => {
+                let (n, r, s, t, f) = self.ce_degree(argument, name)?;
+                let s = checked_degree(s, 1, name, span)?;
+                let f = checked_degree(f, r, name, span)?;
+                return self.model.ce_type(n, r, s, t, f);
             }
             CobarOp::MapDifferential => {
                 let (source, target, s, t) = self.map_cobar_bidegree(argument, name)?;
@@ -2014,6 +2089,7 @@ impl Checker<'_> {
                         | Kind::MapMay(..)
                         | Kind::May(..)
                         | Kind::MayAn(..)
+                        | Kind::CeAn(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
                 ) {
@@ -2172,6 +2248,21 @@ impl Checker<'_> {
                 } else {
                     self.model.map_ext_type(source, target, s, t)
                 }
+            }
+            BinaryOp::CeMul => {
+                let (n, r, s, t, f) = self.ce_degree(left, "ceMul")?;
+                let (m, page, u, v, g) = self.ce_degree(right, "ceMul")?;
+                require_profile(Profile::An(n), Profile::An(m), "ceMul", right.span)?;
+                if r != page {
+                    return Err(Error::new(
+                        right.span,
+                        "ceMul requires classes on the same page",
+                    ));
+                }
+                let s = checked_degree(s, u, "ceMul", span)?;
+                let t = checked_degree(t, v, "ceMul", span)?;
+                let f = checked_degree(f, g, "ceMul", span)?;
+                self.model.ce_type(n, r, s, t, f)
             }
             BinaryOp::MayMul => {
                 if let Kind::PMay(p, r, s, t, f) = *self.model.kind(left.ty) {
