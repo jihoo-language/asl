@@ -116,7 +116,7 @@ pub(crate) fn compare(model: &mut Model, left: &[Word], right: &[Word]) -> Resul
     Ok(left.len().cmp(&right.len()))
 }
 
-fn join(left: &Word, right: &Word) -> Word {
+pub(crate) fn join(left: &Word, right: &Word) -> Word {
     if left.is_empty() {
         return right.clone();
     }

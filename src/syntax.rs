@@ -23,6 +23,7 @@ pub(crate) enum TypeForm {
     Operations(usize),
     Cobar(usize, usize),
     Ext(usize, usize),
+    XExt(Box<ParsedType>, usize, usize),
     May(usize, usize, usize, usize),
     Suspension(Box<ParsedType>),
     Stable(Box<ParsedType>, usize, usize),
@@ -49,6 +50,8 @@ pub(crate) enum BinaryOp {
     Act,
     Concat,
     Yoneda,
+    XAction,
+    XMap,
     MayMul,
     MilnorPair,
 }
@@ -63,6 +66,8 @@ impl BinaryOp {
             "act" => Some(Self::Act),
             "concat" => Some(Self::Concat),
             "yoneda" => Some(Self::Yoneda),
+            "xaction" => Some(Self::XAction),
+            "xmap" => Some(Self::XMap),
             "mayMul" => Some(Self::MayMul),
             "milnorPair" => Some(Self::MilnorPair),
             _ => None,
@@ -105,6 +110,7 @@ pub(crate) enum ExprForm {
     Coact(usize, usize, Span, Box<ParsedExpr>),
     CobarWord(Vec<(Vec<usize>, Span)>),
     ExtGenerator(usize, usize, usize, Span),
+    XExtGenerator(ParsedType, usize, usize, usize, Span),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
     Suspension(ParsedType, SuspensionForm),
@@ -138,6 +144,7 @@ pub(crate) enum StatementForm {
     Assert(ParsedExpr, ParsedExpr),
     Betti(ParsedType),
     ExtDimension(usize, usize),
+    XExtDimension(ParsedType, usize, usize),
     MayDimension(usize, usize, usize, usize),
     Homotopy(ParsedExpr, ParsedExpr),
 }
@@ -464,6 +471,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::ExtDimension(s, t)
             }
+            Token::Word("xextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (base, s, t) = self.space_bidegree(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::XExtDimension(base, s, t)
+            }
             Token::Word("maydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -488,6 +502,13 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (t, _) = self.number()?;
         Ok((s, t))
+    }
+
+    fn space_bidegree(&mut self, nest: usize) -> Result<(ParsedType, usize, usize)> {
+        let base = self.ty(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let (s, t) = self.bidegree()?;
+        Ok((base, s, t))
     }
 
     fn may_degree(&mut self) -> Result<(usize, usize, usize, usize)> {
@@ -542,6 +563,12 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
+        if name.text == "XExt" && self.eat(Token::LParen)? {
+            let (base, s, t) = self.space_bidegree(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = base.depth + 1;
+            return ty(span, TypeForm::XExt(Box::new(base), s, t), depth);
+        }
         if name.text == "May" && self.eat(Token::LParen)? {
             let (r, s, t, f) = self.may_degree()?;
             self.expect(Token::RParen)?;
@@ -806,6 +833,13 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::ExtGenerator(s, t, index, at), 0);
+                }
+                if name.text == "xextgen" && self.eat(Token::LBracket)? {
+                    let (base, s, t) = self.space_bidegree(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::XExtGenerator(base, s, t, index, at), 0);
                 }
                 if name.text == "maygen" && self.eat(Token::LBracket)? {
                     let (r, s, t, f) = self.may_degree()?;

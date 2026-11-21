@@ -49,6 +49,7 @@ A `space` declaration gives generators for a partial order. For example, `space 
 | `A(d)` | The discrete space of homogeneous degree-`d` elements of the mod-two Steenrod algebra. |
 | `Cobar(s, t)` | The discrete space of normalized cobar cochains of length `s` and internal degree `t` for the dual mod-two Steenrod algebra. |
 | `Ext(s, t)` | The discrete space of mod-two Adams $E_2$ classes in filtration `s` and internal degree `t`. |
+| `XExt(X, s, t)` | The discrete space of mod-two Adams $E_2$ classes for the suspension spectrum of `X` with a disjoint basepoint. |
 | `May(r, s, t, f)` | The discrete space of classes on the algebraic May page `r` in cobar length `s`, internal degree `t`, and filtration `f`. |
 | `Susp(X)` | The suspension poset, with two incomparable poles above every point of `X`. |
 | `Stable(X, s, d)` | The discrete space of reduced degree-`d` classes of the `s`-fold suspension of `X₊`. Adjoin a disjoint basepoint to `X` to form `X₊`. |
@@ -193,6 +194,21 @@ The pairing of `mul(a, b)` against a monomial uses `a` on the left coproduct fac
 
 `coact[n, i](u)` takes `u : H(X, q)` and pairs the coaction on the homology generator dual to `gen[X, n, i]` against `u`. The coefficient of $\xi^R$ is the `i`th coordinate of `act(milnor{[r1, r2, ...]}, u)`. For `n > q`, the result has type `Cobar(1, n - q)`. For `n = q`, it gives the `i`th coordinate of `u` as a multiple of the unit in `Cobar(0, 0)`.
 
+## Adams E₂ with finite-space coefficients
+
+`XExt(X, s, t)` computes $\operatorname{Ext}_{\mathcal A}^{s,t}(H^*(X;\mathbb F_2),\mathbb F_2)$, the mod-two Adams $E_2$ page of $\Sigma^\infty X_+$. It uses ordinary homology, so $H_0$ contributes one sphere summand per component. `XExt(One, s, t)` therefore has the rank of `Ext(s, t)`.
+
+A cochain basis term $[a_1\mid\cdots\mid a_s]\otimes z$ has internal degree $t=|z|+\sum_i |a_i|$, where $z$ is dual to a canonical cohomology generator of `X`. The differential splits each word factor by the reduced coproduct. It also appends a factor from the reduced Milnor coaction on $z$, using the actual Steenrod action on $H^*(X;\mathbb F_2)$. For the projective plane the top generator has differential $[\xi_1]\otimes z_1$. The wedge in the projective-plane example has the same Betti numbers and a zero differential on its top generator. [Projective plane and wedge](examples/projective-plane.asl)
+
+| Form | Meaning |
+| --- | --- |
+| `xextdim[X, s, t];` | Print the rank of `XExt(X, s, t)`. |
+| `xextgen[X, s, t, i]` | Select basis generator `i`, starting at zero. |
+| `xaction(a, x)` | Act by an `Ext(u, v)` class `a` on `x : XExt(X, s, t)` by prepending its cobar representative. The result is in `XExt(X, s + u, t + v)`. |
+| `xmap(f, x)` | Apply the map induced by `f : X -> Y` to `x : XExt(X, s, t)`, using the dual of cohomology pullback. The result is in `XExt(Y, s, t)`. |
+
+`zero[XExt(X, s, t)]`, `add(x, y)`, and equality use the vector space structure in a fixed bidegree. The example computes the two sphere summands of a discrete two-point space and checks that the collapse commutes with scalar action. [Finite-space Adams E₂ example](examples/space-adams.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.
@@ -302,6 +318,7 @@ Observations are top-level statements. Every statement ends with `;` and `//` st
 | `homotopy f ~ g;` | Find a shortest zigzag of pointwise-comparable maps of the same type. Print its length, or `no` if the maps lie in different components. |
 | `betti T;` | Compute ordinary Betti numbers over 𝔽₂ of the order complex of `T`, starting in degree zero. Trailing zeros are omitted. The empty space yields `[]`. |
 | `extdim[s, t];` | Print the dimension of `Ext(s, t)` over 𝔽₂. |
+| `xextdim[X, s, t];` | Print the dimension of `XExt(X, s, t)` over 𝔽₂. |
 | `card p;` | For a predicate `p : X -> S`, print the number of points sent to `S.hi` and the size of `X`. On the empty domain this gives `card = 0 / 0`. |
 
 A homotopy step uses a single direction across the whole domain, so it requires `f(x) ≤ g(x)` for every `x`, or the reverse inequality for every `x`. In the triangle example, any endomorphism above the identity must fix all three maximal edges. Each vertex is the unique common lower bound of its two incident edges, so it too is fixed. The dual argument handles endomorphisms below the identity. This isolates the identity in `Circle -> Circle` and explains the `no` printed for the rotation. [Stong, *Finite Topological Spaces*, §3–4](https://webhomes.maths.ed.ac.uk/~v1ranick/papers/stong2.pdf)

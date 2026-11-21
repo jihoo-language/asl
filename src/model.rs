@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::adams::Adams;
 use crate::cobar;
 use crate::cohomology::Cohomology;
+use crate::comodule;
 use crate::error::{Error, Result};
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
@@ -32,6 +33,7 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     Ext(usize, usize),
+    XExt(TypeId, usize, usize),
     May(usize, usize, usize, usize),
     Suspension(TypeId),
     Stable(TypeId, usize, usize),
@@ -87,6 +89,7 @@ struct TypeInfo {
     elements: Option<Rc<[Value]>>,
     cohomology: Option<Rc<Cohomology>>,
     adams: Option<Rc<Adams>>,
+    xext: Option<Rc<comodule::Adams>>,
     may_page: Option<Rc<MayPage>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
@@ -180,7 +183,8 @@ impl Model {
             Kind::Cobar(s, t) | Kind::Ext(s, t) if s == t => 2,
             Kind::May(_, s, t, f) if s > t || f > t - s || (s == 0 && t != 0) => 1,
             Kind::May(_, s, t, _) if s == t => 2,
-            Kind::Cobar(..) | Kind::Ext(..) | Kind::May(..) => usize::MAX,
+            Kind::XExt(base, s, t) if s > t || !self.types[base.0].inhabited => 1,
+            Kind::Cobar(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::May(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -193,6 +197,7 @@ impl Model {
             elements: None,
             cohomology: None,
             adams: None,
+            xext: None,
             may_page: None,
             cardinality_bound,
             heights: [None; 2],
@@ -227,6 +232,7 @@ impl Model {
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::Ext(..)
+                | Kind::XExt(..)
                 | Kind::May(..)
                 | Kind::Stable(..)
                 | Kind::Bar(..)
@@ -346,6 +352,10 @@ impl Model {
         self.inhabited_type(Kind::Ext(s, t), 0)
     }
 
+    pub(crate) fn xext_type(&mut self, base: TypeId, s: usize, t: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::XExt(base, s, t), self.types[base.0].depth + 1)
+    }
+
     pub(crate) fn may_type(&mut self, r: usize, s: usize, t: usize, f: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::May(r, s, t, f), 0)
     }
@@ -407,6 +417,18 @@ impl Model {
         };
         let data = Rc::new(Adams::build(self, s, t)?);
         self.types[ty.0].adams = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn xext(&mut self, ty: TypeId) -> Result<Rc<comodule::Adams>> {
+        if let Some(data) = &self.types[ty.0].xext {
+            return Ok(data.clone());
+        }
+        let Kind::XExt(base, s, t) = *self.kind(ty) else {
+            unreachable!()
+        };
+        let data = Rc::new(comodule::Adams::build(self, base, s, t)?);
+        self.types[ty.0].xext = Some(data.clone());
         Ok(data)
     }
 
@@ -487,6 +509,7 @@ impl Model {
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::Ext(..)
+            | Kind::XExt(..)
             | Kind::May(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
@@ -602,6 +625,11 @@ impl Model {
             &Kind::Operations(degree) => out.push(&format!("A({degree})")),
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::Ext(s, t) => out.push(&format!("Ext({s}, {t})")),
+            &Kind::XExt(base, s, t) => {
+                out.push("XExt(")?;
+                self.write_type(out, base, 0)?;
+                out.push(&format!(", {s}, {t})"))
+            }
             &Kind::May(r, s, t, f) => out.push(&format!("May({r}, {s}, {t}, {f})")),
             &Kind::Bar(modulus) => out.push(&format!("Bar({modulus})")),
             &Kind::CyclicH2(modulus) => out.push(&format!("H2({modulus})")),
@@ -831,6 +859,10 @@ impl Model {
                 }
                 Kind::Ext(..) => {
                     let rank = self.adams(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::XExt(..) => {
+                    let rank = self.xext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::May(..) => {

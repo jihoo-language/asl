@@ -104,6 +104,76 @@ impl Basis {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct QuotientBasis {
+    boundaries: Basis,
+    cycles: Basis,
+    generators: Vec<usize>,
+}
+
+impl QuotientBasis {
+    pub(crate) fn build(
+        model: &mut Model,
+        boundaries: Basis,
+        size: usize,
+        mut differential: impl FnMut(&mut Model, usize) -> Result<Vec<usize>>,
+    ) -> Result<Self> {
+        let mut images = Basis::default();
+        let mut cycles = Basis::default();
+        let mut generators = Vec::new();
+        for coordinate in 0..size {
+            if boundaries.contains_pivot(coordinate) {
+                continue;
+            }
+            // Nonpivot coordinates complement the boundaries. A dependence
+            // among their images gives a cycle with this coordinate as pivot.
+            let image = differential(model, coordinate)?;
+            if let Some(cycle) = images.insert_with_witness(model, image, vec![coordinate])? {
+                let dependence =
+                    cycles.insert_with_witness(model, cycle, vec![generators.len()])?;
+                debug_assert!(dependence.is_none());
+                generators.push(coordinate);
+            }
+        }
+        model.allocate(boundaries.cells() + cycles.cells() + generators.len())?;
+        Ok(Self {
+            boundaries,
+            cycles,
+            generators,
+        })
+    }
+
+    pub(crate) fn rank(&self) -> usize {
+        self.generators.len()
+    }
+
+    pub(crate) fn project(
+        &self,
+        model: &mut Model,
+        support: Vec<usize>,
+    ) -> Result<Option<Vec<usize>>> {
+        let support = self.boundaries.reduce(model, support)?;
+        let (remainder, coordinates) =
+            self.cycles
+                .reduce_with_witness(model, support, Vec::new())?;
+        Ok(remainder.is_empty().then_some(coordinates))
+    }
+
+    pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Vec<usize>> {
+        let mut support = Vec::new();
+        for &index in class {
+            let pivot = self.generators[index];
+            support = xor(model, &support, self.cycles.vector(pivot).unwrap())?;
+        }
+        model.spend(support.len())?;
+        Ok(support)
+    }
+
+    pub(crate) fn is_boundary(&self, model: &mut Model, support: Vec<usize>) -> Result<bool> {
+        Ok(self.boundaries.reduce(model, support)?.is_empty())
+    }
+}
+
 pub(crate) fn xor(model: &mut Model, left: &[usize], right: &[usize]) -> Result<Vec<usize>> {
     model.spend(left.len() + right.len())?;
     Ok(xor_sorted(left, right))

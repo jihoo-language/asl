@@ -1,6 +1,6 @@
 use crate::cobar::{self, Word, WordRows};
 use crate::error::{Error, Result};
-use crate::linear::{self, Basis};
+use crate::linear::{Basis, QuotientBasis};
 use crate::model::{Model, TypeId, Value};
 use std::cell::OnceCell;
 
@@ -10,9 +10,7 @@ const MAX_BASIS_WORDS: usize = 32_768;
 pub(crate) struct Adams {
     bidegree: (usize, usize),
     words: Vec<Word>,
-    boundaries: Basis,
-    kernel: Basis,
-    generators: Vec<usize>,
+    quotient: QuotientBasis,
     boundary_preimages: OnceCell<BoundaryPreimages>,
 }
 
@@ -38,62 +36,38 @@ impl Adams {
         })?;
 
         let mut rows = WordRows::default();
-        let mut images = Basis::default();
-        let mut kernel = Basis::default();
-        let mut generators = Vec::new();
-        for (coordinate, word) in words.iter().enumerate() {
-            if boundaries.contains_pivot(coordinate) {
-                continue;
-            }
-            // Nonpivot words complement the boundaries. A dependence among
-            // their differentials gives a cycle with this word as its pivot.
-            let mut column = cobar::differential_word(model, word)?
+        let quotient = QuotientBasis::build(model, boundaries, words.len(), |model, index| {
+            let mut column = cobar::differential_word(model, &words[index])?
                 .into_iter()
                 .map(|term| rows.coordinate(model, term))
                 .collect::<Result<Vec<_>>>()?;
             model.spend(column.len() * (1 + column.len().max(1).ilog2() as usize))?;
             column.sort_unstable();
-            if let Some(cycle) = images.insert_with_witness(model, column, vec![coordinate])? {
-                let dependence =
-                    kernel.insert_with_witness(model, cycle, vec![generators.len()])?;
-                debug_assert!(dependence.is_none());
-                generators.push(coordinate);
-            }
-        }
-        model.allocate(boundaries.cells() + kernel.cells() + generators.len())?;
+            Ok(column)
+        })?;
         Ok(Self {
             bidegree: (s, t),
             words,
-            boundaries,
-            kernel,
-            generators,
+            quotient,
             boundary_preimages: OnceCell::new(),
         })
     }
 
     pub(crate) fn rank(&self) -> usize {
-        self.generators.len()
+        self.quotient.rank()
     }
 
     pub(crate) fn project(&self, model: &mut Model, words: &[Word]) -> Result<Vec<usize>> {
         let column = word_indices(model, &self.words, words)?;
-        let column = self.boundaries.reduce(model, column)?;
-        let (remainder, coordinates) =
-            self.kernel.reduce_with_witness(model, column, Vec::new())?;
-        if !remainder.is_empty() {
-            return Err(Error::plain("extClass requires a closed cobar cochain"));
-        }
-        Ok(coordinates)
+        self.quotient
+            .project(model, column)?
+            .ok_or_else(|| Error::plain("extClass requires a closed cobar cochain"))
     }
 
     pub(crate) fn representative(&self, model: &mut Model, class: &[usize]) -> Result<Vec<Word>> {
-        let mut words = Vec::new();
-        for &index in class {
-            let pivot = self.generators[index];
-            words = linear::xor(model, &words, self.kernel.vector(pivot).unwrap())?;
-        }
-        model.spend(words.len())?;
-        Ok(words
+        Ok(self
+            .quotient
+            .representative(model, class)?
             .into_iter()
             .map(|index| self.words[index].clone())
             .collect())
@@ -104,7 +78,7 @@ impl Adams {
             return Ok(Some(Vec::new()));
         }
         let column = word_indices(model, &self.words, words)?;
-        if !self.boundaries.reduce(model, column.clone())?.is_empty() {
+        if !self.quotient.is_boundary(model, column.clone())? {
             return Ok(None);
         }
         let preimages = if let Some(preimages) = self.boundary_preimages.get() {

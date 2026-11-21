@@ -5,6 +5,7 @@ use crate::adams;
 use crate::bracket;
 use crate::cobar;
 use crate::cohomology;
+use crate::comodule;
 use crate::cyclic::{self, Layout};
 use crate::error::{Error, Result, Span};
 use crate::may;
@@ -190,6 +191,12 @@ impl Engine {
                 let rank = self.model.adams(ty)?.rank();
                 format!("extdim[{s}, {t}] = {rank}")
             }
+            StatementForm::XExtDimension(base, s, t) => {
+                let base = self.checker().ty(base)?;
+                let ty = self.model.xext_type(base, s, t)?;
+                let rank = self.model.xext(ty)?.rank();
+                format!("xextdim[{}, {s}, {t}] = {rank}", self.model.type_name(base))
+            }
             StatementForm::MayDimension(r, s, t, f) => {
                 let ty = self.model.may_type(r, s, t, f)?;
                 let rank = self.model.may_page(ty)?.rank();
@@ -260,6 +267,12 @@ impl Engine {
                     }
                     (BinaryOp::Yoneda, Value::Class(a), Value::Class(b)) => {
                         adams::yoneda(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::XAction, Value::Class(a), Value::Class(b)) => {
+                        comodule::action(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::XMap, Value::Map(f), Value::Class(b)) => {
+                        comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
                     }
                     (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
                         may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
@@ -571,6 +584,10 @@ impl Checker<'_> {
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::Ext(s, t) => self.model.ext_type(s, t),
+            TypeForm::XExt(base, s, t) => {
+                let base = self.ty(*base)?;
+                self.model.xext_type(base, s, t)
+            }
             TypeForm::May(r, s, t, f) => self.model.may_type(r, s, t, f),
             TypeForm::Bar(modulus) => self.model.cyclic_type(modulus, false),
             TypeForm::CyclicH2(modulus) => self.model.cyclic_type(modulus, true),
@@ -650,7 +667,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) => cobar::zero(),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::May(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::XExt(..) | Kind::May(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -659,7 +676,7 @@ impl Checker<'_> {
                         return Err(Error::new(
                             span,
                             format!(
-                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, May, or bar cochain type, found {}",
+                                "zero requires a cohomology, Steenrod algebra, cobar, Ext, XExt, May, or bar cochain type, found {}",
                                 self.model.type_name(ty),
                             ),
                         ))
@@ -693,6 +710,13 @@ impl Checker<'_> {
             ExprForm::ExtGenerator(s, t, index, at) => {
                 let ty = self.model.ext_type(s, t)?;
                 let rank = self.model.adams(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::XExtGenerator(base, s, t, index, at) => {
+                let base = self.ty(base)?;
+                let ty = self.model.xext_type(base, s, t)?;
+                let rank = self.model.xext(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
@@ -1159,6 +1183,7 @@ impl Checker<'_> {
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
                         | Kind::Ext(..)
+                        | Kind::XExt(..)
                         | Kind::May(..)
                         | Kind::Bar(..)
                         | Kind::CyclicH2(..)
@@ -1166,7 +1191,7 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         left,
                         "add",
-                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, May class, or bar cochain",
+                        "a cohomology class, Steenrod operation, cobar cochain, Ext class, XExt class, May class, or bar cochain",
                     ));
                 }
                 self.require_type(left.ty, right, "add")?;
@@ -1207,6 +1232,28 @@ impl Checker<'_> {
                 let length = checked_degree(s, u, "yoneda", span)?;
                 let degree = checked_degree(t, v, "yoneda", span)?;
                 self.model.ext_type(length, degree)
+            }
+            BinaryOp::XAction => {
+                let (s, t) = self.ext_bidegree(left, "xaction")?;
+                let Kind::XExt(base, u, v) = *self.model.kind(right.ty) else {
+                    return Err(self.invalid_operand(right, "xaction", "an XExt class"));
+                };
+                let length = checked_degree(s, u, "xaction", span)?;
+                let degree = checked_degree(t, v, "xaction", span)?;
+                self.model.xext_type(base, length, degree)
+            }
+            BinaryOp::XMap => {
+                let Kind::Arrow(domain, range) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(left, "xmap", "a function"));
+                };
+                let Kind::XExt(base, s, t) = *self.model.kind(right.ty) else {
+                    return Err(self.invalid_operand(right, "xmap", "an XExt class"));
+                };
+                if base != domain {
+                    let expected = self.model.xext_type(domain, s, t)?;
+                    self.require_type(expected, right, "xmap")?;
+                }
+                self.model.xext_type(range, s, t)
             }
             BinaryOp::MayMul => {
                 let (r, s, t, f) = self.may_degree(left, "mayMul")?;
