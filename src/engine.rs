@@ -72,6 +72,7 @@ use crate::rv_poly;
 use crate::rv_rees;
 use crate::rv_scheme;
 use crate::rv_shintani;
+use crate::rv_sphhecke;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
@@ -245,6 +246,8 @@ enum TypedForm {
     RVLaurentMonomial(i64, Box<TypedExpr>),
     HeckeNegate(Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
+    SphericalProduct(Box<[TypedExpr; 2]>),
+    SphericalEmbedding(Box<TypedExpr>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
     RVAdlv(rv_hodge::Boundary, usize, Vec<i64>, Box<[TypedExpr; 2]>),
@@ -397,28 +400,48 @@ impl Engine {
                     radius,
                 )?
             }
-            StatementForm::HeckeCoefficient(parameter, window, input) => {
+            StatementForm::HeckeCoefficient(spherical, parameter, index, input) => {
                 let input = self.checker().expr(input)?;
-                let name = if parameter.is_some() {
-                    "rvHeckeAt"
-                } else {
-                    "rvHeckeCoeff"
+                let name = match (spherical, parameter.is_some()) {
+                    (true, true) => "rvSphAt",
+                    (true, false) => "rvSphCoeff",
+                    (false, true) => "rvHeckeAt",
+                    (false, false) => "rvHeckeCoeff",
                 };
-                let Kind::RVIwHecke(rank) = self.model.kind(input.ty) else {
+                let rank = match (spherical, self.model.kind(input.ty)) {
+                    (true, Kind::RVSphHecke(rank)) | (false, Kind::RVIwHecke(rank)) => *rank,
+                    (true, _) => {
+                        return Err(Error::plain(format!(
+                            "{name} requires a spherical Hecke element"
+                        )))
+                    }
+                    (false, _) => {
+                        return Err(Error::plain(format!(
+                            "{name} requires an affine Hecke element"
+                        )))
+                    }
+                };
+                if index.len() != rank {
+                    let label = if spherical { "coweight" } else { "window" };
                     return Err(Error::plain(format!(
-                        "{name} requires an affine Hecke element"
+                        "Hecke coefficient {label} rank must match the algebra"
                     )));
-                };
-                if window.len() != *rank {
-                    return Err(Error::plain(
-                        "Hecke coefficient window rank must match the algebra",
-                    ));
                 }
-                rv_iwahori::validate_window(&mut self.model, &window)?;
-                let Value::RVIwHecke(support) = self.eval(&input)? else {
-                    unreachable!()
+                if spherical {
+                    rv_sphhecke::validate(&mut self.model, &index)?;
+                } else {
+                    rv_iwahori::validate_window(&mut self.model, &index)?;
+                }
+                let value = self.eval(&input)?;
+                let coefficient = match &value {
+                    Value::RVIwHecke(support) => {
+                        rv_iwhecke::coefficient(&mut self.model, support, &index)?
+                    }
+                    Value::RVSphHecke(support) => {
+                        rv_sphhecke::coefficient(&mut self.model, support, &index)?
+                    }
+                    _ => unreachable!(),
                 };
-                let coefficient = rv_iwhecke::coefficient(&mut self.model, &support, &window)?;
                 if let Some(parameter) = parameter {
                     let result = rv_iwhecke::evaluate(&mut self.model, coefficient, parameter)?;
                     format!("{name} = {result}")
@@ -1564,6 +1587,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVSphHecke(a), Value::RVSphHecke(b)) => {
+                        rv_sphhecke::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVIwHecke(a), Value::RVIwHecke(b)) => {
                         rv_iwhecke::add(&mut self.model, &a, &b)
                     }
@@ -2034,11 +2060,30 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
-            TypedForm::HeckeNegate(input) => {
-                let Value::RVIwHecke(value) = self.eval(input)? else {
+            TypedForm::HeckeNegate(input) => match self.eval(input)? {
+                Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
+                Value::RVSphHecke(value) => rv_sphhecke::neg(&mut self.model, &value),
+                _ => unreachable!(),
+            },
+            TypedForm::SphericalProduct(arguments) => {
+                let Kind::RVSphHecke(rank) = *self.model.kind(expr.ty) else {
                     unreachable!()
                 };
-                rv_iwhecke::neg(&mut self.model, &value)
+                let [left, right] = arguments.as_ref();
+                let values = [self.eval(left)?, self.eval(right)?];
+                let [Value::RVSphHecke(left), Value::RVSphHecke(right)] = values else {
+                    unreachable!()
+                };
+                rv_sphhecke::multiply(&mut self.model, rank, &left, &right)
+            }
+            TypedForm::SphericalEmbedding(input) => {
+                let Kind::RVIwHecke(rank) = *self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let Value::RVSphHecke(support) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_sphhecke::embed(&mut self.model, rank, &support)
             }
             TypedForm::HeckeProduct(arguments) => {
                 let [left, right] = arguments.as_ref();
@@ -3114,6 +3159,7 @@ impl Checker<'_> {
                 self.model.xext_type(base, s, t)
             }
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
+            TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
             TypeForm::RVLaurent(spec) => {
                 let grade = self.rv_grade(spec)?;
                 self.model.rv_laurent_type(grade)
@@ -3341,6 +3387,7 @@ impl Checker<'_> {
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::RVHom(..) => rv_hom::zero(),
                     Kind::RVIwHecke(..) => rv_iwhecke::zero(),
+                    Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -3738,10 +3785,56 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
-                if !matches!(self.model.kind(input.ty), Kind::RVIwHecke(..)) {
-                    return Err(self.invalid_operand(&input, "neg", "an affine Hecke element"));
+                if !matches!(
+                    self.model.kind(input.ty),
+                    Kind::RVIwHecke(..) | Kind::RVSphHecke(..)
+                ) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "neg",
+                        "an affine Hecke element or a spherical Hecke element",
+                    ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::SphericalBasis(coweight) => {
+                let ty = self.model.sph_hecke_type(coweight.len())?;
+                let value = rv_sphhecke::basis(self.model, coweight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SphericalScalar(rank, degree) => {
+                let ty = self.model.sph_hecke_type(rank)?;
+                let value = rv_sphhecke::scalar(self.model, rank, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SphericalProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVSphHecke(..)) {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvSphMul",
+                        "a spherical Hecke element",
+                    ));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvSphMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::SphericalProduct(Box::new([left, right])),
+                ))
+            }
+            ExprForm::SphericalEmbedding(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSphIwahori",
+                        "a spherical Hecke element",
+                    ));
+                };
+                let ty = self.model.iw_hecke_type(rank)?;
+                Ok((ty, TypedForm::SphericalEmbedding(Box::new(input))))
             }
             ExprForm::HeckeProduct(arguments) => {
                 let [left, right] = *arguments;
@@ -6148,6 +6241,7 @@ impl Checker<'_> {
                         | Kind::RVHom(..)
                         | Kind::RVLaurent(..)
                         | Kind::RVIwHecke(..)
+                        | Kind::RVSphHecke(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)

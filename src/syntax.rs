@@ -61,6 +61,7 @@ pub(crate) enum TypeForm {
     RVHom(RankVarietySpec),
     RVLaurent(RankVarietySpec),
     RVIwHecke(usize),
+    RVSphHecke(usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -442,6 +443,10 @@ pub(crate) enum ExprForm {
     HeckeScalar(usize, usize),
     HeckeNegate(Box<ParsedExpr>),
     HeckeProduct(Box<[ParsedExpr; 2]>),
+    SphericalBasis(Vec<i128>),
+    SphericalScalar(usize, usize),
+    SphericalProduct(Box<[ParsedExpr; 2]>),
+    SphericalEmbedding(Box<ParsedExpr>),
     RVIwAdlv(
         crate::rv_iwahori::Boundary,
         usize,
@@ -580,7 +585,7 @@ pub(crate) enum StatementForm {
     RVHodge(ParsedExpr),
     RVIw(bool, ParsedExpr),
     RVIwKL(Vec<i128>, Vec<i128>),
-    HeckeCoefficient(Option<i128>, Vec<i128>, ParsedExpr),
+    HeckeCoefficient(bool, Option<i128>, Vec<i128>, ParsedExpr),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1133,8 +1138,9 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
             }
-            Token::Word("rvHeckeCoeff" | "rvHeckeAt") => {
-                let evaluate = self.token() == Token::Word("rvHeckeAt");
+            Token::Word("rvHeckeCoeff" | "rvHeckeAt" | "rvSphCoeff" | "rvSphAt") => {
+                let evaluate = matches!(self.token(), Token::Word("rvHeckeAt" | "rvSphAt"));
+                let spherical = matches!(self.token(), Token::Word("rvSphCoeff" | "rvSphAt"));
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let parameter = if evaluate {
@@ -1147,7 +1153,7 @@ impl<'src> Parser<'src> {
                 };
                 let window = self.affine_window()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::HeckeCoefficient(parameter, window, self.paren_expr(0)?)
+                StatementForm::HeckeCoefficient(spherical, parameter, window, self.paren_expr(0)?)
             }
             Token::Word("rvIwKL") => {
                 self.advance()?;
@@ -2342,10 +2348,15 @@ impl<'src> Parser<'src> {
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
         }
-        if name.text == "RVIwHecke" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "RVIwHecke" | "RVSphHecke") && self.eat(Token::LParen)? {
             let (rank, _) = self.number()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::RVIwHecke(rank), 0);
+            let kind = if name.text == "RVIwHecke" {
+                TypeForm::RVIwHecke(rank)
+            } else {
+                TypeForm::RVSphHecke(rank)
+            };
+            return ty(span, kind, 0);
         }
         if matches!(name.text.as_str(), "RVHom" | "RVLaurent") && self.eat(Token::LParen)? {
             let spec = self.rank_variety_spec(nest, true)?;
@@ -3745,6 +3756,29 @@ impl<'src> Parser<'src> {
                     let arguments = self.paren_pair(nest)?;
                     let depth = 1 + arguments[0].depth.max(arguments[1].depth);
                     return expr(span, ExprForm::HeckeProduct(Box::new(arguments)), depth);
+                }
+                if name.text == "rvSphBasis" && self.eat(Token::LBracket)? {
+                    let coweight = self.affine_window()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SphericalBasis(coweight), 0);
+                }
+                if matches!(name.text.as_str(), "rvSphId" | "rvSphQ")
+                    && self.eat(Token::LBracket)?
+                {
+                    let degree = usize::from(name.text == "rvSphQ");
+                    let (rank, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SphericalScalar(rank, degree), 0);
+                }
+                if name.text == "rvSphMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::SphericalProduct(Box::new(arguments)), depth);
+                }
+                if name.text == "rvSphIwahori" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SphericalEmbedding(Box::new(input)), depth);
                 }
                 if name.text == "rvU" && self.eat(Token::LBracket)? {
                     let power = self.signed_number("Laurent exponent")?;

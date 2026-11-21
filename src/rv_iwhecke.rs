@@ -9,8 +9,8 @@ use crate::rv_iwkl::{self, Window};
 
 const MAX_CELLS: usize = 300_000;
 
-type Monomial = (usize, i128);
-type Polynomial = Rc<[Monomial]>;
+pub(crate) type Monomial = (usize, i128);
+pub(crate) type Polynomial = Rc<[Monomial]>;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Term {
@@ -41,7 +41,7 @@ fn window_cells(rank: usize) -> Result<usize> {
         .ok_or_else(storage_limit)
 }
 
-fn persist(model: &mut Model, support: Vec<Term>) -> Result<Value> {
+pub(crate) fn persist(model: &mut Model, support: Vec<Term>) -> Result<Value> {
     let mut cells = 0;
     for term in &support {
         cells += window_cells(term.window.len())? + 3 * term.coefficient.len();
@@ -149,13 +149,13 @@ pub(crate) fn neg(model: &mut Model, terms: &[Term]) -> Result<Value> {
 }
 
 #[derive(Default)]
-struct Accumulator {
+pub(crate) struct Accumulator {
     terms: BTreeMap<Window, BTreeMap<usize, i128>>,
     cells: usize,
 }
 
 impl Accumulator {
-    fn add(
+    pub(crate) fn add(
         &mut self,
         model: &mut Model,
         window: &Window,
@@ -192,7 +192,7 @@ impl Accumulator {
         Ok(())
     }
 
-    fn finish(self) -> Vec<Term> {
+    pub(crate) fn finish(self) -> Vec<Term> {
         self.terms
             .into_iter()
             .map(|(window, coefficient)| Term {
@@ -260,8 +260,13 @@ fn simple_product(model: &mut Model, terms: &[Term], simple: usize) -> Result<Ve
 }
 
 pub(crate) fn multiply(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Value> {
+    let support = product(model, left, right)?;
+    persist(model, support)
+}
+
+pub(crate) fn product(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Vec<Term>> {
     if left.is_empty() || right.is_empty() {
-        return Ok(zero());
+        return Ok(Vec::new());
     }
     let mut product = Accumulator::default();
     for term in right {
@@ -283,7 +288,7 @@ pub(crate) fn multiply(model: &mut Model, left: &[Term], right: &[Term]) -> Resu
             }
         }
     }
-    persist(model, product.finish())
+    Ok(product.finish())
 }
 
 pub(crate) fn coefficient<'a>(

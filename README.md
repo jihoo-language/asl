@@ -726,6 +726,14 @@ The right multiplication rule is $T_xT_s=T_{xs}$ on an ascent and $T_xT_s=qT_{xs
 
 For finite $\mathrm{GL}_3$ flags over $\mathbb F_q$, these evaluated structure coefficients count intermediate complete flags with the prescribed relative positions. The example computes $T_s^2=qT_e+(q-1)T_s$ and verifies the braid relation and $B_sB_tB_s=B_{sts}+qB_s$ for the two adjacent finite generators. It also checks the noncentral rotation and displays a cubic coefficient in $T_s^4$. [Affine Hecke example](examples/rv-hecke.asl)
 
+### The spherical Hecke algebra and Hall counts
+
+`RVSphHecke(n)` is the spherical Hecke algebra of $\mathrm{GL}_n(L((u)))$ with polynomial coefficients in $q=|L|$ and the maximal compact subgroup $K=\mathrm{GL}_n(L[[u]])$ assigned volume one. Use `rvSphBasis[[lambda0,...]]` for $S_\lambda$, with a weakly increasing signed coweight. The identity `rvSphId[n]` is $S_0$, and `rvSphQ[n]` is $qS_0$. The elements support `zero`, `add`, `neg`, and `rvSphMul(a,b)`.
+
+The map `rvSphIwahori` sends $S_\lambda$ to the sum of the distinct $T_w$ in the double coset $S_n t^\lambda S_n$. Its windows are obtained by assigning a distinct permutation of the exponents $\lambda$ and a permutation of the row residues. If $i$ is this map, it satisfies $i(a)i(b)=P_n(q)i(ab)$ with $P_n(q)=\prod_{j=1}^n(1+q+\cdots+q^{j-1})$. The interpreter checks that each orbit in the raw product is complete with constant coefficient, then divides that coefficient exactly by $P_n(q)$.
+
+`rvSphCoeff[[nu0,...]](h);` prints the coefficient of $S_\nu$ in ascending powers of $q$. `rvSphAt[q,[nu0,...]](h);` evaluates it at the supplied integer. For nonnegative coweights these values count intermediate lattices with prescribed quotient types, equivalently submodules with prescribed submodule and quotient partitions in a finite nilpotent Jordan module. In rank two the example computes $S_{(0,1)}^2=S_{(0,2)}+(q+1)S_{(1,1)}$. In rank three it gives $1+q+q^2$ at $(1,1,1)$ in $S_{(0,1,1)}S_{(0,0,1)}$, and $q^2+q$ at $(0,2,2)$ in $S_{(0,0,2)}^2$. [Spherical Hecke example](examples/rv-spherical-hecke.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.
