@@ -18,6 +18,7 @@ mod may;
 mod milnor;
 mod model;
 mod observations;
+mod page_transition;
 mod profile;
 mod steenrod;
 mod syntax;

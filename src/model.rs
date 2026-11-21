@@ -12,6 +12,7 @@ use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
+use crate::page_transition::Transition;
 use crate::profile::Profile;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -130,6 +131,7 @@ struct TypeInfo {
     map_ext: Option<Rc<MapAdams>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
+    page_transition: Option<Rc<Transition>>,
     cardinality_bound: usize,
     heights: [Option<usize>; 2],
     inhabited: bool,
@@ -273,6 +275,7 @@ impl Model {
             map_ext: None,
             map_may: None,
             may_page: None,
+            page_transition: None,
             cardinality_bound,
             heights: [None; 2],
             inhabited,
@@ -617,6 +620,15 @@ impl Model {
         let (profile, r, s, t, f) = self.kind(ty).may_grade().unwrap();
         let data = Rc::new(MayPage::build(self, profile, r, s, t, f)?);
         self.types[ty.0].may_page = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn page_transition(&mut self, ty: TypeId) -> Result<Rc<Transition>> {
+        if let Some(data) = &self.types[ty.0].page_transition {
+            return Ok(data.clone());
+        }
+        let data = Rc::new(Transition::build(self, ty)?);
+        self.types[ty.0].page_transition = Some(data.clone());
         Ok(data)
     }
 

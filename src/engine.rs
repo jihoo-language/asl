@@ -17,6 +17,7 @@ use crate::may;
 use crate::milnor;
 use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
+use crate::page_transition::{self, Direction as PageDirection};
 use crate::profile::Profile;
 use crate::steenrod;
 use crate::syntax::{
@@ -52,6 +53,7 @@ enum CobarOp {
     MayClass,
     MayRepresentative,
     MayDifferential,
+    MayTransition(PageDirection),
     MapDifferential,
     MapClass,
     MapRepresentative,
@@ -66,6 +68,8 @@ impl CobarOp {
             "extPrimitive" => Some(Self::Primitive),
             "mayRep" => Some(Self::MayRepresentative),
             "mayD" => Some(Self::MayDifferential),
+            "mayNext" => Some(Self::MayTransition(PageDirection::Next)),
+            "mayPrev" => Some(Self::MayTransition(PageDirection::Previous)),
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
@@ -424,6 +428,12 @@ impl Engine {
                     } else {
                         may::differential(&mut self.model, input.ty, &class, expr.ty)
                     }
+                }
+                (CobarOp::MayTransition(PageDirection::Next), Value::Class(class)) => {
+                    page_transition::next(&mut self.model, input.ty, &class)
+                }
+                (CobarOp::MayTransition(PageDirection::Previous), Value::Class(class)) => {
+                    page_transition::previous(&mut self.model, input.ty, expr.ty, &class)
                 }
                 (CobarOp::MayRepresentative, Value::Class(class)) => {
                     if matches!(self.model.kind(input.ty), Kind::MapMay(..)) {
@@ -1453,6 +1463,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<TypeId> {
         match op {
+            CobarOp::MayTransition(direction) => {
+                return direction
+                    .result_type(self.model, argument.ty)
+                    .map_err(|error| error.at(argument.span));
+            }
             CobarOp::MapDifferential => {
                 let (source, target, s, t) = self.map_cobar_bidegree(argument, name)?;
                 let s = checked_degree(s, 1, name, span)?;

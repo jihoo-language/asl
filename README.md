@@ -184,11 +184,15 @@ Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomia
 | `mayClass[r, f](c)` | Projects a cobar cochain in $F^f$ whose differential lies in $F^{f+r}$. |
 | `mayRep(x)` | Returns a deterministic cobar lift of the page class. |
 | `mayD(x)` | Evaluates $d_r$ on the page class. |
+| `mayNext(x)` | Projects a $d_r$-cycle to the next page. |
+| `mayPrev(y)` | Chooses a cycle on the previous page representing `y`. |
 | `mayMul(x, y)` | Multiplies two classes on the same page, adding their cobar lengths, internal degrees, and filtration indices. |
 
 `zero[May(r, s, t, f)]` and `add(x, y)` use the vector space structure in a fixed page component. For $r\ge1$, projection identifies lifts that differ by an $(r-1)$-cycle in $F^{f+1}$ or a cobar boundary in $F^f$ with a primitive in $F^{\max(0,f-r+1)}$. The computation stabilizes separately in each internal degree. The stabilized groups are the associated graded groups of `Ext(s, t)` for the induced filtration.
 
 Run `nix run path:. -- examples/may.asl` to compute $d_1(h_{2,0})=h_1h_0$ and the nonzero $d_3$ of a corrected $b_{2,0}$ lift in internal degree 6. The page ranks record the effect on the source and target. A second program computes a nonzero $d_7$ in internal degree 12 and checks that both page components vanish on $E_8$. [First and third differentials](examples/may.asl) · [Seventh differential](examples/may-seventh.asl)
+
+`mayNext(x)` uses the quotient $E_{r+1}=H(E_r,d_r)$. It sends an incoming $d_r$ boundary to zero and reports an error when $d_r(x)$ is nonzero. A class can survive even when its current cobar representative needs a higher-filtration correction. `mayPrev(y)` uses the canonical cobar lift of a class on page $r>0$ to choose an earlier cycle, determined modulo incoming $d_{r-1}$ boundaries. Thus `mayNext(mayPrev(y)) == y`. Both operations preserve the bidegree, filtration, and the specified profile or map endpoints. [Survival example](examples/may-survival.asl)
 
 ### May pages over finite Steenrod subalgebras
 
