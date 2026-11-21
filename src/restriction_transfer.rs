@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::rc::Rc;
 
 use crate::adams;
@@ -8,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::linear;
 use crate::model::{Model, Value};
 use crate::profile::Profile;
-use crate::transfer::{self, Bidegree, Input, Intervals};
+use crate::transfer::{self, odd_stem, Bidegree, Input, Intervals};
 
 pub(crate) fn bidegree(
     inputs: impl IntoIterator<Item = Bidegree>,
@@ -44,30 +45,26 @@ pub(crate) fn evaluate(
         return Ok(Value::Class([].into()));
     }
 
-    // A k-entry tensor has 2^(k-1) consecutive partitions. Check this
-    // before allocating even the polynomial source lift table. Partitions
-    // themselves are visited one at a time and branches with zero lifts end.
-    let partitions = u32::try_from(arity - 1)
-        .ok()
-        .and_then(|exponent| 1usize.checked_shl(exponent))
-        .ok_or_else(partition_limit)?;
-    model.spend(partitions).map_err(|_| partition_limit())?;
-
+    check_partitions(model, arity)?;
     let lifts = Intervals::build(model, source, inputs, arity)?;
     let mut projection = TensorProjection::new(target);
-    let mut restricted = Vec::with_capacity(arity);
-    for start in 0..arity {
-        let mut row = Vec::with_capacity(arity - start);
-        for end in start + 1..=arity {
-            let words = target.restrict(model, lifts.lift(start, end))?;
-            row.push(projection.intern(model, lifts.grade(start, end)?, words)?);
-        }
-        restricted.push(row);
-    }
-    let mut coordinates = Vec::new();
-    projection.partitions(model, &restricted, &mut Vec::new(), 0, &mut coordinates)?;
+    let coordinates = projection.project_blocks(model, arity, |model, start, end| {
+        let words = target.restrict(model, lifts.lift(start, end))?;
+        Ok((lifts.grade(start, end)?, words))
+    })?;
     model.allocate(coordinates.len())?;
     Ok(Value::Class(coordinates.into()))
+}
+
+pub(crate) fn check_partitions(model: &mut Model, arity: usize) -> Result<()> {
+    // Check the 2^(k-1) consecutive partitions before allocating the
+    // polynomial source lift table. Zero branches can be skipped later.
+    let partitions = arity
+        .checked_sub(1)
+        .and_then(|exponent| u32::try_from(exponent).ok())
+        .and_then(|exponent| 1usize.checked_shl(exponent))
+        .ok_or_else(partition_limit)?;
+    model.spend(partitions).map_err(|_| partition_limit())
 }
 
 fn partition_limit() -> Error {
@@ -75,28 +72,106 @@ fn partition_limit() -> Error {
 }
 
 type ChainId = usize;
-type Coordinates = Rc<[usize]>;
+type Coordinates<T> = Rc<[T]>;
 type Splitting = (Option<ChainId>, Option<ChainId>);
+type CochainProjection<T, C> = (Vec<T>, Vec<C>);
+type CochainSplit<T> = (Vec<T>, Vec<T>);
 
-struct Chain {
+pub(crate) trait TensorContraction {
+    type Term: Eq + Hash;
+    type Coordinate;
+    const COORDINATE_CELLS: usize = 1;
+
+    fn cells(term: &Self::Term) -> usize;
+    fn project(
+        &self,
+        model: &mut Model,
+        grade: Bidegree,
+        cochain: &[Self::Term],
+    ) -> Result<CochainProjection<Self::Term, Self::Coordinate>>;
+    fn split_closed(
+        &self,
+        model: &mut Model,
+        grade: Bidegree,
+        closed: &[Self::Term],
+        coordinates: &[Self::Coordinate],
+    ) -> Result<CochainSplit<Self::Term>>;
+    fn multiply(
+        &self,
+        model: &mut Model,
+        left: &[Self::Term],
+        right: &[Self::Term],
+    ) -> Result<Vec<Self::Term>>;
+    fn add(
+        &self,
+        model: &mut Model,
+        sum: &[Self::Coordinate],
+        term: &[Self::Coordinate],
+        negative: bool,
+    ) -> Result<Vec<Self::Coordinate>>;
+}
+
+impl TensorContraction for Profile {
+    type Term = Word;
+    type Coordinate = usize;
+
+    fn cells(term: &Word) -> usize {
+        cobar::word_cells(term)
+    }
+
+    fn project(
+        &self,
+        model: &mut Model,
+        grade: Bidegree,
+        cochain: &[Word],
+    ) -> Result<(Vec<Word>, Vec<usize>)> {
+        transfer::project(model, *self, grade, cochain)
+    }
+
+    fn split_closed(
+        &self,
+        model: &mut Model,
+        grade: Bidegree,
+        closed: &[Word],
+        coordinates: &[usize],
+    ) -> Result<(Vec<Word>, Vec<Word>)> {
+        transfer::split_closed(model, *self, grade, closed, coordinates)
+    }
+
+    fn multiply(&self, model: &mut Model, left: &[Word], right: &[Word]) -> Result<Vec<Word>> {
+        cobar::concat_temporary(model, left, right)
+    }
+
+    fn add(
+        &self,
+        model: &mut Model,
+        sum: &[usize],
+        term: &[usize],
+        _negative: bool,
+    ) -> Result<Vec<usize>> {
+        linear::xor(model, sum, term)
+    }
+}
+
+struct Chain<C: TensorContraction> {
     grade: Bidegree,
-    words: Rc<[Word]>,
-    coordinates: Option<Coordinates>,
+    terms: Rc<[C::Term]>,
+    coordinates: Option<Coordinates<C::Coordinate>>,
     splitting: Option<Splitting>,
 }
 
-struct TensorProjection {
-    profile: Profile,
-    chains: Vec<Chain>,
-    chain_ids: HashMap<Rc<[Word]>, ChainId>,
-    tensors: HashMap<Vec<ChainId>, Coordinates>,
+pub(crate) struct TensorProjection<C: TensorContraction> {
+    contraction: C,
+    chains: Vec<Chain<C>>,
+    chain_ids: HashMap<Rc<[C::Term]>, ChainId>,
+    tensors: HashMap<Vec<ChainId>, Coordinates<C::Coordinate>>,
     cells: usize,
 }
 
-impl TensorProjection {
-    fn new(profile: Profile) -> Self {
+impl<C: TensorContraction> TensorProjection<C> {
+    pub(crate) fn new(contraction: C) -> Self {
         Self {
-            profile,
+            contraction,
             chains: Vec::new(),
             chain_ids: HashMap::new(),
             tensors: HashMap::new(),
@@ -116,28 +191,48 @@ impl TensorProjection {
         &mut self,
         model: &mut Model,
         grade: Bidegree,
-        words: Vec<Word>,
+        terms: Vec<C::Term>,
     ) -> Result<Option<ChainId>> {
-        if words.is_empty() {
+        if terms.is_empty() {
             return Ok(None);
         }
-        let cells: usize = words.iter().map(cobar::word_cells).sum();
+        let cells: usize = terms.iter().map(C::cells).sum();
         model.spend(cells)?;
-        if let Some(&id) = self.chain_ids.get(words.as_slice()) {
+        if let Some(&id) = self.chain_ids.get(terms.as_slice()) {
             debug_assert_eq!(self.chains[id].grade, grade);
             return Ok(Some(id));
         }
         self.retain(1 + cells)?;
         let id = self.chains.len();
-        let words: Rc<[Word]> = words.into();
-        self.chain_ids.insert(words.clone(), id);
+        let terms: Rc<[C::Term]> = terms.into();
+        self.chain_ids.insert(terms.clone(), id);
         self.chains.push(Chain {
             grade,
-            words,
+            terms,
             coordinates: None,
             splitting: None,
         });
         Ok(Some(id))
+    }
+
+    pub(crate) fn project_blocks(
+        &mut self,
+        model: &mut Model,
+        arity: usize,
+        mut lift: impl FnMut(&mut Model, usize, usize) -> Result<(Bidegree, Vec<C::Term>)>,
+    ) -> Result<Vec<C::Coordinate>> {
+        let mut restricted = Vec::with_capacity(arity);
+        for start in 0..arity {
+            let mut row = Vec::with_capacity(arity - start);
+            for end in start + 1..=arity {
+                let (grade, terms) = lift(model, start, end)?;
+                row.push(self.intern(model, grade, terms)?);
+            }
+            restricted.push(row);
+        }
+        let mut coordinates = Vec::new();
+        self.partitions(model, &restricted, &mut Vec::new(), 0, &mut coordinates)?;
+        Ok(coordinates)
     }
 
     fn partitions(
@@ -146,11 +241,11 @@ impl TensorProjection {
         restricted: &[Vec<Option<ChainId>>],
         tensor: &mut Vec<ChainId>,
         start: usize,
-        result: &mut Vec<usize>,
+        result: &mut Vec<C::Coordinate>,
     ) -> Result<()> {
         if start == restricted.len() {
             let projected = self.project_tensor(model, tensor)?;
-            *result = linear::xor(model, result, &projected)?;
+            *result = self.contraction.add(model, result, &projected, false)?;
             return Ok(());
         }
         for (offset, &chain) in restricted[start].iter().enumerate() {
@@ -164,7 +259,11 @@ impl TensorProjection {
         Ok(())
     }
 
-    fn project_tensor(&mut self, model: &mut Model, tensor: &[ChainId]) -> Result<Coordinates> {
+    fn project_tensor(
+        &mut self,
+        model: &mut Model,
+        tensor: &[ChainId],
+    ) -> Result<Coordinates<C::Coordinate>> {
         model.spend(1 + tensor.len())?;
         if let [chain] = *tensor {
             return self.project_chain(model, chain);
@@ -175,7 +274,8 @@ impl TensorProjection {
         let mut result = Vec::new();
         let mut transformed = tensor.to_vec();
         let mut reduced = Vec::with_capacity(tensor.len() - 1);
-        // P_j = P_(j-1) b_2 H_0. The adjacent products lower the tensor
+        let mut homotopy_prefix = false;
+        // P_j = -P_(j-1) δ H_0. The adjacent products lower the tensor
         // length, so the recursion reaches the single-cochain projection.
         for (index, &chain) in tensor.iter().enumerate() {
             let (projection, homotopy) = self.split_chain(model, chain)?;
@@ -183,42 +283,57 @@ impl TensorProjection {
                 // This summand of H0 has ip on the already processed prefix,
                 // h in this slot, and the original entries in the suffix.
                 transformed[index] = homotopy;
+                let mut product_prefix = false;
                 for pair in 0..tensor.len() - 1 {
+                    let left_odd = odd_stem(self.chains[transformed[pair]].grade);
                     let product = self.multiply(model, transformed[pair], transformed[pair + 1])?;
                     reduced.clear();
                     reduced.extend_from_slice(&transformed[..pair]);
                     reduced.push(product);
                     reduced.extend_from_slice(&transformed[pair + 2..]);
                     let projected = self.project_tensor(model, &reduced)?;
-                    result = linear::xor(model, &result, &projected)?;
+                    // Include the global minus, the two suspended tensor
+                    // prefixes, and the raw left stem from b_2 itself.
+                    let negative = !(homotopy_prefix ^ product_prefix ^ left_odd);
+                    result = self.contraction.add(model, &result, &projected, negative)?;
+                    product_prefix ^= !left_odd;
                 }
             }
             let Some(projection) = projection else {
                 break;
             };
             transformed[index] = projection;
+            homotopy_prefix ^= !odd_stem(self.chains[chain].grade);
         }
-        self.retain(1 + tensor.len() + result.len())?;
-        let result: Coordinates = result.into();
+        self.retain(1 + tensor.len() + C::COORDINATE_CELLS * result.len())?;
+        let result: Coordinates<C::Coordinate> = result.into();
         self.tensors.insert(tensor.to_vec(), result.clone());
         Ok(result)
     }
 
-    fn project_chain(&mut self, model: &mut Model, id: ChainId) -> Result<Coordinates> {
+    fn project_chain(
+        &mut self,
+        model: &mut Model,
+        id: ChainId,
+    ) -> Result<Coordinates<C::Coordinate>> {
         let chain = &self.chains[id];
         if let Some(coordinates) = &chain.coordinates {
             return Ok(coordinates.clone());
         }
-        let (_, coordinates) = transfer::project(model, self.profile, chain.grade, &chain.words)?;
+        let (_, coordinates) = self.contraction.project(model, chain.grade, &chain.terms)?;
         self.save_coordinates(id, coordinates)
     }
 
-    fn save_coordinates(&mut self, id: ChainId, coordinates: Vec<usize>) -> Result<Coordinates> {
+    fn save_coordinates(
+        &mut self,
+        id: ChainId,
+        coordinates: Vec<C::Coordinate>,
+    ) -> Result<Coordinates<C::Coordinate>> {
         if let Some(stored) = &self.chains[id].coordinates {
             return Ok(stored.clone());
         }
-        self.retain(coordinates.len())?;
-        let coordinates: Coordinates = coordinates.into();
+        self.retain(C::COORDINATE_CELLS * coordinates.len())?;
+        let coordinates: Coordinates<C::Coordinate> = coordinates.into();
         self.chains[id].coordinates = Some(coordinates.clone());
         Ok(coordinates)
     }
@@ -229,10 +344,11 @@ impl TensorProjection {
             return Ok(splitting);
         }
         let grade = chain.grade;
-        let (closed, coordinates) = transfer::project(model, self.profile, grade, &chain.words)?;
+        let (closed, coordinates) = self.contraction.project(model, grade, &chain.terms)?;
         let coordinates = self.save_coordinates(id, coordinates)?;
         let (representative, homotopy) =
-            transfer::split_closed(model, self.profile, grade, &closed, &coordinates)?;
+            self.contraction
+                .split_closed(model, grade, &closed, &coordinates)?;
         let projection = self.intern(model, grade, representative)?;
         debug_assert!(grade.0 != 0 || homotopy.is_empty());
         let homotopy = self.intern(model, (grade.0.saturating_sub(1), grade.1), homotopy)?;
@@ -255,9 +371,11 @@ impl TensorProjection {
             .1
             .checked_add(right.grade.1)
             .ok_or_else(overflow)?;
-        let words = cobar::concat_temporary(model, &left.words, &right.words)?;
+        let terms = self
+            .contraction
+            .multiply(model, &left.terms, &right.terms)?;
         // Both factors were nonempty, and the common left length determines
         // a unique split of every concatenated word.
-        Ok(self.intern(model, (s, t), words)?.unwrap())
+        Ok(self.intern(model, (s, t), terms)?.unwrap())
     }
 }

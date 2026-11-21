@@ -1,0 +1,21 @@
+let a = pextgen[3, 1, 1, 0];
+let square = pextgen[3, 2, 2, 0];
+let cube = pextgen[3, 3, 3, 0];
+let h = pextgen[3, 1, 12, 0];
+let b = pextgen[3, 2, 12, 0];
+let period = pextangen[3, 1, 3, 15, 0];
+
+assert resHigher[1](h) == resA[1](h);
+assert resA[1](h) == zero[PExtAn(3, 1, 1, 12)];
+let lift = alift(cube, h);
+assert yoneda(cube, h) == zero[PExt(3, 4, 15)];
+assert alift(cube, h) == lift;
+assert resHigher[1](cube, h) == extClass(resA[1](lift));
+assert resHigher[1](cube, h) == period;
+assert resHigher[1](h, cube) == period;
+assert resHigher[1](square, b, a) == period;
+assert resHigher[1](cube, b, a) == pextangen[3, 1, 4, 16, 0];
+assert resHigher[1](resA[2](cube), resA[2](h)) == period;
+pextdim[3, 3, 15];
+show resHigher[1](cube, h);
+show resHigher[1](square, b, a);

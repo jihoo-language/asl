@@ -310,7 +310,7 @@ The higher operations can depend on the chosen contraction. The Massey product c
 
 ### Signed transfer over odd primes
 
-The same `ainfty` and `alift` forms accept `PExt` classes at one common prime and return `PExt` and `PCobar` values in the bidegrees above. In stem grading $|a|=t-s$, let $\sigma$ raise degree by one. The signed binary map on suspended cochains is $b_2(\sigma a,\sigma b)=(-1)^{|a|}\sigma(ab)$. The cobar contraction closes a cochain by $q=c-P(dc)$, projects by $p(c)=[q]$, and uses $h(c)=P(q-i p(c))$. Its identity is $dh+hd=1-ip$.
+The same `ainfty` and `alift` forms accept `PExt` or `PExtAn` classes at one common prime and Steenrod algebra profile. They return an Ext class or cobar cochain of that profile in the bidegrees above. In stem grading $|a|=t-s$, let $\sigma$ raise degree by one. The signed binary map on suspended cochains is $b_2(\sigma a,\sigma b)=(-1)^{|a|}\sigma(ab)$. The cobar contraction closes a cochain by $q=c-P(dc)$, projects by $p(c)=[q]$, and uses $h(c)=P(q-i p(c))$. Its identity is $dh+hd=1-ip$.
 
 On suspended inputs the recursion sums $b_2$ over split pairs of previously computed lifts. It applies $p$ to obtain the higher product and $-h$ to obtain the lift. The public operations undo suspension with the sign $(-1)^{\sum_{j=1}^n(n-j)|a_j|}$ for both outputs. Thus the binary product is `yoneda`, and the binary lift satisfies $dF_2(a,b)=i(m_2(a,b))-i(a)i(b)$.
 
@@ -318,9 +318,13 @@ For $x=[\xi_1]$ the first nonzero repeated higher product is $m_p(x,\ldots,x)=(-
 
 ### Coherent restriction
 
-`resHigher[n](a1, ..., ak)` computes the component $R_k$ of the $A_\infty$ morphism induced by restriction to $\mathcal A(n)$. Its inputs are ordered as for `ainfty` and all use the full algebra or one common $\mathcal A(m)$ with $m\geq n$. The result lies in `ExtAn(n, sum s + 1 - k, sum t)`. The unary component is `resA[n]`, which preserves `yoneda`. For $k>1$, a unit input or an unchanged profile gives zero. ASL restricts canonical lifts of consecutive blocks and applies the target cobar contraction to the resulting tensors.
+`resHigher[n](a1, ..., ak)` computes the component $R_k$ of the $A_\infty$ morphism induced by restriction to $\mathcal A(n)$. Its inputs are ordered as for `ainfty` and all use the full algebra or one common $\mathcal A(m)$ with $m\geq n$. The result lies in `ExtAn(n, sum s + 1 - k, sum t)`, or `PExtAn(p, n, sum s + 1 - k, sum t)` for odd-primary inputs of a common prime `p`. The unary component is `resA[n]`, which preserves `yoneda`. For $k>1$, a unit input or an unchanged profile gives zero. ASL restricts canonical lifts of consecutive blocks and applies the target cobar contraction to the resulting tensors.
 
 The example computes $R_3(h_2,h_0^2,h_1^3)=v_1^4$ over $\mathcal A(1)$. The individual restrictions of $h_2$ and $h_1^3$ both vanish. It computes additional nonzero components in arities two and four. [Coherent restriction example](examples/ainfty-restriction.asl)
+
+Over an odd prime the target projection on suspended tensors uses the tensor contraction $H_0=\sum_j(ip)^{\otimes(j-1)}\otimes h\otimes 1^{\otimes(k-j)}$ with Koszul signs. The projection satisfies $P_1=p$ and $P_k=-P_{k-1}b_2H_0$, where $b_2$ acts on adjacent pairs with the suspended prefix sign. The public components undo suspension with the same sign as `ainfty`.
+
+At $p=3$, write $a_0=[\tau_0]$, $h_{1,1}=[\xi_1^3]$, and $b_{1,0}$ for the degree-$(2,12)$ relation class. Both $R_2(a_0^3,h_{1,1})$ and $R_3(a_0^2,b_{1,0},a_0)$ give $v_1^3$ over $\mathcal A_3(1)$. At $p=5$, $R_2(a_0^5,[\xi_1^5])$ gives $v_1^5$ over $\mathcal A_5(1)$. [Signed coherent restriction example](examples/odd-coherent-restriction.asl)
 
 ## Milnor duality and the homology coaction
 

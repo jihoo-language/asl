@@ -11,6 +11,10 @@ pub(crate) type Bidegree = (usize, usize);
 pub(crate) type Input = (Bidegree, Rc<[usize]>);
 type Cochain = Vec<Word>;
 
+pub(crate) fn odd_stem((s, t): Bidegree) -> bool {
+    (s ^ t) & 1 != 0
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     Product,

@@ -63,7 +63,7 @@ impl Prime {
 }
 
 // Polynomial exponents are trimmed, and exterior indices are increasing.
-#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Monomial {
     pub(crate) exponents: Box<[usize]>,
     pub(crate) taus: Box<[usize]>,

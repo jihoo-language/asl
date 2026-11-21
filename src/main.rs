@@ -28,6 +28,7 @@ mod odd_ext;
 mod odd_massey;
 mod odd_may;
 mod odd_profile;
+mod odd_restriction_transfer;
 mod odd_transfer;
 mod page_transition;
 mod prime_linear;

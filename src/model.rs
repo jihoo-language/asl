@@ -880,6 +880,10 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn cached_odd_ext(&self, ty: TypeId) -> Option<Rc<OddExt>> {
+        self.types[ty.0].odd_ext.clone()
+    }
+
     pub(crate) fn odd_ext(&mut self, ty: TypeId) -> Result<Rc<OddExt>> {
         if let Some(data) = &self.types[ty.0].odd_ext {
             return Ok(data.clone());

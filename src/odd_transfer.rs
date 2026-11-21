@@ -6,7 +6,8 @@ use crate::model::{Model, Value};
 use crate::odd_cobar::{self, Prime, Term};
 use crate::odd_ext;
 use crate::prime_linear::Coordinate;
-use crate::transfer::{Bidegree, Operation};
+use crate::profile::Profile;
+use crate::transfer::{odd_stem, Bidegree, Operation};
 
 pub(crate) type Input = (Bidegree, Rc<[Coordinate]>);
 type Cochain = Vec<Term>;
@@ -14,6 +15,7 @@ type Cochain = Vec<Term>;
 pub(crate) fn evaluate(
     model: &mut Model,
     prime: Prime,
+    profile: Profile,
     inputs: &[Input],
     operation: Operation,
 ) -> Result<Value> {
@@ -24,9 +26,9 @@ pub(crate) fn evaluate(
         return Ok(zero(operation));
     }
     if let (Operation::Product, [((s, t), left), ((u, v), right)]) = (operation, inputs) {
-        let left_ty = model.odd_ext_type(prime, *s, *t)?;
-        let right_ty = model.odd_ext_type(prime, *u, *v)?;
-        let ty = model.odd_ext_type(prime, result_s, result_t)?;
+        let left_ty = model.profile_odd_ext_type(prime, profile, *s, *t)?;
+        let right_ty = model.profile_odd_ext_type(prime, profile, *u, *v)?;
+        let ty = model.profile_odd_ext_type(prime, profile, result_s, result_t)?;
         return odd_ext::yoneda(model, left_ty, left, right_ty, right, ty);
     }
     // The only nonzero classes of filtration zero are scalar multiples of
@@ -35,26 +37,20 @@ pub(crate) fn evaluate(
         return Ok(zero(operation));
     }
 
-    let intervals = Intervals::build(model, prime, inputs)?;
+    let intervals = Intervals::build(model, prime, profile, inputs, arity - 1)?;
     let grade = intervals.grade(0, arity, 2)?;
     let source = intervals.obstruction(model, 0, arity)?;
-    let (closed, mut class) = project(model, prime, grade, source)?;
-    // Undo suspension with exponent sum_j (n-j)|x_j|, with j starting at one.
-    let negative = inputs
-        .iter()
-        .rev()
-        .skip(1)
-        .step_by(2)
-        .fold(false, |parity, &(grade, _)| parity ^ odd_stem(grade));
+    let negative = unsuspension_sign(inputs);
     match operation {
         Operation::Product => {
+            let (_, mut class) = project(model, prime, profile, grade, &source)?;
             if negative {
                 negate(model, prime, &mut class)?;
             }
             odd_ext::persist(model, class)
         }
         Operation::Lift => {
-            let mut terms = suspended_lift(model, prime, grade, &closed, &class)?;
+            let mut terms = finish_lift(model, prime, profile, grade, &source)?;
             if negative {
                 negate(model, prime, &mut terms)?;
             }
@@ -63,7 +59,7 @@ pub(crate) fn evaluate(
     }
 }
 
-struct Intervals {
+pub(crate) struct Intervals {
     prime: Prime,
     prefixes: Vec<Bidegree>,
     // Row k stores the suspended lift of each interval of length k + 1.
@@ -71,7 +67,13 @@ struct Intervals {
 }
 
 impl Intervals {
-    fn build(model: &mut Model, prime: Prime, inputs: &[Input]) -> Result<Self> {
+    pub(crate) fn build(
+        model: &mut Model,
+        prime: Prime,
+        profile: Profile,
+        inputs: &[Input],
+        through: usize,
+    ) -> Result<Self> {
         let arity = inputs.len();
         let prefix_count = arity.saturating_add(1);
         let interval_count = arity.saturating_mul(prefix_count) / 2;
@@ -90,7 +92,7 @@ impl Intervals {
                 .checked_add(t)
                 .ok_or_else(intermediate_overflow)?;
             prefixes.push((sum_s, sum_t));
-            let ty = model.odd_ext_type(prime, s, t)?;
+            let ty = model.profile_odd_ext_type(prime, profile, s, t)?;
             let terms = model.odd_ext(ty)?.representative(model, class)?;
             cells += terms.iter().map(odd_cobar::term_cells).sum::<usize>();
             check_lifts(cells)?;
@@ -101,14 +103,13 @@ impl Intervals {
             prefixes,
             lifts: vec![singletons],
         };
-        for length in 2..arity {
+        for length in 2..=through {
             let mut row = Vec::with_capacity(arity - length + 1);
             for start in 0..=arity - length {
                 let end = start + length;
                 let grade = intervals.grade(start, end, 2)?;
                 let source = intervals.obstruction(model, start, end)?;
-                let (closed, class) = project(model, prime, grade, source)?;
-                let lift = suspended_lift(model, prime, grade, &closed, &class)?;
+                let lift = finish_lift(model, prime, profile, grade, &source)?;
                 cells += lift.iter().map(odd_cobar::term_cells).sum::<usize>();
                 check_lifts(cells)?;
                 row.push(lift);
@@ -118,7 +119,7 @@ impl Intervals {
         Ok(intervals)
     }
 
-    fn grade(&self, start: usize, end: usize, shift: usize) -> Result<Bidegree> {
+    pub(crate) fn grade(&self, start: usize, end: usize, shift: usize) -> Result<Bidegree> {
         let (before_s, before_t) = self.prefixes[start];
         let (after_s, after_t) = self.prefixes[end];
         let s = (after_s - before_s)
@@ -127,7 +128,7 @@ impl Intervals {
         Ok((s, after_t - before_t))
     }
 
-    fn lift(&self, start: usize, end: usize) -> &[Term] {
+    pub(crate) fn lift(&self, start: usize, end: usize) -> &[Term] {
         &self.lifts[end - start - 1][start]
     }
 
@@ -155,65 +156,102 @@ impl Intervals {
     }
 }
 
-fn project(
+pub(crate) fn project(
     model: &mut Model,
     prime: Prime,
-    (s, t): Bidegree,
-    source: Cochain,
+    profile: Profile,
+    grade: Bidegree,
+    source: &[Term],
 ) -> Result<(Cochain, Vec<Coordinate>)> {
-    if source.is_empty() {
-        return Ok((source, Vec::new()));
-    }
-    let image = odd_cobar::differential_support(model, prime, &source)?;
+    let image = odd_cobar::differential_profile_support(model, prime, profile, source)?;
+    project_with_differential(model, prime, profile, grade, source, &image)
+}
+
+fn project_with_differential(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    (s, t): Bidegree,
+    source: &[Term],
+    image: &[Term],
+) -> Result<(Cochain, Vec<Coordinate>)> {
     let closed = if image.is_empty() {
-        source
+        source.to_vec()
     } else {
         // c - P(dc) lies in the cycles.
         let later = s.checked_add(1).ok_or_else(intermediate_overflow)?;
-        let ty = model.odd_ext_type(prime, later, t)?;
-        let mut primitive = model
-            .odd_ext(ty)?
-            .primitive(model, &image)?
+        let mut primitive = odd_ext::canonical_primitive(model, prime, profile, (later, t), image)?
             .ok_or_else(|| Error::plain("odd-prime cobar differential has no boundary preimage"))?;
         negate(model, prime, &mut primitive)?;
-        odd_cobar::add_support(model, prime, &source, &primitive)?
+        odd_cobar::add_support(model, prime, source, &primitive)?
     };
     if closed.is_empty() {
         return Ok((closed, Vec::new()));
     }
-    let ty = model.odd_ext_type(prime, s, t)?;
+    let ty = model.profile_odd_ext_type(prime, profile, s, t)?;
     let class = model.odd_ext(ty)?.project(model, &closed)?;
     Ok((closed, class))
 }
 
-fn suspended_lift(
+fn finish_lift(
     model: &mut Model,
     prime: Prime,
-    (s, t): Bidegree,
-    closed: &[Term],
-    class: &[Coordinate],
+    profile: Profile,
+    grade: Bidegree,
+    source: &[Term],
 ) -> Result<Cochain> {
-    if closed.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ty = model.odd_ext_type(prime, s, t)?;
-    let group = model.odd_ext(ty)?;
-    let mut representative = group.representative(model, class)?;
-    negate(model, prime, &mut representative)?;
-    let boundary = odd_cobar::add_support(model, prime, closed, &representative)?;
-    let mut primitive = group.primitive(model, &boundary)?.ok_or_else(|| {
-        Error::plain("odd-prime cobar cycle differs from its representative by a nonboundary")
-    })?;
-    // The suspended recursion uses -h, and h = P(c_0 - i p(c)).
+    let image = odd_cobar::differential_profile_support(model, prime, profile, source)?;
+    let exact = if image.is_empty() {
+        odd_ext::canonical_primitive(model, prime, profile, grade, source)?
+    } else {
+        None
+    };
+    let mut primitive = if let Some(primitive) = exact {
+        primitive
+    } else {
+        let (closed, class) =
+            project_with_differential(model, prime, profile, grade, source, &image)?;
+        split_closed(model, prime, profile, grade, &closed, &class)?.1
+    };
+    // The suspended recursion uses -h.
     negate(model, prime, &mut primitive)?;
     Ok(primitive)
 }
 
-fn odd_stem((s, t): Bidegree) -> bool {
-    (s ^ t) & 1 != 0
+pub(crate) fn split_closed(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    (s, t): Bidegree,
+    closed: &[Term],
+    class: &[Coordinate],
+) -> Result<(Cochain, Cochain)> {
+    if closed.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let ty = model.profile_odd_ext_type(prime, profile, s, t)?;
+    let group = model.odd_ext(ty)?;
+    let representative = group.representative(model, class)?;
+    let mut correction = representative.clone();
+    negate(model, prime, &mut correction)?;
+    let boundary = odd_cobar::add_support(model, prime, closed, &correction)?;
+    let primitive = group.primitive(model, &boundary)?.ok_or_else(|| {
+        Error::plain("odd-prime cobar cycle differs from its representative by a nonboundary")
+    })?;
+    Ok((representative, primitive))
 }
 
-fn negate<T>(model: &mut Model, prime: Prime, support: &mut [(T, u32)]) -> Result<()> {
+pub(crate) fn unsuspension_sign(inputs: &[Input]) -> bool {
+    // Undo suspension with exponent sum_j (n-j)|x_j|, with j starting at one.
+    inputs
+        .iter()
+        .rev()
+        .skip(1)
+        .step_by(2)
+        .fold(false, |parity, &(grade, _)| parity ^ odd_stem(grade))
+}
+
+pub(crate) fn negate<T>(model: &mut Model, prime: Prime, support: &mut [(T, u32)]) -> Result<()> {
     model.spend(support.len())?;
     for (_, coefficient) in support {
         *coefficient = prime.negate(*coefficient);

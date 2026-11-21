@@ -126,6 +126,39 @@ impl OddExt {
     }
 }
 
+pub(crate) fn canonical_primitive(
+    model: &mut Model,
+    prime: Prime,
+    profile: Profile,
+    (s, t): (usize, usize),
+    terms: &[Term],
+) -> Result<Option<Vec<Term>>> {
+    if terms.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let ty = model.profile_odd_ext_type(prime, profile, s, t)?;
+    if let Some(group) = model.cached_odd_ext(ty) {
+        return group.primitive(model, terms);
+    }
+    let Some(previous) = s.checked_sub(1) else {
+        return Ok(None);
+    };
+    let source = odd_cobar::basis_profile(model, prime, profile, previous, t, MAX_BASIS_WORDS)?;
+    let mut rows = WordRows::default();
+    let target = rows.encode(model, terms.to_vec())?;
+    let mut images = Basis::default();
+    for (index, word) in source.iter().enumerate() {
+        let image = odd_cobar::differential_profile_word(model, prime, profile, word)?;
+        let column = rows.encode(model, image)?;
+        images.insert_with_witness(model, prime, column, vec![(index, 1)])?;
+    }
+    // Independent source columns are selected in the same order as in
+    // OddExt::primitive. Their expression of a boundary is unique, even
+    // though the target rows here are interned instead of enumerated.
+    let (remainder, support) = images.reduce_with_witness(model, prime, target)?;
+    Ok(remainder.is_empty().then(|| decode(&source, support)))
+}
+
 fn boundary_columns(
     model: &mut Model,
     prime: Prime,
