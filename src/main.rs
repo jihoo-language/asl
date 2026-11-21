@@ -21,6 +21,7 @@ mod model;
 mod observations;
 mod odd_cobar;
 mod odd_ext;
+mod odd_massey;
 mod page_transition;
 mod prime_linear;
 mod profile;

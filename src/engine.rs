@@ -20,6 +20,7 @@ use crate::model::{Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::observations::{betti, homotopy};
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext;
+use crate::odd_massey;
 use crate::page_transition::{self, Direction as PageDirection};
 use crate::profile::Profile;
 use crate::restriction_transfer;
@@ -82,7 +83,7 @@ impl CobarOp {
     }
 }
 
-struct MapSystemEntry {
+struct DefiningEntry {
     from: usize,
     to: usize,
     span: Span,
@@ -108,7 +109,8 @@ enum TypedForm {
     Transfer(Profile, transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(Profile, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
-    MapSystem(map_system::Operation, usize, Vec<MapSystemEntry>),
+    MapSystem(map_system::Operation, usize, Vec<DefiningEntry>),
+    OddSystem(odd_massey::Operation, usize, Vec<DefiningEntry>),
     MapBracket {
         target: TypeId,
         inputs: Vec<TypedExpr>,
@@ -662,6 +664,21 @@ impl Engine {
                     .collect::<Result<Vec<_>>>()?;
                 map_system::evaluate(&mut self.model, *arity, &entries, expr.ty, *operation)
             }
+            TypedForm::OddSystem(operation, arity, entries) => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| {
+                        Ok(odd_massey::Entry {
+                            from: entry.from,
+                            to: entry.to,
+                            ty: entry.expr.ty,
+                            span: entry.span,
+                            value: self.eval(&entry.expr)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                odd_massey::evaluate(&mut self.model, *arity, &entries, expr.ty, *operation)
+            }
             TypedForm::MapBracket {
                 target,
                 inputs,
@@ -1162,6 +1179,9 @@ impl Checker<'_> {
             ExprForm::MapSystem(operation, inputs, witnesses) => {
                 self.map_system(operation, inputs, witnesses, span)
             }
+            ExprForm::OddSystem(operation, inputs, witnesses) => {
+                self.odd_system(operation, inputs, witnesses, span)
+            }
             ExprForm::Suspension(base, form) => {
                 let base = self.ty(base)?;
                 let suspension = self.model.suspension_type(base)?;
@@ -1222,6 +1242,9 @@ impl Checker<'_> {
                         }
                         if let Some(operation) = map_system::Operation::from_name(&name.text) {
                             return self.map_system(operation, vec![*argument], Vec::new(), span);
+                        }
+                        if let Some(operation) = odd_massey::Operation::from_name(&name.text) {
+                            return self.odd_system(operation, vec![*argument], Vec::new(), span);
                         }
                         if let Some(operation) = map_bracket::Operation::from_name(&name.text) {
                             return self.map_bracket(operation, vec![*argument]);
@@ -1468,13 +1491,65 @@ impl Checker<'_> {
         let mut entries = Vec::with_capacity(arity + witnesses.len());
         for (index, expr) in inputs.into_iter().enumerate() {
             let to = arity - index;
-            entries.push(MapSystemEntry {
+            entries.push(DefiningEntry {
                 from: to - 1,
                 to,
                 span: expr.span,
                 expr,
             });
         }
+        self.check_witnesses(witnesses, &mut entries, |model, from, to, at| {
+            signature.witness_type(model, from, to, at)
+        })?;
+        Ok((ty, TypedForm::MapSystem(operation, arity, entries)))
+    }
+
+    fn odd_system(
+        &mut self,
+        operation: odd_massey::Operation,
+        inputs: Vec<ParsedExpr>,
+        witnesses: Vec<Witness>,
+        span: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let signature = odd_massey::Signature::new(
+            self.model,
+            operation,
+            inputs.iter().map(|input| (input.ty, input.span)),
+            span,
+        )?;
+        let ty = signature.result_type(self.model, span)?;
+        let arity = signature.arity();
+        let mut entries = Vec::with_capacity(inputs.len() + witnesses.len());
+        for (index, expr) in inputs.into_iter().enumerate() {
+            let to = index + 1;
+            let from = if operation.explicit() { index } else { 0 };
+            if !operation.explicit() && index > 0 {
+                let expected = signature.witness_type(self.model, from, to, expr.span)?;
+                self.require_type(expected, &expr, &format!("pPowerDef witness for gap {to}"))?;
+            }
+            entries.push(DefiningEntry {
+                from,
+                to,
+                span: expr.span,
+                expr,
+            });
+        }
+        self.check_witnesses(witnesses, &mut entries, |model, from, to, at| {
+            signature.witness_type(model, from, to, at)
+        })?;
+        Ok((ty, TypedForm::OddSystem(operation, arity, entries)))
+    }
+
+    fn check_witnesses(
+        &mut self,
+        witnesses: Vec<Witness>,
+        entries: &mut Vec<DefiningEntry>,
+        mut witness_type: impl FnMut(&mut Model, usize, usize, Span) -> Result<TypeId>,
+    ) -> Result<()> {
         let mut supplied = HashSet::new();
         for Witness {
             from,
@@ -1483,7 +1558,7 @@ impl Checker<'_> {
             value,
         } in witnesses
         {
-            let expected = signature.witness_type(self.model, from, to, span)?;
+            let expected = witness_type(self.model, from, to, span)?;
             if !supplied.insert((from, to)) {
                 return Err(Error::new(
                     span,
@@ -1496,14 +1571,14 @@ impl Checker<'_> {
                 &expr,
                 &format!("witness for interval [{from},{to}]"),
             )?;
-            entries.push(MapSystemEntry {
+            entries.push(DefiningEntry {
                 from,
                 to,
                 span,
                 expr,
             });
         }
-        Ok((ty, TypedForm::MapSystem(operation, arity, entries)))
+        Ok(())
     }
 
     fn bracket(&mut self, inputs: Vec<ParsedExpr>, span: Span) -> Result<(TypeId, TypedForm)> {

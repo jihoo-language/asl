@@ -193,6 +193,14 @@ The operators `extClass(c)`, `extRep(x)`, and `extPrimitive(c)` work on odd-prim
 
 The example computes powers of $a_0=[\tau_0]$ and the divided binomial class $b_{1,0}$ at $p=3$ and $p=5$. Its cobar coefficient on $[\xi_1^i\mid\xi_1^{p-i}]$ is the integer $\binom{p}{i}/p$ reduced modulo $p$. It also checks the nonzero anticommuting products of $[\xi_1]$ and $[\xi_1^9]$ at $p=3$. [Odd-prime Adams E₂ example](examples/odd-adams.asl)
 
+### Odd-prime Massey defining systems
+
+`pMassey(x1, ..., xn){i<j => w, ...}` reads its adjacent inputs from left to right. Each input is a `PExt` class or a closed `PCobar` cochain at the same odd prime. It uses the canonical cobar lifts of the classes. In the defining triangle, positions run from $0$ to $n$, and an omitted proper witness is zero. On the interval $[i,j]$, the witness is a `PCobar` cochain of cobar length $1+\sum s_k-(j-i)$ and internal degree $\sum t_k$ for the inputs in that interval.
+
+Write $\overline A=(-1)^{t-s+1} A$ for a cochain of bidegree $(s,t)$. Each proper interval must satisfy $d A_{ij}=\sum_{i<k<j}\overline A_{ik} A_{kj}$ with cobar concatenation. `pCurvature` takes the same inputs and returns the closed upper-right sum in `PCobar`. `pMassey` takes its class in `PExt`. Both evaluate the supplied defining system.
+
+`pPowerDef(b1, ..., b_(n-1))` uses `b1` for each adjacent input and `b_k` on every proper interval of length $k$. For $n=p$ and $b_k=[\xi_1^k]/k!$, the binomial coproduct gives the required proper equations. The upper-right sum represents the negative of the nonzero $b_{1,0}$ class because $(p-1)!=-1$ in $\mathbb F_p$. [Odd-prime power examples at 3 and 5](examples/odd-massey-power.asl)
+
 ## The algebraic May spectral sequence
 
 Give a generator power $\xi_i^{2^j}$ May weight $2i-1$. For an arbitrary monomial, count the set bits of each exponent and multiply that count by the corresponding generator weight. The weight $M$ of a cobar word is the sum over its factors. In internal degree $t$, the decreasing filtration $F^f$ is spanned by words with $t-M\ge f$. The cobar differential preserves this filtration, and concatenation adds filtration indices. The associated graded complex is page $E_0$. Its differential preserves $f$, and $d_r$ increases $s$ by one and $f$ by $r$, preserving $t$. [May, *The cohomology of restricted Lie algebras and of Hopf algebras*](https://doi.org/10.1016/0021-8693(66)90009-3)

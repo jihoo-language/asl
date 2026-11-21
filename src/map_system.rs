@@ -5,6 +5,7 @@ use crate::error::{Error, Result, Span};
 use crate::map_cochain::{self, Support};
 use crate::map_ext::{self, Term};
 use crate::model::{Kind, Model, TypeId, Value};
+use crate::syntax::validate_witness_interval;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -129,20 +130,9 @@ impl Signature {
         span: Span,
     ) -> Result<TypeId> {
         let arity = self.vertices.len() - 1;
+        validate_witness_interval(arity, from, to, span)?;
         let interval = || format!("interval [{from},{to}]");
         let error = |message| Error::new(span, message);
-        if from >= to || to > arity {
-            return Err(error(format!("invalid {}", interval())));
-        }
-        if to - from == 1 {
-            return Err(error(format!(
-                "adjacent {} already has an input",
-                interval()
-            )));
-        }
-        if to - from == arity {
-            return Err(error(format!("top {} cannot have a witness", interval())));
-        }
         let (s, t) = self.bidegree(from, to, 1);
         let s = usize::try_from(s).map_err(|_| {
             if s < 0 {

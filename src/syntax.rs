@@ -3,6 +3,7 @@ use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
+use crate::odd_massey::Operation as OddSystemOp;
 use crate::transfer::Operation as TransferOp;
 
 const MAX_NESTING: usize = 64;
@@ -123,6 +124,30 @@ pub(crate) struct Witness {
     pub(crate) value: ParsedExpr,
 }
 
+pub(crate) fn validate_witness_interval(
+    arity: usize,
+    from: usize,
+    to: usize,
+    span: Span,
+) -> Result<()> {
+    if from >= to || to > arity {
+        return Err(Error::new(span, format!("invalid interval [{from},{to}]")));
+    }
+    if to - from == 1 {
+        return Err(Error::new(
+            span,
+            format!("adjacent interval [{from},{to}] already has an input"),
+        ));
+    }
+    if to - from == arity {
+        return Err(Error::new(
+            span,
+            format!("top interval [{from},{to}] cannot have a witness"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct MapGenerator {
     pub(crate) base: ParsedType,
     pub(crate) degree: usize,
@@ -163,6 +188,7 @@ pub(crate) enum ExprForm {
     Transfer(TransferOp, Vec<ParsedExpr>),
     MapBracket(MapBracketOp, Vec<ParsedExpr>),
     MapSystem(MapSystemOp, Vec<ParsedExpr>, Vec<Witness>),
+    OddSystem(OddSystemOp, Vec<ParsedExpr>, Vec<Witness>),
     MapTransfer(MapTransferOp, Vec<ParsedExpr>),
     Binary(BinaryOp, Box<ParsedExpr>, Box<ParsedExpr>),
     Lambda(Label, ParsedType, Box<ParsedExpr>),
@@ -842,6 +868,7 @@ impl<'src> Parser<'src> {
                     || TransferOp::from_name(&name.text).is_some()
                     || MapBracketOp::from_name(&name.text).is_some()
                     || MapSystemOp::from_name(&name.text).is_some()
+                    || OddSystemOp::from_name(&name.text).is_some()
                     || MapTransferOp::from_name(&name.text).is_some()
                 {
                     head = self.variadic(head, nest)?;
@@ -897,15 +924,16 @@ impl<'src> Parser<'src> {
         };
         let massey = name.text == "massey";
         let map_system = MapSystemOp::from_name(&name.text);
+        let odd_system = OddSystemOp::from_name(&name.text);
+        let has_witnesses =
+            massey || map_system.is_some() || odd_system.is_some_and(OddSystemOp::explicit);
         let span = head.span;
         let mut depth = arguments
             .iter()
             .map(|argument| argument.depth + 1)
             .max()
             .unwrap_or(0);
-        if arguments.len() == 1
-            && (self.token() != Token::LBrace || (!massey && map_system.is_none()))
-        {
+        if arguments.len() == 1 && (self.token() != Token::LBrace || !has_witnesses) {
             return expr(
                 span,
                 ExprForm::Call(Box::new(head), Box::new(arguments.pop().unwrap())),
@@ -926,6 +954,18 @@ impl<'src> Parser<'src> {
             return expr(
                 span,
                 ExprForm::MapSystem(operation, arguments, witnesses),
+                depth,
+            );
+        }
+        if let Some(operation) = odd_system {
+            let witnesses = if operation.explicit() {
+                self.witnesses(nest, &mut depth)?
+            } else {
+                Vec::new()
+            };
+            return expr(
+                span,
+                ExprForm::OddSystem(operation, arguments, witnesses),
                 depth,
             );
         }
