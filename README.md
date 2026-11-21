@@ -610,6 +610,14 @@ The defining relations come from eliminating $T$ from $(J,U_j+Th_j)$. They are b
 
 For the cuspidal cubic and $H=(x,y)$, the normal cone in the chart $z\ne0$ has equations $(x,y,U^2)$, with $U$ nonzero. For $(x^2,xy,y^2)$ in the plane, the Rees equations include $AC+B^2$. This equation remains in the exceptional fiber after the two linear syzygies vanish at the origin. [Rees algebra and normal cone example](examples/rank-blowups.asl)
 
+#### The Gauss graph and projective dual
+
+`rvgauss G[[u0,...]](f);` defines the closed graph of the Gauss map of a hypersurface. The polynomial `f` must be homogeneous, nonzero, and of positive degree. Supply one strictly increasing list of fresh dual indices, one per original variable in order. The graph uses the union of the two variable lists. The construction eliminates $T$ from $(f,U_i+T\partial_i f)$ using the first Hasse partials, then saturates separately by the ideals of all base coordinates and all dual coordinates.
+
+`rvdual D[[u0,...]](f);` eliminates the base coordinates from the graph and saturates in the dual coordinates. It gives the scheme-theoretic image over $\mathbb F_2$. A linear polynomial with a nonempty projective hypersurface gives the point of its constant gradient. When every first partial vanishes, the smooth Gauss graph and dual image are empty, and the resulting ideals are the unit ideals.
+
+`rvGenerator[J, j]` is the polynomial at index `j`, starting at zero, in the reduced Gröbner basis printed by `rvgroebner[J]`. It can be used directly in another declaration. For the cusp $y^3+x^2z=0$, the Gauss map on its normalization is $[s:t]\mapsto[0:t^2:s^2]$. Its dual is the line $U=0$ and its bidual is the point $[1:0:0]$. For the smooth conic $xz+y^2=0$, the dual is the pencil of lines through the nucleus $[0:1:0]$. The smooth Fermat cubic has Frobenius Gauss map $[x:y:z]\mapsto[x^2:y^2:z^2]$ and dual equation $U^3+V^3+W^3=0$. [Gauss graph and duality example](examples/rank-duality.asl)
+
 
 ### Koszul syzygies and their products
 

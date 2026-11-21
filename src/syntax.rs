@@ -7,6 +7,7 @@ use crate::map_transfer::Operation as MapTransferOp;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rv_arithmetic::Series as RankSeries;
+use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
@@ -365,6 +366,7 @@ pub(crate) enum ExprForm {
     RvVanish(usize, Vec<usize>, Box<ParsedExpr>),
     RvInMinors(RvMatrixSpec, usize, Box<ParsedExpr>),
     RvIdeal(RvIdealOp, Label, Box<ParsedExpr>),
+    RvGenerator(Label, usize, Span),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -432,6 +434,7 @@ pub(crate) enum StatementForm {
     RvMinors(RvMatrixSpec, usize),
     RvIdeal(Label, Vec<usize>, Vec<ParsedExpr>),
     RvRees(ReesOp, Label, Label, Vec<usize>, Vec<ParsedExpr>),
+    RvGauss(GaussOp, Label, Vec<usize>, ParsedExpr),
     RvFitting(Label, RvMatrixSpec, usize),
     RvGroebner(Label),
     RvIntersect(Label, Label, Label),
@@ -930,6 +933,19 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvIdeal(name, selected, self.rv_generators()?)
+            }
+            Token::Word("rvgauss" | "rvdual") => {
+                let operation = if self.token() == Token::Word("rvgauss") {
+                    GaussOp::Graph
+                } else {
+                    GaussOp::Dual
+                };
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let variables = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvGauss(operation, name, variables, self.paren_expr(0)?)
             }
             Token::Word("rvrees" | "rvnormalcone") => {
                 let operation = if self.token() == Token::Word("rvrees") {
@@ -2114,6 +2130,13 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvGenerator" && self.eat(Token::LBracket)? {
+                    let ideal = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvGenerator(ideal, index, at), 0);
                 }
                 if name.text == "rvInMinors" && self.eat(Token::LBracket)? {
                     let spec = self.rv_matrix(nest)?;

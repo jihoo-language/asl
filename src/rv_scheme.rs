@@ -1,4 +1,5 @@
 use std::iter::once;
+use std::ops::Range;
 
 use crate::error::{Error, Result};
 use crate::model::Model;
@@ -41,18 +42,28 @@ pub(crate) fn saturate(model: &mut Model, ideal: &Ideal, polynomial: &Polynomial
 pub(crate) fn projective(model: &mut Model, ideal: &Ideal) -> Result<Ideal> {
     let width = ideal.selected.len();
     let generators: Vec<_> = ideal.polynomials().cloned().collect();
+    let result = saturate_coordinates(model, &generators, width, 0..width)?;
+    Ideal::derived(model, ideal.selected.clone(), result)
+}
+
+pub(crate) fn saturate_coordinates(
+    model: &mut Model,
+    generators: &[Polynomial],
+    width: usize,
+    coordinates: Range<usize>,
+) -> Result<Vec<Polynomial>> {
     let mut result = unit(width);
-    for variable in 0..width {
+    for variable in coordinates {
         model.spend(1 + width)?;
         let mut powers = vec![0; width];
         powers[variable] = 1;
-        let component = saturation(model, &generators, &rv_poly::monomial(powers), width)?;
+        let component = saturation(model, generators, &rv_poly::monomial(powers), width)?;
         result = intersection(model, &result, &component)?;
         if result.is_empty() {
             break;
         }
     }
-    Ideal::derived(model, ideal.selected.clone(), result)
+    Ok(result)
 }
 
 fn unit(width: usize) -> Vec<Polynomial> {

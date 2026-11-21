@@ -49,34 +49,27 @@ pub(crate) fn build(
         return Ideal::derived(model, selected, quotient.polynomials().cloned().collect());
     }
 
-    let width = selected.len();
-    let mut graph = Vec::new();
-    let mut center = Vec::new();
+    let mut normals = Vec::with_capacity(extras);
     let mut cells = 0;
-    for polynomial in quotient.polynomials() {
-        charge(model, &mut cells, width + 1, polynomial.len())?;
-        graph.push(
-            polynomial
-                .iter()
-                .map(|term| embed(term, Some(0), extras))
-                .collect(),
-        );
-    }
-    for (index, (_, generator)) in generators.into_iter().enumerate() {
+    for (_, generator) in generators {
         // Replacing h_j by its residue leaves the graph ideal unchanged.
         let normal = quotient.normal(model, generator)?;
-        charge(model, &mut cells, width + 1, 1 + normal.len())?;
-        let mut variable = vec![0; width + 1];
-        variable[1 + quotient.selected.len() + index] = 1;
-        // T comes first in lex order. The U_j term precedes the T*h_j terms.
-        graph.push(
-            once(variable.into())
-                .chain(normal.iter().map(|term| embed(term, Some(1), extras)))
-                .collect(),
-        );
-        if matches!(operation, Operation::NormalCone) && !normal.is_empty() {
-            charge(model, &mut cells, width, normal.len())?;
-            center.push(
+        cells += rv_poly::cells(&normal);
+        rv_ideal::check_storage(cells)?;
+        normals.push(normal);
+    }
+    let mut relations = graph(
+        model,
+        quotient.polynomials(),
+        quotient.selected.len(),
+        &normals,
+    )?;
+    // gr_H(R) is Rees_R(H) modulo the degree-zero image of H.
+    if matches!(operation, Operation::NormalCone) {
+        let mut cells = relations.iter().map(|p| rv_poly::cells(p)).sum();
+        for normal in normals.iter().filter(|p| !p.is_empty()) {
+            charge(model, &mut cells, selected.len(), normal.len())?;
+            relations.push(
                 normal
                     .iter()
                     .map(|term| embed(term, None, extras))
@@ -84,19 +77,41 @@ pub(crate) fn build(
             );
         }
     }
-
-    // Contract the graph of U_j -> T*h_j from the polynomial ring with T.
-    // For the normal cone, gr_H(R) is Rees_R(H) modulo the degree-zero image of H.
-    let mut relations = rv_ideal::eliminate(model, graph)?;
-    rv_ideal::check_storage(
-        relations
-            .iter()
-            .chain(&center)
-            .map(|p| rv_poly::cells(p))
-            .sum(),
-    )?;
-    relations.extend(center);
     Ideal::derived(model, selected, relations)
+}
+
+// Contract the graph of U_j -> T*h_j from the polynomial ring with T.
+pub(crate) fn graph<'a>(
+    model: &mut Model,
+    base: impl IntoIterator<Item = &'a Polynomial>,
+    width: usize,
+    images: &[Polynomial],
+) -> Result<Vec<Polynomial>> {
+    let extras = images.len();
+    let total_width = 1 + width + extras;
+    let mut equations = Vec::new();
+    let mut cells = 0;
+    for polynomial in base {
+        charge(model, &mut cells, total_width, polynomial.len())?;
+        equations.push(
+            polynomial
+                .iter()
+                .map(|term| embed(term, Some(0), extras))
+                .collect(),
+        );
+    }
+    for (index, image) in images.iter().enumerate() {
+        charge(model, &mut cells, total_width, 1 + image.len())?;
+        let mut variable = vec![0; total_width];
+        variable[1 + width + index] = 1;
+        // T comes first in lex order. The U_j term precedes the T*h_j terms.
+        equations.push(
+            once(variable.into())
+                .chain(image.iter().map(|term| embed(term, Some(1), extras)))
+                .collect(),
+        );
+    }
+    rv_ideal::eliminate(model, equations)
 }
 
 fn embed(term: &Monomial, parameter: Option<usize>, extras: usize) -> Monomial {

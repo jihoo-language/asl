@@ -42,6 +42,7 @@ use crate::restriction_transfer;
 use crate::rv_arithmetic;
 use crate::rv_descent;
 use crate::rv_field;
+use crate::rv_gauss;
 use crate::rv_hom;
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_koszul;
@@ -444,6 +445,24 @@ impl Engine {
                 let selected = q_koszul::indices(&mut self.model, selected)?;
                 let generators = self.rv_generator_values(expressions, &selected, "rvideal")?;
                 let ideal = RvIdeal::build(&mut self.model, selected, generators)?;
+                self.model.define_rv_ideal(name.text, ideal);
+                return Ok(None);
+            }
+            StatementForm::RvGauss(operation, name, dual, input) => {
+                check_new_ideal(&self.model, &name)?;
+                let input = self.checker().expr(input)?;
+                let (selected, degree) = self.checker().rv_poly_grade(&input, operation.name())?;
+                let Value::RVPoly(polynomial) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let ideal = rv_gauss::build(
+                    &mut self.model,
+                    operation,
+                    selected,
+                    degree,
+                    &polynomial,
+                    dual,
+                )?;
                 self.model.define_rv_ideal(name.text, ideal);
                 return Ok(None);
             }
@@ -2694,6 +2713,17 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
+            }
+            ExprForm::RvGenerator(name, index, at) => {
+                let ideal = self.model.rv_ideal(&name)?;
+                let (degree, polynomial) = ideal.generator(index).ok_or_else(|| {
+                    Error::new(
+                        at,
+                        format!("rvGenerator reduced basis index {index} is out of range"),
+                    )
+                })?;
+                let ty = self.model.rv_poly_type(ideal.selected.clone(), degree)?;
+                Ok((ty, TypedForm::Constant(Value::RVPoly(polynomial))))
             }
             ExprForm::RvInMinors(spec, size, input) => {
                 let base = self.q_endpoint(*spec.base)?;

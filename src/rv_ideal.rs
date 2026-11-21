@@ -153,6 +153,15 @@ impl Ideal {
         self.basis.iter().map(|row| &row.polynomial)
     }
 
+    pub(crate) fn generator(&self, index: usize) -> Option<(usize, Polynomial)> {
+        self.basis.get(index).map(|row| {
+            (
+                row.degree.expect("homogeneous basis row"),
+                row.polynomial.clone(),
+            )
+        })
+    }
+
     pub(crate) fn normal(&self, model: &mut Model, polynomial: Polynomial) -> Result<Polynomial> {
         reduce(model, polynomial, &self.basis, None, None)
     }
@@ -190,9 +199,17 @@ impl Ideal {
     }
 }
 
-// The auxiliary variable occupies the first exponent. A row whose leading
-// exponent is zero there lies entirely in the original ring.
 pub(crate) fn eliminate(model: &mut Model, generators: Vec<Polynomial>) -> Result<Vec<Polynomial>> {
+    eliminate_prefix(model, generators, 1)
+}
+
+// Pure lex eliminates any initial block of variables. A row with zero
+// leading exponents on the block has no term supported there.
+pub(crate) fn eliminate_prefix(
+    model: &mut Model,
+    generators: Vec<Polynomial>,
+    prefix: usize,
+) -> Result<Vec<Polynomial>> {
     let rows = generators.into_iter().map(|polynomial| Row {
         degree: None,
         polynomial,
@@ -201,7 +218,7 @@ pub(crate) fn eliminate(model: &mut Model, generators: Vec<Polynomial>) -> Resul
     let mut result = Vec::new();
     let mut cells = 0;
     for row in groebner(model, rows)? {
-        if row.leading()[0] == 0 {
+        if row.leading()[..prefix].iter().all(|&power| power == 0) {
             let cost = rv_poly::cells(&row.polynomial);
             cells += cost;
             check_storage(cells)?;
@@ -209,7 +226,7 @@ pub(crate) fn eliminate(model: &mut Model, generators: Vec<Polynomial>) -> Resul
             result.push(
                 row.polynomial
                     .iter()
-                    .map(|term| Rc::from(&term[1..]))
+                    .map(|term| Rc::from(&term[prefix..]))
                     .collect(),
             );
         }
