@@ -1,5 +1,6 @@
 mod adams;
 mod binary_field;
+mod binary_linear;
 mod bracket;
 mod ce;
 mod cobar;
@@ -40,6 +41,7 @@ mod rank_jets;
 mod rank_variety;
 mod restriction_transfer;
 mod rv_arithmetic;
+mod rv_hom;
 mod rv_poly;
 mod steenrod;
 mod syntax;

@@ -46,6 +46,7 @@ pub(crate) enum TypeForm {
     MapMay(MapMaySpec),
     QKoszul(QSpec),
     QExt(QSpec),
+    RVHom(RankVarietySpec),
     VKoszul(QSpec<i64>),
     VExt(QSpec<i64>),
     VBock(VBockSpec),
@@ -262,6 +263,10 @@ pub(crate) enum ExprForm {
     QExtGenerator(QSpec, usize, Span),
     QTerm(QTerm),
     QIdentity(ParsedType, Vec<usize>),
+    RVGenerator(RankVarietySpec, usize, Span),
+    RVIdentity(ParsedType, Vec<usize>, usize, Vec<usize>),
+    RVScale(usize, Box<ParsedExpr>),
+    RVSpecialize(usize, Vec<usize>, Box<ParsedExpr>),
     VExtGenerator(QSpec<i64>, usize, Span),
     VBockGenerator(VBockSpec, usize, Span),
     VBockClass(usize, usize, Box<ParsedExpr>),
@@ -841,24 +846,9 @@ impl<'src> Parser<'src> {
                 let affine = self.token() == Token::Word("rvdim");
                 self.advance()?;
                 self.expect(Token::LBracket)?;
-                let (source, target) = self.map_endpoints(0)?;
-                let selected = self.exponents()?;
-                self.expect(Token::Comma)?;
-                let (modulus, _) = self.number()?;
-                let point = if affine {
-                    self.expect(Token::Comma)?;
-                    Some(self.exponents()?)
-                } else {
-                    None
-                };
+                let spec = self.rank_variety_spec(0, affine)?;
                 self.expect(Token::RBracket)?;
-                StatementForm::RankVariety(RankVarietySpec {
-                    source: Box::new(source),
-                    target: Box::new(target),
-                    selected,
-                    modulus,
-                    point,
-                })
+                StatementForm::RankVariety(spec)
             }
             Token::Word("qextdim") => {
                 self.advance()?;
@@ -1010,6 +1000,26 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBracket)?;
         Ok(result)
+    }
+
+    fn rank_variety_spec(&mut self, nest: usize, affine: bool) -> Result<RankVarietySpec> {
+        let (source, target) = self.map_endpoints(nest)?;
+        let selected = self.exponents()?;
+        self.expect(Token::Comma)?;
+        let (modulus, _) = self.number()?;
+        let point = if affine {
+            self.expect(Token::Comma)?;
+            Some(self.exponents()?)
+        } else {
+            None
+        };
+        Ok(RankVarietySpec {
+            source: Box::new(source),
+            target: Box::new(target),
+            selected,
+            modulus,
+            point,
+        })
     }
 
     fn map_endpoints(&mut self, nest: usize) -> Result<(ParsedType, ParsedType)> {
@@ -1282,6 +1292,12 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVHom" && self.eat(Token::LParen)? {
+            let spec = self.rank_variety_spec(nest, true)?;
+            self.expect(Token::RParen)?;
+            let depth = spec.source.depth.max(spec.target.depth) + 1;
+            return ty(span, TypeForm::RVHom(spec), depth);
         }
         if name.text == "MapMay" && self.eat(Token::LParen)? {
             let spec = self.map_may_spec(nest)?;
@@ -1841,6 +1857,48 @@ impl<'src> Parser<'src> {
                     let selected = self.exponents()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QIdentity(base, selected), 0);
+                }
+                if name.text == "rvgen" && self.eat(Token::LBracket)? {
+                    let spec = self.rank_variety_spec(nest, true)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RVGenerator(spec, index, at), 0);
+                }
+                if name.text == "rvId" && self.eat(Token::LBracket)? {
+                    let base = self.ty(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let selected = self.exponents()?;
+                    self.expect(Token::Comma)?;
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let point = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::RVIdentity(base, selected, modulus, point),
+                        0,
+                    );
+                }
+                if name.text == "rvScale" && self.eat(Token::LBracket)? {
+                    let (scalar, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RVScale(scalar, Box::new(input)), depth);
+                }
+                if name.text == "rvSpec" && self.eat(Token::LBracket)? {
+                    let (modulus, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let point = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RVSpecialize(modulus, point, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "qextgen" && self.eat(Token::LBracket)? {
                     let spec = self.q_spec(nest)?;

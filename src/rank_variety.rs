@@ -1,7 +1,7 @@
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use crate::binary_field::BinaryField;
+use crate::binary_linear::{Basis, Vector};
 use crate::comodule::Generator;
 use crate::error::{Error, Result};
 use crate::model::{Model, TypeId};
@@ -74,88 +74,40 @@ impl Endpoint {
         }
     }
 
+    pub(crate) fn into_groups(self) -> BTreeMap<usize, (usize, usize)> {
+        self.groups
+    }
+
+    pub(crate) fn weighted_column(
+        &self,
+        model: &mut Model,
+        column: usize,
+        point: &[usize],
+    ) -> Result<Vector> {
+        let entries = &self.columns[column];
+        model.spend(1 + entries.len())?;
+        Ok(entries
+            .iter()
+            .filter_map(|&(row, variable)| {
+                let coefficient = point[variable];
+                (coefficient != 0).then_some((row, coefficient))
+            })
+            .collect())
+    }
+
     fn dimension(&self, model: &mut Model, field: BinaryField, point: &[usize]) -> Result<usize> {
-        let mut pivots = BTreeMap::<usize, Column>::new();
-        let mut cells = 0;
-        for entries in &self.columns {
-            model.spend(1 + entries.len())?;
-            let mut column: Column = entries
-                .iter()
-                .filter_map(|&(row, variable)| {
-                    let coefficient = point[variable];
-                    (coefficient != 0).then_some((row, coefficient))
-                })
-                .collect();
-            while let Some(&(leading, coefficient)) = column.last() {
-                model.spend(1)?;
-                if let Some(pivot) = pivots.get(&leading) {
-                    column = add_multiple(model, field, &column, pivot, coefficient)?;
-                } else {
-                    cells += 1 + 2 * column.len();
-                    check_storage(cells)?;
-                    if coefficient != 1 {
-                        let inverse = field.inverse(model, coefficient)?;
-                        model.spend(field.degree() * column.len())?;
-                        for (_, value) in &mut column {
-                            *value = field.multiply(*value, inverse);
-                        }
-                    }
-                    pivots.insert(leading, column);
-                    break;
-                }
-            }
+        let mut basis = Basis::default();
+        for column in 0..self.columns.len() {
+            let values = self.weighted_column(model, column, point)?;
+            basis.insert(model, field, values)?;
         }
         self.columns
             .len()
-            .checked_sub(2 * pivots.len())
+            .checked_sub(2 * basis.rank())
             .ok_or_else(|| {
                 Error::plain("Margolis differential rank is incompatible with square zero")
             })
     }
-}
-
-pub(crate) fn add_multiple(
-    model: &mut Model,
-    field: BinaryField,
-    mut left: &[Entry],
-    mut right: &[Entry],
-    factor: usize,
-) -> Result<Column> {
-    model.spend(left.len() + right.len() * if factor == 1 { 1 } else { field.degree() })?;
-    let mut result = Vec::new();
-    let scale = |value| {
-        if factor == 1 {
-            value
-        } else {
-            field.multiply(factor, value)
-        }
-    };
-    while let (Some((&(a, x), rest_left)), Some((&(b, y), rest_right))) =
-        (left.split_first(), right.split_first())
-    {
-        match a.cmp(&b) {
-            Ordering::Less => {
-                result.push((a, x));
-                left = rest_left;
-            }
-            Ordering::Equal => {
-                let coefficient = x ^ scale(y);
-                if coefficient != 0 {
-                    result.push((a, coefficient));
-                }
-                left = rest_left;
-                right = rest_right;
-            }
-            Ordering::Greater => {
-                result.push((b, scale(y)));
-                right = rest_right;
-            }
-        }
-    }
-    result.extend_from_slice(left);
-    result.extend(right.iter().map(|&(row, value)| (row, scale(value))));
-    check_storage(2 * result.len())?;
-    Ok(result)
 }
 
 pub(crate) struct Endpoints {

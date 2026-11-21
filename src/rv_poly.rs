@@ -182,7 +182,7 @@ pub(crate) fn vanishes(
         let mut product = 1;
         model.spend(1 + field.degree() * term.len())?;
         for (&coordinate, &exponent) in point.iter().zip(term.iter()) {
-            product = field.multiply(product, power(model, field, coordinate, exponent)?);
+            product = field.multiply(product, field.power(model, coordinate, exponent as u128)?);
             if product == 0 {
                 break;
             }
@@ -190,31 +190,6 @@ pub(crate) fn vanishes(
         sum ^= product;
     }
     Ok(sum == 0)
-}
-
-fn power(
-    model: &mut Model,
-    field: BinaryField,
-    mut value: usize,
-    mut exponent: usize,
-) -> Result<usize> {
-    if exponent == 0 || value == 1 {
-        return Ok(1);
-    }
-    if value == 0 {
-        return Ok(0);
-    }
-    exponent %= field.order() - 1;
-    let mut output = 1;
-    while exponent != 0 {
-        model.spend(2 * field.degree())?;
-        if exponent & 1 != 0 {
-            output = field.multiply(output, value);
-        }
-        value = field.multiply(value, value);
-        exponent >>= 1;
-    }
-    Ok(output)
 }
 
 fn exact_divide(

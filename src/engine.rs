@@ -38,6 +38,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
+use crate::rv_hom;
 use crate::rv_poly;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
@@ -155,6 +156,8 @@ enum TypedForm {
     Cobar(CobarOp, Box<TypedExpr>),
     RestrictAlgebra(Profile, Box<TypedExpr>),
     QRestrict(Box<TypedExpr>),
+    RVScale(BinaryField, usize, Box<TypedExpr>),
+    RVSpecialize(Box<TypedExpr>),
     VShift(i64, Box<TypedExpr>),
     VRatio(usize, Box<TypedExpr>),
     RvHasse(Vec<usize>, Box<TypedExpr>),
@@ -626,6 +629,13 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVHom(a), Value::RVHom(b)) => {
+                        let Kind::RVHom(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let field = grade.field;
+                        rv_hom::add(&mut self.model, field, &a, &b)
+                    }
                     (BinaryOp::Add, Value::QKoszul(a), Value::QKoszul(b)) => {
                         Ok(Value::QKoszul(q_koszul::add(&mut self.model, &a, &b)?))
                     }
@@ -650,6 +660,9 @@ impl Engine {
                     }
                     (BinaryOp::XMap, Value::Map(f), Value::Class(b)) => {
                         comodule::map(&mut self.model, left.ty, &f, right.ty, &b, expr.ty)
+                    }
+                    (BinaryOp::MapExtCompose, Value::RVHom(g), Value::RVHom(f)) => {
+                        rv_hom::compose(&mut self.model, left.ty, &g, right.ty, &f)
                     }
                     (BinaryOp::MapExtCompose, Value::QKoszul(g), Value::QKoszul(f)) => {
                         Ok(Value::QKoszul(q_koszul::compose(&mut self.model, &g, &f)?))
@@ -914,6 +927,16 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::RVScale(field, scalar, input) => {
+                let Value::RVHom(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_hom::scale(&mut self.model, *field, &value, *scalar)
+            }
+            TypedForm::RVSpecialize(input) => {
+                let value = self.eval(input)?;
+                rv_hom::specialize(&mut self.model, input.ty, value, expr.ty)
+            }
             TypedForm::QRestrict(input) => {
                 let value = self.eval(input)?;
                 q_koszul::restrict(&mut self.model, input.ty, value, expr.ty)
@@ -1389,6 +1412,10 @@ impl Checker<'_> {
                 let base = self.ty(*base)?;
                 self.model.xext_type(base, s, t)
             }
+            TypeForm::RVHom(spec) => {
+                let grade = self.rv_grade(spec)?;
+                self.model.rv_hom_type(grade)
+            }
             TypeForm::QKoszul(spec) => {
                 let grade = self.q_grade(spec)?;
                 self.model.q_koszul_type(grade)
@@ -1510,6 +1537,7 @@ impl Checker<'_> {
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
+                    Kind::RVHom(..) => rv_hom::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
@@ -1796,6 +1824,36 @@ impl Checker<'_> {
                 })?;
                 let value = q_koszul::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RVGenerator(spec, index, at) => {
+                let grade = self.rv_grade(spec)?;
+                let ty = self.model.rv_hom_type(grade)?;
+                let rank = self.model.rv_hom(ty)?.rank();
+                self.check_generator(ty, rank, index, at)?;
+                let value = rv_hom::persist(self.model, vec![(index, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RVIdentity(base, selected, modulus, point) => {
+                let base = self.q_endpoint(base)?;
+                let selected = q_koszul::indices(self.model, selected)?;
+                let grade = rv_hom::Grade::new(self.model, base, base, selected, modulus, point)?;
+                let ty = self.model.rv_hom_type(grade)?;
+                let value = rv_hom::identity(self.model, ty)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RVScale(scalar, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvScale", "an RVHom map"));
+                };
+                let field = grade.field;
+                field.check_element(scalar)?;
+                Ok((input.ty, TypedForm::RVScale(field, scalar, Box::new(input))))
+            }
+            ExprForm::RVSpecialize(modulus, point, input) => {
+                let input = self.expr(*input)?;
+                let ty = rv_hom::specialize_type(self.model, input.ty, modulus, point)?;
+                Ok((ty, TypedForm::RVSpecialize(Box::new(input))))
             }
             ExprForm::QExtGenerator(spec, index, at) => {
                 let grade = self.q_grade(spec)?;
@@ -2633,6 +2691,20 @@ impl Checker<'_> {
         }
     }
 
+    fn rv_grade(&mut self, spec: crate::syntax::RankVarietySpec) -> Result<rv_hom::Grade> {
+        let source = self.q_endpoint(*spec.source)?;
+        let target = self.q_endpoint(*spec.target)?;
+        let selected = q_koszul::indices(self.model, spec.selected)?;
+        rv_hom::Grade::new(
+            self.model,
+            source,
+            target,
+            selected,
+            spec.modulus,
+            spec.point.unwrap(),
+        )
+    }
+
     fn q_endpoint(&mut self, ty: ParsedType) -> Result<TypeId> {
         if let TypeForm::Name(name) = &ty.kind {
             if let Some(base) = self.model.q_endpoint_named(&name.text) {
@@ -2954,6 +3026,7 @@ impl Checker<'_> {
                         | Kind::QKoszul(..)
                         | Kind::RVPoly(..)
                         | Kind::QExt(..)
+                        | Kind::RVHom(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)
@@ -3085,6 +3158,12 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
+                if matches!(self.model.kind(left.ty), Kind::RVHom(..))
+                    || matches!(self.model.kind(right.ty), Kind::RVHom(..))
+                {
+                    return rv_hom::composition_type(self.model, left.ty, right.ty)
+                        .map_err(|error| error.at(right.span));
+                }
                 if matches!(self.model.kind(left.ty), Kind::VBock(..))
                     || matches!(self.model.kind(right.ty), Kind::VBock(..))
                 {

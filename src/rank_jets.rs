@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use crate::binary_field::BinaryField;
+use crate::binary_linear::add_multiple;
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, TypeId};
-use crate::rank_variety::{add_multiple, Column, Endpoint};
+use crate::rank_variety::{Column, Endpoint};
 
 pub(crate) struct Report {
     pub(crate) dimension: usize,

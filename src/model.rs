@@ -21,6 +21,7 @@ use crate::prime_linear::Coordinate;
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
+use crate::rv_hom::{self, Hom};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -64,6 +65,7 @@ pub(crate) enum Kind {
     MapExt(TypeId, TypeId, usize, i64),
     QKoszul(Grade),
     QExt(Grade),
+    RVHom(rv_hom::Grade),
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
@@ -147,6 +149,7 @@ pub(crate) enum Value {
     OddClass(Rc<[Coordinate]>),
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
+    RVHom(rv_hom::Support),
     RVPoly(Polynomial),
     Suspension(SuspensionPoint),
     Bar(Rc<[usize]>),
@@ -194,6 +197,7 @@ struct TypeInfo {
     xext: Option<Rc<comodule::Adams>>,
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
+    rv_hom: Option<Rc<Hom>>,
     q_module: Option<Rc<Module>>,
     vbock: Option<Rc<BocksteinPage>>,
     map_may: Option<Rc<MapMayPage>>,
@@ -381,7 +385,7 @@ impl Model {
             {
                 1
             }
-            Kind::QKoszul(..) | Kind::QExt(..) => usize::MAX,
+            Kind::QKoszul(..) | Kind::QExt(..) | Kind::RVHom(..) => usize::MAX,
             Kind::VKoszul(ref grade) | Kind::VExt(ref grade)
                 if !self.types[grade.source.0].inhabited
                     || !self.types[grade.target.0].inhabited =>
@@ -410,6 +414,7 @@ impl Model {
             xext: None,
             map_ext: None,
             q_ext: None,
+            rv_hom: None,
             q_module: None,
             vbock: None,
             map_may: None,
@@ -463,6 +468,7 @@ impl Model {
                 | Kind::MapExt(..)
                 | Kind::QKoszul(..)
                 | Kind::QExt(..)
+                | Kind::RVHom(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -763,6 +769,14 @@ impl Model {
         self.inhabited_type(Kind::QKoszul(grade), depth)
     }
 
+    pub(crate) fn rv_hom_type(&mut self, grade: rv_hom::Grade) -> Result<TypeId> {
+        let depth = self.types[grade.source.0]
+            .depth
+            .max(self.types[grade.target.0].depth)
+            + 1;
+        self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
     pub(crate) fn q_ext_type(&mut self, grade: Grade) -> Result<TypeId> {
         self.check_q_endpoints(grade.source, grade.target, &grade.selected)?;
         let depth = self.koszul_depth(&grade);
@@ -1035,6 +1049,19 @@ impl Model {
         Ok(page)
     }
 
+    pub(crate) fn rv_hom(&mut self, ty: TypeId) -> Result<Rc<Hom>> {
+        if let Some(group) = &self.types[ty.0].rv_hom {
+            return Ok(group.clone());
+        }
+        let Kind::RVHom(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let group = Rc::new(Hom::build(self, &grade)?);
+        self.types[ty.0].rv_hom = Some(group.clone());
+        Ok(group)
+    }
+
     pub(crate) fn q_ext(&mut self, ty: TypeId) -> Result<Rc<QExt>> {
         if let Some(group) = &self.types[ty.0].q_ext {
             return Ok(group.clone());
@@ -1203,6 +1230,7 @@ impl Model {
             | Kind::MapExt(..)
             | Kind::QKoszul(..)
             | Kind::QExt(..)
+            | Kind::RVHom(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -1357,6 +1385,18 @@ impl Model {
             Kind::RVPoly(selected, degree) => out.push(&format!("RVPoly({selected:?}, {degree})")),
             Kind::QKoszul(grade) => self.write_koszul_type(out, "QKoszul", grade),
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
+            Kind::RVHom(grade) => {
+                out.push("RVHom(")?;
+                self.write_type(out, grade.source, 0)?;
+                out.push(", ")?;
+                self.write_type(out, grade.target, 0)?;
+                out.push(&format!(
+                    ", {:?}, {}, {:?})",
+                    grade.selected,
+                    grade.field.modulus(),
+                    grade.point
+                ))
+            }
             Kind::VKoszul(grade) => self.write_koszul_type(out, "VKoszul", grade),
             Kind::VExt(grade) => self.write_koszul_type(out, "VExt", grade),
             Kind::VBock(grade) => {
@@ -1459,6 +1499,10 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right)
                     || rv_poly::compare(self, left, right)? == Ordering::Equal)
             }
+            (Value::RVHom(left), Value::RVHom(right)) => {
+                Ok(Rc::ptr_eq(left, right)
+                    || rv_hom::compare(self, left, right)? == Ordering::Equal)
+            }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || q_koszul::compare(self, left, right)? == Ordering::Equal)
@@ -1547,6 +1591,12 @@ impl Model {
                 } else {
                     rv_poly::compare(self, left, right)
                 }
+            }
+            (Value::RVHom(left), Value::RVHom(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    return Ok(Ordering::Equal);
+                }
+                rv_hom::compare(self, left, right)
             }
             (Value::QKoszul(left), Value::QKoszul(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -1674,6 +1724,10 @@ impl Model {
                 Kind::MapMay(..) => {
                     let rank = self.map_may(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RVHom(ref grade) => {
+                    let field = grade.field;
+                    rv_hom::elements(self, ty, field, MAX_ELEMENTS)?
                 }
                 Kind::QExt(..) | Kind::VExt(..) => {
                     let rank = self.q_ext(ty)?.rank();
@@ -2068,6 +2122,23 @@ impl Model {
                 };
                 out.push(&format!("RVPoly({selected:?}, {degree}){{"))?;
                 write_rv_polynomial(out, selected, polynomial)?;
+                out.push("}")
+            }
+            Value::RVHom(support) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if support.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, &(coordinate, coefficient)) in support.iter().enumerate() {
+                    if i != 0 {
+                        out.push(" + ")?;
+                    }
+                    if coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    out.push(&format!("g{coordinate}"))?;
+                }
                 out.push("}")
             }
             Value::QKoszul(terms) => {

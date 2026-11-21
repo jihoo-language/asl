@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::model::Model;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct BinaryField {
     modulus: usize,
     order: usize,
@@ -67,6 +67,20 @@ impl BinaryField {
         self.order
     }
 
+    pub(crate) fn modulus(self) -> usize {
+        self.modulus
+    }
+
+    pub(crate) fn check_element(self, value: usize) -> Result<()> {
+        if value >= self.order {
+            return Err(Error::plain(format!(
+                "field coefficient {value} is out of range for F{}",
+                self.order
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn check_point(
         self,
         coefficients: &[usize],
@@ -78,11 +92,8 @@ impl BinaryField {
                 "{name} requires one field coefficient per selected primitive"
             )));
         }
-        if let Some(value) = coefficients.iter().find(|&&value| value >= self.order) {
-            return Err(Error::plain(format!(
-                "field coefficient {value} is out of range for F{}",
-                self.order
-            )));
+        for &value in coefficients {
+            self.check_element(value)?;
         }
         Ok(())
     }
@@ -106,9 +117,25 @@ impl BinaryField {
         output
     }
 
-    pub(crate) fn inverse(self, model: &mut Model, mut value: usize) -> Result<usize> {
+    pub(crate) fn inverse(self, model: &mut Model, value: usize) -> Result<usize> {
         debug_assert!(value != 0 && value < self.order);
-        let mut exponent = self.order - 2;
+        self.power(model, value, (self.order - 2) as u128)
+    }
+
+    pub(crate) fn power(
+        self,
+        model: &mut Model,
+        mut value: usize,
+        mut exponent: u128,
+    ) -> Result<usize> {
+        debug_assert!(value < self.order);
+        if exponent == 0 || value == 1 {
+            return Ok(1);
+        }
+        if value == 0 {
+            return Ok(0);
+        }
+        exponent %= (self.order - 1) as u128;
         let mut output = 1;
         while exponent != 0 {
             model.spend(2 * self.degree)?;
