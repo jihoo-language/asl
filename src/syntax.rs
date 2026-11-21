@@ -43,6 +43,7 @@ pub(crate) enum TypeForm {
     QExt(QSpec),
     VKoszul(QSpec<i64>),
     VExt(QSpec<i64>),
+    VBock(VBockSpec),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
     CeAn(usize, usize, usize, usize, usize),
@@ -60,6 +61,12 @@ pub(crate) struct QSpec<S = usize> {
     pub(crate) selected: Vec<usize>,
     pub(crate) s: S,
     pub(crate) t: i64,
+}
+
+pub(crate) struct VBockSpec {
+    pub(crate) localized: QSpec<i64>,
+    pub(crate) r: usize,
+    pub(crate) f: usize,
 }
 
 pub(crate) struct MapMaySpec {
@@ -211,6 +218,8 @@ pub(crate) enum ExprForm {
     QTerm(QTerm),
     QIdentity(ParsedType, Vec<usize>),
     VExtGenerator(QSpec<i64>, usize, Span),
+    VBockGenerator(VBockSpec, usize, Span),
+    VBockClass(usize, usize, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     QRestrict(Vec<usize>, Box<ParsedExpr>),
     MayClass(usize, usize, Box<ParsedExpr>),
@@ -263,6 +272,7 @@ pub(crate) enum StatementForm {
     MapMayDimension(MapMaySpec),
     QExtDimension(QSpec),
     VExtDimension(QSpec<i64>),
+    VBockDimension(VBockSpec),
     MayDimension(usize, usize, usize, usize),
     MayAnDimension(usize, usize, usize, usize, usize),
     CeDimension(usize, usize, usize, usize, usize),
@@ -707,6 +717,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::VExtDimension(spec)
             }
+            Token::Word("vbockdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.vbock_spec(0)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::VBockDimension(spec)
+            }
             Token::Word("mapmaydim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -808,6 +825,33 @@ impl<'src> Parser<'src> {
 
     fn v_spec(&mut self, nest: usize) -> Result<QSpec<i64>> {
         self.koszul_spec(nest, Self::signed_degree)
+    }
+
+    fn vbock_spec(&mut self, nest: usize) -> Result<VBockSpec> {
+        let QSpec {
+            source,
+            target,
+            selected,
+            s: (r, s),
+            t,
+        } = self.koszul_spec(nest, |parser| {
+            let (r, _) = parser.number()?;
+            parser.expect(Token::Comma)?;
+            Ok((r, parser.signed_degree()?))
+        })?;
+        self.expect(Token::Comma)?;
+        let (f, _) = self.number()?;
+        Ok(VBockSpec {
+            localized: QSpec {
+                source,
+                target,
+                selected,
+                s,
+                t,
+            },
+            r,
+            f,
+        })
     }
 
     fn koszul_spec<S>(
@@ -999,6 +1043,12 @@ impl<'src> Parser<'src> {
                 TypeForm::VExt(spec)
             };
             return ty(span, kind, depth);
+        }
+        if name.text == "VBock" && self.eat(Token::LParen)? {
+            let spec = self.vbock_spec(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
+            return ty(span, TypeForm::VBock(spec), depth);
         }
         if name.text == "MapMay" && self.eat(Token::LParen)? {
             let spec = self.map_may_spec(nest)?;
@@ -1516,6 +1566,20 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::VExtGenerator(spec, index, at), 0);
+                }
+                if name.text == "vbockgen" && self.eat(Token::LBracket)? {
+                    let spec = self.vbock_spec(nest)?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::VBockGenerator(spec, index, at), 0);
+                }
+                if name.text == "vbClass" && self.eat(Token::LBracket)? {
+                    let (r, f) = self.bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    let value = self.paren_expr(nest)?;
+                    let depth = value.depth + 1;
+                    return expr(span, ExprForm::VBockClass(r, f, Box::new(value)), depth);
                 }
                 if name.text == "vShift" && self.eat(Token::LBracket)? {
                     let k = self.signed_degree()?;

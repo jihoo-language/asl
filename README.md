@@ -428,6 +428,25 @@ The literal `qterm[X,q,i,Y,p,j,I]{a0,...}` gives a `QKoszul` cochain sending gen
 
 The example computes a lightning-flash module with four pairs of generators. The differential has an explicit witness for the fourth power of $v_0$ annihilating the last class, and the third power is nonzero. [Declared module example](examples/q-module.asl)
 
+### Bockstein pages of the localized Koszul category
+
+`VBock(X, Y, [I], r, s, t, f)` is the page-$r$ group of the localized Koszul complex in signed bidegree $(s,t)$. The nonempty list `I` selects the Milnor primitives, with $n=\max(I)$. The filtration of a term $\prod_i v_i^{a_i}$ is $f=\sum_{i<n}a_i$. Only $v_n$ is inverted. In each signed bidegree, the positive differences between the internal degree of $v_n$ and those of the lower variables bound the possible lower exponents.
+
+The differential $v_n Q_n+\sum_{i<n}v_iQ_i$ acts on coefficient maps. The first summand preserves filtration, so $E_1$ takes Margolis $Q_n$ homology of the coefficients at each monomial. The other summands raise filtration by one. Higher differentials use corrected lifts.
+
+| Expression or statement | Result |
+| --- | --- |
+| `vbockdim[X, Y, [I], r, s, t, f];` | Print the rank of a page component. |
+| `vbockgen[X, Y, [I], r, s, t, f, i]` | Select basis generator `i`, starting from zero. |
+| `vbClass[r, f](a)` | Take a `VKoszul` cochain in $F^f$ with differential in $F^{f+r}$ to the page. |
+| `vbRep(x)` | Return the chosen `VKoszul` lift. |
+| `vbD(x)` | Evaluate $d_r$, raising `s` by one and `f` by `r`. |
+| `vbNext(x)` | Advance a $d_r$-cycle to the next page. Incoming boundaries give zero. |
+| `vbPrev(x)` | Choose a cycle on the preceding page using the canonical raw lift. |
+| `ecomp(g, f)` | Compose classes on the same page with the same primitive selection, adding both degrees and filtration. |
+| `vShift[k](x)` | Multiply by $v_n^k$, preserving filtration. |
+
+The example over real projective four-space uses $I=[0,1]$. Here $Dz_2=v_0z_1$ and $Dz_4=v_1z_1+v_0z_3$. The lift $z_2+(v_0/v_1)z_4$ gives the nonzero differential $d_2(z_2)=(v_0^2/v_1)z_3$. Both components vanish on $E_3$. The same calculation after multiplying by $v_1^{-1}$ starts in negative cohomological degree. [Localized Bockstein example](examples/vbock-rp4.asl)
 
 ## Suspension and stable degrees
 

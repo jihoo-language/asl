@@ -24,6 +24,7 @@ use crate::q_module::{Module, Presentation};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_koszul;
+use crate::vbock::{self, BocksteinPage};
 
 const MAX_SPACE_POINTS: usize = 512;
 const MAX_TYPES: usize = 4096;
@@ -61,6 +62,7 @@ pub(crate) enum Kind {
     QExt(Grade),
     VKoszul(v_koszul::Grade),
     VExt(v_koszul::Grade),
+    VBock(vbock::Grade),
     MapMay(TypeId, TypeId, usize, usize, i64, usize),
     May(usize, usize, usize, usize),
     MayAn(usize, usize, usize, usize, usize),
@@ -171,6 +173,7 @@ struct TypeInfo {
     map_ext: Option<Rc<MapAdams>>,
     q_ext: Option<Rc<QExt>>,
     q_module: Option<Rc<Module>>,
+    vbock: Option<Rc<BocksteinPage>>,
     map_may: Option<Rc<MapMayPage>>,
     may_page: Option<Rc<MayPage>>,
     ce_page: Option<Rc<CePage>>,
@@ -347,7 +350,7 @@ impl Model {
             {
                 1
             }
-            Kind::VKoszul(..) | Kind::VExt(..) => usize::MAX,
+            Kind::VKoszul(..) | Kind::VExt(..) | Kind::VBock(..) => usize::MAX,
             Kind::Bar(modulus) => support_space_size(modulus - 1),
             Kind::CyclicH2(modulus) => 2 - (modulus & 1),
         };
@@ -366,6 +369,7 @@ impl Model {
             map_ext: None,
             q_ext: None,
             q_module: None,
+            vbock: None,
             map_may: None,
             may_page: None,
             ce_page: None,
@@ -417,6 +421,7 @@ impl Model {
                 | Kind::QExt(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
+                | Kind::VBock(..)
                 | Kind::MapMay(..)
                 | Kind::May(..)
                 | Kind::MayAn(..)
@@ -700,6 +705,17 @@ impl Model {
         self.inhabited_type(Kind::VExt(grade), depth)
     }
 
+    pub(crate) fn vbock_type(&mut self, grade: vbock::Grade) -> Result<TypeId> {
+        self.check_q_endpoints(
+            grade.localized.source,
+            grade.localized.target,
+            &grade.localized.selected,
+        )?;
+        v_koszul::top(&grade.localized.selected)?;
+        let depth = self.koszul_depth(&grade.localized);
+        self.inhabited_type(Kind::VBock(grade), depth)
+    }
+
     fn koszul_depth<S>(&self, grade: &Grade<S>) -> usize {
         self.types[grade.source.0]
             .depth
@@ -903,6 +919,19 @@ impl Model {
         Ok(data)
     }
 
+    pub(crate) fn vbock_page(&mut self, ty: TypeId) -> Result<Rc<BocksteinPage>> {
+        if let Some(page) = &self.types[ty.0].vbock {
+            return Ok(page.clone());
+        }
+        let Kind::VBock(grade) = self.kind(ty) else {
+            unreachable!()
+        };
+        let grade = grade.clone();
+        let page = Rc::new(BocksteinPage::build(self, &grade)?);
+        self.types[ty.0].vbock = Some(page.clone());
+        Ok(page)
+    }
+
     pub(crate) fn may_page(&mut self, ty: TypeId) -> Result<Rc<MayPage>> {
         if let Some(data) = &self.types[ty.0].may_page {
             return Ok(data.clone());
@@ -1018,6 +1047,7 @@ impl Model {
             | Kind::QExt(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
+            | Kind::VBock(..)
             | Kind::MapMay(..)
             | Kind::May(..)
             | Kind::MayAn(..)
@@ -1163,6 +1193,17 @@ impl Model {
             Kind::QExt(grade) => self.write_koszul_type(out, "QExt", grade),
             Kind::VKoszul(grade) => self.write_koszul_type(out, "VKoszul", grade),
             Kind::VExt(grade) => self.write_koszul_type(out, "VExt", grade),
+            Kind::VBock(grade) => {
+                let localized = &grade.localized;
+                out.push("VBock(")?;
+                self.write_type(out, localized.source, 0)?;
+                out.push(", ")?;
+                self.write_type(out, localized.target, 0)?;
+                out.push(&format!(
+                    ", {:?}, {}, {}, {}, {})",
+                    localized.selected, grade.r, localized.s, localized.t, grade.f,
+                ))
+            }
             &Kind::MapExt(source, target, s, t) | &Kind::MapCobar(source, target, s, t) => {
                 out.push(if matches!(self.kind(ty), Kind::MapCobar(..)) {
                     "MapCobar("
@@ -1459,6 +1500,10 @@ impl Model {
                 }
                 Kind::QExt(..) | Kind::VExt(..) => {
                     let rank = self.q_ext(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::VBock(..) => {
+                    let rank = self.vbock_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::QKoszul(ref grade) => {

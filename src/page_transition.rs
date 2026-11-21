@@ -3,6 +3,7 @@ use crate::linear::Basis;
 use crate::map_ext;
 use crate::model::{Kind, Model, TypeId, Value};
 use crate::profile::Profile;
+use crate::vbock;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Direction {
@@ -14,6 +15,7 @@ pub(crate) enum Direction {
 pub(crate) enum PageFamily {
     May,
     Ce,
+    VBock,
 }
 
 impl PageFamily {
@@ -23,6 +25,8 @@ impl PageFamily {
             (Self::May, Direction::Previous) => "mayPrev",
             (Self::Ce, Direction::Next) => "ceNext",
             (Self::Ce, Direction::Previous) => "cePrev",
+            (Self::VBock, Direction::Next) => "vbNext",
+            (Self::VBock, Direction::Previous) => "vbPrev",
         }
     }
 
@@ -30,6 +34,7 @@ impl PageFamily {
         match self {
             Self::May => "a May or MapMay class",
             Self::Ce => "a CEAn class",
+            Self::VBock => "a VBock class",
         }
     }
 }
@@ -45,6 +50,13 @@ impl Direction {
             if let Kind::PMay(p, r, s, t, f) = *model.kind(ty) {
                 let page = self.target_page(r, family)?;
                 return model.pmay_type(p, page, s, t, f);
+            }
+        }
+        if family == PageFamily::VBock {
+            if let Kind::VBock(grade) = model.kind(ty) {
+                let mut grade = grade.clone();
+                grade.r = self.target_page(grade.r, family)?;
+                return model.vbock_type(grade);
             }
         }
         let grade = Grade::from_type(model, ty)
@@ -213,28 +225,57 @@ pub(crate) struct Transition {
 
 impl Transition {
     pub(crate) fn build(model: &mut Model, current: TypeId) -> Result<Self> {
+        if matches!(model.kind(current), Kind::VBock(..)) {
+            return vbock::transition(model, current);
+        }
         let grade = Grade::from_type(model, current).unwrap();
         let name = grade.family.page_family().name(Direction::Next);
-        let mut cycles = Basis::default();
-        if let Some(incoming) = grade.incoming() {
-            let incoming = incoming.ty(model)?;
-            for index in 0..grade.family.rank(model, incoming)? {
-                let boundary =
-                    grade
-                        .family
-                        .lift_coordinates(model, incoming, current, &[index], true)?;
-                cycles.insert(model, boundary)?;
-            }
-        }
-
+        let incoming = grade.incoming().map(|grade| grade.ty(model)).transpose()?;
+        let boundary_count = if let Some(incoming) = incoming {
+            grade.family.rank(model, incoming)?
+        } else {
+            0
+        };
         let next = Direction::Next.changed_type(model, grade)?;
-        for index in 0..grade.family.rank(model, next)? {
+        let next_rank = grade.family.rank(model, next)?;
+        Self::from_columns(
+            model,
+            grade.page,
+            name,
+            boundary_count,
+            next_rank,
+            |model, index| {
+                grade
+                    .family
+                    .lift_coordinates(model, incoming.unwrap(), current, &[index], true)
+            },
+            |model, index| {
+                grade
+                    .family
+                    .lift_coordinates(model, next, current, &[index], false)
+            },
+        )
+    }
+
+    pub(crate) fn from_columns(
+        model: &mut Model,
+        page: usize,
+        name: &'static str,
+        boundary_count: usize,
+        next_rank: usize,
+        mut boundary: impl FnMut(&mut Model, usize) -> Result<Vec<usize>>,
+        mut earlier_cycle: impl FnMut(&mut Model, usize) -> Result<Vec<usize>>,
+    ) -> Result<Self> {
+        let mut cycles = Basis::default();
+        for index in 0..boundary_count {
+            let column = boundary(model, index)?;
+            cycles.insert(model, column)?;
+        }
+        for index in 0..next_rank {
             // The raw next-page lift is already corrected through filtration
             // f+r. Its image on the current page is a cycle. Its witness
             // records the next-page coordinate modulo incoming boundaries.
-            let earlier = grade
-                .family
-                .lift_coordinates(model, next, current, &[index], false)?;
+            let earlier = earlier_cycle(model, index)?;
             if cycles
                 .insert_with_witness(model, earlier, vec![index])?
                 .is_some()
@@ -243,11 +284,7 @@ impl Transition {
             }
         }
         model.allocate(2 + cycles.cells())?;
-        Ok(Self {
-            page: grade.page,
-            cycles,
-            name,
-        })
+        Ok(Self { page, cycles, name })
     }
 
     fn project(&self, model: &mut Model, class: &[usize]) -> Result<Vec<usize>> {
@@ -282,6 +319,9 @@ pub(crate) fn previous(
 ) -> Result<Value> {
     if class.is_empty() {
         return Ok(Value::Class([].into()));
+    }
+    if matches!(model.kind(source), Kind::VBock(..)) {
+        return vbock::previous(model, source, target, class);
     }
     let grade = Grade::from_type(model, source).unwrap();
     let coordinates = grade

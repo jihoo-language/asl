@@ -32,7 +32,7 @@ pub(crate) trait FilteredComplex {
 
 pub(crate) struct FilteredPage<C: FilteredComplex> {
     f: usize,
-    cutoff: usize,
+    cutoff: u128,
     terms: Vec<C::Term>,
     leading_start: usize,
     quotient: Option<Quotient>,
@@ -48,7 +48,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
     pub(crate) fn empty(r: usize, f: usize) -> Self {
         Self {
             f,
-            cutoff: f.saturating_add(r),
+            cutoff: f as u128 + r as u128,
             terms: Vec::new(),
             leading_start: 0,
             quotient: (r != 0).then(Quotient::default),
@@ -71,7 +71,9 @@ impl<C: FilteredComplex> FilteredPage<C> {
                 Ordering::Equal => leading.push(term),
                 // Words at or above the cutoff cannot correct a differential
                 // below it, so the canonical lifts need only the intervening words.
-                Ordering::Greater if term_filtration < page.cutoff => page.terms.push(term),
+                Ordering::Greater if (term_filtration as u128) < page.cutoff => {
+                    page.terms.push(term)
+                }
                 _ => {}
             }
         }
@@ -106,7 +108,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
             let mut lower = Vec::new();
             for term in complex.differential(model, source)? {
                 model.spend(C::cells(&term))?;
-                if complex.filtration(&term)? < self.cutoff {
+                if (complex.filtration(&term)? as u128) < self.cutoff {
                     lower.push(rows.coordinate(model, C::cells(&term), term)?);
                 }
             }
@@ -213,14 +215,14 @@ impl<C: FilteredComplex> FilteredPage<C> {
                 Ordering::Equal => leading.push(self.leading_coordinate(model, term)?),
                 Ordering::Greater => {}
             }
-            if term_filtration < self.cutoff {
+            if (term_filtration as u128) < self.cutoff {
                 below_cutoff.push(term.clone());
             }
         }
         if let Some(quotient) = &self.quotient {
             for term in complex.differential_support(model, &below_cutoff)? {
                 model.spend(C::cells(&term))?;
-                if complex.filtration(&term)? < self.cutoff {
+                if (complex.filtration(&term)? as u128) < self.cutoff {
                     return Err(Error::plain(format!(
                         "cobar chain does not satisfy the {} page cycle condition",
                         C::NAME,

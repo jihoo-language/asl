@@ -36,10 +36,11 @@ use crate::restriction_transfer;
 use crate::steenrod;
 use crate::syntax::{
     BinaryOp, ClassForm, CyclicForm, Entries, ExprForm, MapMaySpec, ParsedExpr, ParsedType, QSpec,
-    Statement, StatementForm, SuspensionForm, TypeForm, Witness,
+    Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
 };
 use crate::transfer;
 use crate::v_koszul;
+use crate::vbock;
 
 pub(crate) struct Engine {
     model: Model,
@@ -79,6 +80,9 @@ enum CobarOp {
     QClass,
     QRepresentative,
     VLocal,
+    VBockClass,
+    VBockDifferential,
+    VBockRepresentative,
 }
 
 impl CobarOp {
@@ -109,6 +113,13 @@ impl CobarOp {
             "qClass" => Some(Self::QClass),
             "qRep" => Some(Self::QRepresentative),
             "vLocal" => Some(Self::VLocal),
+            "vbD" => Some(Self::VBockDifferential),
+            "vbRep" => Some(Self::VBockRepresentative),
+            "vbNext" => Some(Self::PageTransition(PageFamily::VBock, PageDirection::Next)),
+            "vbPrev" => Some(Self::PageTransition(
+                PageFamily::VBock,
+                PageDirection::Previous,
+            )),
             _ => None,
         }
     }
@@ -347,6 +358,24 @@ impl Engine {
                     grade.t
                 )
             }
+            StatementForm::VBockDimension(spec) => {
+                let ty = self.checker().vbock_type(spec)?;
+                let Kind::VBock(grade) = self.model.kind(ty).clone() else {
+                    unreachable!()
+                };
+                let rank = self.model.vbock_page(ty)?.rank();
+                let localized = grade.localized;
+                format!(
+                    "vbockdim[{}, {}, {:?}, {}, {}, {}, {}] = {rank}",
+                    self.model.type_name(localized.source),
+                    self.model.type_name(localized.target),
+                    localized.selected,
+                    grade.r,
+                    localized.s,
+                    localized.t,
+                    grade.f,
+                )
+            }
             StatementForm::MapMayDimension(spec) => {
                 let ty = self.checker().map_may_type(spec)?;
                 let Kind::MapMay(source, target, r, s, t, f) = *self.model.kind(ty) else {
@@ -475,6 +504,14 @@ impl Engine {
                         Ok(Value::QKoszul(q_koszul::compose(&mut self.model, &g, &f)?))
                     }
                     (BinaryOp::MapExtCompose, Value::Class(g), Value::Class(f)) => {
+                        if matches!(self.model.kind(expr.ty), Kind::VBock(..)) {
+                            return vbock::compose(
+                                &mut self.model,
+                                (left.ty, &g),
+                                (right.ty, &f),
+                                expr.ty,
+                            );
+                        }
                         if matches!(self.model.kind(expr.ty), Kind::QExt(..) | Kind::VExt(..)) {
                             return q_koszul::compose_classes(
                                 &mut self.model,
@@ -585,6 +622,16 @@ impl Engine {
                 }
                 (CobarOp::VLocal, value) => {
                     v_koszul::localize(&mut self.model, input.ty, expr.ty, value)
+                }
+                (CobarOp::VBockClass, Value::QKoszul(terms)) => {
+                    vbock::class(&mut self.model, expr.ty, &terms)
+                }
+                (CobarOp::VBockDifferential, Value::Class(class)) => {
+                    vbock::differential(&mut self.model, input.ty, expr.ty, &class)
+                }
+                (CobarOp::VBockRepresentative, Value::Class(class)) => {
+                    let terms = vbock::representative(&mut self.model, input.ty, &class)?;
+                    Ok(Value::QKoszul(terms))
                 }
                 (CobarOp::MapDifferential, Value::MapCobar(terms)) => {
                     let Kind::MapCobar(source, target, ..) = *self.model.kind(input.ty) else {
@@ -719,6 +766,12 @@ impl Engine {
             }
             TypedForm::VShift(k, input) => {
                 let value = self.eval(input)?;
+                if matches!(self.model.kind(input.ty), Kind::VBock(..)) && *k != 0 {
+                    let Value::Class(class) = value else {
+                        unreachable!()
+                    };
+                    return vbock::shift(&mut self.model, input.ty, expr.ty, *k, &class);
+                }
                 v_koszul::shift(&mut self.model, input.ty, expr.ty, *k, value)
             }
             TypedForm::RestrictAlgebra(profile, input) => {
@@ -1144,6 +1197,7 @@ impl Checker<'_> {
                 let grade = self.q_grade(spec)?;
                 self.model.v_ext_type(grade)
             }
+            TypeForm::VBock(spec) => self.vbock_type(spec),
             TypeForm::MapMay(spec) => self.map_may_type(spec),
             TypeForm::MapExt(source, target, s, t) => {
                 let source = self.ty(*source)?;
@@ -1242,7 +1296,7 @@ impl Checker<'_> {
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
-                    Kind::QExt(..) | Kind::VExt(..) => cohomology::zero(),
+                    Kind::QExt(..) | Kind::VExt(..) | Kind::VBock(..) => cohomology::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
@@ -1523,9 +1577,32 @@ impl Checker<'_> {
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::VBockGenerator(spec, index, at) => {
+                let ty = self.vbock_type(spec)?;
+                let rank = self.model.vbock_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::VBockClass(r, f, input) => {
+                let input = self.expr(*input)?;
+                let Kind::VKoszul(localized) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "vbClass", "a VKoszul cochain"));
+                };
+                let grade = vbock::Grade {
+                    localized: localized.clone(),
+                    r,
+                    f,
+                };
+                let ty = self.model.vbock_type(grade)?;
+                Ok((ty, TypedForm::Cobar(CobarOp::VBockClass, Box::new(input))))
+            }
             ExprForm::VShift(k, input) => {
                 let input = self.expr(*input)?;
-                let ty = v_koszul::shift_type(self.model, input.ty, k)?;
+                let ty = if matches!(self.model.kind(input.ty), Kind::VBock(..)) {
+                    vbock::shift_type(self.model, input.ty, k)?
+                } else {
+                    v_koszul::shift_type(self.model, input.ty, k)?
+                };
                 Ok((ty, TypedForm::VShift(k, Box::new(input))))
             }
             ExprForm::QRestrict(selected, input) => {
@@ -2245,6 +2322,15 @@ impl Checker<'_> {
         })
     }
 
+    fn vbock_type(&mut self, spec: VBockSpec) -> Result<TypeId> {
+        let localized = self.q_grade(spec.localized)?;
+        self.model.vbock_type(vbock::Grade {
+            localized,
+            r: spec.r,
+            f: spec.f,
+        })
+    }
+
     fn map_may_type(&mut self, spec: MapMaySpec) -> Result<TypeId> {
         let source = self.ty(*spec.source)?;
         let target = self.ty(*spec.target)?;
@@ -2298,6 +2384,15 @@ impl Checker<'_> {
             }
         }
         match op {
+            CobarOp::VBockDifferential | CobarOp::VBockRepresentative => {
+                let Kind::VBock(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a VBock class"));
+                };
+                if matches!(op, CobarOp::VBockRepresentative) {
+                    return self.model.v_koszul_type(grade.localized.clone());
+                }
+                return vbock::differential_type(self.model, argument.ty);
+            }
             CobarOp::PageTransition(family, direction) => {
                 return direction
                     .result_type(self.model, argument.ty, *family)
@@ -2517,6 +2612,7 @@ impl Checker<'_> {
                         | Kind::QExt(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
+                        | Kind::VBock(..)
                         | Kind::Ext(..)
                         | Kind::ExtAn(..)
                         | Kind::XExt(..)
@@ -2633,6 +2729,11 @@ impl Checker<'_> {
                 self.model.xext_type(range, s, t)
             }
             BinaryOp::MapExtCompose => {
+                if matches!(self.model.kind(left.ty), Kind::VBock(..))
+                    || matches!(self.model.kind(right.ty), Kind::VBock(..))
+                {
+                    return vbock::composition_type(self.model, left.ty, right.ty);
+                }
                 if matches!(
                     self.model.kind(left.ty),
                     Kind::QKoszul(..) | Kind::QExt(..) | Kind::VKoszul(..) | Kind::VExt(..)
