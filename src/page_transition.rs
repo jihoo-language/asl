@@ -3,6 +3,7 @@ use crate::linear::Basis;
 use crate::map_ext;
 use crate::model::{Kind, Model, TypeId, Value};
 use crate::profile::Profile;
+use crate::rho_bock;
 use crate::rv_bar_page;
 use crate::vbock;
 
@@ -234,6 +235,9 @@ impl Transition {
     pub(crate) fn build(model: &mut Model, current: TypeId) -> Result<Self> {
         if matches!(model.kind(current), Kind::VBock(..)) {
             return vbock::transition(model, current);
+        }
+        if matches!(model.kind(current), Kind::RhoBock(..)) {
+            return rho_bock::transition(model, current);
         }
         if matches!(model.kind(current), Kind::RVBarE(..)) {
             return rv_bar_page::transition(model, current);

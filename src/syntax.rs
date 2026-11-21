@@ -10,6 +10,7 @@ use crate::model::DiffFamily;
 use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
+use crate::rho_bock;
 use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_gauss::Operation as GaussOp;
@@ -48,6 +49,7 @@ pub(crate) enum TypeForm {
     Cobar(usize, usize),
     MCobar(MotivicGrade),
     RMCobar(MotivicGrade),
+    RhoBock(rho_bock::Grade),
     MExt(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
@@ -263,6 +265,27 @@ pub(crate) struct JetPageSpec {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum RhoOp {
+    Class(usize, usize),
+    Representative,
+    Differential,
+    Next,
+    Previous,
+}
+
+impl RhoOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Class(..) => "rhoClass",
+            Self::Representative => "rhoRep",
+            Self::Differential => "rhoD",
+            Self::Next => "rhoNext",
+            Self::Previous => "rhoPrev",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum JetOp {
     Class(usize, usize),
     Representative,
@@ -328,6 +351,7 @@ pub(crate) enum BinaryOp {
     MapExtCompose,
     XMap,
     MayMul,
+    RhoMul,
     CeMul,
     MilnorPair,
     RvMultiply,
@@ -354,6 +378,7 @@ impl BinaryOp {
             "ecomp" => Some(Self::MapExtCompose),
             "xmap" => Some(Self::XMap),
             "mayMul" => Some(Self::MayMul),
+            "rhoMul" => Some(Self::RhoMul),
             "ceMul" => Some(Self::CeMul),
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
@@ -443,6 +468,8 @@ pub(crate) enum ExprForm {
     CobarWord(Vec<(Vec<usize>, Span)>),
     MCobarWord(usize, Vec<FactorLiteral>),
     RMCobarWord(usize, usize, Vec<FactorLiteral>),
+    RhoGenerator(rho_bock::Grade, usize, Span),
+    RhoOperation(RhoOp, Box<ParsedExpr>),
     TauShift(usize, Box<ParsedExpr>),
     RhoShift(usize, Box<ParsedExpr>),
     RealComplex(Box<ParsedExpr>),
@@ -647,6 +674,7 @@ pub(crate) enum StatementForm {
     BpTripleSize(ParsedExpr),
     ExtDimension(usize, usize),
     MExtDimension(MotivicGrade),
+    RhoDimension(rho_bock::Grade),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     BpPageDimension(BpPageMode, BpPageSpec),
@@ -959,6 +987,15 @@ impl<'src> Parser<'src> {
             .map_err(|_| Error::new(span, "decimal integer is out of range"))?;
         self.advance()?;
         Ok((number, span))
+    }
+
+    fn rho_grade(&mut self) -> Result<rho_bock::Grade> {
+        let (r, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let chain = self.motivic_grade()?;
+        self.expect(Token::Comma)?;
+        let (f, _) = self.number()?;
+        Ok(rho_bock::Grade { chain, r, f })
     }
 
     fn motivic_grade(&mut self) -> Result<MotivicGrade> {
@@ -1518,6 +1555,13 @@ impl<'src> Parser<'src> {
                 let (p, n, s, t) = self.prime_profile_bidegree()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::PExtAnDimension(p, n, s, t)
+            }
+            Token::Word("rhobockdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.rho_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RhoDimension(grade)
             }
             Token::Word("mextdim") => {
                 self.advance()?;
@@ -2403,6 +2447,11 @@ impl<'src> Parser<'src> {
                 TypeForm::PExtAn(p, n, s, t)
             };
             return ty(span, kind, 0);
+        }
+        if name.text == "RhoBock" && self.eat(Token::LParen)? {
+            let grade = self.rho_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RhoBock(grade), 0);
         }
         if matches!(name.text.as_str(), "MCobar" | "MExt" | "RMCobar") && self.eat(Token::LParen)? {
             let grade = self.motivic_grade()?;
@@ -3724,6 +3773,44 @@ impl<'src> Parser<'src> {
                         ExprForm::TauShift(power, Box::new(input))
                     };
                     return expr(span, form, depth);
+                }
+                if name.text == "rhobockgen" && self.eat(Token::LBracket)? {
+                    let grade = self.rho_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RhoGenerator(grade, index, at), 0);
+                }
+                if name.text == "rhoClass" && self.eat(Token::LBracket)? {
+                    let (r, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (f, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RhoOperation(RhoOp::Class(r, f), Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "rhoRep" => Some(RhoOp::Representative),
+                        "rhoD" => Some(RhoOp::Differential),
+                        "rhoNext" => Some(RhoOp::Next),
+                        "rhoPrev" => Some(RhoOp::Previous),
+                        _ => None,
+                    };
+                    if let Some(operation) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::RhoOperation(operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "realComplex" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;

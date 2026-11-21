@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ops::RangeInclusive;
 
 use crate::cobar::{self, word_cells, Word};
 use crate::complex::MAX_PIVOT_CELLS;
@@ -21,12 +22,38 @@ pub(crate) trait FilteredComplex {
     const ELEMENT_NAME: &'static str = "cobar";
 
     fn basis(&mut self, model: &mut Model, s: usize, f: usize) -> Result<Vec<Self::Term>>;
+
+    // Implementations may omit terms above the window. The reducer
+    // independently discards them, so the ordinary basis is also valid.
+    fn basis_window(
+        &mut self,
+        model: &mut Model,
+        s: usize,
+        window: RangeInclusive<usize>,
+    ) -> Result<Vec<Self::Term>> {
+        self.basis(model, s, *window.start())
+    }
+
     fn differential(&mut self, model: &mut Model, term: &Self::Term) -> Result<Vec<Self::Term>>;
     fn differential_support(
         &mut self,
         model: &mut Model,
         terms: &[Self::Term],
     ) -> Result<Vec<Self::Term>>;
+    // Implementations may omit terms at or above the cutoff.
+    fn differential_below(
+        &mut self,
+        model: &mut Model,
+        terms: &[Self::Term],
+        _cutoff: u128,
+    ) -> Result<Vec<Self::Term>> {
+        if let [term] = terms {
+            self.differential(model, term)
+        } else {
+            self.differential_support(model, terms)
+        }
+    }
+
     fn filtration(&self, term: &Self::Term) -> Result<usize>;
     fn cells(term: &Self::Term) -> usize;
 }
@@ -65,7 +92,8 @@ impl<C: FilteredComplex> FilteredPage<C> {
     ) -> Result<Self> {
         let mut page = Self::empty(r, f);
         let mut leading = Vec::new();
-        for term in complex.basis(model, s, f)? {
+        let end = f.saturating_add(r.saturating_sub(1));
+        for term in complex.basis_window(model, s, f..=end)? {
             model.spend(C::cells(&term))?;
             let term_filtration = complex.filtration(&term)?;
             match term_filtration.cmp(&f) {
@@ -107,7 +135,9 @@ impl<C: FilteredComplex> FilteredPage<C> {
         let mut lift_cells = 0;
         for (coordinate, source) in self.terms.iter().enumerate() {
             let mut lower = Vec::new();
-            for term in complex.differential(model, source)? {
+            for term in
+                complex.differential_below(model, std::slice::from_ref(source), self.cutoff)?
+            {
                 model.spend(C::cells(&term))?;
                 if (complex.filtration(&term)? as u128) < self.cutoff {
                     lower.push(rows.coordinate(model, C::cells(&term), term)?);
@@ -151,13 +181,17 @@ impl<C: FilteredComplex> FilteredPage<C> {
         let source_filtration = self.f.saturating_sub(r - 1);
         let mut rows = Rows::new(C::NAME);
         let mut lower_images = Basis::default();
-        for source in complex.basis(model, s - 1, source_filtration)? {
+        for source in complex.basis_window(model, s - 1, source_filtration..=self.f)? {
             model.spend(C::cells(&source))?;
             if !(source_filtration..=self.f).contains(&complex.filtration(&source)?) {
                 continue;
             }
             let (mut lower, mut leading) = (Vec::new(), Vec::new());
-            for term in complex.differential(model, &source)? {
+            for term in complex.differential_below(
+                model,
+                std::slice::from_ref(&source),
+                self.f as u128 + 1,
+            )? {
                 model.spend(C::cells(&term))?;
                 match complex.filtration(&term)?.cmp(&self.f) {
                     Ordering::Less => lower.push(rows.coordinate(model, C::cells(&term), term)?),
@@ -223,7 +257,7 @@ impl<C: FilteredComplex> FilteredPage<C> {
             }
         }
         if let Some(quotient) = &self.quotient {
-            for term in complex.differential_support(model, &below_cutoff)? {
+            for term in complex.differential_below(model, &below_cutoff, self.cutoff)? {
                 model.spend(C::cells(&term))?;
                 if (complex.filtration(&term)? as u128) < self.cutoff {
                     return Err(Error::plain(format!(

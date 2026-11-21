@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::ops::RangeInclusive;
 use std::rc::Rc;
 
 use crate::cobar::{self, Monomial, Support, Word};
@@ -122,7 +123,13 @@ pub(crate) fn literal(
         word: squarefree.into(),
     }];
     for (slot, index, power) in powers {
-        product = multiply_power(model, product, vec![Term::arrow(s, slot, index)], power)?;
+        product = multiply_power(
+            model,
+            product,
+            vec![Term::arrow(s, slot, index)],
+            power,
+            u128::MAX,
+        )?;
     }
     // Each term introduced by an arrow generator has positive arrow degree.
     let value = persist(model, product)?;
@@ -190,26 +197,39 @@ pub(crate) fn specialize(model: &mut Model, terms: &[Term]) -> Result<Value> {
 }
 
 pub(crate) fn basis(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Term>> {
+    basis_window(model, grade, 0..=usize::MAX, limit)
+}
+
+pub(crate) fn basis_window(
+    model: &mut Model,
+    grade: Grade,
+    filtration: RangeInclusive<usize>,
+    limit: usize,
+) -> Result<Vec<Term>> {
     let Grade { s, t, w } = grade;
     let w = i128::from(w);
     if t < w || (s == 0 && t > 0) {
         return Ok(Vec::new());
     }
     if s == 0 {
+        let rho = usize::try_from(-t).map_err(|_| basis_overflow())?;
+        if !filtration.contains(&rho) {
+            return Ok(Vec::new());
+        }
         if limit == 0 {
             return Err(cobar::basis_limit(limit));
         }
-        let rho = usize::try_from(-t).map_err(|_| basis_overflow())?;
         let tau = usize::try_from(t - w).map_err(|_| basis_overflow())?;
         let unit = Term::scalar(0, rho, tau);
         model.allocate(unit.cells())?;
         return Ok(vec![unit]);
     }
-    let start = t.max(s as i128);
+    let start = t.saturating_add(*filtration.start() as i128).max(s as i128);
     let stop = t
         .checked_sub(w)
         .and_then(|bound| bound.checked_mul(2))
-        .ok_or_else(basis_overflow)?;
+        .ok_or_else(basis_overflow)?
+        .min(t.saturating_add(*filtration.end() as i128));
     let mut terms = Vec::new();
     let mut cells = 0;
     for top in start..=stop {
@@ -244,9 +264,39 @@ fn basis_overflow() -> Error {
 }
 
 pub(crate) fn differential_support(model: &mut Model, terms: &[Term]) -> Result<Vec<Term>> {
+    differential_below(model, terms, u128::MAX)
+}
+
+pub(crate) fn differential_below(
+    model: &mut Model,
+    terms: &[Term],
+    cutoff: u128,
+) -> Result<Vec<Term>> {
     let mut image = Support::new();
     for term in terms {
         model.spend(term.cells())?;
+        if term.rho as u128 >= cutoff {
+            continue;
+        }
+        if term.rho as u128 + 1 == cutoff {
+            // At a single filtration level, specialization to rho=0
+            // identifies the column with a complex-motivic differential.
+            let odd = motivic::odd_exponents(&term.word);
+            for word in cobar::differential_word(model, &term.word)? {
+                let next_odd = motivic::odd_exponents(&word);
+                let tau = checked_sum(term.tau, (odd - next_odd) / 2)?;
+                toggle(
+                    model,
+                    &mut image,
+                    Term {
+                        tau,
+                        word,
+                        ..term.clone()
+                    },
+                )?;
+            }
+            continue;
+        }
         if term.tau != 0 {
             let first = Term {
                 tau: 0,
@@ -255,14 +305,14 @@ pub(crate) fn differential_support(model: &mut Model, terms: &[Term]) -> Result<
                     .chain(term.word.iter().cloned())
                     .collect(),
             };
-            for coface in transport(model, first, 1, term.tau)? {
+            for coface in transport(model, first, 1, term.tau, cutoff)? {
                 if coface.normalized() {
                     toggle(model, &mut image, coface)?;
                 }
             }
         }
         for (slot, factor) in term.word.iter().enumerate() {
-            for coface in split(model, term, slot, factor)? {
+            for coface in split(model, term, slot, factor, cutoff)? {
                 if coface.normalized() {
                     toggle(model, &mut image, coface)?;
                 }
@@ -273,7 +323,13 @@ pub(crate) fn differential_support(model: &mut Model, terms: &[Term]) -> Result<
     Ok(image.into_vec())
 }
 
-fn split(model: &mut Model, term: &Term, slot: usize, factor: &Monomial) -> Result<Vec<Term>> {
+fn split(
+    model: &mut Model,
+    term: &Term,
+    slot: usize,
+    factor: &Monomial,
+    cutoff: u128,
+) -> Result<Vec<Term>> {
     let width = term.word.len() + 1;
     let even_factor = factor.iter().map(|power| power & !1).collect();
     let mut coface = Support::new();
@@ -314,7 +370,7 @@ fn split(model: &mut Model, term: &Term, slot: usize, factor: &Monomial) -> Resu
                 },
             )?;
         }
-        coface = multiply(model, &coface, &factors.into_vec())?;
+        coface = multiply(model, &coface, &factors.into_vec(), cutoff)?;
     }
     Ok(coface)
 }
@@ -336,7 +392,7 @@ pub(crate) fn concat_support(
                 tau: a.tau,
                 word,
             };
-            for term in transport(model, term, a.word.len(), b.tau)? {
+            for term in transport(model, term, a.word.len(), b.tau, u128::MAX)? {
                 toggle(model, &mut result, term)?;
             }
         }
@@ -345,7 +401,13 @@ pub(crate) fn concat_support(
 }
 
 // Transport a scalar through the preceding arrows via the right unit.
-fn transport(model: &mut Model, mut term: Term, slots: usize, power: usize) -> Result<Vec<Term>> {
+fn transport(
+    model: &mut Model,
+    mut term: Term,
+    slots: usize,
+    power: usize,
+    cutoff: u128,
+) -> Result<Vec<Term>> {
     if slots == 0 || power == 0 {
         term.tau = checked_sum(term.tau, power)?;
         return Ok(vec![term]);
@@ -360,7 +422,7 @@ fn transport(model: &mut Model, mut term: Term, slots: usize, power: usize) -> R
         };
         toggle(model, &mut scalar, term)?;
     }
-    multiply_power(model, vec![term], scalar.into_vec(), power)
+    multiply_power(model, vec![term], scalar.into_vec(), power, cutoff)
 }
 
 fn multiply_power(
@@ -368,17 +430,25 @@ fn multiply_power(
     mut result: Vec<Term>,
     mut factor: Vec<Term>,
     mut exponent: usize,
+    cutoff: u128,
 ) -> Result<Vec<Term>> {
+    let Some(first) = result.first() else {
+        return Ok(result);
+    };
+    let factor_cutoff = cutoff.saturating_sub(first.rho as u128);
     while exponent != 0 {
         if exponent & 1 != 0 {
-            result = multiply(model, &result, &factor)?;
+            result = multiply(model, &result, &factor, cutoff)?;
+            if result.is_empty() {
+                break;
+            }
         }
         exponent >>= 1;
         if exponent != 0 {
             let mut square = Support::new();
             // Frobenius in the commutative tensor algebra over F2.
             for term in &factor {
-                multiply_terms(model, term, term, &mut square)?;
+                multiply_terms(model, term, term, &mut square, factor_cutoff)?;
             }
             factor = square.into_vec();
         }
@@ -386,11 +456,15 @@ fn multiply_power(
     Ok(result)
 }
 
-fn multiply(model: &mut Model, left: &[Term], right: &[Term]) -> Result<Vec<Term>> {
+fn multiply(model: &mut Model, left: &[Term], right: &[Term], cutoff: u128) -> Result<Vec<Term>> {
     let mut result = Support::new();
     for a in left {
         for b in right {
-            multiply_terms(model, a, b, &mut result)?;
+            if a.rho as u128 + b.rho as u128 >= cutoff {
+                model.spend(1)?;
+                break;
+            }
+            multiply_terms(model, a, b, &mut result, cutoff)?;
         }
     }
     Ok(result.into_vec())
@@ -499,9 +573,13 @@ fn multiply_terms(
     left: &Term,
     right: &Term,
     output: &mut Support<Term>,
+    cutoff: u128,
 ) -> Result<()> {
     debug_assert_eq!(left.word.len(), right.word.len());
     model.spend(left.cells() + right.cells())?;
+    if left.rho as u128 + right.rho as u128 >= cutoff {
+        return Ok(());
+    }
     let first = Reduction::product(left, right)?;
     let mut queued = first.cells();
     cobar::check_storage(queued)?;
@@ -523,15 +601,17 @@ fn multiply_terms(
         let mut scalar = xi.clone();
         scalar.tau = checked_sum(scalar.tau, 1)?;
         queue(model, &mut stack, &mut queued, scalar)?;
-        xi.rho = checked_sum(xi.rho, 1)?;
-        for preceding in 0..=slot {
-            let mut carry = xi.clone();
-            carry.add_tau(preceding, 0)?;
-            queue(model, &mut stack, &mut queued, carry)?;
+        if term.rho as u128 + 1 < cutoff {
+            xi.rho = checked_sum(xi.rho, 1)?;
+            for preceding in 0..=slot {
+                let mut carry = xi.clone();
+                carry.add_tau(preceding, 0)?;
+                queue(model, &mut stack, &mut queued, carry)?;
+            }
+            term.rho = checked_sum(term.rho, 1)?;
+            term.add_tau(slot, index + 1)?;
+            queue(model, &mut stack, &mut queued, term)?;
         }
-        term.rho = checked_sum(term.rho, 1)?;
-        term.add_tau(slot, index + 1)?;
-        queue(model, &mut stack, &mut queued, term)?;
     }
     Ok(())
 }

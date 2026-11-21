@@ -35,6 +35,7 @@ use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
 use crate::real_motivic;
+use crate::rho_bock;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
@@ -124,6 +125,7 @@ pub(crate) enum Kind {
     Cobar(usize, usize),
     MCobar(motivic::Grade),
     RMCobar(motivic::Grade),
+    RhoBock(rho_bock::Grade),
     MExt(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
@@ -361,6 +363,7 @@ pub(crate) struct Model {
     rv_hh_homology: HashMap<TypeId, Rc<rv_hh_homology::Slice<rv_hh::Word>>>,
     rv_path_ext: HashMap<TypeId, Rc<rv_bar_dual::Ext>>,
     rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
+    rho_pages: HashMap<TypeId, Rc<rho_bock::Page>>,
     rv_bar_ids: HashMap<String, rv_bar::PathId>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
@@ -391,6 +394,7 @@ impl Model {
             rv_hh_homology: HashMap::new(),
             rv_path_ext: HashMap::new(),
             rv_bar_pages: HashMap::new(),
+            rho_pages: HashMap::new(),
             rv_bar_ids: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
@@ -550,6 +554,7 @@ impl Model {
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
+            | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -685,6 +690,7 @@ impl Model {
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
                 | Kind::MExt(..)
+                | Kind::RhoBock(..)
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
                 | Kind::MapExt(..)
@@ -1086,6 +1092,22 @@ impl Model {
 
     pub(crate) fn real_cobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RMCobar(grade), 0)
+    }
+
+    pub(crate) fn rho_page_type(&mut self, grade: rho_bock::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RhoBock(grade), 0)
+    }
+
+    pub(crate) fn rho_page(&mut self, ty: TypeId) -> Result<Rc<rho_bock::Page>> {
+        if let Some(page) = self.rho_pages.get(&ty) {
+            return Ok(page.clone());
+        }
+        let Kind::RhoBock(grade) = *self.kind(ty) else {
+            unreachable!();
+        };
+        let page = Rc::new(rho_bock::Page::build(self, grade)?);
+        self.rho_pages.insert(ty, page.clone());
+        Ok(page)
     }
 
     pub(crate) fn mext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
@@ -2090,6 +2112,7 @@ impl Model {
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
+            | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -2254,6 +2277,11 @@ impl Model {
                 out.push(&format!("RMCobar({s}, {t}, {w})"))
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
+            &Kind::RhoBock(rho_bock::Grade {
+                chain: motivic::Grade { s, t, w },
+                r,
+                f,
+            }) => out.push(&format!("RhoBock({r}, {s}, {t}, {w}, {f})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
             &Kind::PCobarAn(p, n, s, t) => {
                 out.push(&format!("PCobarAn({}, {n}, {s}, {t})", p.get()))
@@ -2887,6 +2915,10 @@ impl Model {
                 Kind::Arrow(domain, range) => self.enumerate_maps(domain, range)?,
                 Kind::Cohomology(..) => {
                     let rank = self.cohomology(ty)?.rank();
+                    self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RhoBock(..) => {
+                    let rank = self.rho_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
                 Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) => {

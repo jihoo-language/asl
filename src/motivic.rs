@@ -66,7 +66,7 @@ pub(crate) fn intrinsic_weight(word: &Word, t: usize) -> usize {
     (t - odd_exponents(word)) / 2
 }
 
-fn odd_exponents(word: &Word) -> usize {
+pub(crate) fn odd_exponents(word: &Word) -> usize {
     word.iter().map(|factor| cobar::odd_exponents(factor)).sum()
 }
 

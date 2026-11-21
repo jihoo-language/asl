@@ -213,6 +213,14 @@ If a normal word has topological degree $T$ before its global coefficient and ha
 
 For example $d\tau=\rho[\tau_0]$ and $d(\tau^2)=\rho^2[\tau_0^2]$, with the latter expanding to three normal terms. [Real-motivic cobar example](examples/real-motivic-cobar.asl)
 
+### The rho-Bockstein spectral sequence
+
+`RhoBock(r, s, t, w, f)` is the component at filtration `f` of page `r` of the real-motivic cobar filtered by powers of $\rho$. Use `rhobockdim[r, s, t, w, f];` for its dimension and `rhobockgen[r, s, t, w, f, i]` for generator `i`. Page zero is the associated graded. The page-one block is $\rho^f\operatorname{MExt}(s,t+f,w+f)$. Its real-motivic tridegree includes the degree $(-1,-1)$ of each factor of $\rho$. The filtration is finite at fixed `t,w`, since the exponent of $\rho$ is at most $t-2w$.
+
+`rhoClass[r,f](c)` checks the requested filtration and cycle condition on an `RMCobar` cochain. `rhoRep` gives a corrected real cochain representative, and `rhoD` applies the actual cobar differential and projects at $(s+1,t,w,f+r)$. `rhoNext` takes a cycle for that page differential to its next-page class. `rhoPrev` projects a chosen lift to the preceding page. `rhoMul` concatenates the corrected lifts of classes on the same page and adds their filtrations. It satisfies the Leibniz rule on each page.
+
+The leading word of $d_1(\tau)$ is $\rho[\tau_0]$. For $k\ge1$ the leading word of $d_{2^k}(\tau^{2^k})$ is $\rho^{2^k}\tau^{2^{k-1}}[\xi_1^{2^{k-1}}]$. The example follows these classes through $d_{16}$, checks that each target is nonzero on its page, and checks that the target maps to zero on the next page. It also corrects the lift of $\rho^2\tau^3[\xi_1]$ by adding $\rho^3\tau^2([\xi_1\tau_0]+[\tau_1])$. [Rho-Bockstein example](examples/rho-bockstein.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

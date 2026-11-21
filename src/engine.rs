@@ -48,6 +48,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::real_motivic;
 use crate::restriction_transfer;
+use crate::rho_bock;
 use crate::rv_arithmetic;
 use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
@@ -93,7 +94,8 @@ use crate::syntax::RvNCSpec;
 use crate::syntax::{
     BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
     JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
-    RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec, Witness,
+    RhoOp, RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm, VBockSpec,
+    Witness,
 };
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::transfer;
@@ -337,6 +339,7 @@ enum TypedForm {
     MotivicCast(Box<TypedExpr>),
     RhoShift(usize, Box<TypedExpr>),
     RealComplex(Box<TypedExpr>),
+    RhoOperation(RhoOp, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
     Equator,
@@ -918,6 +921,16 @@ impl Engine {
                 let ty = self.model.pce_type(prime, n, r, s, t, f)?;
                 let rank = self.model.odd_page(ty)?.rank();
                 format!("pceandim[{p}, {n}, {r}, {s}, {t}, {f}] = {rank}")
+            }
+            StatementForm::RhoDimension(grade) => {
+                let ty = self.model.rho_page_type(grade)?;
+                let rank = self.model.rho_page(ty)?.rank();
+                let rho_bock::Grade {
+                    chain: motivic::Grade { s, t, w },
+                    r,
+                    f,
+                } = grade;
+                format!("rhobockdim[{r}, {s}, {t}, {w}, {f}] = {rank}")
             }
             StatementForm::MExtDimension(grade) => {
                 let ty = self.model.mext_type(grade)?;
@@ -1927,6 +1940,9 @@ impl Engine {
                     (BinaryOp::MapExtCompose, Value::MapCobar(g), Value::MapCobar(f)) => Ok(
                         Value::MapCobar(map_cochain::compose(&mut self.model, &g, &f)?),
                     ),
+                    (BinaryOp::RhoMul, Value::Class(a), Value::Class(b)) => {
+                        rho_bock::product(&mut self.model, (left.ty, &a), (right.ty, &b), expr.ty)
+                    }
                     (BinaryOp::MayMul, Value::Class(a), Value::Class(b)) => {
                         may::multiply(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
@@ -1983,6 +1999,24 @@ impl Engine {
                 let support = milnor::coact(&mut self.model, base, *n, *index, q, class)?;
                 Ok(Value::Cobar(support.into()))
             }
+            TypedForm::RhoOperation(operation, input) => match (operation, self.eval(input)?) {
+                (RhoOp::Class(..), Value::RMCobar(terms)) => {
+                    rho_bock::class(&mut self.model, expr.ty, &terms)
+                }
+                (RhoOp::Representative, Value::Class(coords)) => {
+                    rho_bock::representative(&mut self.model, input.ty, &coords)
+                }
+                (RhoOp::Differential, Value::Class(coords)) => {
+                    rho_bock::differential(&mut self.model, input.ty, expr.ty, &coords)
+                }
+                (RhoOp::Next, Value::Class(coords)) => {
+                    page_transition::next(&mut self.model, input.ty, &coords)
+                }
+                (RhoOp::Previous, Value::Class(coords)) => {
+                    rho_bock::previous(&mut self.model, input.ty, expr.ty, &coords)
+                }
+                _ => unreachable!(),
+            },
             TypedForm::RhoShift(power, input) => {
                 let Value::RMCobar(terms) = self.eval(input)? else {
                     unreachable!();
@@ -3523,6 +3557,7 @@ impl Checker<'_> {
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
             TypeForm::RMCobar(grade) => self.model.real_cobar_type(grade),
+            TypeForm::RhoBock(grade) => self.model.rho_page_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
@@ -3788,6 +3823,7 @@ impl Checker<'_> {
                         Value::SheafC([].into()),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) =>
                         odd_ext::zero(),
+                    Kind::RhoBock(..) => cohomology::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -3864,6 +3900,46 @@ impl Checker<'_> {
                 let (grade, value) = real_motivic::literal(self.model, rho, tau, factors)?;
                 let ty = self.model.real_cobar_type(grade)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RhoGenerator(grade, index, at) => {
+                let ty = self.model.rho_page_type(grade)?;
+                let rank = self.model.rho_page(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RhoOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = match operation {
+                    RhoOp::Class(r, f) => {
+                        let Kind::RMCobar(chain) = *self.model.kind(input.ty) else {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "an RMCobar cochain",
+                            ));
+                        };
+                        self.model.rho_page_type(rho_bock::Grade { chain, r, f })?
+                    }
+                    _ => {
+                        let Kind::RhoBock(grade) = *self.model.kind(input.ty) else {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "a RhoBock class",
+                            ));
+                        };
+                        match operation {
+                            RhoOp::Representative => self.model.real_cobar_type(grade.chain)?,
+                            RhoOp::Differential => {
+                                self.model.rho_page_type(grade.differential()?)?
+                            }
+                            RhoOp::Next => self.model.rho_page_type(grade.next()?)?,
+                            RhoOp::Previous => self.model.rho_page_type(grade.previous()?)?,
+                            RhoOp::Class(..) => unreachable!(),
+                        }
+                    }
+                };
+                Ok((ty, TypedForm::RhoOperation(operation, Box::new(input))))
             }
             ExprForm::RhoShift(power, input) => {
                 let input = self.expr(*input)?;
@@ -7026,6 +7102,7 @@ impl Checker<'_> {
                         | Kind::Cobar(..)
                         | Kind::MCobar(..)
                         | Kind::RMCobar(..)
+                        | Kind::RhoBock(..)
                         | Kind::MExt(..)
                         | Kind::Sheaf(..)
                         | Kind::SheafComplex(..)
@@ -7436,6 +7513,15 @@ impl Checker<'_> {
                 let t = checked_degree(t, v, "ceMul", span)?;
                 let f = checked_degree(f, g, "ceMul", span)?;
                 self.model.ce_type(n, r, s, t, f)
+            }
+            BinaryOp::RhoMul => {
+                let Kind::RhoBock(a) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(left, "rhoMul", "a RhoBock class"));
+                };
+                let Kind::RhoBock(b) = *self.model.kind(right.ty) else {
+                    return Err(self.invalid_operand(right, "rhoMul", "a RhoBock class"));
+                };
+                self.model.rho_page_type(a.product(b)?)
             }
             BinaryOp::MayMul => {
                 if let Some((p, profile, r, s, t, f)) = self.model.kind(left.ty).pmay_grade() {
