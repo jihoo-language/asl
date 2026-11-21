@@ -3,6 +3,8 @@ mod binary_field;
 mod binary_linear;
 mod bp;
 mod bp_ext;
+mod bp_lattice;
+mod bp_page;
 mod bp_polynomial;
 mod bp_smith;
 mod bracket;

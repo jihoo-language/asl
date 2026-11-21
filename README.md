@@ -335,6 +335,14 @@ At $p=3$, take $a=t$ and $w=v_1t+t^2$. Then $dw=a\smile a$ and the chosen triple
 
 At $p=2$ the arity-one group in degree eight is cyclic of order eight at height one and of order sixteen at height two. The height-two class $d(v_1^4+8v_1v_2)/16$ generates the latter group. At $p=3$ and height two in degree twelve, the arity-one and arity-two groups have orders nine and three. [Integral BP Ext example](examples/bp-ext.asl)
 
+### Bockstein and algebraic Novikov pages
+
+`bpBockdim[p, n, r, a, t, f];` and `bpNovdim[p, n, r, a, t, f];` give dimensions over $\mathbb F_p$ on page `r`, in normalized cobar degree `a`, internal degree `t`, and filtration `f`. The Bockstein calculation filters the integral normalized cobar by powers of $p$. The Novikov calculation uses powers of the invariant ideal $(p,v_1,\ldots,v_n)$. For a monomial of Novikov weight $w$, the sum of the source $v_i$ exponents, membership in $F^f$ means its coefficient is divisible by $p^{\max(0,f-w)}$. The Bockstein calculation uses $w=0$ for every monomial.
+
+Page zero is $F^f/F^{f+1}$. If $Z_r^{a,f}$ consists of $x\in F^f C^a_t$ with $dx\in F^{f+r} C^{a+1}_t$, page `r` for `r ≥ 1` is the quotient of $Z_r^{a,f}$ by $Z_{r-1}^{a,f+1}+dZ_{r-1}^{a-1,f-r+1}$. The calculator imposes the congruences on an integral basis and reduces the denominator in cycle coordinates modulo $p$. Exact arithmetic uses checked signed 128-bit coefficients after removing common filtration powers when possible. These pages describe the stated finite-height complex.
+
+In internal degree eight at $p=2$, the Bockstein starting in cobar degree zero and filtration zero survives to page four at height two and to page three at height one. In internal degree 16 the height-two Novikov $d_2$ from $(a,f)=(1,1)$ to $(2,3)$ has rank one. [Filtered Brown–Peterson page example](examples/bp-pages.asl)
+
 ## Transferred homotopy operations on Ext
 
 `ainfty(a1, ..., ak)` gives the operation $m_k$ of the transferred minimal $A_\infty$ algebra on `Ext`. `alift(a1, ..., ak)` gives the component $F_k$ of its $A_\infty$ quasi-isomorphism to the normalized cobar algebra. Both take $k\ge 2$ Ext classes in a common algebra profile. With input bidegrees $(s_i,t_i)$, the results have bidegrees $(\sum s_i+2-k,\sum t_i)$ and $(\sum s_i+1-k,\sum t_i)$, respectively. They are Ext classes and cobar cochains over the input algebra. A negative result degree gives an error. The binary operation is `yoneda`, and the unit in bidegree $(0,0)$ is strict.

@@ -13,6 +13,11 @@ const MAX_WORD_CELLS: usize = 300_000;
 pub(crate) struct Prime(u32);
 
 impl Prime {
+    pub(crate) fn validated(p: u32) -> Self {
+        debug_assert!(p >= 2);
+        Self(p)
+    }
+
     pub(crate) fn new(model: &mut Model, p: usize) -> Result<Self> {
         let p = u32::try_from(p).map_err(|_| Error::plain("prime must fit in u32"))?;
         if p < 3 || p % 2 == 0 {

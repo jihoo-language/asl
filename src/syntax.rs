@@ -1,4 +1,5 @@
 use crate::bp::Operation as BpOperation;
+use crate::bp_page::Mode as BpPageMode;
 use crate::comodule::Generator;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
@@ -80,6 +81,8 @@ pub(crate) enum RvIdealOp {
 }
 
 pub(crate) struct BpSpec(pub(crate) usize, pub(crate) usize, pub(crate) usize);
+
+pub(crate) type BpPageSpec = (usize, usize, usize, usize, usize, usize);
 
 pub(crate) struct RvGradeSpec {
     pub(crate) ideal: Label,
@@ -421,6 +424,7 @@ pub(crate) enum StatementForm {
     ExtDimension(usize, usize),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
+    BpPageDimension(BpPageMode, BpPageSpec),
     PMayDimension(usize, usize, usize, usize, usize),
     PMayAnDimension(usize, usize, usize, usize, usize, usize),
     PCeAnDimension(usize, usize, usize, usize, usize, usize),
@@ -892,6 +896,18 @@ impl<'src> Parser<'src> {
                 let (p, s, t) = self.prime_bidegree()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::PExtDimension(p, s, t)
+            }
+            Token::Word("bpBockdim") | Token::Word("bpNovdim") => {
+                let mode = if self.token() == Token::Word("bpBockdim") {
+                    BpPageMode::Bockstein
+                } else {
+                    BpPageMode::Novikov
+                };
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let spec = self.prime_profile_page_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::BpPageDimension(mode, spec)
             }
             Token::Word("pextandim") => {
                 self.advance()?;

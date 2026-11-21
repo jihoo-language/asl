@@ -123,6 +123,10 @@ impl Entries {
 }
 
 impl Basis {
+    pub(crate) fn rank(&self) -> usize {
+        self.rows.len()
+    }
+
     pub(crate) fn cells(&self) -> usize {
         self.cells
     }
@@ -419,7 +423,7 @@ fn merge(
 }
 
 // Fermat inversion uses at most two field multiplications per exponent bit.
-fn invert(model: &mut Model, prime: Prime, mut value: u32) -> Result<u32> {
+pub(crate) fn invert(model: &mut Model, prime: Prime, mut value: u32) -> Result<u32> {
     let mut power = prime.get() - 2;
     let mut inverse = 1;
     while power != 0 {

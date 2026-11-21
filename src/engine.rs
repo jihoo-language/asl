@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
+use crate::bp_page;
 use crate::bracket;
 use crate::ce;
 use crate::cobar;
@@ -386,6 +387,19 @@ impl Engine {
                 let ty = self.model.odd_ext_type(prime, s, t)?;
                 let rank = self.model.odd_ext_rank(ty)?;
                 format!("pextdim[{p}, {s}, {t}] = {rank}")
+            }
+            StatementForm::BpPageDimension(mode, (p, n, r, a, t, f)) => {
+                let shape = bp::Shape::new(&mut self.model, p, n, a)?;
+                let grade = bp_page::Grade {
+                    mode,
+                    shape,
+                    page: r,
+                    t,
+                    filtration: f,
+                };
+                let rank = bp_page::rank(&mut self.model, grade)?;
+                let name = mode.dimension_name();
+                format!("{name}[{p}, {n}, {r}, {a}, {t}, {f}] = {rank}")
             }
             StatementForm::PExtAnDimension(p, n, s, t) => {
                 let prime = Prime::new(&mut self.model, p)?;
