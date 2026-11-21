@@ -39,6 +39,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
+use crate::rv_hh;
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwhecke;
@@ -136,6 +137,7 @@ pub(crate) enum Kind {
     VExt(v_koszul::Grade),
     VBock(vbock::Grade),
     RVBarE(rv_bar_page::Grade),
+    RVHHChain(rv_hh::Grade),
     RVBarCobar(rv_bar::Grade),
     RVBarDual(rv_bar::Grade),
     RVPathExt(rv_bar::Grade),
@@ -235,6 +237,7 @@ pub(crate) enum Value {
     RVLaurent(rv_laurent::Support),
     RVIwHecke(rv_iwhecke::Support),
     JetHom(jet_hom::Support),
+    RVHHChain(rv_hh::Support),
     RVBarCobar(rv_barcobar::Support),
     RVBar(rv_bar::Support),
     RVKoszul(rv_koszul::Support),
@@ -528,7 +531,7 @@ impl Model {
             {
                 1
             }
-            Kind::RVBarCobar(..) => usize::MAX,
+            Kind::RVBarCobar(..) | Kind::RVHHChain(..) => usize::MAX,
             Kind::RVBar(..) | Kind::RVBarE(..) | Kind::RVBarDual(..) | Kind::RVPathExt(..) => {
                 usize::MAX
             }
@@ -637,6 +640,7 @@ impl Model {
                 | Kind::VExt(..)
                 | Kind::VBock(..)
                 | Kind::RVBarE(..)
+                | Kind::RVHHChain(..)
                 | Kind::RVBarCobar(..)
                 | Kind::RVBarDual(..)
                 | Kind::RVPathExt(..)
@@ -983,6 +987,10 @@ impl Model {
         self.rv_bar_path(grade.path)
             .check_interval(grade.start, grade.end)?;
         self.inhabited_type(Kind::RVBar(grade), 0)
+    }
+
+    pub(crate) fn rv_hh_type(&mut self, grade: rv_hh::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVHHChain(grade), 0)
     }
 
     pub(crate) fn rv_barcobar_type(&mut self, grade: rv_bar::Grade) -> Result<TypeId> {
@@ -1814,6 +1822,7 @@ impl Model {
             | Kind::VExt(..)
             | Kind::VBock(..)
             | Kind::RVBarE(..)
+            | Kind::RVHHChain(..)
             | Kind::RVBarCobar(..)
             | Kind::RVBarDual(..)
             | Kind::RVPathExt(..)
@@ -1985,6 +1994,10 @@ impl Model {
                 grade.r,
                 grade.chain.b,
                 grade.length,
+            )),
+            Kind::RVHHChain(grade) => out.push(&format!(
+                "RVHHChain({}, {}, {:?})",
+                grade.ideal, grade.b, grade.weight
             )),
             Kind::RVBar(grade)
             | Kind::RVBarDual(grade)
@@ -2204,6 +2217,9 @@ impl Model {
             (Value::BP(left), Value::BP(right)) | (Value::BPRel(left), Value::BPRel(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)? == Ordering::Equal)
             }
+            (Value::RVHHChain(left), Value::RVHHChain(right)) => Ok(
+                Rc::ptr_eq(left, right) || rv_hh::compare(self, left, right)? == Ordering::Equal
+            ),
             (Value::RVBarCobar(left), Value::RVBarCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_barcobar::compare(self, left, right)? == Ordering::Equal),
             (Value::RVBar(left), Value::RVBar(right)) => {
@@ -2334,6 +2350,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     left.compare(self, right)
+                }
+            }
+            (Value::RVHHChain(left), Value::RVHHChain(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_hh::compare(self, left, right)
                 }
             }
             (Value::RVBarCobar(left), Value::RVBarCobar(right)) => {
@@ -2559,6 +2582,14 @@ impl Model {
                 }
                 Kind::BPExt(..) | Kind::BPRelExt(..) | Kind::BPHeight(..) => {
                     self.bp_ext(ty)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::RVHHChain(ref grade) => {
+                    let grade = grade.clone();
+                    let basis = rv_hh::basis(self, &grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.allocate(basis.iter().map(|word| rv_hh::word_cells(word)).sum())?;
+                    self.enumerate_supports(0, basis.len(), |class| {
+                        Value::RVHHChain(class.iter().map(|&item| basis[item].clone()).collect())
+                    })?
                 }
                 Kind::RVBarCobar(grade) => {
                     let basis = rv_barcobar::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
@@ -3085,6 +3116,28 @@ impl Model {
                 polynomial.write(|piece| out.push(piece), shape.height)?;
                 out.push("}")
             }
+            Value::RVHHChain(words) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if words.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, word) in words.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    write_hh_factor(out, &word[0])?;
+                    out.push("[")?;
+                    for (index, factor) in word[1..].iter().enumerate() {
+                        if index != 0 {
+                            out.push(" | ")?;
+                        }
+                        write_hh_factor(out, factor)?;
+                    }
+                    out.push("]")?;
+                }
+                out.push("}")
+            }
             Value::RVBarCobar(words) => {
                 let Kind::RVBarCobar(grade) = self.kind(ty) else {
                     unreachable!()
@@ -3407,6 +3460,13 @@ impl Model {
         }
         Ok(true)
     }
+}
+
+fn write_hh_factor(out: &mut Text, factor: &rv_hh::Factor) -> Result<()> {
+    out.push(&format!(
+        "({}, {:?}):g{}",
+        factor.s, factor.weight, factor.generator
+    ))
 }
 
 fn write_bar_word(out: &mut Text, word: &rv_bar::Word, mut start: usize) -> Result<usize> {

@@ -68,6 +68,7 @@ pub(crate) enum TypeForm {
     VBock(VBockSpec),
     RVPoly(Vec<usize>, usize),
     RVBarE(RvBarPageSpec),
+    RVHHChain(Label, i64, Vec<usize>),
     RVBarCobar(RvBarSpec),
     RVBarDual(RvBarSpec),
     RVPathExt(RvBarSpec),
@@ -489,6 +490,8 @@ pub(crate) enum ExprForm {
     RvPathGenerator(RvBarSpec, usize, Span),
     RvBarEGenerator(RvBarPageSpec, usize, Span),
     RvBarClass(usize, i64, Box<ParsedExpr>),
+    RvHHWord(Vec<ParsedExpr>),
+    RvHHLength(usize, Box<ParsedExpr>),
     RvBarWord(Label, Vec<usize>, Vec<ParsedExpr>),
     RvBarLength(usize, Box<ParsedExpr>),
     RvHFace(Label, Vec<usize>, Vec<usize>),
@@ -2267,6 +2270,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BP(BpSpec(prime, height, arrows), depth), 0);
         }
+        if name.text == "RVHHChain" && self.eat(Token::LParen)? {
+            let ideal = self.label()?;
+            self.expect(Token::Comma)?;
+            let b = self.signed_degree()?;
+            self.expect(Token::Comma)?;
+            let weight = self.exponents()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVHHChain(ideal, b, weight), 0);
+        }
         if name.text == "RVBarCobar" && self.eat(Token::LParen)? {
             let grade = self.rv_bar_spec()?;
             self.expect(Token::RParen)?;
@@ -2721,6 +2733,22 @@ impl<'src> Parser<'src> {
                         ExprForm::RvBarClass(r, length, Box::new(input)),
                         depth,
                     );
+                }
+                if name.text == "rvHHWord" && self.eat(Token::LParen)? {
+                    let inputs = self.arguments(nest)?;
+                    let depth = inputs
+                        .iter()
+                        .map(|input| input.depth + 1)
+                        .max()
+                        .unwrap_or(0);
+                    return expr(span, ExprForm::RvHHWord(inputs), depth);
+                }
+                if name.text == "rvHHLength" && self.eat(Token::LBracket)? {
+                    let (length, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvHHLength(length, Box::new(input)), depth);
                 }
                 if name.text == "rvBarWord" && self.eat(Token::LBracket)? {
                     let path = self.label()?;

@@ -57,6 +57,7 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
+use crate::rv_hh;
 use crate::rv_hochster;
 use crate::rv_hodge;
 use crate::rv_hom;
@@ -124,6 +125,8 @@ enum CobarOp {
     MapDifferential,
     MapClass,
     MapRepresentative,
+    RvHHd,
+    RvConnesB,
     RvBCDesuspend,
     RvBCD,
     RvBCProject,
@@ -175,6 +178,8 @@ impl CobarOp {
             "eD" => Some(Self::MapDifferential),
             "eClass" => Some(Self::MapClass),
             "eRep" => Some(Self::MapRepresentative),
+            "rvHHd" => Some(Self::RvHHd),
+            "rvConnesB" => Some(Self::RvConnesB),
             "rvBCDesuspend" => Some(Self::RvBCDesuspend),
             "rvBCD" => Some(Self::RvBCD),
             "rvBCProject" => Some(Self::RvBCProject),
@@ -266,6 +271,8 @@ enum TypedForm {
     BpModExtRep(Box<TypedExpr>),
     BpModExtOperation(bp::Operation, Box<TypedExpr>),
     BpPageOperation(bp_page::Operation, Box<TypedExpr>),
+    RvHHWord(Vec<TypedExpr>),
+    RvHHLength(usize, Box<TypedExpr>),
     RvBarWord(Vec<usize>, Vec<usize>, Vec<TypedExpr>),
     RvBarLength(usize, Box<TypedExpr>),
     RvMComponent(Box<TypedExpr>),
@@ -1473,6 +1480,9 @@ impl Engine {
                     (BinaryOp::RvBCMul, Value::RVBarCobar(a), Value::RVBarCobar(b)) => Ok(
                         Value::RVBarCobar(rv_barcobar::product(&mut self.model, &a, &b)?),
                     ),
+                    (BinaryOp::Add, Value::RVHHChain(a), Value::RVHHChain(b)) => {
+                        Ok(Value::RVHHChain(rv_hh::add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Add, Value::RVBarCobar(a), Value::RVBarCobar(b)) => Ok(
                         Value::RVBarCobar(rv_barcobar::add(&mut self.model, &a, &b)?),
                     ),
@@ -1752,6 +1762,18 @@ impl Engine {
                     let terms =
                         q_koszul::differential(&mut self.model, source, target, &selected, &terms)?;
                     Ok(Value::QKoszul(terms))
+                }
+                (CobarOp::RvHHd | CobarOp::RvConnesB, Value::RVHHChain(terms)) => {
+                    let Kind::RVHHChain(grade) = self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let grade = grade.clone();
+                    let words = if matches!(op, CobarOp::RvHHd) {
+                        rv_hh::differential(&mut self.model, &grade, &terms)?
+                    } else {
+                        rv_hh::connes(&mut self.model, &grade, &terms)?
+                    };
+                    Ok(Value::RVHHChain(rv_hh::persist(&mut self.model, words)?))
                 }
                 (CobarOp::RvBCDesuspend, Value::RVBar(terms)) => Ok(Value::RVBarCobar(
                     rv_barcobar::desuspend(&mut self.model, &terms)?,
@@ -2437,6 +2459,28 @@ impl Engine {
                 };
                 let vanishes = rv_poly::vanishes(&mut self.model, &polynomial, *field, point)?;
                 Ok(Value::Point(usize::from(vanishes)))
+            }
+            TypedForm::RvHHWord(inputs) => {
+                let classes = inputs
+                    .iter()
+                    .map(|item| {
+                        let Value::Class(class) = self.eval(item)? else {
+                            unreachable!()
+                        };
+                        Ok((item.ty, class))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Value::RVHHChain(rv_hh::word(&mut self.model, &classes)?))
+            }
+            TypedForm::RvHHLength(length, input) => {
+                let Value::RVHHChain(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::RVHHChain(rv_hh::length_part(
+                    &mut self.model,
+                    *length,
+                    &terms,
+                )?))
             }
             TypedForm::RvBarWord(ends, degrees, inputs) => {
                 let classes = inputs
@@ -3145,6 +3189,12 @@ impl Checker<'_> {
                 }
                 self.model.bp_type(shape)
             }
+            TypeForm::RVHHChain(ideal, b, weight) => {
+                let basis = self.model.rv_ideal(&ideal)?;
+                let koszul =
+                    rv_koszul::Grade::local(self.model, &basis, ideal.text.into(), 0, weight)?;
+                self.model.rv_hh_type(rv_hh::Grade::from_tor(koszul, b))
+            }
             TypeForm::RVBarCobar(spec) => {
                 let grade = self.rv_bar_grade(spec)?;
                 self.model.rv_barcobar_type(grade)
@@ -3277,6 +3327,7 @@ impl Checker<'_> {
                     Kind::JetPage(..) => jet_page::zero(),
                     Kind::QKoszul(..) | Kind::VKoszul(..) => Value::QKoszul([].into()),
                     Kind::RVBarE(..) => cohomology::zero(),
+                    Kind::RVHHChain(..) => Value::RVHHChain([].into()),
                     Kind::RVBarCobar(..) => Value::RVBarCobar([].into()),
                     Kind::RVPathExt(..) => cohomology::zero(),
                     Kind::RVBar(..) | Kind::RVBarDual(..) => Value::RVBar([].into()),
@@ -4305,6 +4356,22 @@ impl Checker<'_> {
                     ty,
                     TypedForm::Cobar(CobarOp::RvBarClass, Box::new(argument)),
                 ))
+            }
+            ExprForm::RvHHWord(inputs) => {
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let grade = rv_hh::word_type(self.model, inputs.iter().map(|input| input.ty))?;
+                let ty = self.model.rv_hh_type(grade)?;
+                Ok((ty, TypedForm::RvHHWord(inputs)))
+            }
+            ExprForm::RvHHLength(length, input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVHHChain(_)) {
+                    return Err(self.invalid_operand(&input, "rvHHLength", "an RVHHChain"));
+                }
+                Ok((input.ty, TypedForm::RvHHLength(length, Box::new(input))))
             }
             ExprForm::RvBarWord(path, cuts, inputs) => {
                 let path = self.model.rv_bar_path_id(&path)?;
@@ -5756,6 +5823,17 @@ impl Checker<'_> {
                     _ => self.model.rv_bar_type(grade.chain),
                 };
             }
+            CobarOp::RvHHd | CobarOp::RvConnesB => {
+                let Kind::RVHHChain(grade) = self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "an RVHHChain"));
+                };
+                let target = if matches!(op, CobarOp::RvHHd) {
+                    grade.differential()?
+                } else {
+                    grade.connes()?
+                };
+                return self.model.rv_hh_type(target);
+            }
             CobarOp::RvBCDesuspend => {
                 let Kind::RVBar(grade) = *self.model.kind(argument.ty) else {
                     return Err(self.invalid_operand(argument, name, "an RVBar chain"));
@@ -6051,6 +6129,7 @@ impl Checker<'_> {
                         | Kind::QKoszul(..)
                         | Kind::JetHom(..)
                         | Kind::RVBarE(..)
+                        | Kind::RVHHChain(..)
                         | Kind::RVBarCobar(..)
                         | Kind::RVBarDual(..)
                         | Kind::RVPathExt(..)

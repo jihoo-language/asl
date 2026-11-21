@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use crate::complex::{xor_sorted, MAX_PIVOT_CELLS};
 use crate::error::{Error, Result};
-use crate::linear::Basis;
 use crate::model::{Kind, Model, TypeId, Value};
+use crate::rv_hochster::{squarefree_ranks, Summand};
 use crate::rv_ideal::{self, Ideal};
 use crate::rv_koszul;
 use crate::rv_t_transfer::{self, Operation};
@@ -49,12 +49,6 @@ pub(crate) type Support = Rc<[Word]>;
 
 type Interval = (usize, usize);
 type Multiplication = (usize, Word);
-
-#[derive(Clone, Copy)]
-struct Summand {
-    s: usize,
-    rank: usize,
-}
 
 pub(crate) struct Path {
     name: Rc<str>,
@@ -148,7 +142,7 @@ impl Path {
                 Vec::new()
             } else {
                 let vertices = rv_ideal::support_mask(multidegree, 1);
-                squarefree_ranks(model, masks, vertices)?
+                squarefree_ranks(model, masks, vertices, usize::BITS)?.unwrap()
             }
         } else {
             let mut result = Vec::new();
@@ -206,119 +200,6 @@ impl Path {
         self.products.borrow_mut().insert(key, result.clone());
         Ok(result)
     }
-}
-
-fn squarefree_ranks(model: &mut Model, masks: &[usize], vertices: usize) -> Result<Vec<Summand>> {
-    if !rv_ideal::standard_support(model, masks, 0)? {
-        return Ok(Vec::new());
-    }
-    let size = vertices.count_ones() as usize;
-    let mut reduced = vertices;
-    for &mask in masks {
-        model.spend(1)?;
-        if mask.count_ones() == 1 {
-            reduced &= !mask;
-        }
-    }
-    if masks.iter().all(|mask| mask.count_ones() <= 2) {
-        reduced = collapse_flag(model, masks, reduced)?;
-    }
-    let mut faces = vec![Vec::new(); reduced.count_ones() as usize + 1];
-    let mut count = 0;
-    collect_faces(model, masks, reduced, 0, 0, &mut faces, &mut count)?;
-    let mut incoming = 0;
-    let mut result = Vec::new();
-    for (q, layer) in faces.into_iter().enumerate() {
-        let mut differential = Basis::default();
-        let mut outgoing = 0;
-        for face in &layer {
-            let mut image = Vec::new();
-            let mut possible = reduced & !face;
-            while possible != 0 {
-                let bit = 1usize << possible.trailing_zeros();
-                possible ^= bit;
-                let extension = face | bit;
-                if rv_ideal::standard_support(model, masks, extension)? {
-                    image.push(extension);
-                }
-            }
-            outgoing += usize::from(differential.insert(model, image)?);
-        }
-        let rank = layer
-            .len()
-            .checked_sub(incoming + outgoing)
-            .ok_or_else(|| Error::plain("invalid augmented simplicial ranks"))?;
-        if rank != 0 {
-            result.push(Summand { s: size - q, rank });
-        }
-        incoming = outgoing;
-    }
-    result.reverse();
-    Ok(result)
-}
-
-fn collapse_flag(model: &mut Model, masks: &[usize], mut vertices: usize) -> Result<usize> {
-    let mut neighborhoods = vec![vertices; usize::BITS as usize];
-    for &mask in masks {
-        model.spend(1)?;
-        if mask.count_ones() == 2 && (mask & vertices) == mask {
-            let lower = mask.trailing_zeros() as usize;
-            let upper = mask.ilog2() as usize;
-            neighborhoods[lower] &= !(1usize << upper);
-            neighborhoods[upper] &= !(1usize << lower);
-        }
-    }
-    loop {
-        let mut candidates = vertices;
-        let mut removed = 0;
-        'search: while candidates != 0 {
-            model.spend(1)?;
-            let index = candidates.trailing_zeros() as usize;
-            let vertex = 1usize << index;
-            candidates ^= vertex;
-            let closed = neighborhoods[index] & vertices;
-            let mut neighbors = closed & !vertex;
-            while neighbors != 0 {
-                model.spend(1)?;
-                let neighbor = neighbors.trailing_zeros() as usize;
-                neighbors ^= 1usize << neighbor;
-                if closed & !neighborhoods[neighbor] == 0 {
-                    // In the clique complex the vertex is dominated by this
-                    // neighbor. Deleting it preserves reduced cohomology.
-                    removed = vertex;
-                    break 'search;
-                }
-            }
-        }
-        if removed == 0 {
-            return Ok(vertices);
-        }
-        vertices ^= removed;
-    }
-}
-
-fn collect_faces(
-    model: &mut Model,
-    masks: &[usize],
-    mut options: usize,
-    face: usize,
-    q: usize,
-    layers: &mut [Vec<usize>],
-    count: &mut usize,
-) -> Result<()> {
-    model.spend(1)?;
-    *count += 1;
-    check_storage(*count)?;
-    layers[q].push(face);
-    while options != 0 {
-        let bit = 1usize << options.trailing_zeros();
-        options ^= bit;
-        let extended = face | bit;
-        if rv_ideal::standard_support(model, masks, extended)? {
-            collect_faces(model, masks, options, extended, q + 1, layers, count)?;
-        }
-    }
-    Ok(())
 }
 
 fn check_storage(cells: usize) -> Result<()> {

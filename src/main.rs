@@ -66,6 +66,7 @@ mod rv_curve;
 mod rv_descent;
 mod rv_field;
 mod rv_gauss;
+mod rv_hh;
 mod rv_hochster;
 mod rv_hodge;
 mod rv_hom;

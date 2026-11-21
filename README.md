@@ -941,6 +941,20 @@ awk -v omega=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
 
 The differential of the one-factor word is the singleton top plus all nineteen outer splits. The example checks the retract identity both on that word and on its first-gap split, which projects to the twentieth operation.
 
+### The Hochschild–Connes mixed complex of Tor
+
+For a monomial ideal $J$, `RVHHChain(J,b,[mu])` is the normalized Hochschild chain group of its augmented multigraded $A_\infty$ Tor algebra over $\mathbb F_2$. The word `rvHHWord(a0,...,an)` denotes $a_0[a_1|\cdots|a_n]$. Each input is an `RVMTor` class over $J$. The coefficient $a_0$ may be the unit at zero multidegree. Every other factor has positive multidegree and contributes its suspension. The weight is the sum of the exponent vectors, $b=\sum_i s_i+n$, and `rvHHLength[n]` selects normalized bar length $n$. Negative homological degrees have zero chain groups.
+
+The differential `rvHHd` uses the transferred $m_k$ on each cyclically consecutive block, for $k\ge2$. A block containing the coefficient becomes the new coefficient after contraction, in its cyclic order. Blocks away from the coefficient contract in the bar. Products with the unit have the strict unital values. The Connes operator `rvConnesB` inserts the unit as the coefficient and sums the rotations of all factors as reduced inputs. A word with unit coefficient maps to zero. Repeated terms cancel over $\mathbb F_2$, and the two operations satisfy $d^2=B^2=dB+Bd=0$.
+
+For $J=(x)$ there is one exterior Tor generator $e$. In weight $N>0$ the two normalized words have degrees $2N$ and $2N-1$. Their Hochschild differential vanishes and $B(e[e|\cdots|e])$ is $N$ times the word with unit coefficient and $N$ reduced factors. [Hochschild–Connes example](examples/rank-hochconnes.asl)
+
+```sh
+awk -v hh=1 -v n=20 -f examples/staircase-transfer.awk | nix run path:. -- -
+```
+
+The length-one part of the differential is the unit with the nonzero twentieth transferred product in its bar, in degree $39$ and weight $(1,\ldots,1)$ on forty variables. The two remaining terms come from multiplication by the unit at the cyclic ends. The generator checks the full differential and its Connes image at arity twenty. It also checks the second Hochschild differential through arity nine within the standard computation limits.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

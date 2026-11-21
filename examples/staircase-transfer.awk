@@ -5,6 +5,11 @@ BEGIN {
         print "n must be an integer between 3 and 31 (primitive labels are 1 through 2n)" > "/dev/stderr"
         exit 2
     }
+    if (hh == "") hh = 0
+    if (hh !~ /^[01]$/) {
+        print "hh must be 0 or 1" > "/dev/stderr"
+        exit 2
+    }
     if (omega == "") omega = 0
     if (omega !~ /^[01]$/) {
         print "omega must be 0 or 1" > "/dev/stderr"
@@ -31,7 +36,7 @@ BEGIN {
         exit 2
     }
     if (pages || dual || omega) bar = 1
-    if (bar) local = 1
+    if (bar || hh) local = 1
     constructor = local ? "rvmkterm" : "rvkterm"
     for (k = 1; k <= 2*n; k++) selection = append(selection, k)
 
@@ -143,6 +148,21 @@ BEGIN {
         emit("assert add(rvBCD(rvBCHomotopy(split1)),rvBCHomotopy(rvBCD(split1))) == add(split1,inclusion);")
         emit(sprintf("assert rvBCHomotopy(rvBCHomotopy(split1)) == zero[RVBarCobar(StairBar,0,%d,%d)];",n,2*n))
         emit("show rvBCProject(split1);")
+    }
+
+    if (hh) {
+        weight = multidegree(1,n)
+        emit("let unit = rvmtorgen[Stair,0,[" multidegree(1,0) "],0];")
+        emit("let circle = rvHHWord(unit," arguments(1,n) ");")
+        emit("let cyclic_top = rvHHWord(unit,result);")
+        emit("let two_ends = add(rvHHWord(" arguments(1,n) "),rvHHWord(a" n "," arguments(1,n-1) "));")
+        emit("let hh_boundary = rvHHd(circle);")
+        emit("assert hh_boundary == add(cyclic_top,two_ends);")
+        emit("assert rvHHLength[1](hh_boundary) == cyclic_top;")
+        if (n <= 9)
+            emit(sprintf("assert rvHHd(hh_boundary) == zero[RVHHChain(Stair,%d,[%s])];",2*n-2,weight))
+        emit(sprintf("assert rvConnesB(hh_boundary) == zero[RVHHChain(Stair,%d,[%s])];",2*n,weight))
+        emit("show rvHHLength[1](hh_boundary);")
     }
 
     for (i = 1; i <= line_count; i++) print lines[i]
