@@ -505,6 +505,14 @@ For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ iden
 
 `vbarRep[X, Y, [i, n], d, e, k]` gives the raw representative in bidegree $(0,d)$ of the $k$th torsion bar with pair $(d,e)$, with indexing from zero among equal pairs. `vbarNull` takes the same arguments and gives the witness in bidegree $(-1,d-eL)$. The differential of that witness equals `vRatio[e]` of the representative. The operation `vRatio[k](x)` multiplies a rank-two localized cochain or class by $w^k$ for a nonnegative integer $k$. The Flash example gives a bar of grade 7 and exact order 4. [Graded Smith example](examples/v-bars.asl)
 
+### Margolis homology over truncated polynomial rings
+
+`rvjet[X, Y, I, modulus, N, coefficients];` takes one list of coefficients for each selected primitive in `I`. The entries of each list give $\lambda_i(u)$ in ascending powers of $u$ over the same binary field $K$ as `rvdim`. The order `N` must be positive. Missing entries are zero and entries beyond degree $N-1$ must be zero.
+
+Set $R=K[u]/(u^N)$. After forgetting the internal grading, the interpreter forms the $R$-linear differential $D(F)=\sum_i\lambda_i(u)(Q_i^Y F+FQ_i^X)$ on the module of coefficient matrices from `X` to `Y`. The result gives the dimension of $\ker D/\operatorname{im}D$ over $K$ and the multiplicity of each Jordan block length for multiplication by $u$. A block of length $j$ is a summand $R/(u^j)$. At `N = 1` the dimension agrees with `rvdim` at the constant coefficients.
+
+The three arcs $(u,0,1)$, $(0,u,1)$, and $(u^3,u^2,1)$ through the cusp have the same residue. At order seven from `One` to `Cusp` they give block multiplicities `{1: 4}`, `{1: 2, 2: 2}`, and `{2: 2, 7: 2}`. The example also computes the blocks for endomorphisms of `Cusp`. [Margolis jet example](examples/rank-jets.asl)
+
 ## Suspension and stable degrees
 
 `north[X]` and `south[X]` are the poles of `Susp(X)`. The inclusion `equator[X]` has type `X -> Susp(X)`. The order complex consists of two cones on the equator. `susp(u)` raises the degree of a cocycle by one. On a chain ending at the north pole it reads the value of the old cocycle on the remaining face, and it assigns zero to all other chains.

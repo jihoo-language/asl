@@ -34,6 +34,7 @@ use crate::page_transition::{self, Direction as PageDirection, PageFamily};
 use crate::profile::Profile;
 use crate::q_koszul::{self, Grade};
 use crate::q_module;
+use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_poly;
@@ -360,6 +361,29 @@ impl Engine {
                 let base = self.checker().q_endpoint(*spec.base)?;
                 let selected = q_koszul::indices(&mut self.model, spec.selected)?;
                 self.model.show_rv_minors(base, selected, size)?
+            }
+            StatementForm::RankJet(spec) => {
+                let source = self.checker().q_endpoint(*spec.source)?;
+                let target = self.checker().q_endpoint(*spec.target)?;
+                let selected = q_koszul::indices(&mut self.model, spec.selected)?;
+                let report = rank_jets::compute(
+                    &mut self.model,
+                    source,
+                    target,
+                    &selected,
+                    spec.modulus,
+                    spec.order,
+                    &spec.coefficients,
+                )?;
+                let from = self.model.type_name(source);
+                let to = self.model.type_name(target);
+                let modulus = spec.modulus;
+                let order = spec.order;
+                let coefficients = spec.coefficients;
+                let rank_jets::Report { dimension, blocks } = report;
+                format!(
+                    "rvjet[{from}, {to}, {selected:?}, {modulus}, {order}, {coefficients:?}] = dimension {dimension}, blocks {blocks:?}"
+                )
             }
             StatementForm::RankVariety(spec) => {
                 let source = self.checker().q_endpoint(*spec.source)?;

@@ -11,7 +11,7 @@ const MAX_CELLS: usize = 300_000;
 const MAX_PROJECTIVE_POINTS: usize = 4096;
 
 type Entry = (usize, usize);
-type Column = Vec<Entry>;
+pub(crate) type Column = Vec<Entry>;
 
 // An entry records the row and the parameter multiplying it. The underlying
 // Q_i matrices are binary, and weighting them produces a field-valued column.
@@ -114,7 +114,7 @@ impl Endpoint {
     }
 }
 
-fn add_multiple(
+pub(crate) fn add_multiple(
     model: &mut Model,
     field: BinaryField,
     mut left: &[Entry],

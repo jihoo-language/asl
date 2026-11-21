@@ -73,6 +73,15 @@ pub(crate) struct RankVarietySpec {
     pub(crate) point: Option<Vec<usize>>,
 }
 
+pub(crate) struct RankJetSpec {
+    pub(crate) source: Box<ParsedType>,
+    pub(crate) target: Box<ParsedType>,
+    pub(crate) selected: Vec<usize>,
+    pub(crate) modulus: usize,
+    pub(crate) order: usize,
+    pub(crate) coefficients: Vec<Vec<usize>>,
+}
+
 pub(crate) struct QSpec<S = usize> {
     pub(crate) source: Box<ParsedType>,
     pub(crate) target: Box<ParsedType>,
@@ -310,6 +319,7 @@ pub(crate) enum StatementForm {
     QExtDimension(QSpec),
     RankVariety(RankVarietySpec),
     RvMinors(RvMatrixSpec, usize),
+    RankJet(RankJetSpec),
     VExtDimension(QSpec<i64>),
     VBars(BarFamilySpec),
     VBarDimension(QSpec<i64>),
@@ -755,6 +765,35 @@ impl<'src> Parser<'src> {
                 let (size, _) = self.number()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvMinors(spec, size)
+            }
+            Token::Word("rvjet") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (source, target) = self.map_endpoints(0)?;
+                let selected = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let (modulus, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (order, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                self.expect(Token::LBracket)?;
+                let mut coefficients = Vec::new();
+                while self.token() != Token::RBracket {
+                    coefficients.push(self.exponents()?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RankJet(RankJetSpec {
+                    source: Box::new(source),
+                    target: Box::new(target),
+                    selected,
+                    modulus,
+                    order,
+                    coefficients,
+                })
             }
             Token::Word("rvdim" | "rvspectrum") => {
                 let affine = self.token() == Token::Word("rvdim");
