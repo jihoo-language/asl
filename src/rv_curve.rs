@@ -1,6 +1,7 @@
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
+use crate::binary_field::BinaryField;
 use crate::error::{Error, Result};
 use crate::linear::Basis;
 use crate::model::Model;
@@ -16,6 +17,7 @@ pub(crate) struct Curve {
     pub(crate) orders: Vec<usize>,
     degree: usize,
     columns: usize,
+    independent: Vec<usize>,
     rows: Vec<Row>,
 }
 
@@ -72,15 +74,86 @@ impl Curve {
             ));
         }
 
-        let (orders, rows) = order_sequence(model, affine)?;
-        model.allocate(1 + orders.len() + rows.iter().map(|row| row_cells(row)).sum::<usize>())?;
+        let independent = coordinate_basis(model, &affine)?;
+        let (orders, rows) = order_sequence(model, &affine, independent.len(), None)?;
+        model.allocate(
+            1 + orders.len()
+                + independent.len()
+                + rows.iter().map(|row| row_cells(row)).sum::<usize>(),
+        )?;
         Ok(Self {
             selected,
             orders,
             degree,
             columns,
+            independent,
             rows,
         })
+    }
+
+    pub(crate) fn frobenius_orders(
+        &self,
+        model: &mut Model,
+        exponent: usize,
+    ) -> Result<Vec<usize>> {
+        let (_, orders, _) = self.frobenius_rows(model, exponent)?;
+        Ok(orders)
+    }
+
+    pub(crate) fn frobenius_wronskian(
+        &self,
+        model: &mut Model,
+        exponent: usize,
+    ) -> Result<(usize, Polynomial)> {
+        let (q, orders, rows) = self.frobenius_rows(model, exponent)?;
+        let sum = orders.iter().map(|&order| order as u128).sum::<u128>();
+        let total = (q as u128 + orders.len() as u128) * self.degree as u128;
+        let degree = total
+            .checked_sub(2 * sum)
+            .ok_or_else(|| Error::plain("Frobenius Wronskian degree is negative"))?;
+        let degree = usize::try_from(degree)
+            .map_err(|_| Error::plain("Frobenius Wronskian degree is out of range"))?;
+        let determinant = rv_poly::determinant_polynomials(model, rows)?;
+        let polynomial = homogenize(
+            model,
+            &determinant,
+            degree,
+            "Frobenius Wronskian exceeds its homogeneous degree",
+        )?;
+        Ok((degree, polynomial))
+    }
+
+    fn frobenius_rows(
+        &self,
+        model: &mut Model,
+        exponent: usize,
+    ) -> Result<(usize, Vec<usize>, Vec<Row>)> {
+        if !(1..usize::BITS as usize).contains(&exponent) {
+            return Err(Error::plain("Frobenius extension exponent must be positive and within the machine exponent range"));
+        }
+        let q = 1usize << exponent;
+        self.degree
+            .checked_mul(q)
+            .ok_or_else(|| Error::plain("Frobenius row degree is out of range"))?;
+        let series: Row = self
+            .independent
+            .iter()
+            .map(|&column| self.rows[0][column].clone())
+            .collect();
+        let mut cells = 1 + series.len();
+        let mut top = Vec::with_capacity(series.len());
+        for polynomial in &series {
+            let cost = rv_poly::cells(polynomial);
+            cells += cost;
+            rv_ideal::check_storage(cells)?;
+            model.spend(cost)?;
+            top.push(polynomial.iter().map(|term| [term[0] * q].into()).collect());
+        }
+        let (orders, rows) = order_sequence(model, &series, series.len(), Some(&top))?;
+        let mut matrix = Vec::with_capacity(series.len());
+        matrix.push(top);
+        matrix.extend(rows);
+        Ok((q, orders, matrix))
     }
 
     fn plucker_degree(&self, k: usize) -> Result<usize> {
@@ -138,18 +211,12 @@ impl Curve {
             ));
         }
         let affine = self.affine_minor(model, &columns)?;
-        model.spend(rv_poly::cells(&affine))?;
-        let polynomial = affine
-            .iter()
-            .rev()
-            .map(|term| {
-                let t = term[0];
-                let s = degree
-                    .checked_sub(t)
-                    .ok_or_else(|| Error::plain("affine minor exceeds its Plucker degree"))?;
-                Ok([s, t].into())
-            })
-            .collect::<Result<Polynomial>>()?;
+        let polynomial = homogenize(
+            model,
+            &affine,
+            degree,
+            "affine minor exceeds its Plucker degree",
+        )?;
         Ok((degree, polynomial))
     }
 
@@ -192,6 +259,114 @@ impl Curve {
         let kernel = rv_scheme::saturate_coordinates(model, &kernel, width, 0..width)?;
         Ideal::derived(model, selected, kernel)
     }
+}
+
+pub(crate) fn order_at(
+    model: &mut Model,
+    polynomial: &Polynomial,
+    modulus: usize,
+    point: &[usize],
+) -> Result<Option<usize>> {
+    let field = BinaryField::new(model, modulus)?;
+    let &[s, t] = point else {
+        return Err(Error::plain("rvOrdAt requires two field coordinates"));
+    };
+    field.check_element(s)?;
+    field.check_element(t)?;
+    if s == 0 && t == 0 {
+        return Err(Error::plain(
+            "the zero vector does not define a projective point",
+        ));
+    }
+    let Some(first) = polynomial.first() else {
+        return Ok(None);
+    };
+    if s == 0 {
+        return Ok(Some(first[0]));
+    }
+    if t == 0 {
+        return Ok(Some(polynomial.last().unwrap()[1]));
+    }
+
+    let parameter = field.multiply(t, field.inverse(model, s)?);
+    model.spend(rv_poly::cells(polynomial))?;
+    let mut terms = polynomial
+        .iter()
+        .rev()
+        .map(|term| {
+            let power = term[1];
+            Ok((power, field.power(model, parameter, power as u128)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Rescale the local coordinate so the point is X=1. If the largest
+    // power of two present is b, write g(X)=A(X)+X^b B(X). At X=1+Z,
+    // g is (A+B)(1+Z)+Z^b B(1+Z). The first summand has degree below b.
+    let mut order = 0;
+    while terms.len() > 1 {
+        model.spend(1 + terms.len())?;
+        let bit = 1usize << terms.last().unwrap().0.ilog2();
+        let split = terms.partition_point(|&(power, _)| power < bit);
+        let mut upper = terms.split_off(split);
+        for (power, _) in &mut upper {
+            *power -= bit;
+        }
+        let low = add_bands(&terms, &upper);
+        terms = if low.is_empty() {
+            order += bit;
+            upper
+        } else {
+            low
+        };
+    }
+    Ok(Some(order))
+}
+
+fn add_bands(mut left: &[(usize, usize)], mut right: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut sum = Vec::with_capacity(left.len() + right.len());
+    while let (Some((&a, tail_a)), Some((&b, tail_b))) = (left.split_first(), right.split_first()) {
+        match a.0.cmp(&b.0) {
+            Ordering::Less => {
+                sum.push(a);
+                left = tail_a;
+            }
+            Ordering::Greater => {
+                sum.push(b);
+                right = tail_b;
+            }
+            Ordering::Equal => {
+                let coefficient = a.1 ^ b.1;
+                if coefficient != 0 {
+                    sum.push((a.0, coefficient));
+                }
+                left = tail_a;
+                right = tail_b;
+            }
+        }
+    }
+    sum.extend_from_slice(left);
+    sum.extend_from_slice(right);
+    sum
+}
+
+fn homogenize(
+    model: &mut Model,
+    affine: &Polynomial,
+    degree: usize,
+    degree_error: &str,
+) -> Result<Polynomial> {
+    model.spend(rv_poly::cells(affine))?;
+    affine
+        .iter()
+        .rev()
+        .map(|term| {
+            let t = term[0];
+            let s = degree
+                .checked_sub(t)
+                .ok_or_else(|| Error::plain(degree_error))?;
+            Ok([s, t].into())
+        })
+        .collect()
 }
 
 fn row_cells(row: &[Polynomial]) -> usize {
@@ -246,29 +421,42 @@ fn binary_remainder(
     Ok(powers.into_iter().map(|power| [power].into()).collect())
 }
 
-fn order_sequence(
-    model: &mut Model,
-    polynomials: Vec<Polynomial>,
-) -> Result<(Vec<usize>, Vec<Row>)> {
-    let columns = polynomials.len();
-    let mut span = Basis::default();
-    let mut exponents = BTreeMap::<usize, Vec<usize>>::new();
-    let mut cells = 0;
+fn coordinate_basis(model: &mut Model, polynomials: &[Polynomial]) -> Result<Vec<usize>> {
     // Translation f(T+X) is invertible over F2(T), so the full Hasse matrix
     // has rank equal to the F2 span of the coordinate polynomials.
-    let mut rank = 0;
-    for (column, polynomial) in polynomials.into_iter().enumerate() {
+    let mut span = Basis::default();
+    let mut independent = Vec::new();
+    for (column, polynomial) in polynomials.iter().enumerate() {
         let support: Vec<_> = polynomial.iter().map(|term| term[0]).collect();
-        rank += usize::from(span.insert(model, support.clone())?);
-        for power in support {
+        if span.insert(model, support)? {
+            independent.push(column);
+        }
+    }
+    Ok(independent)
+}
+
+fn order_sequence(
+    model: &mut Model,
+    polynomials: &[Polynomial],
+    rank: usize,
+    leading: Option<&[Polynomial]>,
+) -> Result<(Vec<usize>, Vec<Row>)> {
+    let needed = rank - usize::from(leading.is_some());
+    if needed == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let columns = polynomials.len();
+    let mut exponents = BTreeMap::<usize, Vec<usize>>::new();
+    let mut cells = 0;
+    for (column, polynomial) in polynomials.iter().enumerate() {
+        for term in polynomial.iter() {
             model.spend(1 + exponents.len().max(1).ilog2() as usize)?;
-            let coordinates = exponents.entry(power).or_default();
+            let coordinates = exponents.entry(term[0]).or_default();
             cells += if coordinates.is_empty() { 4 } else { 1 };
-            rv_ideal::check_storage(cells + span.cells())?;
+            rv_ideal::check_storage(cells)?;
             coordinates.push(column);
         }
     }
-    drop(span);
 
     // Merge the increasing submask lists of the exponents actually present.
     // Lucas parity excludes every other derivative without visiting it.
@@ -280,9 +468,15 @@ fn order_sequence(
     rv_ideal::check_storage(index_cells)?;
     model.spend(1 + queue.len())?;
     let mut echelon = RationalBasis::default();
-    let mut rows = Vec::with_capacity(rank);
-    let mut orders = Vec::with_capacity(rank);
+    let mut rows = Vec::with_capacity(needed);
+    let mut orders = Vec::with_capacity(needed);
     let mut retained = 0;
+    if let Some(row) = leading {
+        retained = row_cells(row);
+        if !echelon.insert(model, row, index_cells + retained)? {
+            return Err(Error::plain("Frobenius row vanishes"));
+        }
+    }
     while let Some(&Reverse((order, _))) = queue.peek() {
         model.spend(1 + columns)?;
         let mut row = vec![Vec::new(); columns];
@@ -311,7 +505,7 @@ fn order_sequence(
             retained += row_cells(&row);
             rv_ideal::check_storage(index_cells + retained + echelon.cells)?;
             rows.push(row);
-            if rows.len() == rank {
+            if rows.len() == needed {
                 return Ok((orders, rows));
             }
         }

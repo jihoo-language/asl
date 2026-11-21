@@ -41,7 +41,7 @@ use crate::rank_jets;
 use crate::rank_variety;
 use crate::restriction_transfer;
 use crate::rv_arithmetic;
-use crate::rv_curve::Curve as RvCurve;
+use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_gauss;
@@ -538,6 +538,24 @@ impl Engine {
                 let curve = RvCurve::build(&mut self.model, selected, forms)?;
                 self.model.define_rv_curve(name.text, curve);
                 return Ok(None);
+            }
+            StatementForm::RvFrobeniusOrders(name, exponent) => {
+                let curve = self.model.rv_curve(&name)?;
+                let orders = curve.frobenius_orders(&mut self.model, exponent)?;
+                format!("rvFrobOrders[{}, {exponent}] = {orders:?}", name.text)
+            }
+            StatementForm::RvOrderAt(modulus, point, polynomial) => {
+                let input = self.checker().expr(polynomial)?;
+                let (selected, _) = self.checker().rv_poly_grade(&input, "rvOrdAt")?;
+                if selected.len() != 2 {
+                    return Err(Error::new(input.span, "rvOrdAt requires a binary form"));
+                }
+                let Value::RVPoly(polynomial) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let order = rv_curve::order_at(&mut self.model, &polynomial, modulus, &point)?;
+                let order = order.map_or_else(|| "infinite".into(), |order| order.to_string());
+                format!("rvOrdAt[{modulus}, {point:?}] = {order}")
             }
             StatementForm::RvOrders(name) => {
                 let curve = self.model.rv_curve(&name)?;
@@ -3270,6 +3288,13 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
+            }
+            ExprForm::RvFrobeniusWronskian(name, exponent) => {
+                let curve = self.model.rv_curve(&name)?;
+                let (degree, polynomial) = curve.frobenius_wronskian(self.model, exponent)?;
+                let polynomial = rv_poly::persist(self.model, polynomial)?;
+                let ty = self.model.rv_poly_type(curve.selected.clone(), degree)?;
+                Ok((ty, TypedForm::Constant(Value::RVPoly(polynomial))))
             }
             ExprForm::RvOscMinor(name, k, columns) => {
                 let curve = self.model.rv_curve(&name)?;

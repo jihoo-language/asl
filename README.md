@@ -673,6 +673,14 @@ For the cuspidal cubic and $H=(x,y)$, the normal cone in the chart $z\ne0$ has e
 
 `rvosculating Image[C,k,[u0,...]];` gives the homogeneous ideal of the projective image of those Plücker coordinates. Supply one fresh index per increasing $(k+1)$-tuple of coordinate positions, in lexicographic order of the tuples. Exact substitution and elimination compute the relations, followed by projective saturation. For $q=2^e$ and forms $[s^{q+1},s^qt,st^q,t^{q+1}]$, the order sequence is $[0,1,q,q+1]$. The tangent coordinates are $[s^{2q},0,s^qt^q,s^qt^q,0,t^{2q}]$ and their image is a conic. The four plane coordinates give the original parametrization. [Hasse orders and osculating images example](examples/rank-osculation.asl)
 
+#### Frobenius orders and local ramification
+
+`rvFrobOrders[C, e];` prints the Stöhr–Voloch Frobenius orders for $q=2^e$ with $e>0$. Use the lexicographically first independent subset of the coordinate forms. For $r+1$ such forms, prepend their $q$-th powers as the first row and choose the least $r$ independent Hasse orders $\nu_0,\ldots,\nu_{r-1}$. `rvFrobWronskian[C, e]` returns the determinant as a binary form of degree $(q+r)d-2\sum_j\nu_j$, including its ramification factors.
+
+`rvOrdAt[P,[s,t]](F);` prints the vanishing multiplicity of the binary form `F` at the projective point $[s:t]$ over the binary field with modulus `P`. The field coordinates use the same encoding as `rvVanish`. This includes the point at infinity. The zero form has order `infinite` at every valid point. The affine calculation uses exact local substitution and splits the support at powers of two, so a sparse multiple root can have large order without a search through each lower order.
+
+The Ballico–Hefez parametrization $[s^5:s^4t+st^4:t^5]$ has ordinary Hasse orders $[0,1,4]$. For $q=4$ its Frobenius orders are $[0,4]$ and its Wronskian is $(st^4+s^4t)(st^{16}+s^{16}t)$. It vanishes twice at each point of $\mathbb P^1(\mathbb F_4)$ and once at each other point of $\mathbb P^1(\mathbb F_{16})$. For $q=2$ or $16$ the Frobenius orders are $[0,1]$. [Frobenius order and ramification example](examples/rank-frobenius.asl)
+
 
 ### Koszul syzygies and their products
 

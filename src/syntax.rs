@@ -405,6 +405,7 @@ pub(crate) enum ExprForm {
     RvIdeal(RvIdealOp, Label, Box<ParsedExpr>),
     RvGenerator(Label, usize, Span),
     RvOscMinor(Label, usize, Vec<usize>),
+    RvFrobeniusWronskian(Label, usize),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
     VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
@@ -482,6 +483,8 @@ pub(crate) enum StatementForm {
     RvGauss(GaussOp, Label, Vec<usize>, ParsedExpr),
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvOrders(Label),
+    RvFrobeniusOrders(Label, usize),
+    RvOrderAt(usize, Vec<usize>, ParsedExpr),
     RvOsculating(Label, Label, usize, Vec<usize>),
     RvFitting(Label, RvMatrixSpec, usize),
     RvGroebner(Label),
@@ -1030,6 +1033,24 @@ impl<'src> Parser<'src> {
                 let variables = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvCurve(name, variables, self.rv_generators()?)
+            }
+            Token::Word("rvFrobOrders") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let (exponent, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvFrobeniusOrders(name, exponent)
+            }
+            Token::Word("rvOrdAt") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (modulus, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let point = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvOrderAt(modulus, point, self.paren_expr(0)?)
             }
             Token::Word("rvorders") => {
                 self.advance()?;
@@ -2397,6 +2418,13 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvFrobWronskian" && self.eat(Token::LBracket)? {
+                    let curve = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (exponent, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RvFrobeniusWronskian(curve, exponent), 0);
                 }
                 if name.text == "rvOscMinor" && self.eat(Token::LBracket)? {
                     let curve = self.label()?;
