@@ -105,6 +105,16 @@ show lamp(Joint.seam);   // S.hi
 
 The double-cover example has a local section on each vertex star of the triangle. Two of the overlaps force the sheet choices. On the third overlap one chart yields `Cover.ca0` and the other yields `Cover.ca1`. Switching the initial sheet exchanges both answers. Run `cargo run -- examples/rejected/double-cover.asl` to see that obstruction reported at the `sew`. [Double-cover program](examples/rejected/double-cover.asl)
 
+## Sheaf cohomology on a finite poset
+
+`sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix.
+
+`ShC(F,k)` is the normalized Roos cochain space in degree $k$. The factor for a strict chain $x_0<\cdots<x_k$ is the terminal stalk $F(x_k)$. Use `shTerm[F,[x0,...,xk],i]` for its basis coordinate $i$, numbered from zero, or add a signed coefficient as the fourth argument. `shD(c)` takes the alternating sum over faces. When a face drops the terminal point, the contribution uses the restriction from its old terminal stalk to the new one. In particular, on a two-point chain the differential of a section is $c(b)-r_{ab}c(a)$.
+
+`ShH(F,k)` is the resulting cohomology space. `shClass(c)` projects a closed cochain to its class and `shRep(h)` returns a deterministic closed representative. Use `shdim[F,k];` for the dimension and `shgen[F,k,i]` for cohomology basis element $i$. The basis calculation orders chains by their point indices in the space declaration, then by terminal stalk coordinate. Both types support `zero`, `add`, and signed scalar multiplication `shScale[c](v)`. Sparse cochains can be formed and differentiated directly. Cohomology uses bounded prime-field reduction of the adjacent degrees.
+
+The circle example compares constant coefficients, rank-two unipotent holonomy over $\mathbb F_3$, scalar holonomy $2$ over $\mathbb F_5$, and a sheaf supported on the three maximal points. [Finite-poset sheaf example](examples/sheaf-cohomology.asl)
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

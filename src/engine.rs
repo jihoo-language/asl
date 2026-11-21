@@ -83,6 +83,7 @@ use crate::rv_t_transfer;
 use crate::rv_tree;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
+use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::RvHHSpec;
@@ -314,6 +315,7 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
+    SheafOperation(SheafOp, Rc<Sheaf>, usize, Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
     JetOperation(JetOp, Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
@@ -374,6 +376,23 @@ impl Engine {
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
                 return Ok(None);
+            }
+            StatementForm::Sheaf(name, base, prime, presentation) => {
+                self.model.check_new_sheaf(&name)?;
+                let ty = self.model.named(&base.text).ok_or_else(|| {
+                    Error::new(
+                        base.span,
+                        format!("unknown named sheaf base '{}'", base.text),
+                    )
+                })?;
+                let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
+                self.model.define_sheaf(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafDimension(name, degree) => {
+                let data = self.model.sheaf(&name)?;
+                let rank = data.rank(&mut self.model, degree)?;
+                format!("shdim[{}, {degree}] = {rank}", name.text)
             }
             StatementForm::Space(name, chains) => {
                 self.model.define_space(&name, &chains)?;
@@ -1672,6 +1691,13 @@ impl Engine {
                     (BinaryOp::Add, Value::Cobar(a), Value::Cobar(b)) => {
                         cobar::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::SheafC(a), Value::SheafC(b)) => {
+                        let Kind::Sheaf(_, name, _) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let data = self.model.sheaf_named(name).expect("registered sheaf");
+                        sheaf::add(&mut self.model, data.prime, &a, &b)
+                    }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
                         let p = match *self.model.kind(expr.ty) {
                             Kind::PExt(p, ..)
@@ -1679,6 +1705,12 @@ impl Engine {
                             | Kind::PMay(p, ..)
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
+                            Kind::Sheaf(_, ref name, _) => {
+                                self.model
+                                    .sheaf_named(name)
+                                    .expect("registered sheaf")
+                                    .prime
+                            }
                             Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                             Kind::BPVPage(grade) => grade.prime(),
                             Kind::BPModExt(grade) => grade.prime(),
@@ -2949,6 +2981,29 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::SheafOperation(operation, data, degree, input) => {
+                let value = self.eval(input)?;
+                match (*operation, value) {
+                    (SheafOp::Differential, Value::SheafC(raw)) => {
+                        data.differential(&mut self.model, &raw)
+                    }
+                    (SheafOp::Class, Value::SheafC(raw)) => {
+                        data.class(&mut self.model, *degree, &raw)
+                    }
+                    (SheafOp::Representative, Value::OddClass(class)) => {
+                        data.representative(&mut self.model, *degree, &class)
+                    }
+                    (SheafOp::Scale(scalar), Value::SheafC(raw)) => {
+                        let scalar = sheaf::residue(data.prime, scalar);
+                        sheaf::scale(&mut self.model, data.prime, scalar, &raw)
+                    }
+                    (SheafOp::Scale(scalar), Value::OddClass(class)) => {
+                        let scalar = sheaf::residue(data.prime, scalar);
+                        odd_ext::scale(&mut self.model, data.prime, scalar as usize, &class)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::PScale(prime, scalar, value) => match self.eval(value)? {
                 Value::PCobar(terms) => odd_cobar::scale(&mut self.model, *prime, *scalar, &terms),
                 Value::OddClass(class) => odd_ext::scale(&mut self.model, *prime, *scalar, &class),
@@ -3301,6 +3356,7 @@ impl Checker<'_> {
             TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
             TypeForm::RMCobar(grade) => self.model.real_cobar_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
+            TypeForm::Sheaf(form, name, degree) => self.model.sheaf_type(form, &name, degree),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.odd_ext_type(prime, s, t)
@@ -3553,6 +3609,8 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::RMCobar(..) => real_motivic::zero(),
+                    Kind::Sheaf(SheafForm::Cochain, ..) => Value::SheafC([].into()),
+                    Kind::Sheaf(SheafForm::Class, ..) => odd_ext::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -3683,6 +3741,49 @@ impl Checker<'_> {
                 let ((s, t), value) = odd_cobar::literal(self.model, prime, factors)?;
                 let ty = self.model.pcobar_type(prime, s, t)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafTerm(name, chain, index, coefficient) => {
+                let data = self.model.sheaf(&name)?;
+                let value = data.term(self.model, &chain, index, coefficient)?;
+                let ty = self
+                    .model
+                    .sheaf_type(SheafForm::Cochain, &name, chain.len() - 1)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafGenerator(name, degree, index) => {
+                let data = self.model.sheaf(&name)?;
+                let value = data.generator(self.model, degree, index)?;
+                let ty = self.model.sheaf_type(SheafForm::Class, &name, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let expected = match operation {
+                    SheafOp::Differential | SheafOp::Class => "a ShC cochain",
+                    SheafOp::Representative => "a ShH class",
+                    SheafOp::Scale(_) => "a ShC cochain or ShH class",
+                };
+                let Kind::Sheaf(form, name, degree) = self.model.kind(input.ty).clone() else {
+                    return Err(self.invalid_operand(&input, operation.name(), expected));
+                };
+                let (output, grade) = match (operation, form) {
+                    (SheafOp::Differential, SheafForm::Cochain) => (
+                        form,
+                        degree.checked_add(1).ok_or_else(|| {
+                            Error::new(input.span, "sheaf differential degree is out of range")
+                        })?,
+                    ),
+                    (SheafOp::Class, SheafForm::Cochain) => (SheafForm::Class, degree),
+                    (SheafOp::Representative, SheafForm::Class) => (SheafForm::Cochain, degree),
+                    (SheafOp::Scale(_), _) => (form, degree),
+                    _ => return Err(self.invalid_operand(&input, operation.name(), expected)),
+                };
+                let data = self.model.sheaf_named(&name).expect("registered sheaf");
+                let ty = self.model.known_sheaf_type(output, name, grade)?;
+                Ok((
+                    ty,
+                    TypedForm::SheafOperation(operation, data, degree, Box::new(input)),
+                ))
             }
             ExprForm::PScale(scalar, expression) => {
                 let value = self.expr(*expression)?;
@@ -6559,6 +6660,7 @@ impl Checker<'_> {
                         | Kind::MCobar(..)
                         | Kind::RMCobar(..)
                         | Kind::MExt(..)
+                        | Kind::Sheaf(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)

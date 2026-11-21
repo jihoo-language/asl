@@ -19,6 +19,7 @@ use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
+use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -41,6 +42,7 @@ pub(crate) enum TypeForm {
     Name(Label),
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
+    Sheaf(SheafForm, Label, usize),
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
@@ -448,6 +450,9 @@ pub(crate) enum ExprForm {
     PMayGenerator(usize, usize, usize, usize, usize, usize, Span),
     PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
+    SheafTerm(Label, Vec<Label>, usize, i64),
+    SheafGenerator(Label, usize, usize),
+    SheafOperation(SheafOp, Box<ParsedExpr>),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
@@ -597,6 +602,8 @@ pub(crate) struct Statement {
 
 pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
+    Sheaf(Label, Label, usize, sheaf::Presentation),
+    SheafDimension(Label, usize),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
@@ -1105,6 +1112,47 @@ impl<'src> Parser<'src> {
         Ok(crate::q_module::Presentation { generators, rules })
     }
 
+    fn sheaf_body(&mut self) -> Result<sheaf::Presentation> {
+        self.expect(Token::LBrace)?;
+        let mut stalks = Vec::new();
+        while self.token() != Token::RBrace {
+            let point = self.label()?;
+            self.expect(Token::Colon)?;
+            stalks.push((point, self.number()?.0));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::LBrace)?;
+        let mut maps = Vec::new();
+        while self.token() != Token::RBrace {
+            let source = self.label()?;
+            self.expect(Token::Less)?;
+            let target = self.label()?;
+            self.expect(Token::Colon)?;
+            self.expect(Token::LBracket)?;
+            let mut entries = Vec::new();
+            while self.token() != Token::RBracket {
+                entries.push(self.signed_number("signed sheaf matrix entry")?);
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            maps.push(sheaf::Cover {
+                source,
+                target,
+                entries,
+            });
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(sheaf::Presentation { stalks, maps })
+    }
+
     fn chains(&mut self) -> Result<Vec<Vec<Label>>> {
         self.expect(Token::LBrace)?;
         let mut chains = Vec::new();
@@ -1132,6 +1180,25 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 let presentation = self.q_module_body()?;
                 StatementForm::QModule(name, selected, presentation)
+            }
+            Token::Word("sheaf") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
+            }
+            Token::Word("shdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafDimension(name, degree)
             }
             Token::Word("space") => {
                 self.advance()?;
@@ -2445,6 +2512,18 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if matches!(name.text.as_str(), "ShC" | "ShH") && self.eat(Token::LParen)? {
+            let form = if name.text == "ShC" {
+                SheafForm::Cochain
+            } else {
+                SheafForm::Class
+            };
+            let sheaf = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Sheaf(form, sheaf, degree), 0);
+        }
         if matches!(name.text.as_str(), "ASDiff" | "WittDiff") && self.eat(Token::LParen)? {
             let family = if name.text == "WittDiff" {
                 DiffFamily::Witt
@@ -3533,6 +3612,60 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::RVScale(scalar, Box::new(value)), depth);
+                }
+                if name.text == "shTerm" && self.eat(Token::LBracket)? {
+                    let sheaf = self.label()?;
+                    self.expect(Token::Comma)?;
+                    self.expect(Token::LBracket)?;
+                    let mut chain = Vec::new();
+                    while self.token() != Token::RBracket {
+                        chain.push(self.label()?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.signed_number("signed sheaf coefficient")?
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafTerm(sheaf, chain, index, coefficient),
+                        0,
+                    );
+                }
+                if name.text == "shgen" && self.eat(Token::LBracket)? {
+                    let sheaf = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SheafGenerator(sheaf, degree, index), 0);
+                }
+                if let Some(operation) = match name.text.as_str() {
+                    "shD" if self.token() == Token::LParen => Some(SheafOp::Differential),
+                    "shClass" if self.token() == Token::LParen => Some(SheafOp::Class),
+                    "shRep" if self.token() == Token::LParen => Some(SheafOp::Representative),
+                    "shScale" if self.eat(Token::LBracket)? => {
+                        let coefficient = self.signed_number("signed sheaf coefficient")?;
+                        self.expect(Token::RBracket)?;
+                        Some(SheafOp::Scale(coefficient))
+                    }
+                    _ => None,
+                } {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafOperation(operation, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "pscale" && self.eat(Token::LBracket)? {
                     let (scalar, _) = self.number()?;

@@ -53,6 +53,7 @@ use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
+use crate::sheaf::{self, Form as SheafForm, Sheaf};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -111,6 +112,7 @@ impl DiffFamily {
 pub(crate) enum Kind {
     Space(String),
     QModule(String),
+    Sheaf(SheafForm, Rc<str>, usize),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
@@ -243,6 +245,7 @@ pub(crate) enum Value {
     RMCobar(real_motivic::Cochain),
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
+    SheafC(sheaf::Support),
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
     RVHom(rv_hom::Support),
@@ -281,6 +284,10 @@ pub(crate) struct Poset {
 }
 
 impl Poset {
+    pub(crate) fn strict_less(&self, left: usize, right: usize) -> bool {
+        left != right && self.order[left][right]
+    }
+
     fn new(names: Vec<String>, order: Vec<Vec<bool>>) -> Self {
         let lookup = names
             .iter()
@@ -330,6 +337,7 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
+    sheaves: HashMap<String, Rc<Sheaf>>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
@@ -356,6 +364,7 @@ impl Model {
     pub(crate) fn new() -> Self {
         let mut model = Self {
             types: Vec::new(),
+            sheaves: HashMap::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             v_bars: HashMap::new(),
@@ -428,6 +437,8 @@ impl Model {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::QModule(_) => 1,
+            Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
+            Kind::Sheaf(..) => usize::MAX,
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -636,6 +647,7 @@ impl Model {
         matches!(
             self.kind(ty),
             Kind::Cohomology(..)
+                | Kind::Sheaf(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
@@ -694,6 +706,48 @@ impl Model {
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
         )
+    }
+
+    pub(crate) fn check_new_sheaf(&self, name: &Label) -> Result<()> {
+        if self.sheaves.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("sheaf '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_sheaf(&mut self, name: String, sheaf: Sheaf) {
+        self.sheaves.insert(name, Rc::new(sheaf));
+    }
+
+    pub(crate) fn sheaf(&self, name: &Label) -> Result<Rc<Sheaf>> {
+        self.sheaf_named(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown sheaf '{}'", name.text)))
+    }
+
+    pub(crate) fn sheaf_named(&self, name: &str) -> Option<Rc<Sheaf>> {
+        self.sheaves.get(name).cloned()
+    }
+
+    pub(crate) fn sheaf_type(
+        &mut self,
+        form: SheafForm,
+        name: &Label,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.sheaf(name)?;
+        self.known_sheaf_type(form, name.text.as_str().into(), degree)
+    }
+
+    pub(crate) fn known_sheaf_type(
+        &mut self,
+        form: SheafForm,
+        name: Rc<str>,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::Sheaf(form, name, degree), 0)
     }
 
     pub(crate) fn q_endpoint_named(&self, name: &str) -> Option<TypeId> {
@@ -1903,6 +1957,7 @@ impl Model {
             }
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
+            | Kind::Sheaf(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
@@ -2056,6 +2111,9 @@ impl Model {
     fn write_type(&self, out: &mut Text, ty: TypeId, precedence: u8) -> Result<()> {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
+            Kind::Sheaf(form, name, degree) => {
+                out.push(&format!("{}({name}, {degree})", form.name()))
+            }
             &Kind::Star(base, center) => {
                 out.push("Star(")?;
                 self.write_type(out, base, 0)?;
@@ -2328,6 +2386,9 @@ impl Model {
             ),
             (Value::RMCobar(left), Value::RMCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || real_motivic::compare(self, left, right)? == Ordering::Equal),
+            (Value::SheafC(left), Value::SheafC(right)) => {
+                Ok(Rc::ptr_eq(left, right) || sheaf::compare(self, left, right)?.is_eq())
+            }
             (Value::OddClass(left), Value::OddClass(right)) => {
                 Ok(Rc::ptr_eq(left, right)
                     || odd_ext::compare(self, left, right)? == Ordering::Equal)
@@ -2458,6 +2519,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     real_motivic::compare(self, left, right)
+                }
+            }
+            (Value::SheafC(left), Value::SheafC(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    sheaf::compare(self, left, right)
                 }
             }
             (Value::OddClass(left), Value::OddClass(right)) => {
@@ -2863,6 +2931,16 @@ impl Model {
                     let rank = self.ce_page(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
+                Kind::Sheaf(form, ref name, degree) => {
+                    let data = self.sheaf_named(name).expect("registered sheaf");
+                    match form {
+                        SheafForm::Cochain => data.elements(self, degree, MAX_ELEMENTS)?,
+                        SheafForm::Class => {
+                            let rank = data.rank(self, degree)?;
+                            odd_ext::elements(self, data.prime, rank, MAX_ELEMENTS)?
+                        }
+                    }
+                }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
                 Kind::RMCobar(grade) => {
                     let basis = real_motivic::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
@@ -3213,6 +3291,34 @@ impl Model {
             Value::CyclicClass(nonzero) => {
                 self.write_type(out, ty, 0)?;
                 out.push(if *nonzero { "{carry}" } else { "{0}" })
+            }
+            Value::SheafC(terms) => {
+                let Kind::Sheaf(_, name, _) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let data = self.sheaf_named(name).expect("registered sheaf");
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, (generator, coefficient)) in terms.iter().enumerate() {
+                    if index != 0 {
+                        out.push(" + ")?;
+                    }
+                    if *coefficient != 1 {
+                        out.push(&format!("{coefficient}*"))?;
+                    }
+                    out.push("[")?;
+                    for (i, &point) in generator.chain.iter().enumerate() {
+                        if i != 0 {
+                            out.push("<")?;
+                        }
+                        out.push(&data.poset.names[point])?;
+                    }
+                    out.push(&format!("]#{}", generator.index))?;
+                }
+                out.push("}")
             }
             Value::OddClass(support) => {
                 self.write_type(out, ty, 0)?;
