@@ -783,6 +783,12 @@ impl Engine {
                 let rank = self.model.odd_page(ty)?.rank();
                 format!("pceandim[{p}, {n}, {r}, {s}, {t}, {f}] = {rank}")
             }
+            StatementForm::MExtDimension(grade) => {
+                let ty = self.model.mext_type(grade)?;
+                let rank = self.model.adams(ty)?.rank();
+                let motivic::Grade { s, t, w } = grade;
+                format!("mextdim[{s}, {t}, {w}] = {rank}")
+            }
             StatementForm::ExtDimension(s, t) => {
                 let ty = self.model.ext_type(s, t)?;
                 let rank = self.model.adams(ty)?.rank();
@@ -1754,7 +1760,18 @@ impl Engine {
                 let support = milnor::coact(&mut self.model, base, *n, *index, q, class)?;
                 Ok(Value::Cobar(support.into()))
             }
-            TypedForm::MotivicCast(input) => self.eval(input),
+            TypedForm::MotivicCast(input) => {
+                let value = self.eval(input)?;
+                let Value::Class(support) = value else {
+                    return Ok(value);
+                };
+                if support.is_empty() || input.ty == expr.ty {
+                    return Ok(Value::Class(support));
+                }
+                let group = self.model.adams(input.ty)?;
+                let representative = group.representative(&mut self.model, &support)?;
+                adams::class(&mut self.model, expr.ty, &representative)
+            }
             TypedForm::Cobar(op, input) => match (op, self.eval(input)?) {
                 (CobarOp::Differential, Value::Cobar(words)) => {
                     let kind = self.model.kind(input.ty);
@@ -2049,8 +2066,12 @@ impl Engine {
                     if words.is_empty() {
                         return Ok(cobar::zero());
                     }
-                    let (profile, s, t) = self.model.kind(input.ty).cobar_grade().unwrap();
-                    let ty = self.model.profile_ext_type(profile, s, t)?;
+                    let ty = if let Kind::MCobar(grade) = *self.model.kind(input.ty) {
+                        self.model.mext_type(grade)?
+                    } else {
+                        let (profile, s, t) = self.model.kind(input.ty).cobar_grade().unwrap();
+                        self.model.profile_ext_type(profile, s, t)?
+                    };
                     let adams = self.model.adams(ty)?;
                     let primitive = adams
                         .primitive(&mut self.model, &words)?
@@ -3122,6 +3143,7 @@ impl Checker<'_> {
             TypeForm::Operations(degree) => self.model.operation_type(degree),
             TypeForm::Cobar(s, t) => self.model.cobar_type(s, t),
             TypeForm::MCobar(grade) => self.model.mcobar_type(grade),
+            TypeForm::MExt(grade) => self.model.mext_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.odd_ext_type(prime, s, t)
@@ -3389,7 +3411,7 @@ impl Checker<'_> {
                     Kind::RVIwHecke(..) => rv_iwhecke::zero(),
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
-                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
+                    Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
                     }
                     Kind::Bar(_) => Value::Bar([].into()),
@@ -3436,18 +3458,32 @@ impl Checker<'_> {
             }
             ExprForm::TauShift(power, input) => {
                 let input = self.expr(*input)?;
-                let Kind::MCobar(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "tauShift", "an MCobar cochain"));
+                let ty = match *self.model.kind(input.ty) {
+                    Kind::MCobar(grade) => self.model.mcobar_type(grade.shift(power)?)?,
+                    Kind::MExt(grade) => self.model.mext_type(grade.shift(power)?)?,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "tauShift",
+                            "an MCobar cochain or MExt class",
+                        ));
+                    }
                 };
-                let ty = self.model.mcobar_type(grade.shift(power)?)?;
                 Ok((ty, TypedForm::MotivicCast(Box::new(input))))
             }
             ExprForm::Realize(input) => {
                 let input = self.expr(*input)?;
-                let Kind::MCobar(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "realize", "an MCobar cochain"));
+                let ty = match *self.model.kind(input.ty) {
+                    Kind::MCobar(grade) => self.model.cobar_type(grade.s, grade.t)?,
+                    Kind::MExt(grade) => self.model.ext_type(grade.s, grade.t)?,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "realize",
+                            "an MCobar cochain or MExt class",
+                        ));
+                    }
                 };
-                let ty = self.model.cobar_type(grade.s, grade.t)?;
                 Ok((ty, TypedForm::MotivicCast(Box::new(input))))
             }
             ExprForm::PCobarWord(p, factors) => {
@@ -3513,6 +3549,12 @@ impl Checker<'_> {
                 let ty = self.model.pce_type(prime, n, r, s, t, f)?;
                 let rank = self.model.odd_page(ty)?.rank();
                 let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MExtGenerator(grade, index, at) => {
+                let ty = self.model.mext_type(grade)?;
+                let rank = self.model.adams(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::ExtGenerator(s, t, index, at) => {
@@ -5853,8 +5895,21 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<TypeId> {
         if let Kind::MCobar(grade) = *self.model.kind(argument.ty) {
-            if matches!(op, CobarOp::Differential) {
-                return self.model.mcobar_type(grade.differential()?);
+            match op {
+                CobarOp::Differential => return self.model.mcobar_type(grade.differential()?),
+                CobarOp::Class => return self.model.mext_type(grade),
+                CobarOp::Primitive => {
+                    let previous = grade.previous().ok_or_else(|| {
+                        Error::new(span, "extPrimitive requires positive cobar length")
+                    })?;
+                    return self.model.mcobar_type(previous);
+                }
+                _ => {}
+            }
+        }
+        if let Kind::MExt(grade) = *self.model.kind(argument.ty) {
+            if matches!(op, CobarOp::Representative) {
+                return self.model.mcobar_type(grade);
             }
         }
         if let Some((p, profile, s, t)) = self.model.kind(argument.ty).pcobar_grade() {
@@ -6208,6 +6263,7 @@ impl Checker<'_> {
                         | Kind::Operations(..)
                         | Kind::Cobar(..)
                         | Kind::MCobar(..)
+                        | Kind::MExt(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)
@@ -6320,6 +6376,15 @@ impl Checker<'_> {
                 self.model.profile_cobar_type(profile, length, degree)
             }
             BinaryOp::Yoneda => {
+                if let Kind::MExt(a) = *self.model.kind(left.ty) {
+                    let Kind::MExt(b) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "yoneda", "an MExt class"));
+                    };
+                    return self.model.mext_type(a.product(b)?);
+                }
+                if matches!(self.model.kind(right.ty), Kind::MExt(..)) {
+                    return Err(self.invalid_operand(left, "yoneda", "an MExt class"));
+                }
                 if let Some((p, profile, s, t)) = self.model.kind(left.ty).pext_grade() {
                     let Some((q, other, u, v)) = self.model.kind(right.ty).pext_grade() else {
                         return Err(self.invalid_operand(right, "yoneda", "a PExt class"));

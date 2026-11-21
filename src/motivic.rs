@@ -19,6 +19,13 @@ impl Grade {
         Ok(Self { s, ..self })
     }
 
+    pub(crate) fn previous(self) -> Option<Self> {
+        Some(Self {
+            s: self.s.checked_sub(1)?,
+            ..self
+        })
+    }
+
     pub(crate) fn product(self, right: Self) -> Result<Self> {
         let s = self
             .s

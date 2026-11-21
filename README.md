@@ -179,6 +179,12 @@ Use `cobarD`, `concat`, `add`, and `zero` on motivic cochains. The differential 
 
 A normalized monomial $\prod_{i\ge1}\xi_i^{b_i}\tau_{i-1}^{\epsilon_{i-1}}$ realizes to the classical exponents $2b_i+\epsilon_{i-1}$. If a word has $o$ odd exponents across its slots, its intrinsic weight is $W=(t-o)/2$, and its global coefficient exponent is $W-w$. This gives a finite basis at every tridegree. In a coproduct the number of odd exponents can drop when two $\tau_i$ factors meet. For example the reduced coproduct of $\tau_0\tau_1$ contains $\tau[\xi_1|\xi_1]$. [Complex-motivic cobar example](examples/motivic-cobar.asl)
 
+### The complex-motivic Adams E2
+
+`MExt(s, t, w)` is cohomology of the trigraded motivic cobar. Here `s` is Adams filtration and `t-s` is the stem. `mextdim[s, t, w];` computes the dimension and `mextgen[s, t, w, i]` selects generator `i`. Use `extClass(x)` on a closed motivic cochain, `extRep` to read a cocycle, and `extPrimitive` to find a cochain bounding a given motivic boundary. `yoneda` multiplies classes by concatenating representatives. `tauShift[k]` and `realize` act on classes by applying their cochain maps and taking the resulting class.
+
+The elements $h_0=[\tau_0]$, $h_1=[\xi_1]$, and $h_2=[\xi_1^2]$ satisfy $h_0 h_1=0$ and $\tau h_1^3=h_0^2 h_2\ne0$. The class $h_1^4$ is nonzero in weight four. Multiplying by $\tau$ gives a boundary in weight three, where the explicit five-term primitive can be checked with `cobarD`. In even topological degree $t$ at weight $t/2$, every exponent is even under realization. Halving those exponents identifies that slice with the classical cobar in half the topological degree. These computations concern the motivic Adams $E_2$ page. [Complex-motivic Ext example](examples/motivic-ext.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

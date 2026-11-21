@@ -2,14 +2,50 @@ use crate::cobar::{self, Word, WordRows};
 use crate::error::{Error, Result};
 use crate::linear::{Basis, QuotientBasis};
 use crate::model::{Model, TypeId, Value};
+use crate::motivic;
 use crate::profile::Profile;
 use std::cell::OnceCell;
 
 const MAX_BASIS_WORDS: usize = 32_768;
 
+#[derive(Clone, Copy)]
+enum GradedCobar {
+    Classical(Profile, usize, usize),
+    Motivic(motivic::Grade),
+}
+
+impl Default for GradedCobar {
+    fn default() -> Self {
+        Self::Classical(Profile::Full, 0, 0)
+    }
+}
+
+impl GradedCobar {
+    fn basis(self, model: &mut Model) -> Result<Vec<Word>> {
+        match self {
+            Self::Classical(profile, s, t) => profile.basis(model, s, t, MAX_BASIS_WORDS),
+            Self::Motivic(grade) => motivic::basis(model, grade, MAX_BASIS_WORDS),
+        }
+    }
+
+    fn previous(self) -> Option<Self> {
+        match self {
+            Self::Classical(profile, s, t) => Some(Self::Classical(profile, s.checked_sub(1)?, t)),
+            Self::Motivic(grade) => Some(Self::Motivic(grade.previous()?)),
+        }
+    }
+
+    fn differential(self, model: &mut Model, word: &Word) -> Result<Vec<Word>> {
+        match self {
+            Self::Classical(profile, ..) => profile.differential_word(model, word),
+            Self::Motivic(..) => cobar::differential_word(model, word),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Adams {
-    bidegree: (Profile, usize, usize),
+    grade: GradedCobar,
     words: Vec<Word>,
     quotient: QuotientBasis,
     boundary_preimages: OnceCell<BoundaryPreimages>,
@@ -22,24 +58,32 @@ struct BoundaryPreimages {
 
 impl Adams {
     pub(crate) fn build(model: &mut Model, profile: Profile, s: usize, t: usize) -> Result<Self> {
-        let words = profile.basis(model, s, t, MAX_BASIS_WORDS)?;
+        Self::for_grade(model, GradedCobar::Classical(profile, s, t))
+    }
+
+    pub(crate) fn build_motivic(model: &mut Model, grade: motivic::Grade) -> Result<Self> {
+        Self::for_grade(model, GradedCobar::Motivic(grade))
+    }
+
+    fn for_grade(model: &mut Model, grade: GradedCobar) -> Result<Self> {
+        let words = grade.basis(model)?;
         if words.is_empty() {
             return Ok(Self {
-                bidegree: (profile, s, t),
+                grade,
                 ..Self::default()
             });
         }
 
         let mut boundaries = Basis::default();
-        for_each_boundary(model, profile, s, t, &words, |model, _, column| {
+        for_each_boundary(model, grade, &words, |model, _, column| {
             boundaries.insert(model, column)?;
             Ok(())
         })?;
 
         let mut rows = WordRows::default();
         let quotient = QuotientBasis::build(model, boundaries, words.len(), |model, index| {
-            let mut column = profile
-                .differential_word(model, &words[index])?
+            let mut column = grade
+                .differential(model, &words[index])?
                 .into_iter()
                 .map(|term| rows.coordinate(model, term))
                 .collect::<Result<Vec<_>>>()?;
@@ -48,7 +92,7 @@ impl Adams {
             Ok(column)
         })?;
         Ok(Self {
-            bidegree: (profile, s, t),
+            grade,
             words,
             quotient,
             boundary_preimages: OnceCell::new(),
@@ -86,13 +130,10 @@ impl Adams {
         let preimages = if let Some(preimages) = self.boundary_preimages.get() {
             preimages
         } else {
-            let (profile, s, t) = self.bidegree;
             let mut images = Basis::default();
             let words = for_each_boundary(
                 model,
-                profile,
-                s,
-                t,
+                self.grade,
                 &self.words,
                 |model, index, differential| {
                     let _ = images.insert_with_witness(model, differential, vec![index])?;
@@ -119,18 +160,16 @@ impl Adams {
 
 fn for_each_boundary(
     model: &mut Model,
-    profile: Profile,
-    s: usize,
-    t: usize,
+    grade: GradedCobar,
     target: &[Word],
     mut use_column: impl FnMut(&mut Model, usize, Vec<usize>) -> Result<()>,
 ) -> Result<Vec<Word>> {
-    let Some(previous) = s.checked_sub(1) else {
+    let Some(previous) = grade.previous() else {
         return Ok(Vec::new());
     };
-    let source = profile.basis(model, previous, t, MAX_BASIS_WORDS)?;
+    let source = previous.basis(model)?;
     for (index, word) in source.iter().enumerate() {
-        let differential = profile.differential_word(model, word)?;
+        let differential = previous.differential(model, word)?;
         let column = word_indices(model, target, &differential)?;
         use_column(model, index, column)?;
     }

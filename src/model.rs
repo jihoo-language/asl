@@ -113,6 +113,7 @@ pub(crate) enum Kind {
     Operations(usize),
     Cobar(usize, usize),
     MCobar(motivic::Grade),
+    MExt(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
     PExt(Prime, usize, usize),
@@ -502,6 +503,7 @@ impl Model {
             | Kind::MCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
+            | Kind::MExt(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -629,6 +631,7 @@ impl Model {
                 | Kind::CobarAn(..)
                 | Kind::Ext(..)
                 | Kind::ExtAn(..)
+                | Kind::MExt(..)
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
                 | Kind::MapExt(..)
@@ -917,6 +920,10 @@ impl Model {
 
     pub(crate) fn mcobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::MCobar(grade), 0)
+    }
+
+    pub(crate) fn mext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MExt(grade), 0)
     }
 
     pub(crate) fn ext_type(&mut self, s: usize, t: usize) -> Result<TypeId> {
@@ -1607,8 +1614,14 @@ impl Model {
         if let Some(data) = &self.types[ty.0].adams {
             return Ok(data.clone());
         }
-        let (profile, s, t) = self.kind(ty).ext_grade().unwrap();
-        let data = Rc::new(Adams::build(self, profile, s, t)?);
+        let data = match *self.kind(ty) {
+            Kind::MExt(grade) => Adams::build_motivic(self, grade)?,
+            _ => {
+                let (profile, s, t) = self.kind(ty).ext_grade().unwrap();
+                Adams::build(self, profile, s, t)?
+            }
+        };
+        let data = Rc::new(data);
         self.types[ty.0].adams = Some(data.clone());
         Ok(data)
     }
@@ -1816,6 +1829,7 @@ impl Model {
             | Kind::MCobar(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
+            | Kind::MExt(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
             | Kind::MapExt(..)
@@ -1966,6 +1980,7 @@ impl Model {
             &Kind::MCobar(motivic::Grade { s, t, w }) => {
                 out.push(&format!("MCobar({s}, {t}, {w})"))
             }
+            &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
             &Kind::PCobar(p, s, t) => out.push(&format!("PCobar({}, {s}, {t})", p.get())),
             &Kind::PCobarAn(p, n, s, t) => {
                 out.push(&format!("PCobarAn({}, {n}, {s}, {t})", p.get()))
@@ -2548,7 +2563,7 @@ impl Model {
                     let rank = self.cohomology(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
-                Kind::Ext(..) | Kind::ExtAn(..) => {
+                Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) => {
                     let rank = self.adams(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }

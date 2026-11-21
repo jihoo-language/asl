@@ -42,6 +42,7 @@ pub(crate) enum TypeForm {
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
+    MExt(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
     PExt(usize, usize, usize),
@@ -466,6 +467,7 @@ pub(crate) enum ExprForm {
     JetGenerator(JetPageSpec, usize, Span),
     JetTerm(JetTerm),
     ExtGenerator(usize, usize, usize, Span),
+    MExtGenerator(MotivicGrade, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
@@ -602,6 +604,7 @@ pub(crate) enum StatementForm {
     BpTripleContains(Box<[ParsedExpr; 2]>),
     BpTripleSize(ParsedExpr),
     ExtDimension(usize, usize),
+    MExtDimension(MotivicGrade),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
     BpPageDimension(BpPageMode, BpPageSpec),
@@ -1315,6 +1318,13 @@ impl<'src> Parser<'src> {
                 let (p, n, s, t) = self.prime_profile_bidegree()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::PExtAnDimension(p, n, s, t)
+            }
+            Token::Word("mextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.motivic_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MExtDimension(grade)
             }
             Token::Word("extdim") => {
                 self.advance()?;
@@ -2120,10 +2130,15 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
-        if name.text == "MCobar" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "MCobar" | "MExt") && self.eat(Token::LParen)? {
             let grade = self.motivic_grade()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::MCobar(grade), 0);
+            let form = if name.text == "MCobar" {
+                TypeForm::MCobar(grade)
+            } else {
+                TypeForm::MExt(grade)
+            };
+            return ty(span, form, 0);
         }
         if matches!(name.text.as_str(), "PCobar" | "PExt") && self.eat(Token::LParen)? {
             let (p, s, t) = self.prime_bidegree()?;
@@ -3375,6 +3390,13 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PExtAnGenerator(p, n, s, t, index, at), 0);
+                }
+                if name.text == "mextgen" && self.eat(Token::LBracket)? {
+                    let grade = self.motivic_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MExtGenerator(grade, index, at), 0);
                 }
                 if name.text == "extgen" && self.eat(Token::LBracket)? {
                     let (s, t) = self.bidegree()?;
