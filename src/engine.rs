@@ -755,6 +755,7 @@ enum TypedForm {
     WittAdams(u128, Box<TypedExpr>),
     WittVerschiebung(u128, Box<TypedExpr>),
     WittNorm(u128, Box<TypedExpr>),
+    WittCyclicPower(crate::rv_witt_spectrum::CyclicPower, Box<TypedExpr>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -10183,6 +10184,14 @@ impl Engine {
                     unreachable!()
                 };
                 value.norm(&mut self.model, *n)?.persist(&mut self.model)
+            }
+            TypedForm::WittCyclicPower(projection, input) => {
+                let Value::RVWittSpectrum(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .cyclic_power(&mut self.model, *projection)?
+                    .persist(&mut self.model)
             }
             TypedForm::WittExterior(r, input) => {
                 let Value::RVWittSpectrum(value) = self.eval(input)? else {
@@ -22358,6 +22367,11 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_type(ty, &input, "rvWittSpectrumNorm")?;
                 TypedForm::WittNorm(n, Box::new(input))
+            }
+            Expression::CyclicPower(projection, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, projection.name())?;
+                TypedForm::WittCyclicPower(projection, Box::new(input))
             }
             Expression::Exterior(m, input) => {
                 let input = self.expr(*input)?;

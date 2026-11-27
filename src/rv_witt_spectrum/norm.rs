@@ -148,12 +148,10 @@ fn ranks(a: usize, b: usize, n: u128) -> Result<(usize, usize)> {
     }
 }
 
-fn half(value: Integer) -> Result<Integer> {
+pub(super) fn half(value: Integer) -> Result<Integer> {
     let (magnitude, remainder) = value.magnitude.divide_u32(2);
     if remainder != 0 {
-        return Err(Error::plain(
-            "tensor-induction parity trace division is inexact",
-        ));
+        return Err(Error::plain("graded trace division by two is inexact"));
     }
     Ok(Integer {
         magnitude,

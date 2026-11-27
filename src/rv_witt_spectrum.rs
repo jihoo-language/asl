@@ -12,8 +12,10 @@ type Integer = Wide<LIMBS>;
 type Magnitude = Natural<LIMBS>;
 type Polynomial = Vec<Integer>;
 
+mod cyclic;
 mod necklace;
 mod norm;
+pub(crate) use cyclic::CyclicPower;
 pub(crate) use necklace::coordinate as primitive_coordinate;
 pub(crate) use norm::{cycles as norm_cycles, power as norm_power};
 
@@ -24,6 +26,7 @@ pub(crate) enum Expression {
     Adams(u128, Box<ParsedExpr>),
     Verschiebung(u128, Box<ParsedExpr>),
     Norm(u128, Box<ParsedExpr>),
+    CyclicPower(CyclicPower, Box<ParsedExpr>),
     Exterior(u128, Box<ParsedExpr>),
     Bridge(Bridge),
     HilbertBridge(HilbertBridge),
@@ -51,6 +54,7 @@ pub(crate) enum Query {
     Factor(u128),
     Necklace(u128),
     NormGhost(u128, u128),
+    CyclicGhost(CyclicPower, u128),
 }
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -292,6 +296,13 @@ impl Spectrum {
                     .ok_or_else(coefficient_overflow)?;
                 Ok(format!("rvWittSpectrumNormGhost[{n}, {k}] = {trace}"))
             }
+            Query::CyclicGhost(projection, k) => {
+                let ghost = self
+                    .cyclic_ghost(model, projection, k)?
+                    .signed()
+                    .ok_or_else(coefficient_overflow)?;
+                Ok(format!("{} = {ghost}", projection.ghost_label(k)))
+            }
             Query::Necklace(n) => {
                 if n == 0 {
                     return Err(Error::plain(
@@ -404,6 +415,21 @@ fn power_trace(model: &mut Model, p: &[i128], k: u128) -> Result<Integer> {
     trace_residue(model, &power, &initial)
 }
 
+fn trace_at_product(model: &mut Model, p: &[i128], a: u128, b: u128) -> Result<Integer> {
+    if let Some(exponent) = a.checked_mul(b) {
+        return power_trace(model, p, exponent);
+    }
+    let rank = p.len() - 1;
+    if rank == 0 {
+        return Ok(zero());
+    }
+    let characteristic: Polynomial = p.iter().rev().copied().map(Integer::from_i128).collect();
+    let root = power_mod(model, &characteristic, a)?;
+    let residue = residue_power(model, &characteristic, root, b)?;
+    let sums = power_sums(model, p, rank - 1)?;
+    trace_residue(model, &residue, &sums)
+}
+
 fn trace_residue(model: &mut Model, residue: &[Integer], sums: &[Integer]) -> Result<Integer> {
     residue.iter().zip(sums).try_fold(zero(), |sum, (&a, &b)| {
         let term = multiply(model, a, b)?;
@@ -453,12 +479,17 @@ pub(crate) fn determinant_from_ghosts(model: &mut Model, ghosts: &[Integer]) -> 
     Ok(coefficients)
 }
 
-fn power_mod(
+fn power_mod(model: &mut Model, characteristic: &[Integer], exponent: u128) -> Result<Polynomial> {
+    let root = divide_monic(model, vec![zero(), one()], characteristic)?.1;
+    residue_power(model, characteristic, root, exponent)
+}
+
+fn residue_power(
     model: &mut Model,
     characteristic: &[Integer],
+    mut root: Polynomial,
     mut exponent: u128,
 ) -> Result<Polynomial> {
-    let mut root = divide_monic(model, vec![zero(), one()], characteristic)?.1;
     let mut result = vec![one()];
     while exponent != 0 {
         if !exponent.is_multiple_of(2) {

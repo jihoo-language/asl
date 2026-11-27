@@ -19,7 +19,14 @@ pub(crate) fn coordinate(
     if index == 1 {
         return Ok(sum);
     }
-    let primes = distinct_primes(model, index)?;
+    let primes = factorization(
+        model,
+        index,
+        "primitive period factorization exceeds the trial division limit",
+    )?
+    .into_iter()
+    .map(|(prime, _)| prime)
+    .collect::<Vec<_>>();
     accumulate(model, &primes, index, true, &mut sum, &mut ghost)?;
     let (magnitude, remainder) = sum.magnitude.divide(model, index)?;
     if remainder != 0 {
@@ -33,29 +40,33 @@ pub(crate) fn coordinate(
     })
 }
 
-fn distinct_primes(model: &mut Model, mut n: u128) -> Result<Vec<u128>> {
+pub(super) fn factorization(
+    model: &mut Model,
+    mut n: u128,
+    limit_message: &'static str,
+) -> Result<Vec<(u128, u32)>> {
     let mut factors = Vec::new();
     let mut candidate = 2;
     let mut trials = 0;
     while candidate <= n / candidate {
         if trials == TRIAL_LIMIT {
-            return Err(Error::plain(
-                "primitive period factorization exceeds the trial division limit",
-            ));
+            return Err(Error::plain(limit_message));
         }
         model.spend(1)?;
         trials += 1;
         if n.is_multiple_of(candidate) {
-            factors.push(candidate);
+            let mut exponent = 0;
             while n.is_multiple_of(candidate) {
                 model.spend(1)?;
                 n /= candidate;
+                exponent += 1;
             }
+            factors.push((candidate, exponent));
         }
         candidate = if candidate == 2 { 3 } else { candidate + 2 };
     }
     if n > 1 {
-        factors.push(n);
+        factors.push((n, 1));
     }
     Ok(factors)
 }

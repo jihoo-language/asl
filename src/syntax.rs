@@ -5383,6 +5383,18 @@ impl<'src> Parser<'src> {
         ))))
     }
 
+    fn witt_cyclic_power(&mut self, cyclic: bool) -> Result<crate::rv_witt_spectrum::CyclicPower> {
+        use crate::rv_witt_spectrum::CyclicPower;
+        let n = self.wide_unsigned("cyclic tensor length")?;
+        if cyclic {
+            self.expect(Token::Comma)?;
+            let d = self.wide_unsigned("cyclotomic order")?;
+            Ok(CyclicPower::Isotypic(n, d))
+        } else {
+            Ok(CyclicPower::Lie(n))
+        }
+    }
+
     fn witt_spectrum_expression(
         &mut self,
         name: &str,
@@ -5455,6 +5467,14 @@ impl<'src> Parser<'src> {
                     _ => Expression::Norm(index, input),
                 };
                 (form, depth)
+            }
+            "rvWittSpectrumCyclic" | "rvWittSpectrumLie" => {
+                self.expect(Token::LBracket)?;
+                let projection = self.witt_cyclic_power(name == "rvWittSpectrumCyclic")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::CyclicPower(projection, Box::new(input)), depth)
             }
             "rvK3FrobHilbSpectrum" => {
                 self.expect(Token::LBracket)?;
@@ -8611,12 +8631,21 @@ impl<'src> Parser<'src> {
                 | "rvWittSpectrumGhost"
                 | "rvWittSpectrumCoeff"
                 | "rvWittSpectrumNecklace"
-                | "rvWittSpectrumNormGhost"),
+                | "rvWittSpectrumNormGhost"
+                | "rvWittSpectrumCyclicGhost"
+                | "rvWittSpectrumLieGhost"),
             ) => {
                 use crate::rv_witt_spectrum::Query;
                 self.advance()?;
                 let query = if name == "rvWittSpectrumData" {
                     Query::Data
+                } else if matches!(name, "rvWittSpectrumCyclicGhost" | "rvWittSpectrumLieGhost") {
+                    self.expect(Token::LBracket)?;
+                    let projection = self.witt_cyclic_power(name == "rvWittSpectrumCyclicGhost")?;
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("Witt spectrum ghost index")?;
+                    self.expect(Token::RBracket)?;
+                    Query::CyclicGhost(projection, index)
                 } else if name == "rvWittSpectrumNormGhost" {
                     self.expect(Token::LBracket)?;
                     let degree = self.wide_unsigned("tensor-induction degree")?;
@@ -15528,6 +15557,8 @@ impl<'src> Parser<'src> {
                         | "rvWittSpectrumExterior"
                         | "rvWittSpectrumVerschiebung"
                         | "rvWittSpectrumNorm"
+                        | "rvWittSpectrumCyclic"
+                        | "rvWittSpectrumLie"
                         | "rvK3FrobHilbSpectrum"
                         | "rvK3SpechtSpectrum"
                         | "rvK3StratumSpectrum"
