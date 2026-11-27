@@ -367,37 +367,47 @@ mod tests {
     #[test]
     fn membership_rejects_failed_local_conditions_and_unsupported_places() {
         let mut model = Model::new();
-        let ring = Ring::new(&mut model, 5, 1, vec![0, 1]).unwrap();
+        let ring =
+            Ring::new(&mut model, 5, 1, vec![0, 1]).unwrap_or_else(|error| panic!("{error}"));
         let field = Field { ring: &ring };
         let zero = Vec::new();
         let a = field.polynomial(&[0, 0, 1]);
         let b = field.polynomial(&[0, 0, 1, 1]);
-        let space = Selmer::new(&mut model, field, [&zero, &a, &b]).unwrap();
-        assert!(space.contains(&mut model, &Descent::default()).unwrap());
+        let space = Selmer::new(&mut model, field, [&zero, &a, &b])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(space
+            .contains(&mut model, &Descent::default())
+            .unwrap_or_else(|error| panic!("{error}")));
         let factor = field.polynomial(&[1, 1]);
         let invalid_at_minus_one = Descent::from_coordinates([
             (false, vec![]),
             (false, vec![factor.clone()]),
             (false, vec![factor]),
         ]);
-        assert!(!space.contains(&mut model, &invalid_at_minus_one).unwrap());
+        assert!(!space
+            .contains(&mut model, &invalid_at_minus_one)
+            .unwrap_or_else(|error| panic!("{error}")));
         let factor = field.polynomial(&[-1, 1]);
         let outside_support = Descent::from_coordinates([
             (false, vec![]),
             (false, vec![factor.clone()]),
             (false, vec![factor]),
         ]);
-        assert!(!space.contains(&mut model, &outside_support).unwrap());
+        assert!(!space
+            .contains(&mut model, &outside_support)
+            .unwrap_or_else(|error| panic!("{error}")));
         let nonsquare_product =
             Descent::from_coordinates([(true, vec![]), (false, vec![]), (false, vec![])]);
-        assert!(!space.contains(&mut model, &nonsquare_product).unwrap());
+        assert!(!space
+            .contains(&mut model, &nonsquare_product)
+            .unwrap_or_else(|error| panic!("{error}")));
 
         let nonrational = field.polynomial(&[2, 0, 1]);
         let one = field.polynomial(&[1]);
         let failure = Selmer::new(&mut model, field, [&zero, &nonrational, &one]);
         assert!(failure
             .err()
-            .unwrap()
+            .expect("support contains a nonrational place")
             .to_string()
             .contains("rational bad places"));
     }
