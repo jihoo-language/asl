@@ -119,6 +119,10 @@ pub(crate) enum TypeForm {
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
+    ECCurve(Label),
+    ECPoint(Label),
+    ECKernel(Label, usize),
+    ECIso(Label),
     HWMatrix(usize, usize, usize),
     HWWMatrix(Label, usize),
     HWScalar(usize, usize),
@@ -937,6 +941,7 @@ pub(crate) enum ExprForm {
     CMUnary(crate::legendre_cm::Unary, Box<ParsedExpr>),
     UnramElement(Label, Vec<i128>),
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
+    Elliptic(Box<crate::elliptic::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1094,6 +1099,7 @@ pub(crate) enum StatementForm {
     Lee(crate::lee::Command),
     LeeDt(Box<crate::lee::dt::Command>),
     Khovanov(Box<crate::khovanov::Command>),
+    Elliptic(Box<crate::elliptic::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
@@ -2787,6 +2793,119 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::HWWClosed(Box::new(expression)), depth)
     }
 
+    fn ec_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::elliptic::Command;
+        self.advance()?;
+        let statement = match command {
+            "rvec" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let field = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Curve(name, field, Box::new(self.paren_pair(0)?))
+            }
+            "rvecisogeny" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Isogeny(name, source, target, Box::new(self.paren_expr(0)?))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let command = match command {
+                    "rvECPointCount" => Command::PointCount(name),
+                    "rvECCertify" => Command::Certify(name),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        Command::Kernels(name, self.number()?.0)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::Elliptic(Box::new(statement)))
+    }
+
+    fn ec_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::elliptic::{Expression, MapPolynomial, Unary};
+        let mut depth = 0;
+        let expression = match command {
+            "rvECApply" => {
+                let args = self.paren_pair(nest)?;
+                depth = 1 + args[0].depth.max(args[1].depth);
+                Expression::Apply(Box::new(args))
+            }
+            "rvECScale" | "rvECX" | "rvECY" | "rvECKCoeff" | "rvECGetKernel" | "rvECXNum"
+            | "rvECXDen" | "rvECDNum" | "rvECDDen" => {
+                let op = match command {
+                    "rvECX" => Unary::PointCoordinate(false),
+                    "rvECY" => Unary::PointCoordinate(true),
+                    "rvECGetKernel" => Unary::IsogenyKernel,
+                    "rvECScale" => {
+                        self.expect(Token::LBracket)?;
+                        let n =
+                            self.signed_wide("a signed point multiple", "elliptic point multiple")?;
+                        self.expect(Token::RBracket)?;
+                        Unary::Multiple(n)
+                    }
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let k = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        match command {
+                            "rvECKCoeff" => Unary::KernelCoefficient(k),
+                            "rvECXNum" => Unary::IsogenyCoefficient(MapPolynomial::XNumerator, k),
+                            "rvECXDen" => Unary::IsogenyCoefficient(MapPolynomial::XDenominator, k),
+                            "rvECDNum" => {
+                                Unary::IsogenyCoefficient(MapPolynomial::DerivativeNumerator, k)
+                            }
+                            _ => Unary::IsogenyCoefficient(MapPolynomial::DerivativeDenominator, k),
+                        }
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                depth = 1 + input.depth;
+                Expression::Unary(op, Box::new(input))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                if command == "rveckernel" {
+                    self.expect(Token::Comma)?;
+                    let ell = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let coefficients = self.set_named_rows(|parser| {
+                        parser.signed_tuple(
+                            "a signed residue coordinate",
+                            "kernel coefficient coordinate",
+                        )
+                    })?;
+                    Expression::Kernel(name, ell, coefficients)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    match command {
+                        "rvECCurve" => Expression::Curve(name),
+                        "rvECA" => Expression::CurveCoefficient(name, false),
+                        "rvECB" => Expression::CurveCoefficient(name, true),
+                        "rvECIso" => Expression::Isogeny(name),
+                        "rvECInfinity" => Expression::Infinity(name),
+                        _ => {
+                            let args = self.paren_pair(nest)?;
+                            depth = 1 + args[0].depth.max(args[1].depth);
+                            Expression::Point(name, Box::new(args))
+                        }
+                    }
+                }
+            }
+        };
+        expr(span, ExprForm::Elliptic(Box::new(expression)), depth)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
@@ -2813,6 +2932,10 @@ impl<'src> Parser<'src> {
             Token::Word(command @ ("rvHWWWeil" | "rvHWWPoints" | "rvHWWVerify")) => {
                 self.hww_statement(command)?
             }
+            Token::Word(
+                command @ ("rvec" | "rvecisogeny" | "rvECPointCount" | "rvECIsogenies"
+                | "rvECCertify"),
+            ) => self.ec_statement(command)?,
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -5927,6 +6050,24 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if matches!(
+            name.text.as_str(),
+            "RVECCurve" | "RVECPoint" | "RVECKernel" | "RVECIso"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            let form = match name.text.as_str() {
+                "RVECCurve" => TypeForm::ECCurve(label),
+                "RVECPoint" => TypeForm::ECPoint(label),
+                "RVECIso" => TypeForm::ECIso(label),
+                _ => {
+                    self.expect(Token::Comma)?;
+                    TypeForm::ECKernel(label, self.number()?.0)
+                }
+            };
+            self.expect(Token::RParen)?;
+            return ty(span, form, 0);
+        }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
             self.expect(Token::RParen)?;
@@ -7697,6 +7838,29 @@ impl<'src> Parser<'src> {
                         | "rvHWWDescend"
                 ) {
                     return self.hww_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rveckernel"
+                        | "rvECCurve"
+                        | "rvECA"
+                        | "rvECB"
+                        | "rvECIso"
+                        | "rvECPoint"
+                        | "rvECInfinity"
+                        | "rvECScale"
+                        | "rvECKCoeff"
+                        | "rvECXNum"
+                        | "rvECXDen"
+                        | "rvECDNum"
+                        | "rvECDDen"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvECApply" | "rvECX" | "rvECY" | "rvECGetKernel"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ec_expression(&name.text, span, nest);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;

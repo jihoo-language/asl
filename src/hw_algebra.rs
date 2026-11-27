@@ -279,6 +279,24 @@ pub(crate) fn pow_polynomial<R: CoefficientRing>(
     Ok(answer)
 }
 
+pub(crate) fn multiply_polynomials<R: CoefficientRing>(
+    model: &mut Model,
+    ring: &R,
+    a: &[R::Element],
+    b: &[R::Element],
+) -> Result<Vec<R::Element>> {
+    if a.is_empty() || b.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bound = a
+        .len()
+        .checked_add(b.len())
+        .ok_or_else(|| Error::plain("polynomial product degree is out of range"))?
+        - 1;
+    storage(bound.saturating_mul(10), ring.cells())?;
+    product(model, ring, a, b, bound)
+}
+
 fn product<R: CoefficientRing>(
     model: &mut Model,
     ring: &R,

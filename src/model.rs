@@ -17,6 +17,10 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
+use crate::ec_poly::Scalar as ECScalar;
+use crate::elliptic::{
+    self, Curve as EllipticCurve, Isogeny, Kernel as ECKernel, Point as ECPoint,
+};
 use crate::error::{Error, Result};
 use crate::hw_algebra::Matrix as HWMatrix;
 use crate::hw_closed;
@@ -232,6 +236,10 @@ pub(crate) enum Kind {
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
+    ECCurve(Rc<str>),
+    ECPoint(Rc<str>),
+    ECKernel(Rc<str>, u64),
+    ECIso(Rc<str>),
     HWMatrix(Residues, usize),
     HWWMatrix(hw_closed::Grade),
     HWScalar(Residues),
@@ -388,6 +396,10 @@ pub(crate) enum Value {
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
+    ECCurve(Rc<str>),
+    ECPoint(Rc<ECPoint>),
+    ECKernel(Rc<ECKernel>),
+    ECIso(Rc<str>),
     HWMatrix(Rc<HWMatrix<u64>>),
     HWWMatrix(Rc<hw_closed::Matrix>),
     HWScalar(u64),
@@ -541,6 +553,8 @@ pub(crate) struct Model {
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
+    elliptic_curves: HashMap<Rc<str>, Rc<EllipticCurve>>,
+    elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
@@ -619,6 +633,8 @@ impl Model {
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
+            elliptic_curves: HashMap::new(),
+            elliptic_isogenies: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
             rv_unram_rings: HashMap::new(),
@@ -880,6 +896,15 @@ impl Model {
             Kind::RVStableTree(3) | Kind::RVStableMarks(_, 3) => 1,
             Kind::RVHyperCover(..) => usize::MAX,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
+            Kind::ECCurve(..) | Kind::ECIso(..) => 1,
+            Kind::ECPoint(..) => usize::MAX,
+            Kind::ECKernel(_, ell) => {
+                if inhabited {
+                    ell as usize + 1
+                } else {
+                    0
+                }
+            }
             Kind::HWScalar(ring) => ring.count(1),
             Kind::HWMatrix(ring, size) => ring.count(size * size),
             Kind::HWWMatrix(ref grade) => {
@@ -1078,6 +1103,10 @@ impl Model {
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
+                | Kind::ECCurve(..)
+                | Kind::ECPoint(..)
+                | Kind::ECKernel(..)
+                | Kind::ECIso(..)
                 | Kind::HWMatrix(..)
                 | Kind::HWWMatrix(..)
                 | Kind::HWScalar(..)
@@ -2960,6 +2989,128 @@ impl Model {
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
     }
 
+    pub(crate) fn ec_curve(&self, name: &str) -> Result<Rc<EllipticCurve>> {
+        self.elliptic_curves
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown elliptic curve '{name}'")))
+    }
+
+    pub(crate) fn ec_isogeny(&self, name: &str) -> Result<Rc<Isogeny>> {
+        self.elliptic_isogenies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown cyclic isogeny '{name}'")))
+    }
+
+    pub(crate) fn define_ec_curve(
+        &mut self,
+        name: Label,
+        ring: Label,
+        a: ECScalar,
+        b: ECScalar,
+    ) -> Result<()> {
+        if self.elliptic_curves.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "elliptic curve is already defined"));
+        }
+        let field = self.rv_unram(&ring)?;
+        let curve = EllipticCurve::new(self, ring.text.into(), field, a, b)?;
+        self.elliptic_curves
+            .insert(name.text.into(), Rc::new(curve));
+        Ok(())
+    }
+
+    pub(crate) fn define_ec_isogeny(
+        &mut self,
+        name: Label,
+        source: Label,
+        target: Label,
+        kernel: Rc<ECKernel>,
+    ) -> Result<()> {
+        if self.elliptic_isogenies.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "cyclic isogeny is already defined"));
+        }
+        if self.elliptic_curves.contains_key(target.text.as_str()) {
+            return Err(Error::new(
+                target.span,
+                "isogeny target name is already defined",
+            ));
+        }
+        let curve = self.ec_curve(&source.text)?;
+        let target: Rc<str> = target.text.into();
+        let (isogeny, quotient) =
+            Isogeny::new(self, &curve, source.text.into(), target.clone(), kernel)?;
+        self.elliptic_curves.insert(target, Rc::new(quotient));
+        self.elliptic_isogenies
+            .insert(name.text.into(), Rc::new(isogeny));
+        Ok(())
+    }
+
+    pub(crate) fn ec_curve_type(&mut self, name: Rc<str>, point: bool) -> Result<TypeId> {
+        self.ec_curve(&name)?;
+        let kind = if point {
+            Kind::ECPoint(name)
+        } else {
+            Kind::ECCurve(name)
+        };
+        self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn ec_kernel_type(
+        &mut self,
+        name: Rc<str>,
+        ell: u64,
+        witness: bool,
+    ) -> Result<TypeId> {
+        let kind = Kind::ECKernel(name.clone(), ell);
+        if let Some(&id) = self.type_ids.get(&kind) {
+            return Ok(id);
+        }
+        let curve = self.ec_curve(&name)?;
+        let inhabited = witness || curve.has_kernel(self, ell)?;
+        Ok(self.insert(kind, None, None, inhabited, 0))
+    }
+
+    pub(crate) fn ec_isogeny_type(&mut self, name: Rc<str>) -> Result<TypeId> {
+        self.ec_isogeny(&name)?;
+        self.inhabited_type(Kind::ECIso(name), 0)
+    }
+
+    pub(crate) fn ec_coefficient_type(&mut self, curve: &EllipticCurve) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVUnram(curve.ring_name.clone()), 0)
+    }
+
+    pub(crate) fn show_ec_kernels(&mut self, name: &Label, ell: usize) -> Result<String> {
+        let curve = self.ec_curve(&name.text)?;
+        let kernels = elliptic::enumerate_kernels(self, &curve, ell)?;
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!(
+            "rvECIsogenies[{}, {ell}] = count={}, kernels=[",
+            name.text,
+            kernels.len()
+        ))?;
+        for (index, kernel) in kernels.iter().enumerate() {
+            if index > 0 {
+                out.push(", ")?;
+            }
+            self.write_ec_polynomial(&mut out, kernel)?;
+        }
+        out.push("]")?;
+        Ok(out.string)
+    }
+
+    fn write_ec_polynomial(&mut self, out: &mut Text, polynomial: &[ECScalar]) -> Result<()> {
+        out.push("[")?;
+        for (i, s) in polynomial.iter().enumerate() {
+            self.spend(1 + s.len())?;
+            if i > 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!("{s:?}"))?;
+        }
+        out.push("]")
+    }
+
     pub(crate) fn define_hyperelliptic(
         &mut self,
         name: Label,
@@ -4122,6 +4273,10 @@ impl Model {
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::ECCurve(..)
+            | Kind::ECPoint(..)
+            | Kind::ECKernel(..)
+            | Kind::ECIso(..)
             | Kind::HWMatrix(..)
             | Kind::HWWMatrix(..)
             | Kind::HWScalar(..)
@@ -4584,6 +4739,10 @@ impl Model {
             Kind::CMOrder(grade) => {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
+            Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
+            Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
+            Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
+            Kind::ECKernel(name, ell) => out.push(&format!("RVECKernel({name}, {ell})")),
             Kind::HWMatrix(ring, size) => out.push(&format!(
                 "RVHWMatrix({}, {size}, {})",
                 ring.prime.get(),
@@ -4842,6 +5001,17 @@ impl Model {
                 Ok(hw_closed::compare(self, a, b)?.is_eq())
             }
             (Value::HWScalar(a), Value::HWScalar(b)) => Ok(a == b),
+            (Value::ECCurve(a), Value::ECCurve(b)) | (Value::ECIso(a), Value::ECIso(b)) => {
+                Ok(a == b)
+            }
+            (Value::ECPoint(a), Value::ECPoint(b)) => {
+                self.spend(1)?;
+                Ok(a == b)
+            }
+            (Value::ECKernel(a), Value::ECKernel(b)) => {
+                self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
+                Ok(a.polynomial == b.polynomial)
+            }
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
             }
@@ -5145,6 +5315,17 @@ impl Model {
             }
             (Value::HWWMatrix(a), Value::HWWMatrix(b)) => hw_closed::compare(self, a, b),
             (Value::HWScalar(a), Value::HWScalar(b)) => Ok(a.cmp(b)),
+            (Value::ECCurve(a), Value::ECCurve(b)) | (Value::ECIso(a), Value::ECIso(b)) => {
+                Ok(a.cmp(b))
+            }
+            (Value::ECPoint(a), Value::ECPoint(b)) => {
+                self.spend(1)?;
+                Ok(a.cmp(b))
+            }
+            (Value::ECKernel(a), Value::ECKernel(b)) => {
+                self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
+                Ok(a.polynomial.cmp(&b.polynomial))
+            }
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
@@ -5426,6 +5607,23 @@ impl Model {
                     self.spend(size)?;
                     self.allocate(size)?;
                     (0..size).map(|c| Value::HWScalar(c as u64)).collect()
+                }
+                Kind::ECCurve(ref name) => vec![Value::ECCurve(name.clone())],
+                Kind::ECIso(ref name) => vec![Value::ECIso(name.clone())],
+                Kind::ECPoint(ref name) => self.ec_curve(name)?.elements(self, MAX_ELEMENTS)?,
+                Kind::ECKernel(ref name, ell) => {
+                    let curve = self.ec_curve(name)?;
+                    let mut kernels = elliptic::enumerate_kernels(self, &curve, ell as usize)?;
+                    self.check_element_limit(kernels.len())?;
+                    self.spend(kernels.len() * (1 + kernels.len().max(1).ilog2() as usize))?;
+                    kernels.sort_unstable();
+                    kernels
+                        .into_iter()
+                        .map(|k| {
+                            let k = ECKernel::from_certified(self, &curve, ell, k)?;
+                            Ok(Value::ECKernel(Rc::new(k)))
+                        })
+                        .collect::<Result<_>>()?
                 }
                 Kind::HWMatrix(ring, size) => ring.matrix_elements(self, size, MAX_ELEMENTS)?,
                 Kind::HWWMatrix(ref grade) => {
@@ -6785,6 +6983,40 @@ impl Model {
             Value::CMOrder(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", value.constant, value.generator))
+            }
+            Value::ECCurve(name) => {
+                self.write_type(out, ty, 0)?;
+                let curve = self.ec_curve(name)?;
+                out.push(&format!("{{a={:?}, b={:?}}}", curve.a, curve.b))
+            }
+            Value::ECPoint(point) => {
+                self.write_type(out, ty, 0)?;
+                match point.as_ref() {
+                    ECPoint::Infinity => out.push("{infinity}"),
+                    ECPoint::Affine(x, y) => out.push(&format!("{{x={x:?}, y={y:?}}}")),
+                }
+            }
+            Value::ECKernel(kernel) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                self.write_ec_polynomial(out, &kernel.polynomial)?;
+                out.push("}")
+            }
+            Value::ECIso(name) => {
+                self.write_type(out, ty, 0)?;
+                let map = self.ec_isogeny(name)?;
+                out.push(&format!(
+                    "{{source={}, target={}, degree={}, xnum=",
+                    map.source, map.target, map.kernel.ell
+                ))?;
+                self.write_ec_polynomial(out, &map.numerator)?;
+                out.push(", xden=")?;
+                self.write_ec_polynomial(out, &map.denominator)?;
+                out.push(", dnum=")?;
+                self.write_ec_polynomial(out, &map.derivative_numerator)?;
+                out.push(", dden=")?;
+                self.write_ec_polynomial(out, &map.derivative_denominator)?;
+                out.push("}")
             }
             Value::HWMatrix(matrix) => {
                 self.write_type(out, ty, 0)?;

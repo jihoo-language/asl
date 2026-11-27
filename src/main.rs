@@ -23,6 +23,8 @@ mod comodule;
 mod complex;
 mod cyclic;
 mod dependent_sets;
+mod ec_poly;
+mod elliptic;
 mod engine;
 mod eo;
 mod error;

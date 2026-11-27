@@ -1100,6 +1100,24 @@ These values have type `RVHWWMatrix(W,g)` and support `zero`, `add`, `neg`, equa
 
 The genus-two example over $\mathbb F_{27}$ gives Weil coefficients $[1,-2,34,-54,729]$ and ordered unit coefficients $[1,25,7]\bmod27$. Reversing the factors gives $[1,10,7]$, which fails the division. Changing one integral lift by $3$ changes the semilinear matrix and ordered product and preserves the certified characteristic coefficients. [Closed-point Hasse–Witt example](examples/closed-hasse-witt.asl)
 
+### Rational cyclic kernels and normalized Vélu maps
+
+`rvec E[W](a,b);` declares the short Weierstrass curve $E:y^2=x^3+ax+b$ with coefficients of type `RVUnram(W)`. The named ring has precision one and odd characteristic $p\ge5$. The interpreter checks that $4a^3+27b^2\ne0$. Use `rvECCurve[E]` for the value of type `RVECCurve(E)`, and `rvECA[E]` and `rvECB[E]` for its coefficients. `rvECPointCount[E];` counts the rational points, including infinity, and reports the Frobenius trace.
+
+For an odd prime $\ell\ne p$, `rveckernel[E,ell]{[c0 coordinates],...,[1]}` gives a value of type `RVECKernel(E,ell)`. The lists give the field coordinates of the coefficients of a monic polynomial $K$ in ascending powers of $x$. Empty coordinate lists give zero. The degree is $(\ell-1)/2$. The interpreter checks squarefreeness and divisibility by the $\ell$-division polynomial, then evaluates the multiplication-by-$g$ rational function modulo $K$ for a generator $g$ of $\mathbb F_\ell^*/\{\pm1\}$. Closure under this action identifies one cyclic subgroup, since every geometric root is the $x$-coordinate of a nonzero point of order $\ell$. Coefficients in the declared field make the subgroup Frobenius-stable.
+
+`rvECIsogenies[E,ell];` enumerates monic candidates within the work limit and lists the actual cyclic kernels. `rvECKCoeff[k](K)` returns the coefficient of $x^k$. An explicit kernel literal is checked with division-polynomial recurrences in the quotient by $K$. It can therefore succeed when enumerating the field or all monic candidates exceeds the work limit. A bare kernel type determines whether its domain is empty from the Frobenius characteristic polynomial. A certified kernel also supplies a witness that the domain is inhabited.
+
+`rvecisogeny I[E,Q](K);` constructs the normalized Vélu map and registers its quotient curve under the fresh name `Q`. Use `rvECIso[I]` for the value of type `RVECIso(I)` and `rvECGetKernel` to recover its kernel. The map has $x'=R(x)$ and $y'=yR'(x)$, with
+$$
+R(x)=x+\sum_{r:K(r)=0}\left(\frac{6r^2+2a}{x-r}+\frac{4(r^3+ar+b)}{(x-r)^2}\right).
+$$
+The calculation uses Newton power sums and polynomial identities over the declared field. It expresses $R=N/K^2$ and $R'=(N'K-2NK')/K^3$. The coefficient queries `rvECXNum[k]`, `rvECXDen[k]`, `rvECDNum[k]`, and `rvECDDen[k]` take the isogeny as input and return the indicated coefficient. The constructor checks the cleared identity $f(N'K-2NK')^2=N^3+a'NK^4+b'K^6$ for the quotient coefficients $a',b'$. Use `rvECCertify[I];` to repeat the check.
+
+`rvECPoint[E](x,y)` validates an affine point and `rvECInfinity[E]` is its group identity, both of type `RVECPoint(E)`. Use `rvECX` and `rvECY` for affine coordinates, `add` and `neg` for the group law, and `rvECScale[n]` for signed multiplication. `rvECApply(i,P)` gives the actual image point on the quotient, including infinity for the kernel points and for infinity itself.
+
+The two curves over $\mathbb F_{13}$ in the example both have $19$ rational points. They have one and four rational degree-three kernels respectively. The example also computes the quotient for the irreducible kernel polynomial of the degree-five isogeny $x^2+3x+1$ over $\mathbb F_7$ and a kernel with nonconstant coefficients over $\mathbb F_{25}$. [Cyclic Vélu example](examples/cyclic-velu.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

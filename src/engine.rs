@@ -18,6 +18,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
+use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
@@ -462,6 +463,9 @@ enum TypedForm {
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
     UnramUnary(crate::rv_unram::Unary, Rc<UnramRing>, Box<TypedExpr>),
+    ECPoint(Rc<EllipticCurve>, Box<[TypedExpr; 2]>),
+    ECApply(Box<[TypedExpr; 2]>),
+    ECUnary(elliptic::Unary, Box<TypedExpr>),
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
@@ -1013,6 +1017,57 @@ impl Engine {
                 }
             },
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
+            StatementForm::Elliptic(command) => match *command {
+                elliptic::Command::Curve(name, ring, args) => {
+                    let [a, b] = *args;
+                    let ty = self.model.rv_unram_type(&ring)?;
+                    let a = self.checker().expr(a)?;
+                    let b = self.checker().expr(b)?;
+                    self.checker().require_type(ty, &a, "rvec")?;
+                    self.checker().require_type(ty, &b, "rvec")?;
+                    let Value::RVUnram(a) = self.eval(&a)? else {
+                        unreachable!()
+                    };
+                    let Value::RVUnram(b) = self.eval(&b)? else {
+                        unreachable!()
+                    };
+                    self.model
+                        .define_ec_curve(name, ring, a.to_vec(), b.to_vec())?;
+                    return Ok(None);
+                }
+                elliptic::Command::Isogeny(name, source, target, kernel) => {
+                    let input = self.checker().expr(*kernel)?;
+                    if !matches!(self.model.kind(input.ty),Kind::ECKernel(curve,_) if curve.as_ref()==source.text)
+                    {
+                        return Err(Error::new(
+                            input.span,
+                            "rvecisogeny requires a certified kernel on the source curve",
+                        ));
+                    }
+                    let Value::ECKernel(kernel) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    self.model.define_ec_isogeny(name, source, target, kernel)?;
+                    return Ok(None);
+                }
+                elliptic::Command::PointCount(name) => {
+                    let curve = self.model.ec_curve(&name.text)?;
+                    let (q, trace) = curve.trace(&mut self.model)?;
+                    let count = i128::from(q) + 1 - i128::from(trace);
+                    format!("rvECPointCount[{}] = {count}, trace={trace}", name.text)
+                }
+                elliptic::Command::Kernels(name, ell) => self.model.show_ec_kernels(&name, ell)?,
+                elliptic::Command::Certify(name) => {
+                    let map = self.model.ec_isogeny(&name.text)?;
+                    let source = self.model.ec_curve(&map.source)?;
+                    let target = self.model.ec_curve(&map.target)?;
+                    map.certify(&mut self.model, &source, &target)?;
+                    format!(
+                        "rvECCertify[{}] = degree={}, cleared identity=yes",
+                        name.text, map.kernel.ell
+                    )
+                }
+            },
             StatementForm::HasseWitt(command) => match *command {
                 hyperelliptic::Command::Define(name, p, lift) => {
                     self.model.define_hyperelliptic(name, p, lift)?;
@@ -4403,6 +4458,14 @@ impl Engine {
                         };
                         legendre_cm::persist(&mut self.model, value)
                     }
+                    (BinaryOp::Add, Value::ECPoint(a), Value::ECPoint(b)) => {
+                        let Kind::ECPoint(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let curve = self.model.ec_curve(name)?;
+                        let value = curve.add(&mut self.model, &a, &b)?;
+                        elliptic::persist_point(&mut self.model, value)
+                    }
                     (BinaryOp::Add, Value::HWMatrix(a), Value::HWMatrix(b)) => {
                         let Kind::HWMatrix(ring, _) = *self.model.kind(expr.ty) else {
                             unreachable!()
@@ -5480,6 +5543,73 @@ impl Engine {
                     legendre_cm::Unary::Negate => value.negate(&mut self.model)?,
                 };
                 legendre_cm::persist(&mut self.model, value)
+            }
+            TypedForm::ECPoint(curve, input) => {
+                let Value::RVUnram(x) = self.eval(&input[0])? else {
+                    unreachable!()
+                };
+                let Value::RVUnram(y) = self.eval(&input[1])? else {
+                    unreachable!()
+                };
+                let point = curve.point(&mut self.model, x.to_vec(), y.to_vec())?;
+                elliptic::persist_point(&mut self.model, point)
+            }
+            TypedForm::ECApply(input) => {
+                let Value::ECIso(name) = self.eval(&input[0])? else {
+                    unreachable!()
+                };
+                let Value::ECPoint(point) = self.eval(&input[1])? else {
+                    unreachable!()
+                };
+                let map = self.model.ec_isogeny(&name)?;
+                let domain = self.model.ec_curve(&map.source)?;
+                let range = self.model.ec_curve(&map.target)?;
+                let point = map.apply(&mut self.model, &domain, &range, &point)?;
+                elliptic::persist_point(&mut self.model, point)
+            }
+            TypedForm::ECUnary(operator, input) => {
+                use elliptic::Unary;
+                let argument = self.eval(input)?;
+                match (operator, argument) {
+                    (Unary::PointCoordinate(is_y), Value::ECPoint(p)) => {
+                        let c = elliptic::point_coordinate(&p, *is_y)?.clone();
+                        rv_unram::persist(&mut self.model, c)
+                    }
+                    (Unary::Multiple(n), Value::ECPoint(p)) => {
+                        let Kind::ECPoint(name) = self.model.kind(input.ty) else {
+                            unreachable!()
+                        };
+                        let curve = self.model.ec_curve(name)?;
+                        let point = curve.multiple(&mut self.model, &p, *n)?;
+                        elliptic::persist_point(&mut self.model, point)
+                    }
+                    (Unary::KernelCoefficient(index), Value::ECKernel(k)) => {
+                        let Kind::ECKernel(name, _) = self.model.kind(input.ty) else {
+                            unreachable!()
+                        };
+                        let curve = self.model.ec_curve(name)?;
+                        let c = k
+                            .polynomial
+                            .get(*index)
+                            .cloned()
+                            .unwrap_or_else(|| curve.ring.scalar(0));
+                        rv_unram::persist(&mut self.model, c)
+                    }
+                    (Unary::IsogenyKernel, Value::ECIso(name)) => Ok(Value::ECKernel(
+                        self.model.ec_isogeny(&name)?.kernel.clone(),
+                    )),
+                    (Unary::IsogenyCoefficient(which, index), Value::ECIso(name)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        let curve = self.model.ec_curve(&map.source)?;
+                        let c = map
+                            .polynomial(*which)
+                            .get(*index)
+                            .cloned()
+                            .unwrap_or_else(|| curve.ring.scalar(0));
+                        rv_unram::persist(&mut self.model, c)
+                    }
+                    _ => unreachable!(),
+                }
             }
             TypedForm::HWUnary(ring, operation, input) => {
                 let value = self.eval(input)?;
@@ -7639,6 +7769,14 @@ impl Checker<'_> {
                 let ring = Residues::checked(self.model, p, s)?;
                 self.model.hw_scalar_type(ring)
             }
+            TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
+            TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
+            TypeForm::ECIso(name) => self.model.ec_isogeny_type(name.text.into()),
+            TypeForm::ECKernel(name, ell) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let ell = elliptic::validate_ell(self.model, &curve, ell)?;
+                self.model.ec_kernel_type(name.text.into(), ell, false)
+            }
             TypeForm::RVUnram(ring) => self.model.rv_unram_type(&ring),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
@@ -8487,6 +8625,7 @@ impl Checker<'_> {
                         hw_closed::zero(self.model,&ring,grade.genus)?
                     }
                     Kind::HWScalar(_)=>Value::HWScalar(0),
+                    Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
                     Kind::RVUnram(name) => {
                         let ring = self.model.rv_unram_named(name).expect("registered unramified ring");
                         rv_unram::persist(self.model,ring.scalar(0))?
@@ -10433,6 +10572,7 @@ impl Checker<'_> {
                     TypedForm::UnramUnary(operation, ring, Box::new(input)),
                 ))
             }
+            ExprForm::Elliptic(expression) => self.ec_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
@@ -11168,6 +11308,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::ECPoint(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::ECUnary(elliptic::Unary::Multiple(-1), Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVUnram(..)) {
@@ -14762,6 +14908,7 @@ impl Checker<'_> {
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::ECPoint(..)
                         | Kind::HWMatrix(..)
                         | Kind::HWWMatrix(..)
                         | Kind::HWScalar(..)
@@ -15388,6 +15535,106 @@ impl Checker<'_> {
         } else {
             Ok((right, TypedForm::Snd(Box::new(pair))))
         }
+    }
+
+    fn ec_expression(&mut self, form: elliptic::Expression) -> Result<(TypeId, TypedForm)> {
+        use elliptic::{Expression, Unary};
+        let (ty, value) = match form {
+            Expression::Curve(name) => {
+                let name: Rc<str> = name.text.into();
+                (
+                    self.model.ec_curve_type(name.clone(), false)?,
+                    Value::ECCurve(name),
+                )
+            }
+            Expression::CurveCoefficient(name, is_b) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let ty = self.model.ec_coefficient_type(&curve)?;
+                let c = if is_b {
+                    curve.b.clone()
+                } else {
+                    curve.a.clone()
+                };
+                (ty, rv_unram::persist(self.model, c)?)
+            }
+            Expression::Isogeny(name) => {
+                let name: Rc<str> = name.text.into();
+                (
+                    self.model.ec_isogeny_type(name.clone())?,
+                    Value::ECIso(name),
+                )
+            }
+            Expression::Infinity(name) => (
+                self.model.ec_curve_type(name.text.into(), true)?,
+                Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
+            ),
+            Expression::Point(name, args) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let field = self.model.ec_coefficient_type(&curve)?;
+                let [x, y] = *args;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                self.require_type(field, &x, "rvECPoint")?;
+                self.require_type(field, &y, "rvECPoint")?;
+                let ty = self.model.ec_curve_type(name.text.into(), true)?;
+                return Ok((ty, TypedForm::ECPoint(curve, Box::new([x, y]))));
+            }
+            Expression::Kernel(name, ell, coefficients) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let polynomial = coefficients
+                    .into_iter()
+                    .map(|c| curve.ring.literal(self.model, c))
+                    .collect::<Result<_>>()?;
+                let kernel = elliptic::Kernel::new(self.model, &curve, ell, polynomial)?;
+                let ty = self
+                    .model
+                    .ec_kernel_type(name.text.into(), kernel.ell, true)?;
+                (ty, Value::ECKernel(Rc::new(kernel)))
+            }
+            Expression::Apply(args) => {
+                let [map, point] = *args;
+                let map = self.expr(map)?;
+                let point = self.expr(point)?;
+                let Kind::ECIso(name) = self.model.kind(map.ty) else {
+                    return Err(self.invalid_operand(&map, "rvECApply", "an RVECIso"));
+                };
+                let isogeny = self.model.ec_isogeny(name)?;
+                let domain = self.model.ec_curve_type(isogeny.source.clone(), true)?;
+                self.require_type(domain, &point, "rvECApply")?;
+                let ty = self.model.ec_curve_type(isogeny.target.clone(), true)?;
+                return Ok((ty, TypedForm::ECApply(Box::new([map, point]))));
+            }
+            Expression::Unary(operator, input) => {
+                let input = self.expr(*input)?;
+                let ty = match (operator, self.model.kind(input.ty).clone()) {
+                    (Unary::Multiple(_), Kind::ECPoint(_)) => input.ty,
+                    (Unary::PointCoordinate(_), Kind::ECPoint(name))
+                    | (Unary::KernelCoefficient(_), Kind::ECKernel(name, _)) => {
+                        let curve = self.model.ec_curve(&name)?;
+                        self.model.ec_coefficient_type(&curve)?
+                    }
+                    (Unary::IsogenyKernel, Kind::ECIso(name)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        self.model
+                            .ec_kernel_type(map.source.clone(), map.kernel.ell, true)?
+                    }
+                    (Unary::IsogenyCoefficient(..), Kind::ECIso(name)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        let curve = self.model.ec_curve(&map.source)?;
+                        self.model.ec_coefficient_type(&curve)?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operator.name(),
+                            "a compatible elliptic point, cyclic kernel, or isogeny",
+                        ));
+                    }
+                };
+                return Ok((ty, TypedForm::ECUnary(operator, Box::new(input))));
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn hw_expression(
