@@ -26,6 +26,7 @@ mod dependent_sets;
 mod ec_morphism;
 mod ec_poly;
 mod elliptic;
+mod elliptic_cm_recognition;
 mod elliptic_local;
 mod engine;
 mod eo;

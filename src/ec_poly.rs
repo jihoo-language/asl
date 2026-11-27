@@ -39,11 +39,25 @@ impl CoefficientRing for Field<'_> {
     }
 
     fn subtract(&self, model: &mut Model, a: &Scalar, b: &Scalar) -> Result<Scalar> {
-        let b = self.ring.negate(model, b)?;
-        self.ring.add(model, a, &b)
+        let modulus = self.ring.modulus();
+        model.spend(self.ring.degree())?;
+        Ok(a.iter()
+            .zip(b)
+            .map(|(&x, &y)| crate::rv_unram::sub_mod(x, y, modulus))
+            .collect())
     }
 
     fn multiply(&self, model: &mut Model, a: &Scalar, b: &Scalar) -> Result<Scalar> {
+        // A coefficient in the base ring needs only scalar multiplication,
+        // including when the entire polynomial has been extended from it.
+        model.spend(a.len().saturating_sub(1))?;
+        if zero(&a[1..]) {
+            return self.ring.scale(model, b, a[0]);
+        }
+        model.spend(b.len().saturating_sub(1))?;
+        if zero(&b[1..]) {
+            return self.ring.scale(model, a, b[0]);
+        }
         self.ring.multiply(model, a, b)
     }
 

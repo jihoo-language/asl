@@ -1116,6 +1116,16 @@ The matrix type is `RVHWMatrix(p,g,s)`, with row-major literal `rvHWMat[p,g,s]{e
 
 For the genus-two curve in the example, $M_3=\begin{pmatrix}16&4\\13&11\end{pmatrix}\bmod 27$, and its ordered characteristic factor $T^2+16$ divides $T^4-2T^2+9$ modulo $27$. The reverse product gives a different matrix. The example includes a noncommuting genus-three calculation, a genus-two certificate modulo $3^7$, and the Legendre unit $39\bmod 49$. [Hyperelliptic Hasse–Witt example](examples/hyperelliptic-hasse-witt.asl)
 
+### Lang maps and exact CM recognition
+
+`rvECFrobenius[E]` gives the $q$-power endomorphism $(x,y)\mapsto(x^q,y^q)$ of a curve over the named field of size $q$. `rvECLang[E]` gives $1-\pi$. Its kernel is exactly the rational points over that field. `rvECSum` and `rvECNegate` use the group law on rational functions, including doubling, opposite maps, and the constant map to infinity. The two summands must have the same named source and target. `rvECChart[E,F](u)` gives the scaling $(x,y)\mapsto(u^2x,u^3y)$ when it takes the source equation to the target equation.
+
+`rvECExtend[E',F'](map)` transports the coefficients of a rational map along the deterministic residue-field embedding and checks both extended curve equations. This uses the same rule for embedding defining roots as the closed-point Hasse–Witt calculation.
+
+For an ordinary curve, `rvECCMRecognize[K](map)` returns the actual `RVQpQuad(K)` element $a+b\pi$ corresponding to a rational endomorphism. The field `K` must have the curve's Frobenius data. The calculation measures the degree $n$ and trace $1+n-\deg(1-\alpha)$ of the map. Degree polarization with $\pi$ gives $\operatorname{tr}(\alpha\pi)$, and the two traces determine $a,b$ by the trace pairing in the basis $(1,\pi)$. The operation checks the actual normalized rational functions in $[D]\alpha=[A]+[B]\pi$ for a common positive denominator $D$. `rvECCMCertify[K](map);` reports the two traces, degree, and checked integers $A,B,D$.
+
+On $y^2=x^3+x+7$ over $\mathbb F_{11}$, the composite of the explicit degree-three and degree-five Vélu maps is $1-\pi$ of degree $15$. The same map over $\mathbb F_{121}$ has coordinates $(14+\pi_{121})/3$. On $y^2=x^3+2$ over $\mathbb F_{13}$ the scaling by $u=3$ gives the automorphism $(1+\pi)/3$ with trace $-1$ and degree $1$. [Lang and CM example](examples/elliptic-cm-recognition.asl)
+
 ### Hasse–Witt matrices over closed points
 
 `rvhyperelliptic C[W]{f0,...,fd};` defines $y^2=f(x)$ over the residue field of a named `RVUnram(W)`. The coefficient expressions supply integral lifts in that same ring, in ascending degree order. The residue characteristic is odd, the leading coefficient is a unit, and the reduction of $f$ is squarefree. Both odd and even degrees are supported, with genus $g=\lfloor(d-1)/2\rfloor$.

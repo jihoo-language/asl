@@ -950,6 +950,7 @@ pub(crate) enum ExprForm {
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
     ECMap(Box<crate::ec_morphism::Expression>),
     Elliptic(Box<crate::elliptic::Expression>),
+    EllipticCM(Box<crate::elliptic_cm_recognition::Expression>),
     EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
@@ -1119,6 +1120,7 @@ pub(crate) enum StatementForm {
     Khovanov(Box<crate::khovanov::Command>),
     ECMapReport(crate::ec_morphism::Report, Box<ParsedExpr>),
     Elliptic(Box<crate::elliptic::Command>),
+    EllipticCM(Box<crate::elliptic_cm_recognition::Command>),
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
@@ -2871,6 +2873,59 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Elliptic(Box::new(statement)))
     }
 
+    fn ec_cm_field(&mut self) -> Result<Label> {
+        self.expect(Token::LBracket)?;
+        let field = self.label()?;
+        self.expect(Token::RBracket)?;
+        Ok(field)
+    }
+
+    fn ec_cm_statement(&mut self) -> Result<StatementForm> {
+        self.advance()?;
+        let family = self.ec_cm_field()?;
+        let input = self.paren_expr(0)?;
+        Ok(StatementForm::EllipticCM(Box::new(
+            crate::elliptic_cm_recognition::Command::Certify(family, Box::new(input)),
+        )))
+    }
+
+    fn ec_cm_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::elliptic_cm_recognition::Expression;
+        let (form, depth) = match name {
+            "rvECFrobenius" | "rvECLang" => (
+                Expression::Frobenius(self.ec_cm_field()?, name == "rvECLang"),
+                0,
+            ),
+            "rvECSum" => {
+                let args = self.paren_pair(nest)?;
+                let depth = 1 + args[0].depth.max(args[1].depth);
+                (Expression::Sum(Box::new(args)), depth)
+            }
+            "rvECNegate" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Negate(Box::new(input)), depth)
+            }
+            "rvECCMRecognize" => {
+                let family = self.ec_cm_field()?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Recognize(family, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Extend(source, target, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::EllipticCM(Box::new(form)), depth)
+    }
+
     fn ec_local_test(&mut self) -> Result<(Label, crate::elliptic_local::Test)> {
         self.expect(Token::LBracket)?;
         let curve = self.label()?;
@@ -3124,6 +3179,7 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::ECMapReport(report, Box::new(self.paren_expr(0)?))
             }
+            Token::Word("rvECCMCertify") => self.ec_cm_statement()?,
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -8145,6 +8201,15 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.ec_expression(&name.text, span, nest);
+                }
+                if (matches!(name.text.as_str(), "rvECSum" | "rvECNegate")
+                    && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvECFrobenius" | "rvECLang" | "rvECCMRecognize" | "rvECExtend"
+                    ) && self.token() == Token::LBracket)
+                {
+                    return self.ec_cm_expression(&name.text, span, nest);
                 }
                 if matches!(name.text.as_str(), "rvEllFrobCoordinates" | "rvEllLocalGen")
                     && self.token() == Token::LBracket

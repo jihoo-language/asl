@@ -498,13 +498,24 @@ impl Morphism {
                 "an affine elliptic morphism must carry infinity to infinity",
             ));
         }
-        // f C² B³ = D²(A³ + a' A B² + b' B³).
+        // For f C² B³ = D²(A³ + a' A B² + b' B³), coprimality of each
+        // coordinate and squarefreeness of f imply J = D²/B³ divides f.
+        // Check the divisions before forming the much smaller chart identity.
         let b2 = poly::multiply(model, field, b, b)?;
         let b3 = poly::multiply(model, field, &b2, b)?;
-        let c2 = poly::multiply(model, field, c, c)?;
         let d2 = poly::multiply(model, field, d, d)?;
-        let left = poly::multiply(model, field, &c2, &b3)?;
-        let left = poly::multiply(model, field, &left, source.polynomial())?;
+        let (j, remainder) = poly::divide(model, field, d2, &b3)?;
+        let chart_error =
+            || Error::plain("elliptic morphism fails the exact cleared chart equation");
+        if j.is_empty() || j.len() > source.polynomial().len() || !remainder.is_empty() {
+            return Err(chart_error());
+        }
+        let (f, remainder) = poly::divide(model, field, source.polynomial().to_vec(), &j)?;
+        if !remainder.is_empty() {
+            return Err(chart_error());
+        }
+        let c2 = poly::multiply(model, field, c, c)?;
+        let left = poly::multiply(model, field, &c2, &f)?;
         let a2 = poly::multiply(model, field, a, a)?;
         let a3 = poly::multiply(model, field, &a2, a)?;
         let linear = poly::multiply(model, field, a, &b2)?;
@@ -512,12 +523,9 @@ impl Morphism {
         let constant = poly::scale(model, field, &b3, &target.b)?;
         let right = poly::sum(model, field, &a3, &linear, false)?;
         let right = poly::sum(model, field, &right, &constant, false)?;
-        let right = poly::multiply(model, field, &right, &d2)?;
         model.spend(left.len().min(right.len()) * field.cells())?;
         if left != right {
-            return Err(Error::plain(
-                "elliptic morphism fails the exact cleared chart equation",
-            ));
+            return Err(chart_error());
         }
         Ok(())
     }

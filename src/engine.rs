@@ -20,6 +20,7 @@ use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
+use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_local;
 use crate::eo;
 use crate::error::{Error, Result, Span};
@@ -418,6 +419,14 @@ enum ClosedWittAction {
     Compose(Rc<UnramRing>, Box<[TypedExpr; 2]>),
 }
 
+enum ECRecognitionAction {
+    Frobenius(Rc<str>, Rc<EllipticCurve>, bool),
+    Negate(Box<TypedExpr>),
+    Sum(Box<[TypedExpr; 2]>),
+    Extend(Rc<str>, Rc<str>, Box<TypedExpr>),
+    Recognize(crate::legendre_cm::Family, Box<TypedExpr>),
+}
+
 enum TypedForm {
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -465,6 +474,7 @@ enum TypedForm {
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
     UnramUnary(crate::rv_unram::Unary, Rc<UnramRing>, Box<TypedExpr>),
+    ECRecognition(Box<ECRecognitionAction>),
     ECPoint(Rc<EllipticCurve>, Box<[TypedExpr; 2]>),
     ECApply(Box<[TypedExpr; 2]>),
     ECMapUnary(ec_morphism::Unary, Box<TypedExpr>),
@@ -1200,6 +1210,15 @@ impl Engine {
                 }
             },
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
+            StatementForm::EllipticCM(command) => {
+                let ec_cm::Command::Certify(family, input) = *command;
+                let term = self.checker().recognize_ec(&family, *input)?;
+                let Value::ECMap(map) = self.eval(&term)? else {
+                    unreachable!()
+                };
+                let data = self.model.legendre_cm(&family)?;
+                ec_cm::Recognition::check(&mut self.model, data, &map)?.report(&family.text)
+            }
             StatementForm::EllipticLocal(command) => match *command {
                 elliptic_local::Command::Certificate(name, test) => {
                     let curve = self.model.ec_curve(&name.text)?;
@@ -4245,6 +4264,49 @@ impl Engine {
         Ok(value)
     }
 
+    fn eval_ec_cm(&mut self, action: &ECRecognitionAction) -> Result<Value> {
+        use ECRecognitionAction::*;
+        let morphism = match action {
+            Frobenius(name, curve, false) => {
+                ec_cm::frobenius(&mut self.model, name.clone(), curve)?
+            }
+            Frobenius(name, curve, true) => ec_cm::lang(&mut self.model, name.clone(), curve)?,
+            Negate(input) => {
+                let Value::ECMap(map) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let curve = self.model.ec_curve(&map.source)?;
+                let range = self.model.ec_curve(&map.target)?;
+                ec_cm::negate(&mut self.model, &curve, &range, &map)?
+            }
+            Sum(input) => {
+                let Value::ECMap(a) = self.eval(&input[0])? else {
+                    unreachable!()
+                };
+                let Value::ECMap(b) = self.eval(&input[1])? else {
+                    unreachable!()
+                };
+                let source = self.model.ec_curve(&a.source)?;
+                let target = self.model.ec_curve(&a.target)?;
+                ec_cm::sum(&mut self.model, &source, &target, &a, &b)?
+            }
+            Extend(a, b, input) => {
+                let Value::ECMap(map) = self.eval(input)? else {
+                    unreachable!()
+                };
+                ec_cm::extend(&mut self.model, &map, a.clone(), b.clone())?
+            }
+            Recognize(family, input) => {
+                let Value::ECMap(map) = self.eval(input)? else {
+                    unreachable!()
+                };
+                return ec_cm::Recognition::check(&mut self.model, *family, &map)?
+                    .into_value(&mut self.model);
+            }
+        };
+        crate::ec_morphism::persist(&mut self.model, morphism)
+    }
+
     fn eval_hww(&mut self, action: &ClosedWittAction) -> Result<Value> {
         match action {
             ClosedWittAction::Unary(ring, operation, input) => {
@@ -5842,6 +5904,7 @@ impl Engine {
                 };
                 legendre_cm::persist(&mut self.model, value)
             }
+            TypedForm::ECRecognition(action) => self.eval_ec_cm(action),
             TypedForm::ECPoint(curve, input) => {
                 let Value::RVUnram(x) = self.eval(&input[0])? else {
                     unreachable!()
@@ -11244,6 +11307,7 @@ impl Checker<'_> {
             }
             ExprForm::ECMap(expression) => self.ec_map_expression(*expression),
             ExprForm::Elliptic(expression) => self.ec_expression(*expression),
+            ExprForm::EllipticCM(expression) => self.ec_cm_expression(*expression),
             ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
@@ -16399,6 +16463,74 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Constant(value)))
+    }
+
+    fn recognize_ec(&mut self, family: &Label, input: ParsedExpr) -> Result<TypedExpr> {
+        self.model.legendre_cm(family)?;
+        let input = self.expr(input)?;
+        match self.model.kind(input.ty) {
+            Kind::ECMap(a, b) if a == b => Ok(input),
+            _ => Err(self.invalid_operand(
+                &input,
+                "rvECCMRecognize",
+                "a rational endomorphism of a named curve",
+            )),
+        }
+    }
+
+    fn ec_cm_expression(&mut self, expression: ec_cm::Expression) -> Result<(TypeId, TypedForm)> {
+        use ec_cm::Expression;
+        use ECRecognitionAction as Action;
+        let (ty, action) = match expression {
+            Expression::Frobenius(curve, lang) => {
+                let name: Rc<str> = curve.text.into();
+                let curve = self.model.ec_curve(&name)?;
+                let ty = self.model.ec_map_type(name.clone(), name.clone())?;
+                (ty, Action::Frobenius(name, curve, lang))
+            }
+            Expression::Negate(input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::ECMap(..)) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvECNegate",
+                        "a rational elliptic map",
+                    ));
+                }
+                (input.ty, Action::Negate(Box::new(input)))
+            }
+            Expression::Sum(pair) => {
+                let [a, b] = *pair;
+                let a = self.expr(a)?;
+                if !matches!(self.model.kind(a.ty), Kind::ECMap(..)) {
+                    return Err(self.invalid_operand(&a, "rvECSum", "a rational elliptic map"));
+                }
+                let b = self.expr(b)?;
+                self.require_type(a.ty, &b, "rvECSum")?;
+                (a.ty, Action::Sum(Box::new([a, b])))
+            }
+            Expression::Extend(source, target, map) => {
+                let input = self.expr(*map)?;
+                if !matches!(self.model.kind(input.ty), Kind::ECMap(..)) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvECExtend",
+                        "a rational elliptic map",
+                    ));
+                }
+                let source: Rc<str> = source.text.into();
+                let target: Rc<str> = target.text.into();
+                let ty = self.model.ec_map_type(source.clone(), target.clone())?;
+                (ty, Action::Extend(source, target, Box::new(input)))
+            }
+            Expression::Recognize(family, input) => {
+                let input = self.recognize_ec(&family, *input)?;
+                let ty = self.model.qp_quad_type(&family)?;
+                let data = self.model.legendre_cm(&family)?;
+                (ty, Action::Recognize(data, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::ECRecognition(Box::new(action))))
     }
 
     fn ec_expression(&mut self, form: elliptic::Expression) -> Result<(TypeId, TypedForm)> {
