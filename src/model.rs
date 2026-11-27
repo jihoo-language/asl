@@ -1863,9 +1863,16 @@ impl Model {
             return Ok(group.clone());
         }
         let group = Rc::new(match *self.kind(ty) {
-            Kind::RMExt(grade) => real_ext::Group::build(self, grade)?,
+            Kind::RMExt(grade) => {
+                let bars = grade
+                    .t
+                    .checked_sub(i128::from(grade.w))
+                    .and_then(|k| self.real_bars.get(&(grade.s, k)))
+                    .cloned();
+                real_ext::Group::build(self, grade, None, bars.as_deref())?
+            }
             Kind::RMRhoExt(grade) => {
-                real_ext::Group::build_below(self, grade.chain, Some(grade.exponent))?
+                real_ext::Group::build(self, grade.chain, Some(grade.exponent), None)?
             }
             _ => unreachable!(),
         });

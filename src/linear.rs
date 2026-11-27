@@ -167,9 +167,14 @@ impl QuotientBasis {
         self.generators.len()
     }
 
-    // An independently computed cycle span gives the same ordered kernel
-    // basis as build when there are no boundaries.
-    pub(crate) fn from_cycle_span(model: &mut Model, span: Basis) -> Result<Self> {
+    // A cycle span in the complement of the boundary pivots gives the
+    // same ordered generators as build. Each resulting representative
+    // has zero entries at the other cycle pivots.
+    pub(crate) fn from_cycle_span(
+        model: &mut Model,
+        boundaries: Basis,
+        span: Basis,
+    ) -> Result<Self> {
         let mut cycles = Basis::default();
         let mut generators = Vec::new();
         for row in span.vectors() {
@@ -178,9 +183,9 @@ impl QuotientBasis {
             cycles.insert_with_witness(model, row, vec![generators.len()])?;
             generators.push(pivot);
         }
-        model.allocate(cycles.cells() + generators.len())?;
+        model.allocate(boundaries.cells() + cycles.cells() + generators.len())?;
         Ok(Self {
-            boundaries: Basis::default(),
+            boundaries,
             cycles,
             generators,
         })

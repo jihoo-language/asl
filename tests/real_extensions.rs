@@ -70,6 +70,23 @@ fn living_bar_coordinates_are_first_class_and_division_omits_dying_bars() {
 }
 
 #[test]
+fn hidden_products_can_be_divided_in_their_first_bar_query() {
+    for n in [1, 2, 4] {
+        let source = format!(
+            "let a=extClass(rmcword[0,0]{{([],[{n}])}});
+             let b=extClass(rmcword[0,0]{{([],[{}])}});
+             let p=yoneda(a,b);
+             let q=rhoDivide[{n}](p);
+             assert rhoShift[{n}](q)==p;
+             assert extClass(extRep(q))==q;
+             rhodepth(p);",
+            2 * n,
+        );
+        assert_eq!(stdout(interpret(&source)), format!("rhodepth = {n}\n"));
+    }
+}
+
+#[test]
 fn compact_real_rows_compute_the_depth_four_product_and_its_null() {
     let source = r"
         let t4 = extClass(rmcword[0,0]{([],[4])});

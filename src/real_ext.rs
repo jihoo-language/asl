@@ -9,6 +9,7 @@ use crate::linear::{Basis, QuotientBasis};
 use crate::may::Rows;
 use crate::model::{Model, TypeId, Value};
 use crate::motivic::{self, Grade};
+use crate::real_bars;
 use crate::real_motivic::{self, Term};
 use crate::rho_localized;
 
@@ -21,22 +22,24 @@ pub(crate) struct Group {
 }
 
 impl Group {
-    pub(crate) fn build(model: &mut Model, grade: Grade) -> Result<Self> {
-        Self::build_below(model, grade, None)
-    }
-
-    pub(crate) fn build_below(
+    pub(crate) fn build(
         model: &mut Model,
         grade: Grade,
         cutoff: Option<usize>,
+        bars: Option<&real_bars::Group>,
     ) -> Result<Self> {
         if let Some(cycles) = degree_one_cycles(model, grade, cutoff)? {
             return Self::from_cycle_supports(model, cycles);
         }
-        Self::from_matrix(model, grade, cutoff)
+        Self::from_matrix(model, grade, cutoff, bars)
     }
 
-    fn from_matrix(model: &mut Model, grade: Grade, cutoff: Option<usize>) -> Result<Self> {
+    fn from_matrix(
+        model: &mut Model,
+        grade: Grade,
+        cutoff: Option<usize>,
+        bars: Option<&real_bars::Group>,
+    ) -> Result<Self> {
         let max = cutoff.map_or(usize::MAX, |exponent| exponent - 1);
         let bound = cutoff.map_or(u128::MAX, |exponent| exponent as u128);
         let terms = real_motivic::basis_window(model, grade, 0..=max, MAX_BASIS)?;
@@ -50,6 +53,21 @@ impl Group {
                 let column = indices(model, &terms, &image, wrong_degree)?;
                 boundaries.insert(model, column)?;
             }
+        }
+        if let Some(bars) = bars {
+            // The cached barcode supplies a basis of ordinary cohomology.
+            // Reduce its representatives into the same boundary complement.
+            let mut span = Basis::default();
+            for index in bars.living(model, grade.t)? {
+                let cycle = bars.get(index)?.lift_at(model, grade.t)?;
+                let support = indices(model, &terms, &cycle, wrong_degree)?;
+                let reduced = boundaries.reduce(model, support)?;
+                if !span.insert(model, reduced)? {
+                    return Err(Error::plain("living rho bars are linearly dependent"));
+                }
+            }
+            let quotient = QuotientBasis::from_cycle_span(model, boundaries, span)?;
+            return Ok(Self { terms, quotient });
         }
         let mut rows = real_motivic::Rows::default();
         let quotient = QuotientBasis::build(model, boundaries, terms.len(), |model, index| {
@@ -80,7 +98,7 @@ impl Group {
             let column = indices(model, &terms, &cycle, wrong_degree)?;
             span.insert(model, column)?;
         }
-        let quotient = QuotientBasis::from_cycle_span(model, span)?;
+        let quotient = QuotientBasis::from_cycle_span(model, Basis::default(), span)?;
         Ok(Self { terms, quotient })
     }
 
@@ -617,7 +635,7 @@ mod tests {
                     let mut model = Model::new();
                     if let Some(cycles) = degree_one_cycles(&mut model, grade, cutoff)? {
                         let compact = Group::from_cycle_supports(&mut model, cycles)?;
-                        let matrix = Group::from_matrix(&mut model, grade, cutoff)?;
+                        let matrix = Group::from_matrix(&mut model, grade, cutoff, None)?;
                         assert_eq!(compact.rank(), matrix.rank(), "{grade:?}, {cutoff:?}");
                         for i in 0..matrix.rank() {
                             let ordinary = matrix.representative(&mut model, &[i])?;
