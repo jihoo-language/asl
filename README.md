@@ -1280,6 +1280,21 @@ In odd exterior weight the example gives a nonzero $d_1$ at filtration four. In 
 
 Use `-v bars=1` with the staircase generator to check the bar certificate alongside the page calculation. At $r=720$ the final line is `mixbars[Stair] = free [], torsion [(1439, 720)]`. With `-v control=1` it is `mixbars[Stair] = free [0, 1439], torsion []`. The `direct=1` mode checks the immediately preceding page and the selected differential and its target at the next page. It verifies $d_{4096}$ with the page calculation alone.
 
+#### Mixed Hom complexes and coherent maps
+
+`mixhom H[C,D];` constructs the finite graded Hom complex between two declared mixed complexes over the same prime field. The matrix unit from a source generator $x$ to a target generator $y$ has degree $|y|-|x|$. Construct that unit with `mixunit[H,x,y]`. For a homogeneous map $f$ the two mixed operators are
+$b_H(f)=b_Df-(-1)^{|f|}fb_C$ and $B_H(f)=B_Df-(-1)^{|f|}fB_C$.
+
+Use `mixEval(f,x)` to evaluate a map and `mixComp[K](g,f)` to compose $g$ after $f$, with $K$ a declared Hom complex for the resulting endpoints. `mixId[H]` is the degree-zero identity for a declared endomorphism complex. Evaluation and composition work on both ordinary chains and total chains, with powers of $u$ adding under composition. The signed Leibniz identity holds for both operators and for the total differential. [Mixed Hom example](examples/mixed-hom.asl)
+
+The pages and bar queries on $H$ compute the obstruction to lifting a leading map to a homogeneous $\mathbb F_p[u]$-linear chain map, and the negative cyclic homology class of a closed lift. A degree-zero class represents a chain map modulo the boundaries from degree-one maps. The Hom staircase sends the single source generator to the corrected sum $\sum_{i<r}u^i x_i$. Its differential evaluates on that generator to $u^r y_r$. With the split control the same corrected map is closed. [Staircase generator](examples/mixed-page-staircase.awk)
+
+```sh
+awk -v r=720 -v p=3 -v hom=1 -v bars=1 -f examples/mixed-page-staircase.awk | nix run path:. -- -
+```
+
+This verifies composition with the source identity, evaluation of the actual obstruction, and the nonzero $d_{720}$ in the Hom complex. The matching torsion bar is $(1439,720)$. Add `-v control=1` for the closed map and two free bars.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

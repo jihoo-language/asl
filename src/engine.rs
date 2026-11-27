@@ -30,6 +30,7 @@ use crate::map_transfer;
 use crate::may;
 use crate::may_lift;
 use crate::milnor;
+use crate::mixed_hom;
 use crate::model::{DiffFamily, Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::motivic;
 use crate::nakamura;
@@ -426,6 +427,7 @@ enum TypedForm {
         Box<TypedExpr>,
     ),
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
+    MixedComposition([Rc<mixed_hom::Hom>; 3], Box<TypedExpr>, Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
@@ -492,6 +494,14 @@ impl Engine {
         let line = match statement {
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
+                return Ok(None);
+            }
+            StatementForm::MixedHom(name, source, target) => {
+                self.model.check_new_mixed(&name)?;
+                let source = self.model.mixed_id(&source)?;
+                let target = self.model.mixed_id(&target)?;
+                let (hom, complex) = mixed_hom::Hom::build(&mut self.model, source, target)?;
+                self.model.define_mixed_hom(name.text, complex, hom);
                 return Ok(None);
             }
             StatementForm::MixedComplex(name, prime, generators, b, big_b) => {
@@ -2183,6 +2193,14 @@ impl Engine {
                     (BinaryOp::Add, Value::RVBarCobar(a), Value::RVBarCobar(b)) => Ok(
                         Value::RVBarCobar(rv_barcobar::add(&mut self.model, &a, &b)?),
                     ),
+                    (BinaryOp::MixEval, Value::OddClass(map), Value::OddClass(argument)) => {
+                        let Kind::MixedChain(grade, _) = *self.model.kind(left.ty) else {
+                            unreachable!()
+                        };
+                        let hom = self.model.mixed_hom(grade.complex)?;
+                        let value = hom.evaluate(&mut self.model, &map, &argument)?;
+                        odd_ext::persist(&mut self.model, value)
+                    }
                     (BinaryOp::RvBarPair, Value::RVBar(dual), Value::RVBar(raw)) => {
                         Ok(Value::Point(usize::from(rv_bar_dual::pair(
                             &mut self.model,
@@ -3919,6 +3937,18 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::MixedComposition(homs, outer, inner) => {
+                let Value::OddClass(outer) = self.eval(outer)? else {
+                    unreachable!()
+                };
+                let Value::OddClass(inner) = self.eval(inner)? else {
+                    unreachable!()
+                };
+                let [output, outer_hom, inner_hom] = homs;
+                let value =
+                    output.compose(&mut self.model, outer_hom, inner_hom, &outer, &inner)?;
+                odd_ext::persist(&mut self.model, value)
+            }
             TypedForm::MixedEmbed(input) => self.eval(input),
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
@@ -4979,6 +5009,61 @@ impl Checker<'_> {
                     }
                 };
                 Ok((ty, TypedForm::RvHHToMixed(origin, Box::new(input))))
+            }
+            ExprForm::MixedUnit(name, source, target) => {
+                let id = self.model.mixed_id(&name)?;
+                let hom = self.model.mixed_hom(id)?;
+                let x = self.model.mixed_complex(hom.source).index(&source)?;
+                let y = self.model.mixed_complex(hom.target).index(&target)?;
+                let index = hom.index(x, y);
+                let b = self.model.mixed_complex(id).raw_degree(index);
+                let ty = self
+                    .model
+                    .mixed_chain_type(mixed::Grade { complex: id, b }, false)?;
+                let value = odd_ext::persist(self.model, vec![(index, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedIdentity(name) => {
+                let id = self.model.mixed_id(&name)?;
+                let entries = self.model.mixed_hom(id)?.identity(self.model)?;
+                let ty = self
+                    .model
+                    .mixed_chain_type(mixed::Grade { complex: id, b: 0 }, false)?;
+                let value = odd_ext::persist(self.model, entries)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedComposition(name, outer, inner) => {
+                let outer = self.expr(*outer)?;
+                let inner = self.expr(*inner)?;
+                let (g, total) = self.mixed_chain(&outer, "mixComp")?;
+                let (f, inner_total) = self.mixed_chain(&inner, "mixComp")?;
+                if total != inner_total {
+                    return Err(Error::plain("mixComp requires chains of the same form"));
+                }
+                let outer_hom = self.model.mixed_hom(g.complex)?;
+                let inner_hom = self.model.mixed_hom(f.complex)?;
+                let output = self.model.mixed_id(&name)?;
+                let output_hom = self.model.mixed_hom(output)?;
+                if inner_hom.target != outer_hom.source
+                    || output_hom.source != inner_hom.source
+                    || output_hom.target != outer_hom.target
+                {
+                    return Err(Error::plain("mixComp endpoint complexes do not match"));
+                }
+                let chain = mixed::Grade {
+                    complex: output,
+                    b: g.b,
+                }
+                .shift(f.b.into())?;
+                let ty = self.model.mixed_chain_type(chain, total)?;
+                Ok((
+                    ty,
+                    TypedForm::MixedComposition(
+                        [output_hom, outer_hom, inner_hom],
+                        Box::new(outer),
+                        Box::new(inner),
+                    ),
+                ))
             }
             ExprForm::MixedLiteral(name, b, terms) => {
                 let complex = self.model.mixed_id(&name)?;
@@ -8032,6 +8117,13 @@ impl Checker<'_> {
         rv_negative::Grade::new(self.rv_hh_grade((ideal, b, weight))?, length)
     }
 
+    fn mixed_chain(&self, value: &TypedExpr, name: &str) -> Result<(mixed::Grade, bool)> {
+        match *self.model.kind(value.ty) {
+            Kind::MixedChain(grade, total) => Ok((grade, total)),
+            _ => Err(self.invalid_operand(value, name, "a MixedChain or MixedU chain")),
+        }
+    }
+
     fn mixed_grade(&self, (name, r, b, f): MixedSpec) -> Result<mixed_page::Grade> {
         let complex = self.model.mixed_id(&name)?;
         Ok(mixed_page::Grade {
@@ -9045,6 +9137,25 @@ impl Checker<'_> {
                 };
                 self.model
                     .rv_barcobar_type(rv_barcobar::product_grade(a, b)?)
+            }
+            BinaryOp::MixEval => {
+                let (map, total) = self.mixed_chain(left, "mixEval")?;
+                let (argument, argument_total) = self.mixed_chain(right, "mixEval")?;
+                let hom = self.model.mixed_hom(map.complex)?;
+                if argument.complex != hom.source {
+                    return Err(Error::plain(
+                        "mixEval argument belongs to the wrong source complex",
+                    ));
+                }
+                if total != argument_total {
+                    return Err(Error::plain("mixEval requires chains of the same form"));
+                }
+                let grade = mixed::Grade {
+                    complex: hom.target,
+                    b: map.b,
+                }
+                .shift(argument.b.into())?;
+                self.model.mixed_chain_type(grade, total)
             }
             BinaryOp::RvBarPair => {
                 let Kind::RVBarDual(grade) = *self.model.kind(left.ty) else {

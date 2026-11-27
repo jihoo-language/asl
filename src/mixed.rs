@@ -152,6 +152,14 @@ impl Complex {
         self.names.len()
     }
 
+    pub(crate) fn column(&self, operation: Differential, index: usize) -> &[Coordinate] {
+        match operation {
+            Differential::Down => &self.down[index],
+            Differential::Up => &self.up[index],
+            Differential::Total => unreachable!(),
+        }
+    }
+
     pub(crate) fn raw_degree(&self, index: usize) -> i64 {
         self.degrees[index]
     }
@@ -160,7 +168,7 @@ impl Complex {
         &self.names[index]
     }
 
-    fn index(&self, name: &Label) -> Result<usize> {
+    pub(crate) fn index(&self, name: &Label) -> Result<usize> {
         self.indices.get(&name.text).copied().ok_or_else(|| {
             Error::new(
                 name.span,

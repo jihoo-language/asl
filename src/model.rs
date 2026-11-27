@@ -25,6 +25,7 @@ use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::mixed_bars;
+use crate::mixed_hom;
 use crate::motivic;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
@@ -394,6 +395,7 @@ pub(crate) struct Model {
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
+    mixed_homs: HashMap<mixed::Id, Rc<mixed_hom::Hom>>,
     mixed_bars: HashMap<mixed::Id, Rc<mixed_bars::Bars>>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
@@ -438,6 +440,7 @@ impl Model {
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
+            mixed_homs: HashMap::new(),
             mixed_bars: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
@@ -892,6 +895,23 @@ impl Model {
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::plain("operation requires a mixed complex imported by rvHHMixed"))
+    }
+
+    pub(crate) fn define_mixed_hom(
+        &mut self,
+        name: String,
+        complex: mixed::Complex,
+        hom: mixed_hom::Hom,
+    ) {
+        let id = self.define_mixed(name, complex);
+        self.mixed_homs.insert(id, Rc::new(hom));
+    }
+
+    pub(crate) fn mixed_hom(&self, id: mixed::Id) -> Result<Rc<mixed_hom::Hom>> {
+        self.mixed_homs
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Error::plain("operation requires a mixed complex defined by mixhom"))
     }
 
     pub(crate) fn mixed_id(&self, name: &Label) -> Result<mixed::Id> {

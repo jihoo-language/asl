@@ -426,6 +426,7 @@ pub(crate) enum BinaryOp {
     MilnorPair,
     RvMultiply,
     RvBCMul,
+    MixEval,
     RvBarPair,
     AsDeRhamPair,
     EOBruhat,
@@ -456,6 +457,7 @@ impl BinaryOp {
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
             "rvBCMul" => Some(Self::RvBCMul),
+            "mixEval" => Some(Self::MixEval),
             "rvBarPair" => Some(Self::RvBarPair),
             "rvASDeRhamPair" => Some(Self::AsDeRhamPair),
             "eoBruhat" => Some(Self::EOBruhat),
@@ -560,6 +562,9 @@ pub(crate) enum ExprForm {
     PMayAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     MixedLiteral(Label, i64, crate::mixed::Terms),
+    MixedUnit(Label, Label, Label),
+    MixedIdentity(Label),
+    MixedComposition(Label, Box<ParsedExpr>, Box<ParsedExpr>),
     MixedEmbed(usize, Box<ParsedExpr>),
     RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
     MixedBarTerm(Label, usize, bool),
@@ -774,6 +779,7 @@ pub(crate) enum StatementForm {
     MixedBars(Label),
     MixedBarRank(Label, i64, Option<i64>),
     MixedPeriodicRank(Label, i64),
+    MixedHom(Label, Label, Label),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
@@ -1495,6 +1501,16 @@ impl<'src> Parser<'src> {
                 let weight = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvHHMixed(name, ideal, weight)
+            }
+            Token::Word("mixhom") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedHom(name, source, target)
             }
             Token::Word("mixedcomplex") => {
                 self.advance()?;
@@ -3971,6 +3987,35 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvHHToMixed(name, f, Box::new(input)), depth);
+                }
+                if name.text == "mixunit" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let source = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MixedUnit(complex, source, target), 0);
+                }
+                if name.text == "mixId" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MixedIdentity(complex), 0);
+                }
+                if name.text == "mixComp" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let outer = self.expr(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let inner = self.expr(nest + 1)?;
+                    self.expect(Token::RParen)?;
+                    let depth = 1 + outer.depth.max(inner.depth);
+                    return expr(
+                        span,
+                        ExprForm::MixedComposition(complex, Box::new(outer), Box::new(inner)),
+                        depth,
+                    );
                 }
                 if name.text == "mixchain" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
