@@ -154,8 +154,37 @@ pub(crate) fn evaluate(
 pub(crate) fn remainder(
     model: &mut Model,
     field: Field<'_>,
+    numerator: Polynomial,
+    denominator: &[Scalar],
+) -> Result<Polynomial> {
+    division(model, field, numerator, denominator, |_, _| {})
+}
+
+pub(crate) fn divide(
+    model: &mut Model,
+    field: Field<'_>,
+    numerator: Polynomial,
+    denominator: &[Scalar],
+) -> Result<(Polynomial, Polynomial)> {
+    let size = numerator
+        .len()
+        .saturating_add(1)
+        .saturating_sub(denominator.len());
+    field.check_polynomial(size)?;
+    model.spend(size)?;
+    let mut quotient = vec![field.zero(); size];
+    let remainder = division(model, field, numerator, denominator, |order, c| {
+        quotient[order] = c
+    })?;
+    Ok((trim(quotient), remainder))
+}
+
+fn division(
+    model: &mut Model,
+    field: Field<'_>,
     mut numerator: Polynomial,
     denominator: &[Scalar],
+    mut quotient: impl FnMut(usize, Scalar),
 ) -> Result<Polynomial> {
     let leading = denominator
         .last()
@@ -169,9 +198,9 @@ pub(crate) fn remainder(
     } else {
         field.inverse_unit(model, leading)?
     };
+    let width = denominator.len() - 1;
     while numerator.len() >= denominator.len() {
         let top = numerator.pop().expect("nonempty dividend");
-        let width = denominator.len() - 1;
         model.spend(1 + width)?;
         if zero(&top) {
             continue;
@@ -185,12 +214,29 @@ pub(crate) fn remainder(
             let product = field.multiply(model, &factor, c)?;
             *dst = field.subtract(model, dst, &product)?;
         }
+        quotient(order, factor);
         while numerator.last().is_some_and(|c| zero(c)) {
             numerator.pop();
             model.spend(1)?;
         }
     }
     Ok(numerator)
+}
+
+pub(crate) fn exact_divide(
+    model: &mut Model,
+    field: Field<'_>,
+    a: &[Scalar],
+    b: &[Scalar],
+) -> Result<Polynomial> {
+    model.spend(a.len())?;
+    let (quotient, remainder) = divide(model, field, a.to_vec(), b)?;
+    if !remainder.is_empty() {
+        return Err(Error::plain(
+            "expected an exact polynomial division over the residue field",
+        ));
+    }
+    Ok(quotient)
 }
 
 pub(crate) fn multiply_mod(
@@ -226,17 +272,53 @@ pub(crate) fn power_mod(
     Ok(result)
 }
 
-pub(crate) fn coprime(
+pub(crate) fn gcd(
     model: &mut Model,
     field: Field<'_>,
     mut a: Polynomial,
     mut b: Polynomial,
-) -> Result<bool> {
+) -> Result<Polynomial> {
     while !b.is_empty() {
         let c = remainder(model, field, a, &b)?;
         (a, b) = (b, c);
     }
-    Ok(a.len() == 1)
+    Ok(a)
+}
+
+pub(crate) fn coprime(
+    model: &mut Model,
+    field: Field<'_>,
+    a: Polynomial,
+    b: Polynomial,
+) -> Result<bool> {
+    Ok(gcd(model, field, a, b)?.len() == 1)
+}
+
+pub(crate) fn inverse_mod(
+    model: &mut Model,
+    field: Field<'_>,
+    a: &[Scalar],
+    modulus: &[Scalar],
+) -> Result<Polynomial> {
+    model.spend(a.len() + modulus.len())?;
+    let mut r0 = modulus.to_vec();
+    let mut r1 = remainder(model, field, a.to_vec(), modulus)?;
+    let mut v0 = Vec::new();
+    let mut v1 = vec![field.one()];
+    while !r1.is_empty() {
+        let (quotient, remainder) = divide(model, field, r0, &r1)?;
+        let change = multiply_mod(model, field, &quotient, &v1, modulus)?;
+        let value = sum(model, field, &v0, &change, true)?;
+        (r0, r1) = (r1, remainder);
+        (v0, v1) = (v1, value);
+    }
+    if r0.len() != 1 {
+        return Err(Error::plain(
+            "rational denominator is not a unit in the finite kernel algebra",
+        ));
+    }
+    let inv = field.inverse_unit(model, &r0[0])?;
+    scale(model, field, &v0, &inv)
 }
 
 pub(crate) fn power_sums(

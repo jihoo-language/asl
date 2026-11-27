@@ -17,6 +17,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
+use crate::ec_morphism::Morphism as ECMap;
 use crate::ec_poly::Scalar as ECScalar;
 use crate::elliptic::{
     self, Curve as EllipticCurve, Isogeny, Kernel as ECKernel, Point as ECPoint,
@@ -238,6 +239,7 @@ pub(crate) enum Kind {
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     ECCurve(Rc<str>),
+    ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
     ECIso(Rc<str>),
@@ -399,6 +401,7 @@ pub(crate) enum Value {
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     ECCurve(Rc<str>),
+    ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
     ECIso(Rc<str>),
@@ -914,6 +917,7 @@ impl Model {
             Kind::RVHyperArithmetic(..) | Kind::RVHyperCover(..) => usize::MAX,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
             Kind::ECCurve(..) | Kind::ECIso(..) => 1,
+            Kind::ECMap(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1122,6 +1126,7 @@ impl Model {
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
                 | Kind::ECCurve(..)
+                | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
                 | Kind::ECIso(..)
@@ -3182,6 +3187,25 @@ impl Model {
         Ok(self.insert(kind, None, None, inhabited, 0))
     }
 
+    pub(crate) fn ec_map_type(&mut self, source: Rc<str>, target: Rc<str>) -> Result<TypeId> {
+        if self.ec_curve(&source)?.ring_name != self.ec_curve(&target)?.ring_name {
+            return Err(Error::plain(
+                "elliptic morphisms require the same named residue field",
+            ));
+        }
+        self.inhabited_type(Kind::ECMap(source, target), 0)
+    }
+
+    pub(crate) fn ec_push_type(
+        &mut self,
+        target: Rc<str>,
+        ell: u64,
+        input_kernel: TypeId,
+    ) -> Result<TypeId> {
+        let witness = self.types[input_kernel.0].inhabited;
+        self.ec_kernel_type(target, ell, witness)
+    }
+
     pub(crate) fn ec_isogeny_type(&mut self, name: Rc<str>) -> Result<TypeId> {
         self.ec_isogeny(&name)?;
         self.inhabited_type(Kind::ECIso(name), 0)
@@ -4393,6 +4417,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::ECCurve(..)
+            | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
             | Kind::ECIso(..)
@@ -4866,6 +4891,7 @@ impl Model {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
             Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
+            Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
             Kind::ECKernel(name, ell) => out.push(&format!("RVECKernel({name}, {ell})")),
@@ -5141,6 +5167,7 @@ impl Model {
                 self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
                 Ok(a.polynomial == b.polynomial)
             }
+            (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
             }
@@ -5462,6 +5489,7 @@ impl Model {
                 self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
                 Ok(a.polynomial.cmp(&b.polynomial))
             }
+            (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
@@ -5751,6 +5779,11 @@ impl Model {
                 }
                 Kind::ECCurve(ref name) => vec![Value::ECCurve(name.clone())],
                 Kind::ECIso(ref name) => vec![Value::ECIso(name.clone())],
+                Kind::ECMap(..) => {
+                    return Err(Error::plain(
+                        "an elliptic rational morphism type cannot be enumerated",
+                    ));
+                }
                 Kind::ECPoint(ref name) => self.ec_curve(name)?.elements(self, MAX_ELEMENTS)?,
                 Kind::ECKernel(ref name, ell) => {
                     let curve = self.ec_curve(name)?;
@@ -7134,6 +7167,25 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 let curve = self.ec_curve(name)?;
                 out.push(&format!("{{a={:?}, b={:?}}}", curve.a, curve.b))
+            }
+            Value::ECMap(map) => {
+                self.write_type(out, ty, 0)?;
+                let Some(coords) = &map.coordinates else {
+                    return out.push("{infinity map}");
+                };
+                out.push(&format!("{{degree={}, xnum=", map.degree()))?;
+                self.write_ec_polynomial(out, &coords.x.numerator)?;
+                out.push(", xden=")?;
+                self.write_ec_polynomial(out, &coords.x.denominator)?;
+                out.push(", ynum=")?;
+                self.write_ec_polynomial(out, &coords.y_multiplier.numerator)?;
+                out.push(", yden=")?;
+                self.write_ec_polynomial(out, &coords.y_multiplier.denominator)?;
+                if let Some(kernel) = map.kernel() {
+                    out.push(", kernel=")?;
+                    self.write_ec_polynomial(out, &kernel.polynomial)?;
+                }
+                out.push("}")
             }
             Value::ECPoint(point) => {
                 self.write_type(out, ty, 0)?;

@@ -18,6 +18,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
+use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_local;
 use crate::eo;
@@ -466,6 +467,9 @@ enum TypedForm {
     UnramUnary(crate::rv_unram::Unary, Rc<UnramRing>, Box<TypedExpr>),
     ECPoint(Rc<EllipticCurve>, Box<[TypedExpr; 2]>),
     ECApply(Box<[TypedExpr; 2]>),
+    ECMapUnary(ec_morphism::Unary, Box<TypedExpr>),
+    ECMapBinary(ec_morphism::Binary, Box<[TypedExpr; 2]>),
+    ECMapChart(Rc<str>, Rc<str>, Box<TypedExpr>),
     ECUnary(elliptic::Unary, Box<TypedExpr>),
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
@@ -1227,6 +1231,30 @@ impl Engine {
                     )?
                 }
             },
+            StatementForm::ECMapReport(report, input) => {
+                let input = self.checker().expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::ECMap(..)) {
+                    return Err(Error::new(
+                        input.span,
+                        "elliptic map report requires an RVECMap",
+                    ));
+                }
+                let Value::ECMap(map) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match report {
+                    ec_morphism::Report::Degree => format!("rvECMapDegree = {}", map.degree()),
+                    ec_morphism::Report::Certify => {
+                        let source = self.model.ec_curve(&map.source)?;
+                        let target = self.model.ec_curve(&map.target)?;
+                        map.certify(&mut self.model, &source, &target)?;
+                        format!(
+                            "rvECMapCertify = degree={}, cleared identity=yes",
+                            map.degree()
+                        )
+                    }
+                }
+            }
             StatementForm::Elliptic(command) => match *command {
                 elliptic::Command::Curve(name, ring, args) => {
                     let [a, b] = *args;
@@ -5837,6 +5865,84 @@ impl Engine {
                 let point = map.apply(&mut self.model, &domain, &range, &point)?;
                 elliptic::persist_point(&mut self.model, point)
             }
+            TypedForm::ECMapUnary(operator, input) => {
+                use ec_morphism::Unary;
+                match (operator, self.eval(input)?) {
+                    (Unary::FromVelu, Value::ECIso(name)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        let curve = self.model.ec_curve(&map.source)?;
+                        let map = Morphism::from_velu(&mut self.model, &curve, &map)?;
+                        ec_morphism::persist(&mut self.model, map)
+                    }
+                    (Unary::Dual, Value::ECMap(map)) => {
+                        let source = self.model.ec_curve(&map.source)?;
+                        let target = self.model.ec_curve(&map.target)?;
+                        let dual = map.dual(&mut self.model, &source, &target)?;
+                        ec_morphism::persist(&mut self.model, dual)
+                    }
+                    (Unary::Coefficient(coordinate, index), Value::ECMap(map)) => {
+                        let curve = self.model.ec_curve(&map.source)?;
+                        let coefficient = map.coefficient(curve.field(), *coordinate, *index)?;
+                        rv_unram::persist(&mut self.model, coefficient)
+                    }
+                    (Unary::KernelCoefficient(index), Value::ECMap(map)) => {
+                        let kernel = map
+                            .kernel()
+                            .ok_or_else(|| Error::plain("map has no certified prime kernel"))?;
+                        let curve = self.model.ec_curve(&map.source)?;
+                        let coefficient = kernel
+                            .polynomial
+                            .get(*index)
+                            .cloned()
+                            .unwrap_or_else(|| curve.ring.scalar(0));
+                        rv_unram::persist(&mut self.model, coefficient)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::ECMapBinary(operator, input) => {
+                use ec_morphism::Binary;
+                let a = self.eval(&input[0])?;
+                let b = self.eval(&input[1])?;
+                match (operator, a, b) {
+                    (Binary::Compose, Value::ECMap(outer), Value::ECMap(inner)) => {
+                        let source = self.model.ec_curve(&inner.source)?;
+                        let result = outer.compose(&mut self.model, &source, &inner)?;
+                        ec_morphism::persist(&mut self.model, result)
+                    }
+                    (Binary::Apply, Value::ECMap(map), Value::ECPoint(point)) => {
+                        let source = self.model.ec_curve(&map.source)?;
+                        let target = self.model.ec_curve(&map.target)?;
+                        let point = map.apply(&mut self.model, &source, &target, &point)?;
+                        elliptic::persist_point(&mut self.model, point)
+                    }
+                    (Binary::Push, Value::ECIso(name), Value::ECKernel(kernel)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        let source = self.model.ec_curve(&map.source)?;
+                        let target = self.model.ec_curve(&map.target)?;
+                        let image =
+                            ec_morphism::push(&mut self.model, &source, &target, &map, &kernel)?;
+                        Ok(Value::ECKernel(image))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::ECMapChart(source, target, input) => {
+                let Value::RVUnram(scale) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let domain = self.model.ec_curve(source)?;
+                let range = self.model.ec_curve(target)?;
+                let analog = Morphism::chart(
+                    &mut self.model,
+                    source.clone(),
+                    target.clone(),
+                    &domain,
+                    &range,
+                    &scale.to_vec(),
+                )?;
+                ec_morphism::persist(&mut self.model, analog)
+            }
             TypedForm::ECUnary(operator, input) => {
                 use elliptic::Unary;
                 let argument = self.eval(input)?;
@@ -8126,6 +8232,7 @@ impl Checker<'_> {
                 let ring = Residues::checked(self.model, p, s)?;
                 self.model.hw_scalar_type(ring)
             }
+            TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
             TypeForm::ECIso(name) => self.model.ec_isogeny_type(name.text.into()),
@@ -9073,6 +9180,9 @@ impl Checker<'_> {
                     }
                     Kind::HWScalar(_)=>Value::HWScalar(0),
                     Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
+                    Kind::ECMap(source,target)=>{
+                        ec_morphism::persist(self.model,Morphism::zero(source.clone(),target.clone()))?
+                    }
                     Kind::RVUnram(name) => {
                         let ring = self.model.rv_unram_named(name).expect("registered unramified ring");
                         rv_unram::persist(self.model,ring.scalar(0))?
@@ -11132,6 +11242,7 @@ impl Checker<'_> {
                     TypedForm::UnramUnary(operation, ring, Box::new(input)),
                 ))
             }
+            ExprForm::ECMap(expression) => self.ec_map_expression(*expression),
             ExprForm::Elliptic(expression) => self.ec_expression(*expression),
             ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
@@ -16162,6 +16273,129 @@ impl Checker<'_> {
                 let order = elliptic_local::LocalOrder::compute(self.model, &curve, prime)?;
                 let value = order.generator(self.model, family)?;
                 (self.model.qp_quad_type(&field)?, value)
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
+    }
+
+    fn ec_map_expression(
+        &mut self,
+        expression: ec_morphism::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ec_morphism::{Binary, Expression, Unary};
+        let (ty, value) = match expression {
+            Expression::Identity(name) => {
+                let name: Rc<str> = name.text.into();
+                let curve = self.model.ec_curve(&name)?;
+                let map = Morphism::identity(self.model, name.clone(), &curve)?;
+                let ty = self.model.ec_map_type(name.clone(), name)?;
+                (ty, ec_morphism::persist(self.model, map)?)
+            }
+            Expression::Multiple(name, n) => {
+                let name: Rc<str> = name.text.into();
+                let curve = self.model.ec_curve(&name)?;
+                let map = Morphism::multiple(self.model, name.clone(), &curve, n)?;
+                let ty = self.model.ec_map_type(name.clone(), name)?;
+                (ty, ec_morphism::persist(self.model, map)?)
+            }
+            Expression::Chart(a, b, input) => {
+                let source: Rc<str> = a.text.into();
+                let target: Rc<str> = b.text.into();
+                let ty = self.model.ec_map_type(source.clone(), target.clone())?;
+                let curve = self.model.ec_curve(&source)?;
+                let field = self.model.ec_coefficient_type(&curve)?;
+                let input = self.expr(*input)?;
+                self.require_type(field, &input, "rvECChart")?;
+                return Ok((ty, TypedForm::ECMapChart(source, target, Box::new(input))));
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = match (operation, self.model.kind(input.ty).clone()) {
+                    (Unary::FromVelu, Kind::ECIso(name)) => {
+                        let map = self.model.ec_isogeny(&name)?;
+                        self.model
+                            .ec_map_type(map.source.clone(), map.target.clone())?
+                    }
+                    (Unary::Dual, Kind::ECMap(source, target)) => {
+                        self.model.ec_map_type(target, source)?
+                    }
+                    (
+                        Unary::Coefficient(..) | Unary::KernelCoefficient(_),
+                        Kind::ECMap(source, _),
+                    ) => {
+                        let curve = self.model.ec_curve(&source)?;
+                        self.model.ec_coefficient_type(&curve)?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "a compatible elliptic isogeny or map",
+                        ))
+                    }
+                };
+                return Ok((ty, TypedForm::ECMapUnary(operation, Box::new(input))));
+            }
+            Expression::Binary(operation, arguments) => {
+                let [outer, inner] = *arguments;
+                let outer = self.expr(outer)?;
+                let inner = self.expr(inner)?;
+                let ty = if matches!(operation, Binary::Push) {
+                    let Kind::ECIso(name) = self.model.kind(outer.ty) else {
+                        return Err(self.invalid_operand(&outer, operation.name(), "an RVECIso"));
+                    };
+                    let map = self.model.ec_isogeny(name)?;
+                    let Kind::ECKernel(source, ell) = self.model.kind(inner.ty).clone() else {
+                        return Err(self.invalid_operand(
+                            &inner,
+                            operation.name(),
+                            "an RVECKernel",
+                        ));
+                    };
+                    if source != map.source {
+                        return Err(Error::new(
+                            inner.span,
+                            "kernel push requires a kernel on the isogeny source",
+                        ));
+                    }
+                    if ell == map.kernel.ell {
+                        return Err(Error::new(
+                            inner.span,
+                            "kernel push requires coprime prime isogeny and kernel degrees",
+                        ));
+                    }
+                    self.model.ec_push_type(map.target.clone(), ell, inner.ty)?
+                } else {
+                    let Kind::ECMap(source, target) = self.model.kind(outer.ty).clone() else {
+                        return Err(self.invalid_operand(&outer, operation.name(), "an RVECMap"));
+                    };
+                    if matches!(operation, Binary::Compose) {
+                        let Kind::ECMap(inner_source, inner_target) =
+                            self.model.kind(inner.ty).clone()
+                        else {
+                            return Err(self.invalid_operand(
+                                &inner,
+                                operation.name(),
+                                "an RVECMap",
+                            ));
+                        };
+                        if inner_target != source {
+                            return Err(Error::new(
+                                inner.span,
+                                "elliptic morphisms have mismatched endpoints",
+                            ));
+                        }
+                        self.model.ec_map_type(inner_source, target)?
+                    } else {
+                        let points = self.model.ec_curve_type(source, true)?;
+                        self.require_type(points, &inner, operation.name())?;
+                        self.model.ec_curve_type(target, true)?
+                    }
+                };
+                return Ok((
+                    ty,
+                    TypedForm::ECMapBinary(operation, Box::new([outer, inner])),
+                ));
             }
         };
         Ok((ty, TypedForm::Constant(value)))

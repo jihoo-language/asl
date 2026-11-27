@@ -1,0 +1,57 @@
+// Two coprime kernels on the same curve over F11.
+rvunram W[11,1]{0,1};
+let one = rvUnramElem[W]{1};
+rvec E[W](one,rvUnramElem[W]{7});
+let k3 = rveckernel[E,3]{[3],[1]};
+let k5 = rveckernel[E,5]{[7],[3],[1]};
+rvecisogeny I3[E,E3](k3);
+rvecisogeny I5[E,E5](k5);
+let i3 = rvECIso[I3];
+let i5 = rvECIso[I5];
+let f3 = rvECMap(i3);
+let f5 = rvECMap(i5);
+let d3 = rvECDual(f3);
+let d5 = rvECDual(f5);
+assert rvECMapCompose(d3,f3) == rvECMultMap[E,3];
+assert rvECMapCompose(f3,d3) == rvECMultMap[E3,3];
+assert rvECMapCompose(d5,f5) == rvECMultMap[E,5];
+assert rvECMapCompose(f5,d5) == rvECMultMap[E5,5];
+assert rvECDual(d3) == f3;
+assert rvECDual(d5) == f5;
+rvECMapCertify(d3);
+rvECMapCertify(d5);
+
+let h5 = rvECPush(i3,k5);
+let h3 = rvECPush(i5,k3);
+assert h5 == rveckernel[E3,5]{[2],[8],[1]};
+assert h3 == rveckernel[E5,3]{[3],[1]};
+rvecisogeny J5[E3,Q35](h5);
+rvecisogeny J3[E5,Q53](h3);
+let path35 = rvECMapCompose(rvECMap(rvECIso[J5]),f3);
+let path53 = rvECMapCompose(rvECMap(rvECIso[J3]),f5);
+let chart = rvECChart[Q53,Q35](one);
+assert rvECA[Q35] == rvUnramElem[W]{3};
+assert rvECB[Q35] == rvUnramElem[W]{6};
+assert path35 == rvECMapCompose(chart,path53);
+assert rvECMapApply(path35,rvECInfinity[E]) == rvECInfinity[Q35];
+show rvECCurve[Q35];
+rvECMapDegree(path35);
+rvECMapCertify(path35);
+
+// The second degree-three line closes a normalized degree-15 loop.
+let alternate = rveckernel[E,3]{[7],[1]};
+rvecisogeny A3[E,EA](alternate);
+let ia = rvECIso[A3];
+let ha5 = rvECPush(ia,k5);
+let ha3 = rvECPush(i5,alternate);
+assert ha5 == rveckernel[EA,5]{[8],[6],[1]};
+assert ha3 == rveckernel[E5,3]{[10],[1]};
+rvecisogeny A5[EA,P35](ha5);
+rvecisogeny A53[E5,P53](ha3);
+let via3 = rvECMapCompose(rvECMap(rvECIso[A5]),rvECMap(ia));
+let via5 = rvECMapCompose(rvECMap(rvECIso[A53]),f5);
+let cycle3 = rvECMapCompose(rvECChart[P35,E](one),via3);
+let cycle5 = rvECMapCompose(rvECChart[P53,E](one),via5);
+assert cycle3 == cycle5;
+rvECMapDegree(cycle3);
+show rvECCurve[P35];

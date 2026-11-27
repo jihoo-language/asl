@@ -120,6 +120,7 @@ pub(crate) enum TypeForm {
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
+    ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
     ECKernel(Label, usize),
@@ -947,6 +948,7 @@ pub(crate) enum ExprForm {
     CMUnary(crate::legendre_cm::Unary, Box<ParsedExpr>),
     UnramElement(Label, Vec<i128>),
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
+    ECMap(Box<crate::ec_morphism::Expression>),
     Elliptic(Box<crate::elliptic::Expression>),
     EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
@@ -1115,6 +1117,7 @@ pub(crate) enum StatementForm {
     Lee(crate::lee::Command),
     LeeDt(Box<crate::lee::dt::Command>),
     Khovanov(Box<crate::khovanov::Command>),
+    ECMapReport(crate::ec_morphism::Report, Box<ParsedExpr>),
     Elliptic(Box<crate::elliptic::Command>),
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
@@ -3015,6 +3018,69 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Elliptic(Box::new(expression)), depth)
     }
 
+    fn ec_map_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::ec_morphism::{Binary, Coordinate, Expression, Unary};
+        let mut depth = 0;
+        let expression = match name {
+            "rvECMapCompose" | "rvECMapApply" | "rvECPush" => {
+                let operation = match name {
+                    "rvECMapCompose" => Binary::Compose,
+                    "rvECMapApply" => Binary::Apply,
+                    _ => Binary::Push,
+                };
+                let args = self.paren_pair(nest)?;
+                depth = 1 + args[0].depth.max(args[1].depth);
+                Expression::Binary(operation, Box::new(args))
+            }
+            "rvECId" | "rvECMultMap" | "rvECChart" => {
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                if name == "rvECId" {
+                    self.expect(Token::RBracket)?;
+                    Expression::Identity(source)
+                } else {
+                    self.expect(Token::Comma)?;
+                    if name == "rvECMultMap" {
+                        let n = self.signed_wide(
+                            "a signed integer multiple",
+                            "elliptic multiplication index",
+                        )?;
+                        self.expect(Token::RBracket)?;
+                        Expression::Multiple(source, n)
+                    } else {
+                        let target = self.label()?;
+                        self.expect(Token::RBracket)?;
+                        let scale = self.paren_expr(nest)?;
+                        depth = 1 + scale.depth;
+                        Expression::Chart(source, target, Box::new(scale))
+                    }
+                }
+            }
+            _ => {
+                let operation = match name {
+                    "rvECMap" => Unary::FromVelu,
+                    "rvECDual" => Unary::Dual,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        match name {
+                            "rvECMapXNum" => Unary::Coefficient(Coordinate::XNumerator, index),
+                            "rvECMapXDen" => Unary::Coefficient(Coordinate::XDenominator, index),
+                            "rvECMapYNum" => Unary::Coefficient(Coordinate::YNumerator, index),
+                            "rvECMapYDen" => Unary::Coefficient(Coordinate::YDenominator, index),
+                            _ => Unary::KernelCoefficient(index),
+                        }
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                depth = 1 + input.depth;
+                Expression::Unary(operation, Box::new(input))
+            }
+        };
+        expr(span, ExprForm::ECMap(Box::new(expression)), depth)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
@@ -3048,6 +3114,16 @@ impl<'src> Parser<'src> {
             Token::Word(
                 command @ ("rvEllFrobCert" | "rvEllLocalOrder" | "rvellipticcm" | "rvEllEdge"),
             ) => self.ec_local_statement(command)?,
+            Token::Word(name @ ("rvECMapDegree" | "rvECMapCertify")) => {
+                use crate::ec_morphism::Report;
+                let report = if name == "rvECMapDegree" {
+                    Report::Degree
+                } else {
+                    Report::Certify
+                };
+                self.advance()?;
+                StatementForm::ECMapReport(report, Box::new(self.paren_expr(0)?))
+            }
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -6242,6 +6318,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVECMap" && self.eat(Token::LParen)? {
+            let source = self.label()?;
+            self.expect(Token::Comma)?;
+            let target = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ECMap(source, target), 0);
+        }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
             self.expect(Token::RParen)?;
@@ -8067,6 +8150,24 @@ impl<'src> Parser<'src> {
                     && self.token() == Token::LBracket
                 {
                     return self.ec_local_expression(&name.text, span);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvECId"
+                        | "rvECMultMap"
+                        | "rvECChart"
+                        | "rvECMapXNum"
+                        | "rvECMapXDen"
+                        | "rvECMapYNum"
+                        | "rvECMapYDen"
+                        | "rvECMapKCoeff"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvECMapCompose" | "rvECMapApply" | "rvECPush" | "rvECMap" | "rvECDual"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ec_map_expression(&name.text, span, nest);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;
