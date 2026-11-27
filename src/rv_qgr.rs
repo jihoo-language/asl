@@ -7,7 +7,7 @@ use crate::model::{Model, Value};
 use crate::rv_hive::{self, Boundary, MAX_RANK};
 
 const MAX_CELLS: usize = 300_000;
-type Shape = Rc<[usize]>;
+pub(crate) type Shape = Rc<[usize]>;
 pub(crate) type Support = Rc<[(Schubert, i128)]>;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -37,7 +37,7 @@ impl Grade {
         }
     }
 
-    fn width(self) -> usize {
+    pub(crate) fn width(self) -> usize {
         self.ambient - self.rank
     }
 
@@ -80,7 +80,7 @@ fn storage(count: usize) -> Result<()> {
     Ok(())
 }
 
-fn persist(model: &mut Model, terms: Vec<(Schubert, i128)>) -> Result<Value> {
+pub(crate) fn persist(model: &mut Model, terms: Vec<(Schubert, i128)>) -> Result<Value> {
     let mut count = 0;
     for (term, _) in &terms {
         count += cells(term.shape.len());
@@ -114,13 +114,13 @@ pub(crate) fn compare(model: &mut Model, left: &Support, right: &Support) -> Res
 }
 
 #[derive(Default)]
-struct Sum {
-    terms: BTreeMap<Schubert, i128>,
-    cells: usize,
+pub(crate) struct Sum {
+    pub(crate) terms: BTreeMap<Schubert, i128>,
+    pub(crate) cells: usize,
 }
 
 impl Sum {
-    fn insert(
+    pub(crate) fn insert(
         &mut self,
         model: &mut Model,
         term: Schubert,
@@ -400,4 +400,57 @@ pub(crate) fn gw(
         .get(&key)
         .copied()
         .unwrap_or(0))
+}
+
+// Quantum Pieri for the hyperplane. In beta coordinates the eigenvalue
+// equation moves one beta number up by one modulo n. On wraparound its
+// reordering sign cancels the sign (-1)^(k-1) attached to q.
+pub(crate) fn hyperplane(
+    model: &mut Model,
+    grade: Grade,
+    shape: &[usize],
+    kept: usize,
+) -> Result<Vec<Schubert>> {
+    if grade.rank > grade.width() {
+        let shape = transpose_shape(model, shape, kept)?;
+        let mut terms = hyperplane(model, grade.complement(), &shape, kept)?;
+        let mut cells_kept = kept;
+        for term in &mut terms {
+            term.shape = transpose_shape(model, &term.shape, cells_kept)?;
+            cells_kept += cells(term.shape.len());
+        }
+        return Ok(terms);
+    }
+    model.spend(grade.rank * grade.rank)?;
+    let beta: Vec<_> = (0..grade.rank)
+        .map(|i| shape.get(i).copied().unwrap_or(0) + grade.rank - 1 - i)
+        .collect();
+    let mut terms = Vec::new();
+    for (i, &height) in beta.iter().enumerate() {
+        let wrap = height == grade.ambient - 1;
+        let next = if wrap { 0 } else { height + 1 };
+        if (wrap && beta.last() == Some(&0)) || (i > 0 && beta[i - 1] == next) {
+            continue;
+        }
+        let mut changed = beta.clone();
+        changed[i] = next;
+        if wrap {
+            changed.rotate_left(1);
+        }
+        let shape = beta_shape(&changed);
+        terms.push(Schubert {
+            quantum: usize::from(wrap),
+            shape,
+        });
+    }
+    Ok(terms)
+}
+
+pub(crate) fn beta_shape(descending: &[usize]) -> Shape {
+    descending
+        .iter()
+        .enumerate()
+        .map(|(i, &height)| height - (descending.len() - 1 - i))
+        .take_while(|&part| part != 0)
+        .collect()
 }

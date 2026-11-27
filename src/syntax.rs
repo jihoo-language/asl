@@ -88,6 +88,7 @@ pub(crate) enum TypeForm {
     RVSatake(usize),
     RVHive(HiveSpec),
     RVQGr(usize, usize),
+    RVOre,
     RVFusion(usize, usize),
     RVCyclo(usize),
     JetHom(JetHomSpec),
@@ -608,6 +609,11 @@ pub(crate) enum ExprForm {
     Hive(HiveSpec, Option<Vec<i128>>),
     QuantumBasis(usize, usize, Vec<usize>),
     QuantumProduct(Box<[ParsedExpr; 2]>),
+    QuantumNabla(Box<ParsedExpr>),
+    QuantumAnnihilator(usize, usize),
+    OreTerm(usize, usize, i128),
+    OreProduct(Box<[ParsedExpr; 2]>),
+    OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
     FusionOne(usize, usize),
@@ -813,6 +819,8 @@ pub(crate) enum StatementForm {
     HiveVertex(usize, usize, ParsedExpr),
     QuantumCoefficient(usize, Vec<usize>, ParsedExpr),
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
+    OreCoefficient(usize, usize, ParsedExpr),
+    QuantumPeriod(usize, usize, usize),
     FusionCoefficient(Vec<i128>, ParsedExpr),
     CycloCoefficient(usize, ParsedExpr),
     ConformalDimension(usize, usize, usize, Vec<Vec<i128>>),
@@ -1803,6 +1811,21 @@ impl<'src> Parser<'src> {
                 let weight = self.signed_tuple("a signed fusion weight", "fusion weight")?;
                 self.expect(Token::RBracket)?;
                 StatementForm::FusionCoefficient(weight, self.paren_expr(0)?)
+            }
+            Token::Word("rvOreCoeff" | "rvQGrPeriod") => {
+                let period = self.token() == Token::Word("rvQGrPeriod");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (a, b) = self.quantum_grade()?;
+                if period {
+                    self.expect(Token::Comma)?;
+                    let (degree, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    StatementForm::QuantumPeriod(a, b, degree)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    StatementForm::OreCoefficient(a, b, self.paren_expr(0)?)
+                }
             }
             Token::Word("rvQGrCoeff") => {
                 self.advance()?;
@@ -3495,6 +3518,9 @@ impl<'src> Parser<'src> {
             let (level, _) = self.number()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVFusion(rank, level), 0);
+        }
+        if name.text == "RVOre" {
+            return ty(span, TypeForm::RVOre, 0);
         }
         if name.text == "RVQGr" && self.eat(Token::LParen)? {
             let (rank, ambient) = self.quantum_grade()?;
@@ -5705,6 +5731,38 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if name.text == "rvOre" && self.eat(Token::LBracket)? {
+                    let (q, theta) = self.quantum_grade()?;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.signed_wide("a signed Ore coefficient", "Ore coefficient")?
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::OreTerm(q, theta, coefficient), 0);
+                }
+                if matches!(name.text.as_str(), "rvOreMul" | "rvOreApply")
+                    && self.token() == Token::LParen
+                {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    let form = if name.text == "rvOreMul" {
+                        ExprForm::OreProduct(Box::new(arguments))
+                    } else {
+                        ExprForm::OreApply(Box::new(arguments))
+                    };
+                    return expr(span, form, depth);
+                }
+                if name.text == "rvQGrNabla" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::QuantumNabla(Box::new(input)), depth);
+                }
+                if name.text == "rvQGrAnnihilator" && self.eat(Token::LBracket)? {
+                    let (rank, ambient) = self.quantum_grade()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::QuantumAnnihilator(rank, ambient), 0);
                 }
                 if name.text == "rvQGrMul" && self.token() == Token::LParen {
                     let arguments = self.paren_pair(nest)?;

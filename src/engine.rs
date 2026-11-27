@@ -85,7 +85,9 @@ use crate::rv_koszul;
 use crate::rv_laurent;
 use crate::rv_negative;
 use crate::rv_newton;
+use crate::rv_ore;
 use crate::rv_poly;
+use crate::rv_qconnection;
 use crate::rv_qgr;
 use crate::rv_rees;
 use crate::rv_satake;
@@ -337,6 +339,9 @@ enum TypedForm {
     SphericalEmbedding(Box<TypedExpr>),
     SatakeTransform(Box<TypedExpr>),
     QuantumProduct(rv_qgr::Grade, Box<[TypedExpr; 2]>),
+    QuantumNabla(rv_qgr::Grade, Box<TypedExpr>),
+    OreProduct(Box<[TypedExpr; 2]>),
+    OreApply(rv_qgr::Grade, Box<[TypedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<TypedExpr>),
     SatakeInverse(Box<TypedExpr>),
     FusionProduct(rv_fusion::Grade, Box<[TypedExpr; 2]>),
@@ -785,6 +790,25 @@ impl Engine {
                 };
                 let coefficient = rv_fusion::coefficient(&mut self.model, grade, &terms, weight)?;
                 format!("rvFusionCoeff = {coefficient}")
+            }
+            StatementForm::OreCoefficient(q, theta, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Err(Error::new(
+                        input.span,
+                        "rvOreCoeff requires an Ore operator",
+                    ));
+                }
+                let Value::RVOre(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = rv_ore::coefficient(&mut self.model, &terms, q, theta)?;
+                format!("rvOreCoeff = {coefficient}")
+            }
+            StatementForm::QuantumPeriod(rank, ambient, degree) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let period = rv_qconnection::period(&mut self.model, grade, degree)?;
+                format!("rvQGrPeriod = {period}")
             }
             StatementForm::QuantumCoefficient(degree, shape, input) => {
                 let input = self.checker().expr(input)?;
@@ -2355,6 +2379,9 @@ impl Engine {
                         };
                         rv_fusion::add(&mut self.model, grade, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
+                        rv_ore::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVQGr(a), Value::RVQGr(b)) => {
                         rv_qgr::add(&mut self.model, &a, &b)
                     }
@@ -3119,6 +3146,7 @@ impl Engine {
             TypedForm::HeckeNegate(input) => match self.eval(input)? {
                 Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
                 Value::RVSphHecke(value) => rv_sphhecke::neg(&mut self.model, &value),
+                Value::RVOre(value) => rv_ore::negate(&mut self.model, &value),
                 Value::RVSatake(value) => rv_satake::neg(&mut self.model, &value),
                 _ => unreachable!(),
             },
@@ -3182,6 +3210,26 @@ impl Engine {
                     unreachable!()
                 };
                 rv_satake::inverse(&mut self.model, &terms)
+            }
+            TypedForm::OreProduct(arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVOre(a), Value::RVOre(b)] = values else {
+                    unreachable!()
+                };
+                rv_ore::multiply(&mut self.model, &a, &b)
+            }
+            TypedForm::OreApply(grade, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVOre(a), Value::RVQGr(b)] = values else {
+                    unreachable!()
+                };
+                rv_qconnection::apply(&mut self.model, *grade, &a, &b)
+            }
+            TypedForm::QuantumNabla(grade, input) => {
+                let Value::RVQGr(v) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_qconnection::nabla(&mut self.model, *grade, &v)
             }
             TypedForm::QuantumProduct(grade, arguments) => {
                 let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
@@ -4531,6 +4579,7 @@ impl Checker<'_> {
             TypeForm::RVFusion(rank, level) => self
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
+            TypeForm::RVOre => self.model.ore_type(),
             TypeForm::RVQGr(rank, ambient) => self
                 .model
                 .quantum_grassmannian_type(rv_qgr::Grade::checked(rank, ambient)?),
@@ -4805,6 +4854,7 @@ impl Checker<'_> {
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVSatake(..) => rv_satake::zero(),
                     Kind::RVQGr(..) => rv_qgr::zero(),
+                    Kind::RVOre => rv_ore::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -5959,6 +6009,9 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVQGr(..)) {
                     return Ok((
                         input.ty,
@@ -6080,6 +6133,54 @@ impl Checker<'_> {
                 let grade = rv_qgr::Grade::checked(rank, ambient)?;
                 let ty = self.model.quantum_grassmannian_type(grade)?;
                 let value = rv_qgr::basis(self.model, grade, shape)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::OreTerm(q, theta, coefficient) => {
+                let ty = self.model.ore_type()?;
+                let value = rv_ore::term(self.model, q, theta, coefficient)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::OreProduct(arguments) => {
+                let [a, b] = *arguments;
+                let a = self.expr(a)?;
+                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
+                    return Err(self.invalid_operand(&a, "rvOreMul", "an Ore operator"));
+                }
+                let b = self.expr(b)?;
+                self.require_type(a.ty, &b, "rvOreMul")?;
+                Ok((a.ty, TypedForm::OreProduct(Box::new([a, b]))))
+            }
+            ExprForm::OreApply(arguments) => {
+                let [a, b] = *arguments;
+                let a = self.expr(a)?;
+                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
+                    return Err(self.invalid_operand(&a, "rvOreApply", "an Ore operator"));
+                }
+                let b = self.expr(b)?;
+                let Kind::RVQGr(grade) = *self.model.kind(b.ty) else {
+                    return Err(self.invalid_operand(
+                        &b,
+                        "rvOreApply",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                Ok((b.ty, TypedForm::OreApply(grade, Box::new([a, b]))))
+            }
+            ExprForm::QuantumNabla(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvQGrNabla",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                Ok((input.ty, TypedForm::QuantumNabla(grade, Box::new(input))))
+            }
+            ExprForm::QuantumAnnihilator(rank, ambient) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let ty = self.model.ore_type()?;
+                let value = rv_qconnection::annihilator(self.model, grade)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::QuantumProduct(arguments) => {
@@ -9054,6 +9155,7 @@ impl Checker<'_> {
                         | Kind::RVSphHecke(..)
                         | Kind::RVSatake(..)
                         | Kind::RVQGr(..)
+                        | Kind::RVOre
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::VKoszul(..)
