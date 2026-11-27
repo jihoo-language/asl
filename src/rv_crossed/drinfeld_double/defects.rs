@@ -12,6 +12,7 @@ use super::representations::{Image, Irrep};
 use super::{characters, negate_phase, representations, Double, Quotient, Simple};
 
 mod balanced;
+pub(crate) mod relative;
 
 pub(crate) enum Command {
     Declare(Label, [Label; 2]),

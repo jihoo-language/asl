@@ -822,6 +822,13 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+struct RelativeAction {
+    double: Rc<dd::Double>,
+    source: [Rc<dd::defects::Category>; 2],
+    target: Rc<dd::defects::Category>,
+    inputs: Box<[TypedExpr; 2]>,
+}
+
 enum DoubleDefectAction {
     Entry(Rc<dd::defects::Category>, [usize; 3], Box<TypedExpr>),
     Character(Rc<dd::defects::Category>, usize, Box<TypedExpr>),
@@ -860,6 +867,7 @@ enum TypedForm {
     Double(DoubleAction),
     DoubleBraid(DoubleBraidAction),
     DoubleDefect(DoubleDefectAction),
+    DoubleRelative(RelativeAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2597,6 +2605,9 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleRelative(command) => {
+                return self.relative_command(*command).map(Some)
+            }
             StatementForm::DoubleBoundary(command) => {
                 return self.double_boundary_command(*command)
             }
@@ -8994,6 +9005,131 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn relative_command(&mut self, command: dd::defects::relative::Command) -> Result<String> {
+        use dd::defects::relative::{self, Command};
+        match command {
+            Command::InducedAction(key, input) => {
+                let input = self.checker().expr(*input)?;
+                let source = self
+                    .checker()
+                    .double_defect_operand(&input, "rvDoubleRelativeInducedAction")?;
+                let bulk = Label {
+                    text: source.boundaries[0].double_name.to_string(),
+                    span: input.span,
+                };
+                let double = self.model.drinfeld_double(&bulk)?;
+                let simple = self.eval_defect_index(&input)?;
+                relative::induced_action(&mut self.model, &double, &source, simple, key)
+            }
+            Command::Associate(name, entry, inputs) => {
+                let [a, b, c] = *inputs;
+                let args = [
+                    self.checker().expr(a)?,
+                    self.checker().expr(b)?,
+                    self.checker().expr(c)?,
+                ];
+                let op = "rvDoubleRelativeAssociator";
+                let sources = [
+                    self.checker().relative_operand(&args[0], op)?,
+                    self.checker().relative_operand(&args[1], op)?,
+                    self.checker().relative_operand(&args[2], op)?,
+                ];
+                let target = self.model.double_defects(&name)?;
+                relative::check_categories(&[&sources[0], &sources[1], &sources[2]], &target)?;
+                let bulk = Label {
+                    text: target.boundaries[0].double_name.to_string(),
+                    span: name.span,
+                };
+                let double = self.model.drinfeld_double(&bulk)?;
+                let inputs = [
+                    self.eval_relative_operand(&args[0])?,
+                    self.eval_relative_operand(&args[1])?,
+                    self.eval_relative_operand(&args[2])?,
+                ];
+                let [a, b, c] = inputs;
+                relative::associate(
+                    &mut self.model,
+                    &double,
+                    &target,
+                    [(&sources[0], a), (&sources[1], b), (&sources[2], c)],
+                    entry,
+                )
+            }
+            other => {
+                enum Query {
+                    Data,
+                    Basis([usize; 2]),
+                    Action([usize; 4]),
+                    Hom(usize),
+                    Inclusion([usize; 4]),
+                    Projector([usize; 3]),
+                }
+                let (input, query) = match other {
+                    Command::Data(input) => (input, Query::Data),
+                    Command::Basis(key, input) => (input, Query::Basis(key)),
+                    Command::Action(key, input) => (input, Query::Action(key)),
+                    Command::Hom(i, input) => (input, Query::Hom(i)),
+                    Command::Inclusion(key, input) => (input, Query::Inclusion(key)),
+                    Command::Projector(key, input) => (input, Query::Projector(key)),
+                    Command::Associate(..) | Command::InducedAction(..) => unreachable!(),
+                };
+                let input = self.checker().expr(*input)?;
+                let Kind::DoubleRelative(name) = self.model.kind(input.ty) else {
+                    return Err(Error::new(
+                        input.span,
+                        "relative query requires a graded defect bimodule",
+                    ));
+                };
+                let target = self.model.double_defects(&Label {
+                    text: name.to_string(),
+                    span: input.span,
+                })?;
+                let Value::DoubleRelative(product) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match query {
+                    Query::Data => Ok(product.data()),
+                    Query::Basis(key) => product.basis(key),
+                    Query::Action(key) => {
+                        let bulk = Label {
+                            text: target.boundaries[0].double_name.to_string(),
+                            span: input.span,
+                        };
+                        let double = self.model.drinfeld_double(&bulk)?;
+                        product.action(&double, &target, key)
+                    }
+                    Query::Hom(i) => product.hom_report(i),
+                    Query::Inclusion(key) => product.inclusion(&mut self.model, key),
+                    Query::Projector(key) => product.projector(&mut self.model, key),
+                }
+            }
+        }
+    }
+
+    fn eval_relative(&mut self, action: &RelativeAction) -> Result<Value> {
+        let a = self.eval_relative_operand(&action.inputs[0])?;
+        let b = self.eval_relative_operand(&action.inputs[1])?;
+        dd::defects::relative::Relative::new(
+            &mut self.model,
+            &action.double,
+            &action.target,
+            [(&action.source[0], a), (&action.source[1], b)],
+        )?
+        .persist(&mut self.model)
+    }
+
+    fn eval_relative_operand(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<dd::defects::relative::Operand> {
+        use dd::defects::relative::Operand;
+        match self.eval(input)? {
+            Value::DoubleDefect(index) => Ok(Operand::Simple(index)),
+            Value::DoubleRelative(value) => Ok(Operand::Graded(value)),
+            _ => unreachable!("checked relative tensor operand"),
+        }
+    }
+
     fn double_defect_command(&mut self, command: dd::defects::Command) -> Result<Option<String>> {
         use dd::defects::Command;
         let result = match command {
@@ -14049,6 +14185,7 @@ impl Engine {
             TypedForm::Double(action) => self.eval_double(action),
             TypedForm::DoubleBraid(action) => self.eval_double_braid(action),
             TypedForm::DoubleDefect(action) => self.eval_double_defect(action),
+            TypedForm::DoubleRelative(action) => self.eval_relative(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -18132,6 +18269,7 @@ impl Checker<'_> {
             TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
             TypeForm::DoubleSector(name) => self.model.double_sector_type(&name),
             TypeForm::DoubleDefect(name) => self.model.double_defect_type(&name),
+            TypeForm::DoubleRelative(name) => self.model.double_relative_type(&name),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -18991,6 +19129,7 @@ impl Checker<'_> {
             ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
             ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
             ExprForm::DoubleDefect(expression) => self.double_defect_expression(*expression),
+            ExprForm::DoubleRelative(expression) => self.relative_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -30958,6 +31097,53 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn relative_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<dd::defects::Category>> {
+        let (Kind::DoubleDefect(name) | Kind::DoubleRelative(name)) = self.model.kind(input.ty)
+        else {
+            return Err(self.invalid_operand(input, operation, "a double boundary defect"));
+        };
+        self.model.double_defects(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn relative_expression(
+        &mut self,
+        expression: dd::defects::relative::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::relative::{self, Expression};
+        let Expression::Compose(name, inputs) = expression;
+        let [a, b] = *inputs;
+        let inputs = [self.expr(a)?, self.expr(b)?];
+        let op = "rvDoubleRelative";
+        let source = [
+            self.relative_operand(&inputs[0], op)?,
+            self.relative_operand(&inputs[1], op)?,
+        ];
+        let target = self.model.double_defects(&name)?;
+        relative::check_categories(&[&source[0], &source[1]], &target)?;
+        let bulk = Label {
+            text: target.boundaries[0].double_name.to_string(),
+            span: name.span,
+        };
+        let double = self.model.drinfeld_double(&bulk)?;
+        let ty = self.model.double_relative_type(&name)?;
+        Ok((
+            ty,
+            TypedForm::DoubleRelative(RelativeAction {
+                double,
+                source,
+                target,
+                inputs: Box::new(inputs),
+            }),
+        ))
     }
 
     fn double_defect_expression(

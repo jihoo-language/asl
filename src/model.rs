@@ -213,6 +213,7 @@ pub(crate) enum Kind {
     PostnikovCochain(Rc<str>, usize),
     DoubleSector(Rc<str>),
     DoubleDefect(Rc<str>),
+    DoubleRelative(Rc<str>),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -502,6 +503,7 @@ pub(crate) enum Value {
     PostnikovCochain(Rc<postnikov::Cochain>),
     DoubleSector(Rc<dd::Sector>),
     DoubleDefect(usize),
+    DoubleRelative(Rc<dd::defects::relative::Relative>),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -1183,6 +1185,11 @@ impl Model {
             })
     }
 
+    pub(crate) fn double_relative_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.double_defects(name)?;
+        self.inhabited_type(Kind::DoubleRelative(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn double_defect_type(&mut self, name: &Label) -> Result<TypeId> {
         self.double_defects(name)?;
         self.inhabited_type(Kind::DoubleDefect(name.text.as_str().into()), 0)
@@ -1696,9 +1703,10 @@ impl Model {
             Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::KSExterior(_, 0..=64) => usize::MAX,
             Kind::KSExterior(..) => 1,
-            Kind::KSNomizu(_, _, 0..=65) | Kind::DoubleSector(..) | Kind::DoubleBraid(..) => {
-                usize::MAX
-            }
+            Kind::KSNomizu(_, _, 0..=65)
+            | Kind::DoubleSector(..)
+            | Kind::DoubleBraid(..)
+            | Kind::DoubleRelative(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -1980,6 +1988,7 @@ impl Model {
                 | Kind::PostnikovCochain(..)
                 | Kind::DoubleSector(..)
                 | Kind::DoubleDefect(..)
+                | Kind::DoubleRelative(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -7712,6 +7721,7 @@ impl Model {
             | Kind::PostnikovCochain(..)
             | Kind::DoubleSector(..)
             | Kind::DoubleDefect(..)
+            | Kind::DoubleRelative(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -7897,6 +7907,7 @@ impl Model {
             Kind::DoubleBraid(name, [a, b, c], [d, e, f]) => {
                 out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
             }
+            Kind::DoubleRelative(name) => out.push(&format!("RVDoubleRelative({name})")),
             Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
             Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
             Kind::PostnikovCochain(name, degree) => {
@@ -8556,6 +8567,7 @@ impl Model {
                 self.spend(a.0.len())?;
                 Ok(a == b)
             }
+            (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a == b),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -8909,6 +8921,7 @@ impl Model {
                 self.spend(a.0.len())?;
                 Ok(a.cmp(b))
             }
+            (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -9881,6 +9894,11 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a double braid operator type",
                     ));
+                }
+                Kind::DoubleRelative(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the relative defect bimodule type",
+                    ))
                 }
                 Kind::DoubleDefect(ref name) => {
                     let size = self.double_defects[name.as_ref()].count();
@@ -10869,6 +10887,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleRelative(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", value.data()))
             }
             Value::DoubleDefect(index) => {
                 self.write_type(out, ty, 0)?;

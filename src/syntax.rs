@@ -78,6 +78,7 @@ pub(crate) enum TypeForm {
     PostnikovCochain(Label, usize),
     DoubleSector(Label),
     DoubleDefect(Label),
+    DoubleRelative(Label),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -768,6 +769,7 @@ pub(crate) enum ExprForm {
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Expression>),
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Expression>),
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Expression>),
+    DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1258,6 +1260,7 @@ pub(crate) enum StatementForm {
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Command>),
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Command>),
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Command>),
+    DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4257,6 +4260,61 @@ impl<'src> Parser<'src> {
             *i = self.number()?.0;
         }
         Ok(indices)
+    }
+
+    fn relative_indices<const N: usize>(&mut self) -> Result<[usize; N]> {
+        let mut output = [0; N];
+        self.expect(Token::LBracket)?;
+        for (i, x) in output.iter_mut().enumerate() {
+            if i != 0 {
+                self.expect(Token::Comma)?;
+            }
+            *x = self.number()?.0;
+        }
+        self.expect(Token::RBracket)?;
+        Ok(output)
+    }
+
+    fn relative_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvDoubleRelativeAssociator" | "rvDoubleRelativeAssocImage" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let entry = (operation == "rvDoubleRelativeAssocImage")
+                    .then(|| self.following_indices())
+                    .transpose()?;
+                self.expect(Token::RBracket)?;
+                Command::Associate(name, entry, Box::new(self.paren_triple(0)?))
+            }
+            "rvDoubleRelativeData" => Command::Data(Box::new(self.paren_expr(0)?)),
+            "rvDoubleRelativeBasis" => {
+                let key = self.relative_indices()?;
+                Command::Basis(key, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleRelativeInducedAction" => {
+                let key = self.relative_indices()?;
+                Command::InducedAction(key, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleRelativeAction" => {
+                let key = self.relative_indices()?;
+                Command::Action(key, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleRelativeHom" => {
+                let [index] = self.relative_indices()?;
+                Command::Hom(index, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleRelativeInclusion" => {
+                let key = self.relative_indices()?;
+                Command::Inclusion(key, Box::new(self.paren_expr(0)?))
+            }
+            _ => {
+                let key = self.relative_indices()?;
+                Command::Projector(key, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::DoubleRelative(Box::new(command)))
     }
 
     fn double_defect_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -12434,6 +12492,17 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFuse"
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
+            Token::Word(
+                op @ ("rvDoubleRelativeData"
+                | "rvDoubleRelativeAction"
+                | "rvDoubleRelativeBasis"
+                | "rvDoubleRelativeInducedAction"
+                | "rvDoubleRelativeHom"
+                | "rvDoubleRelativeInclusion"
+                | "rvDoubleRelativeProjector"
+                | "rvDoubleRelativeAssociator"
+                | "rvDoubleRelativeAssocImage"),
+            ) => self.relative_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -16673,6 +16742,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleRelative" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleRelative(name), 0);
+        }
         if name.text == "RVDoubleDefect" && self.eat(Token::LParen)? {
             let label = self.label()?;
             self.expect(Token::RParen)?;
@@ -19659,6 +19733,18 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.double_defect_expression(&name.text, span, nest);
+                }
+                if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
+                    let name = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let inputs = self.paren_pair(nest)?;
+                    let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                    let expression =
+                        crate::rv_crossed::drinfeld_double::defects::relative::Expression::Compose(
+                            name,
+                            Box::new(inputs),
+                        );
+                    return expr(span, ExprForm::DoubleRelative(Box::new(expression)), depth);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
