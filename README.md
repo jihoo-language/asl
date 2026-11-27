@@ -1517,7 +1517,7 @@ Composition with each nonzero map scales the degree form by its degree and prese
 
 `rvCMAbelianMap[A](u,v,z,t)` takes four actual elliptic morphisms in row-major order, with endpoint types $E\to E$, $F\to E$, $E\to F$, $F\to F$. The interpreter recovers and verifies each block in its Hom frame. `rvCMAbelianDagger(M)`, `rvCMAbelianAdjugate(M)` and `rvCMAbelianCompose(M,N)` act on the certified product endomorphism type, and `rvCMAbelianBlock[i](M)` reconstructs the corresponding actual elliptic map. `rvCMAbelianMapData(M);` reports the matrix and $\deg M=N(\det M)$. `rvCMAbelianPull(M,x)` sends $(r,H,s)$ to $(r,M^\dagger H M,\deg(M)s)$. For a nonsingular $M$, `rvCMAbelianPush(M,x)` sends it to $(\deg(M)r,\operatorname{adj}(M)^\dagger H\operatorname{adj}(M),s)$. These are operations on the algebraic Mukai cohomology, with exact rational coefficients and checked wide intermediates.
 
-The example realizes the degree-five endomorphism with blocks $(1,f^\dagger,g,1)$ over $\mathbb F_{41}$. It verifies Fourier and tensor isometries, pull/push adjunction and their degree-scaled composites, the Fourier relation with the Rosati dual, and the order-three relation for Fourier followed by tensor with the product polarization. [CM Fourier–Mukai example](examples/elliptic-cm-fourier-mukai.asl)
+The example realizes the degree-five endomorphism with blocks $(1,f^\dagger,g,1)$ over $\mathbb F_{41}$. It verifies Fourier and tensor isometries, pull/push adjunction and their degree-scaled composites, the Fourier relation with the Rosati dual, and the order-three relation for tensor with the product polarization followed by Fourier. [CM Fourier–Mukai example](examples/elliptic-cm-fourier-mukai.asl)
 
 #### Odd-adic Brauer B-fields and normalized Mukai Frobenius
 

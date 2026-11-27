@@ -34,6 +34,8 @@ rvCMAbelianDet(D);
 rvCMAbelianData(v);
 rvCMAbelianData(rvCMAbelianPull(M,v));
 rvCMAbelianData(rvCMAbelianFourier(rvCMAbelianLine(D)));
+let unit=rvCMAbelianMukai[1,0](zero[RVCMAbelianDiv(A)]);
+assert rvCMAbelianTensor(unit,D)==rvCMAbelianLine(D);
 rvCMAbelianPair(v,u);
 rvCMAbelianPair(rvCMAbelianFourier(v),rvCMAbelianFourier(u));
 rvCMAbelianPair(rvCMAbelianTensor(v,J),rvCMAbelianTensor(u,J));
