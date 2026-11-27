@@ -143,13 +143,29 @@ impl Basis {
     }
 
     pub(crate) fn coordinate(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u32> {
+        self.require_torsion(model, t, "rvJacTorsionCoord")?;
+        self.coordinate_of_torsion(model, t, index)
+    }
+
+    pub(crate) fn translation_coordinates(
+        &self,
+        model: &mut Model,
+        t: &Divisor,
+    ) -> Result<Vec<u32>> {
+        self.require_torsion(model, t, "generalized Kummer translation")?;
+        (0..self.len())
+            .map(|index| self.coordinate_of_torsion(model, t, index))
+            .collect()
+    }
+
+    fn require_torsion(&self, model: &mut Model, t: &Divisor, context: &str) -> Result<()> {
         let order = u64::from(self.prime.get());
         if !is_torsion(model, &self.curve, order, t)? {
             return Err(Error::plain(format!(
-                "rvJacTorsionCoord requires a class killed by {order}"
+                "{context} requires a class killed by {order}"
             )));
         }
-        self.coordinate_of_torsion(model, t, index)
+        Ok(())
     }
 
     fn coordinate_of_torsion(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u32> {

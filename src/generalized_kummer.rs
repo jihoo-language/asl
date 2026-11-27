@@ -20,6 +20,10 @@ pub(crate) enum Command {
     Trace(Label, Label, u128, u128),
     HilbertBetti(u128, u128),
     HilbertTrace(Label, u128, u128, u128),
+    TranslateChar(u128, u128, u128),
+    TranslateFixed(u128, u128),
+    TranslateFrob(Label, Label, u128, u128, Box<ParsedExpr>),
+    TranslatePoints(Label, Label, u128, Box<ParsedExpr>),
 }
 
 pub(crate) fn require_curve(curve: &Curve) -> Result<()> {
@@ -122,19 +126,27 @@ pub(crate) fn level(
     basis: &Basis,
     base: &Curve,
     degree: u128,
+    translation: Option<&Divisor>,
 ) -> Result<(u128, u128)> {
     require_level_basis(basis)?;
+    basis.require_base_extension(model, base)?;
+    let coordinates = translation
+        .map(|t| basis.translation_coordinates(model, t))
+        .transpose()?;
     let ell = u128::from(basis.prime.get());
     let (q, hilbert) = abelian_counts(model, base, ell, degree)?;
     let n = ell as usize;
-    let torsion = rational_torsion(model, basis, base, degree as usize)?;
+    let fixed = torsion_fixed(model, basis, base, degree as usize, coordinates.as_deref())?;
     // The correction is integral because H_1 is already the group order.
     let main = exact_divide(hilbert[n], hilbert[1])?;
-    let correction = q
-        .checked_pow((n - 1) as u32)
-        .and_then(|factor| factor.checked_mul(torsion - 1))
-        .ok_or_else(overflow)?;
-    Ok((main.checked_add(correction).ok_or_else(overflow)?, torsion))
+    let tate = q.checked_pow((n - 1) as u32).ok_or_else(overflow)?;
+    let count = if fixed == 0 {
+        main.checked_sub(tate).ok_or_else(integrity)?
+    } else {
+        let correction = tate.checked_mul(fixed - 1).ok_or_else(overflow)?;
+        main.checked_add(correction).ok_or_else(overflow)?
+    };
+    Ok((count, fixed))
 }
 
 fn require_level_basis(basis: &Basis) -> Result<()> {
@@ -146,25 +158,81 @@ fn require_level_basis(basis: &Basis) -> Result<()> {
     Ok(())
 }
 
-fn rational_torsion(model: &mut Model, basis: &Basis, base: &Curve, degree: usize) -> Result<u128> {
+fn torsion_fixed(
+    model: &mut Model,
+    basis: &Basis,
+    base: &Curve,
+    degree: usize,
+    coordinates: Option<&[u32]>,
+) -> Result<u128> {
     let frobenius = basis.frobenius(model, base, degree)?;
     let matrix = frobenius.matrix;
+    let prime = basis.prime;
     let mut image = prime_linear::Basis::default();
-    for i in 0..4 {
-        let row = (0..4)
-            .filter_map(|j| {
-                let entry = *matrix.entry(i, j) as u32;
-                let value = if i == j {
-                    basis.prime.add(entry, basis.prime.negate(1))
-                } else {
-                    entry
-                };
-                (value != 0).then_some((j, value))
+    // The fixed points of x ↦ F^r x + t solve (I − F^r)x = t.
+    for column in 0..4 {
+        let vector = (0..4)
+            .filter_map(|row| {
+                let entry = prime.negate(*matrix.entry(row, column) as u32);
+                let value = prime.add(u32::from(row == column), entry);
+                (value != 0).then_some((row, value))
             })
             .collect();
-        image.insert(model, basis.prime, row)?;
+        image.insert(model, prime, vector)?;
     }
-    Ok(u128::from(basis.prime.get()).pow((4 - image.rank()) as u32))
+    if let Some(coordinates) = coordinates {
+        let translation = coordinates
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, value)| value != 0)
+            .collect();
+        if !image.reduce(model, prime, translation)?.is_empty() {
+            return Ok(0);
+        }
+    }
+    Ok(u128::from(prime.get()).pow((4 - image.rank()) as u32))
+}
+
+pub(crate) fn require_translation_order(n: u128, h: u128) -> Result<()> {
+    if n == 0 {
+        return Err(Error::plain("generalized Kummer length must be positive"));
+    }
+    if h == 0 || !n.is_multiple_of(h) {
+        return Err(Error::plain(
+            "translation order must be a positive divisor of the generalized Kummer length",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn translation_fixed_locus(
+    model: &mut Model,
+    n: u128,
+    h: u128,
+) -> Result<(u128, u128, u128)> {
+    require_translation_order(n, h)?;
+    let overflow =
+        || Error::plain("translation fixed-locus invariant exceeds unsigned 128-bit range");
+    let n_cubed = n.checked_pow(3).ok_or_else(overflow)?;
+    let components = h.checked_pow(3).ok_or_else(overflow)?;
+    let length = n / h;
+    let root = length.isqrt();
+    let work = usize::try_from(root)
+        .map_err(|_| Error::plain("translation fixed-locus divisor sum exceeds the work limit"))?;
+    model.spend(work)?;
+    let mut sigma = 0u128;
+    for d in 1..=root {
+        if length.is_multiple_of(d) {
+            let complement = length / d;
+            sigma = sigma.checked_add(d).ok_or_else(overflow)?;
+            if d != complement {
+                sigma = sigma.checked_add(complement).ok_or_else(overflow)?;
+            }
+        }
+    }
+    let euler = n_cubed.checked_mul(sigma).ok_or_else(overflow)?;
+    Ok((components, length - 1, euler))
 }
 
 struct DivisorStatistic {

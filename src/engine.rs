@@ -4961,6 +4961,19 @@ impl Engine {
                 "smooth generalized Kummer fiber"
             }
         };
+        let translation_input = |engine: &mut Self, basis: &jacobian_level::Basis, input| {
+            let expected = engine.model.jacobian_type(basis.curve_name.clone())?;
+            let input = engine.checker().expr(input)?;
+            engine.checker().require_type(
+                expected,
+                &input,
+                "generalized Kummer translation input",
+            )?;
+            let Value::Jacobian(divisor) = engine.eval(&input)? else {
+                unreachable!()
+            };
+            Ok(divisor)
+        };
         match command {
             Command::Betti(n, i) => {
                 let value = cohomology::betti(&mut self.model, n, i)?;
@@ -4969,9 +4982,48 @@ impl Engine {
             Command::Trace(name, base, degree, i) => {
                 let basis = self.model.jacobian_level(&name)?;
                 let curve = curve_for(&self.model, &base)?;
-                let value = cohomology::trace(&mut self.model, &basis, &curve, degree, i)?;
+                let value = cohomology::trace(&mut self.model, &basis, &curve, degree, i, None)?;
                 Ok(format!(
                     "rvGenKummerTrace[{}, {}, {degree}, {i}] = {value}",
+                    name.text, base.text
+                ))
+            }
+            Command::TranslateChar(n, h, i) => {
+                let value = cohomology::translation_character(&mut self.model, n, h, i)?;
+                Ok(format!("rvGenKummerTranslateChar[{n}, {h}, {i}] = {value}"))
+            }
+            Command::TranslateFixed(n, h) => {
+                let (components, index, euler) =
+                    kummer::translation_fixed_locus(&mut self.model, n, h)?;
+                Ok(format!(
+                    "rvGenKummerTranslateFixed[{n}, {h}] = {components} components of type K_{index}, Euler characteristic={euler}"
+                ))
+            }
+            Command::TranslateFrob(name, base, degree, i, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let translation = translation_input(self, &basis, *input)?;
+                let value = cohomology::trace(
+                    &mut self.model,
+                    &basis,
+                    &curve,
+                    degree,
+                    i,
+                    Some(&translation),
+                )?;
+                Ok(format!(
+                    "rvGenKummerTranslateFrob[{}, {}, {degree}, {i}] = {value}",
+                    name.text, base.text
+                ))
+            }
+            Command::TranslatePoints(name, base, degree, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let translation = translation_input(self, &basis, *input)?;
+                let (count, fixed) =
+                    kummer::level(&mut self.model, &basis, &curve, degree, Some(&translation))?;
+                Ok(format!(
+                    "rvGenKummerTranslatePoints[{}, {}, {degree}] = {count}, affine torsion fixed points={fixed}",
                     name.text, base.text
                 ))
             }
@@ -5023,7 +5075,8 @@ impl Engine {
             Command::Level(name, base, degree) => {
                 let basis = self.model.jacobian_level(&name)?;
                 let curve = curve_for(&self.model, &base)?;
-                let (count, torsion) = kummer::level(&mut self.model, &basis, &curve, degree)?;
+                let (count, torsion) =
+                    kummer::level(&mut self.model, &basis, &curve, degree, None)?;
                 let length = basis.prime.get();
                 Ok(format!("rvGenKummerLevel[{}, {}, {degree}] = {count}, smooth generalized Kummer fiber, length={length}, rational torsion order={torsion}", name.text, base.text))
             }

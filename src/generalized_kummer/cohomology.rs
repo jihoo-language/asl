@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::hw_closed::Curve;
+use crate::hyperelliptic_jacobian::Divisor;
 use crate::hyperelliptic_kummer_surface::hilbert::{
     checked_product, coefficients, intermediate_overflow, power, unsigned, Integer, Magnitude,
     SurfaceKind,
@@ -7,7 +8,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::{
 use crate::jacobian_level::Basis;
 use crate::model::Model;
 
-use super::{rational_torsion, require_level_basis};
+use super::{require_level_basis, require_translation_order, torsion_fixed};
 
 pub(crate) fn hilbert_betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
     let Some((degree, _)) = dual_degree(n, i) else {
@@ -54,11 +55,23 @@ pub(crate) fn hilbert_trace(
 }
 
 pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
+    betti_value(geometric_value(model, n, 1, i)?, i)
+}
+
+pub(crate) fn translation_character(model: &mut Model, n: u128, h: u128, i: u128) -> Result<i128> {
+    require_translation_order(n, h)?;
+    let value = geometric_value(model, n, h, i)?;
+    cohomology_sign(value, i).signed().ok_or_else(|| {
+        Error::plain("generalized Kummer translation character exceeds signed 128-bit range")
+    })
+}
+
+fn geometric_value(model: &mut Model, n: u128, h: u128, i: u128) -> Result<Integer> {
     let Some((degree, _)) = dual_degree(n - 1, i) else {
-        return Ok(0);
+        return Ok(Integer::from_i128(0));
     };
     if degree == 0 {
-        return Ok(1);
+        return Ok(Integer::from_i128(1));
     }
     let length = n.min(degree);
     let rows = coefficients(model, length, Some(degree), None, SurfaceKind::Abelian)?;
@@ -66,15 +79,17 @@ pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
     if n <= degree {
         let n = n as usize; // The coefficient table already bounds this length.
         let top = degree as usize;
-        for (k, shift, exact) in geometric_torsion_terms(model, n, top)? {
+        for (k, shift, exact) in character_terms(model, n, top, h as usize)? {
+            if exact == 0 {
+                continue;
+            }
             for (coefficient, &source) in numerator[shift..].iter_mut().zip(&rows[k]) {
-                let term = checked_product(model, nonnegative(exact), source)?;
+                let term = checked_product(model, Integer::from_i128(exact), source)?;
                 *coefficient = coefficient.add(term).map_err(|_| intermediate_overflow())?;
             }
         }
     }
-    let value = quotient(model, numerator, &rows[1])?;
-    betti_value(value, degree)
+    quotient(model, numerator, &rows[1])
 }
 
 // Length, cohomological shift, and exact-order torsion count for the
@@ -84,7 +99,23 @@ pub(crate) fn geometric_torsion_terms(
     n: usize,
     top: usize,
 ) -> Result<Vec<(usize, usize, u128)>> {
-    let mut orders = vec![(1, 1u128)];
+    character_terms(model, n, top, 1)?
+        .into_iter()
+        .map(|(k, shift, exact)| {
+            let count = u128::try_from(exact)
+                .map_err(|_| Error::plain("exact-order torsion count must be nonnegative"))?;
+            Ok((k, shift, count))
+        })
+        .collect()
+}
+
+fn character_terms(
+    model: &mut Model,
+    n: usize,
+    top: usize,
+    order: usize,
+) -> Result<Vec<(usize, usize, i128)>> {
+    let mut orders = vec![(1, 1i128)];
     let mut terms = Vec::new();
     for d in 2..=n {
         model.spend(1)?;
@@ -96,13 +127,20 @@ pub(crate) fn geometric_torsion_terms(
         if shift > top {
             break;
         }
-        // All proper divisors of d occur earlier, so this is Möbius inversion.
-        let mut exact = (d as u128)
-            .checked_pow(4)
-            .ok_or_else(intermediate_overflow)?;
+        // Characters of order dividing d sum to d^4 when the translation
+        // belongs to d*A[n], which means its order divides n/d.
+        let mut exact = if (n / order).is_multiple_of(d) {
+            (d as i128)
+                .checked_pow(4)
+                .ok_or_else(intermediate_overflow)?
+        } else {
+            0
+        };
+        // Invert the divisor sums to get the trace on exact-order characters.
+        model.spend(orders.len())?;
         for &(e, count) in &orders {
             if d.is_multiple_of(e) {
-                exact -= count;
+                exact = exact.checked_sub(count).ok_or_else(intermediate_overflow)?;
             }
         }
         orders.push((d, exact));
@@ -117,9 +155,13 @@ pub(crate) fn trace(
     curve: &Curve,
     r: u128,
     i: u128,
+    translation: Option<&Divisor>,
 ) -> Result<i128> {
     require_level_basis(basis)?;
     basis.require_base_extension(model, curve)?;
+    let coordinates = translation
+        .map(|t| basis.translation_coordinates(model, t))
+        .transpose()?;
     let n = u128::from(basis.prime.get());
     let Some((degree, twist)) = dual_degree(n - 1, i) else {
         return Ok(0);
@@ -139,8 +181,14 @@ pub(crate) fn trace(
             let value = quotient(model, rows[length as usize].clone(), &rows[1])?;
             if degree == 2 * (n - 1) {
                 let power_index = usize::try_from(r).map_err(|_| intermediate_overflow())?;
-                let torsion = rational_torsion(model, basis, curve, power_index)?;
-                let correction = tate(model, curve, r, n - 1, nonnegative(torsion - 1))?;
+                let fixed =
+                    torsion_fixed(model, basis, curve, power_index, coordinates.as_deref())?;
+                let factor = if fixed == 0 {
+                    Integer::from_i128(-1)
+                } else {
+                    nonnegative(fixed - 1)
+                };
+                let correction = tate(model, curve, r, n - 1, factor)?;
                 value.add(correction).map_err(|_| intermediate_overflow())?
             } else {
                 value

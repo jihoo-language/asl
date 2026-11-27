@@ -3558,6 +3558,22 @@ impl<'src> Parser<'src> {
             };
             return Ok(StatementForm::GeneralizedKummer(Box::new(command)));
         }
+        if matches!(
+            name,
+            "rvGenKummerTranslateChar" | "rvGenKummerTranslateFixed"
+        ) {
+            let length = self.wide_unsigned("generalized Kummer length")?;
+            self.expect(Token::Comma)?;
+            let order = self.wide_unsigned("translation order")?;
+            let command = if name == "rvGenKummerTranslateChar" {
+                self.expect(Token::Comma)?;
+                Command::TranslateChar(length, order, self.wide_unsigned("cohomological degree")?)
+            } else {
+                Command::TranslateFixed(length, order)
+            };
+            self.expect(Token::RBracket)?;
+            return Ok(StatementForm::GeneralizedKummer(Box::new(command)));
+        }
         let first = self.label()?;
         self.expect(Token::Comma)?;
         let positive_degree = |parser: &mut Self| {
@@ -3568,23 +3584,37 @@ impl<'src> Parser<'src> {
             }
             Ok(degree)
         };
-        let command = if matches!(name, "rvGenKummerLevel" | "rvGenKummerTrace") {
+        let command = if matches!(
+            name,
+            "rvGenKummerLevel"
+                | "rvGenKummerTrace"
+                | "rvGenKummerTranslateFrob"
+                | "rvGenKummerTranslatePoints"
+        ) {
             let base = self.label()?;
             self.expect(Token::Comma)?;
             let degree = positive_degree(self)?;
-            let command = if name == "rvGenKummerTrace" {
+            let i = if matches!(name, "rvGenKummerTrace" | "rvGenKummerTranslateFrob") {
                 self.expect(Token::Comma)?;
-                Command::Trace(
+                Some(self.wide_unsigned("cohomological degree")?)
+            } else {
+                None
+            };
+            self.expect(Token::RBracket)?;
+            match name {
+                "rvGenKummerTrace" => Command::Trace(first, base, degree, i.unwrap()),
+                "rvGenKummerTranslateFrob" => Command::TranslateFrob(
                     first,
                     base,
                     degree,
-                    self.wide_unsigned("cohomological degree")?,
-                )
-            } else {
-                Command::Level(first, base, degree)
-            };
-            self.expect(Token::RBracket)?;
-            command
+                    i.unwrap(),
+                    Box::new(self.paren_expr(0)?),
+                ),
+                "rvGenKummerTranslatePoints" => {
+                    Command::TranslatePoints(first, base, degree, Box::new(self.paren_expr(0)?))
+                }
+                _ => Command::Level(first, base, degree),
+            }
         } else {
             let span = self.span();
             let length = self.wide_unsigned("Jacobian Hilbert-scheme length")?;
@@ -4939,9 +4969,18 @@ impl<'src> Parser<'src> {
                 name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"),
             ) => self.k3_automorphism_statement(name)?,
             Token::Word(
-                command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
-                | "rvGenKummerLevel" | "rvGenKummerBetti" | "rvGenKummerTrace"
-                | "rvJacHilbBetti" | "rvJacHilbTrace"),
+                command @ ("rvJacHilbPoints"
+                | "rvGenKummerPoints"
+                | "rvGenKummerFiber"
+                | "rvGenKummerLevel"
+                | "rvGenKummerBetti"
+                | "rvGenKummerTrace"
+                | "rvGenKummerTranslateChar"
+                | "rvGenKummerTranslateFixed"
+                | "rvGenKummerTranslateFrob"
+                | "rvGenKummerTranslatePoints"
+                | "rvJacHilbBetti"
+                | "rvJacHilbTrace"),
             ) => self.generalized_kummer_statement(command)?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
