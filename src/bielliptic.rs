@@ -17,9 +17,10 @@ pub(crate) struct Command {
     pub(crate) matrix: [ParsedExpr; 4],
 }
 
-struct Coordinates {
+pub(crate) struct Coordinates {
     numerator: Polynomial,
     denominator: Polynomial,
+    offset: Scalar,
     scale: Scalar,
     ordinate_scale: Scalar,
 }
@@ -71,7 +72,7 @@ impl Quotient {
         let n = poly::trim(vec![field.ring.negate(model, b)?, d.clone()]);
         let m = poly::trim(vec![a.clone(), field.ring.negate(model, c)?]);
         let determinant_cubed = field.ring.power(model, &determinant, 3)?;
-        model.allocate(16 + (2 * (n.len() + m.len()) + 4) * field.cells())?;
+        model.allocate(16 + (2 * (n.len() + m.len()) + 6) * field.cells())?;
         let make = |model: &mut Model, coefficients, numerator, denominator, scale| {
             let target = Curve::new(
                 model,
@@ -83,12 +84,13 @@ impl Quotient {
             Ok(Self {
                 source: source.clone(),
                 target: Rc::new(target),
-                coordinates: Rc::new(Coordinates {
+                coordinates: Rc::new(Coordinates::new(
                     numerator,
                     denominator,
+                    field.zero(),
                     scale,
                     ordinate_scale,
-                }),
+                )),
             })
         };
         // The second quotient uses 1/t and Y/t³.
@@ -113,6 +115,22 @@ impl Quotient {
 }
 
 impl Coordinates {
+    pub(crate) fn new(
+        numerator: Polynomial,
+        denominator: Polynomial,
+        offset: Scalar,
+        scale: Scalar,
+        ordinate_scale: Scalar,
+    ) -> Self {
+        Self {
+            numerator,
+            denominator,
+            offset,
+            scale,
+            ordinate_scale,
+        }
+    }
+
     fn rechart(&self, model: &mut Model, field: Field<'_>, chart: &Chart) -> Result<Self> {
         // x=r+d₀/z and y=d₀*w/z³. Multiply the two linear forms by z.
         let numerator = [chart.derivative.clone(), chart.branch.clone()];
@@ -123,13 +141,14 @@ impl Coordinates {
         let numerator = substitute(model, &self.numerator)?;
         let denominator = substitute(model, &self.denominator)?;
         let ordinate_scale = field.multiply(model, &self.ordinate_scale, &chart.derivative)?;
-        model.allocate(8 + (numerator.len() + denominator.len() + 2) * field.cells())?;
-        Ok(Self {
+        model.allocate(8 + (numerator.len() + denominator.len() + 3) * field.cells())?;
+        Ok(Self::new(
             numerator,
             denominator,
-            scale: self.scale.clone(),
+            self.offset.clone(),
+            self.scale.clone(),
             ordinate_scale,
-        })
+        ))
     }
 
     fn point(&self, model: &mut Model, target: &Curve, x: &[u64], y: &[u64]) -> Result<Divisor> {
@@ -168,6 +187,7 @@ impl Coordinates {
         let ratio = field.multiply(model, numerator, &inverse)?;
         let square = field.multiply(model, &ratio, &ratio)?;
         let image_x = field.multiply(model, &self.scale, &square)?;
+        let image_x = field.add(model, &self.offset, &image_x)?;
         let inverse_cube = ring.power(model, &inverse, 3)?;
         let ordinate = ring.multiply(model, &self.ordinate_scale, y)?;
         let image_y = field.multiply(model, &ordinate, &inverse_cube)?;

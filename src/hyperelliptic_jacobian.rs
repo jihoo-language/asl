@@ -34,6 +34,8 @@ pub(crate) enum Expression {
     BiellipticPoint(Label, Box<[ParsedExpr; 2]>),
     BiellipticPicard(Label, crate::bielliptic::picard::Direction, Box<ParsedExpr>),
     EllipticGluePoint(Label, crate::elliptic_gluing::Side, Box<[ParsedExpr; 2]>),
+    EllipticGlueMap(Label, Box<[ParsedExpr; 2]>),
+    EllipticGlueDual(Label, Box<ParsedExpr>),
     Transport(Label, Direction, Box<ParsedExpr>),
     QuadraticTrace(Label, Box<ParsedExpr>, Box<[Vec<Vec<i128>>; 4]>),
     Apply(Operation, Box<ParsedExpr>),

@@ -4,6 +4,7 @@ use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
+use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{quadratic_trace, Divisor};
 use crate::model::Model;
 use crate::syntax::Label;
@@ -37,32 +38,51 @@ impl Map {
         let curve = model
             .jacobian_curve(&source.text)
             .map_err(|error| error.at(source.span))?;
-        let coordinates = if Rc::ptr_eq(&curve, &quotient.source) {
-            quotient.coordinates.clone()
-        } else {
-            let wrong_source = || {
-                Error::new(
-                    source.span,
-                    format!(
-                        "RVJac({}) must be on the named bielliptic source of '{}' or a direct branch chart of that source",
-                        source.text, target.text,
-                    ),
-                )
-            };
-            let chart = model.jacobian_chart(source).map_err(|_| wrong_source())?;
-            let original = model.hww_curve(&Label {
-                text: chart.source.to_string(),
-                span: source.span,
-            })?;
-            if !Rc::ptr_eq(&original, &quotient.source) {
-                return Err(wrong_source());
-            }
-            let field = Field { ring: &curve.ring };
-            Rc::new(quotient.coordinates.rechart(model, field, &chart)?)
+        if Rc::ptr_eq(&curve, &quotient.source) {
+            return Ok(Self {
+                source: curve,
+                target: quotient.target.clone(),
+                coordinates: quotient.coordinates.clone(),
+            });
+        }
+        let wrong_source = || {
+            Error::new(
+                source.span,
+                format!(
+                    "RVJac({}) must be on the named bielliptic source of '{}' or a direct branch chart of that source",
+                    source.text, target.text,
+                ),
+            )
         };
+        let chart = model.jacobian_chart(source).map_err(|_| wrong_source())?;
+        let original = model.hww_curve(&Label {
+            text: chart.source.to_string(),
+            span: source.span,
+        })?;
+        if !Rc::ptr_eq(&original, &quotient.source) {
+            return Err(wrong_source());
+        }
+        Self::from_chart(
+            model,
+            curve,
+            quotient.target.clone(),
+            &quotient.coordinates,
+            &chart,
+        )
+    }
+
+    pub(crate) fn from_chart(
+        model: &mut Model,
+        source: Rc<Curve>,
+        target: Rc<Curve>,
+        coordinates: &Coordinates,
+        chart: &Chart,
+    ) -> Result<Self> {
+        let field = Field { ring: &source.ring };
+        let coordinates = Rc::new(coordinates.rechart(model, field, chart)?);
         Ok(Self {
-            source: curve,
-            target: quotient.target.clone(),
+            source,
+            target,
             coordinates,
         })
     }
@@ -141,6 +161,7 @@ impl Map {
             Ok([real, imaginary])
         };
         let [x0, x1] = split(model, x)?;
+        let x0 = field.add(model, &x0, &coordinates.offset)?;
         let [y0, y1] = split(model, y)?;
         let u = [
             vec![field.ring.negate(model, &x0)?, field.one()],
@@ -159,6 +180,7 @@ impl Map {
         let x = field.ring.negate(model, &divisor.u[0])?;
         let y = divisor.coefficient(&self.target, true, 0);
         let coordinates = &self.coordinates;
+        let x = field.subtract(model, &x, &coordinates.offset)?;
         let n = &coordinates.numerator;
         let m = &coordinates.denominator;
         let n_squared = poly::multiply(model, field, n, n)?;

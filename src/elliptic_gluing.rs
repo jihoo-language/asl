@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use crate::bielliptic::{picard::Map, Coordinates};
 use crate::ec_poly::{self as poly, Field, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
@@ -157,6 +158,47 @@ impl Gluing {
             Side::Left => &self.factors[0],
             Side::Right => &self.factors[1],
         }
+    }
+
+    pub(crate) fn picard_maps(model: &mut Model, source: &Label) -> Result<(Rc<Self>, [Map; 2])> {
+        let chart = model.jacobian_chart(source).map_err(|_| {
+            Error::new(
+                source.span,
+                "elliptic gluing Picard maps require a direct branch chart of a glued curve",
+            )
+        })?;
+        let gluing = model.elliptic_gluing(&Label {
+            text: chart.source.to_string(),
+            span: source.span,
+        })?;
+        let curve = model
+            .jacobian_curve(&source.text)
+            .map_err(|error| error.at(source.span))?;
+        let field = Field { ring: &curve.ring };
+        let linear = vec![field.zero(), field.one()];
+        let constant = vec![field.one()];
+        let inverse_scale = field.inverse_unit(model, &gluing.scale)?;
+        let reciprocal_scale = field.multiply(model, &gluing.numerator, &inverse_scale)?;
+        let left = Coordinates::new(
+            linear.clone(),
+            constant.clone(),
+            gluing.pole.clone(),
+            gluing.scale.clone(),
+            field.one(),
+        );
+        let right = Coordinates::new(
+            constant,
+            linear,
+            gluing.image_of_infinity.clone(),
+            reciprocal_scale,
+            inverse_scale,
+        );
+        let [e, f] = &gluing.factors;
+        let maps = [
+            Map::from_chart(model, curve.clone(), e.curve.clone(), &left, &chart)?,
+            Map::from_chart(model, curve, f.curve.clone(), &right, &chart)?,
+        ];
+        Ok((gluing, maps))
     }
 
     pub(crate) fn point(

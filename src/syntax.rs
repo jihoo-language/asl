@@ -3233,6 +3233,23 @@ impl<'src> Parser<'src> {
                     depth,
                 )
             }
+            "rvEllGlueMap" => {
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let arguments = self.paren_pair(nest)?;
+                let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                (
+                    Expression::EllipticGlueMap(target, Box::new(arguments)),
+                    depth,
+                )
+            }
+            "rvEllGlueDual" => {
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::EllipticGlueDual(target, Box::new(input)), depth)
+            }
             "rvJacRechart" | "rvJacUnchart" => {
                 use crate::hyperelliptic_chart::Direction;
                 let chart = self.label()?;
@@ -8859,6 +8876,8 @@ impl<'src> Parser<'src> {
                         | "rvBiellipticPull"
                         | "rvEllGlueLeft"
                         | "rvEllGlueRight"
+                        | "rvEllGlueMap"
+                        | "rvEllGlueDual"
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"

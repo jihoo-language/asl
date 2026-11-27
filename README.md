@@ -1308,6 +1308,10 @@ The example checks on all 64 source classes and all eight classes of each factor
 
 `rvEllGlueLeft[C](t,Y)` gives $(A+kt^2,Y)$ in `RVJac(E)`. `rvEllGlueRight[C](t,Y)` gives $(B+m/(kt^2),Y/(kt^3))$ in `RVJac(F)`, with $t=0$ sent to infinity. Both expressions check that the input lies on `C`. The example over $\mathbb F_5$ glues two irreducible cubics by $x\mapsto1/x$ and checks the maps and Frobenius polynomials of all three curves. [Elliptic gluing example](examples/hyperelliptic-elliptic-gluing.asl)
 
+`rvEllGlueMap[S](P,Q)` adds the pullbacks of classes on `E` and `F` to give a class in `RVJac(S)`. Declare `S` directly on the glued sextic with `rvjacchart S[C](r);` for a rational branch point `r`. `rvEllGlueDual[S](D)` returns the two norms as a pair of type `RVJac(E) * RVJac(F)`. The factor names come from the original gluing declaration in the same order, including when both factors use one name. Both maps use the branch chart's coordinates and its point at infinity as the source base point for the norms.
+
+Both compositions are multiplication by two on their respective groups. The kernel of the map from the product is the graph of the declared identification on two-torsion. The example checks the compositions on every class of the product and every class of the glued Jacobian, and verifies the four matching pairs in the kernel. [Gluing and dual isogeny example](examples/hyperelliptic-elliptic-gluing-picard.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

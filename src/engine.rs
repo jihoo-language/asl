@@ -466,6 +466,11 @@ enum JacobianAction {
         elliptic_gluing::Side,
         Box<[TypedExpr; 2]>,
     ),
+    EllipticGlueMap(
+        Box<[crate::bielliptic::picard::Map; 2]>,
+        Box<[TypedExpr; 2]>,
+    ),
+    EllipticGlueDual(Box<[crate::bielliptic::picard::Map; 2]>, Box<TypedExpr>),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -4894,6 +4899,33 @@ impl Engine {
                 gluing
                     .point(&mut self.model, *side, &t, &y)?
                     .persist(&mut self.model, &gluing.factor(*side).curve)
+            }
+            JacobianAction::EllipticGlueMap(maps, inputs) => {
+                let [left_map, right_map] = maps.as_ref();
+                let [left, right] = inputs.as_ref();
+                let (Value::Jacobian(left), Value::Jacobian(right)) =
+                    (self.eval(left)?, self.eval(right)?)
+                else {
+                    unreachable!()
+                };
+                let left = left_map.pull(&mut self.model, &left)?;
+                let right = right_map.pull(&mut self.model, &right)?;
+                left.add(&mut self.model, &left_map.source, &right)?
+                    .persist(&mut self.model, &left_map.source)
+            }
+            JacobianAction::EllipticGlueDual(maps, input) => {
+                let [left, right] = maps.as_ref();
+                let Value::Jacobian(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image_left = left
+                    .push(&mut self.model, &input)?
+                    .persist(&mut self.model, &left.target)?;
+                let image_right = right
+                    .push(&mut self.model, &input)?
+                    .persist(&mut self.model, &right.target)?;
+                self.model.allocate(2)?;
+                Ok(Value::Pair(Rc::new((image_left, image_right))))
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -18078,6 +18110,50 @@ impl Checker<'_> {
                         gluing,
                         side,
                         Box::new(xy),
+                    )),
+                ))
+            }
+            Expression::EllipticGlueMap(name, inputs) => {
+                use elliptic_gluing::{Gluing, Side};
+                let (gluing, maps) = Gluing::picard_maps(self.model, &name)?;
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let left_type = self
+                    .model
+                    .jacobian_type(gluing.factor(Side::Left).name.clone())?;
+                let right_type = self
+                    .model
+                    .jacobian_type(gluing.factor(Side::Right).name.clone())?;
+                self.require_type(left_type, &left, "rvEllGlueMap left divisor")?;
+                self.require_type(right_type, &right, "rvEllGlueMap right divisor")?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::EllipticGlueMap(
+                        Box::new(maps),
+                        Box::new([left, right]),
+                    )),
+                ))
+            }
+            Expression::EllipticGlueDual(name, input) => {
+                use elliptic_gluing::{Gluing, Side};
+                let (gluing, maps) = Gluing::picard_maps(self.model, &name)?;
+                let input = self.expr(*input)?;
+                let source = self.model.jacobian_type(name.text.into())?;
+                self.require_type(source, &input, "rvEllGlueDual source divisor")?;
+                let left_type = self
+                    .model
+                    .jacobian_type(gluing.factor(Side::Left).name.clone())?;
+                let right_type = self
+                    .model
+                    .jacobian_type(gluing.factor(Side::Right).name.clone())?;
+                let ty = self.model.product(left_type, right_type)?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::EllipticGlueDual(
+                        Box::new(maps),
+                        Box::new(input),
                     )),
                 ))
             }
