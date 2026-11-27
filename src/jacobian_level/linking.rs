@@ -35,7 +35,7 @@ pub(crate) struct Pairing {
 }
 
 pub(crate) struct Change {
-    matrix: Exterior,
+    pub(super) matrix: Exterior,
 }
 
 pub(crate) struct Value {

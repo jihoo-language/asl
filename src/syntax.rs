@@ -152,6 +152,7 @@ pub(crate) enum TypeForm {
     KummerDisc(Label),
     KummerBrauerFixed(Label, usize),
     KummerBrauerClass(Label),
+    BrauerMukai(Label),
     KummerCMCycle(Label),
     KummerWeil(Label),
     KummerDiv(Label),
@@ -1053,6 +1054,7 @@ pub(crate) enum ExprForm {
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerBrauerLink(Box<crate::jacobian_level::linking::Expression>),
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Expression>),
+    BrauerMukai(Box<crate::jacobian_level::twisted_mukai::Expression>),
     KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
@@ -1318,6 +1320,7 @@ pub(crate) enum StatementForm {
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerBrauerLink(Box<crate::jacobian_level::linking::Statement>),
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Statement>),
+    BrauerMukai(Box<crate::jacobian_level::twisted_mukai::Statement>),
     KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Statement>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
@@ -3224,6 +3227,107 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::KummerCMCycle(Box::new(value)), depth)
+    }
+
+    fn brauer_mukai_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::twisted_mukai::Statement;
+        self.advance()?;
+        let statement = match command {
+            "rvBrauerMukaiPair" => Statement::Pair(Box::new(self.paren_pair(0)?)),
+            "rvBrauerMukaiData" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let power = if self.eat(Token::Comma)? {
+                    self.number()?.0
+                } else {
+                    1
+                };
+                self.expect(Token::RBracket)?;
+                Statement::Data(name, power)
+            }
+            _ => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                match command {
+                    "rvbrauermukai" => {
+                        self.expect(Token::Comma)?;
+                        let precision = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Statement::Define(name, source, precision, Box::new(self.paren_expr(0)?))
+                    }
+                    "rvbrauermukaishift" => {
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        let values = self.signed_list(
+                            Token::RBrace,
+                            "a signed B-field shift",
+                            "B-field shift",
+                        )?;
+                        let shift = values
+                            .try_into()
+                            .map_err(|_| self.expected("six B-field shift coefficients"))?;
+                        Statement::Shift(name, source, shift)
+                    }
+                    "rvbrauermukaialgebraic" => {
+                        self.expect(Token::RBracket)?;
+                        Statement::Algebraic(name, source, Box::new(self.paren_expr(0)?))
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let quotient = self.label()?;
+                        self.expect(Token::RBracket)?;
+                        if command == "rvbrauermukaiextend" {
+                            Statement::Extend(name, source, quotient)
+                        } else {
+                            Statement::Marking(name, source, quotient)
+                        }
+                    }
+                }
+            }
+        };
+        Ok(StatementForm::BrauerMukai(Box::new(statement)))
+    }
+
+    fn brauer_mukai_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::twisted_mukai::Expression;
+        self.expect(Token::LBracket)?;
+        let (value, depth) = if name == "rvBrauerMukaiFrob" {
+            let exponent = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Frobenius(exponent, Box::new(input)), depth)
+        } else {
+            let chart = self.label()?;
+            self.expect(Token::RBracket)?;
+            match name {
+                "rvBrauerMukai" => {
+                    self.expect(Token::LBrace)?;
+                    let values = self.signed_list(
+                        Token::RBrace,
+                        "a signed Mukai coordinate",
+                        "Mukai coordinate",
+                    )?;
+                    let vector = values.try_into().map_err(|_| {
+                        Error::new(span, "Brauer Mukai vector requires eight coefficients")
+                    })?;
+                    (Expression::Vector(chart, vector), 0)
+                }
+                "rvBrauerMukaiWitness" => (Expression::Witness(chart), 0),
+                _ => {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    (Expression::Transport(chart, Box::new(input)), depth)
+                }
+            }
+        };
+        expr(span, ExprForm::BrauerMukai(Box::new(value)), depth)
     }
 
     fn kummer_brauer_transfer_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -10758,6 +10862,15 @@ impl<'src> Parser<'src> {
                 | "rvKummerCMCycleHermitian"
                 | "rvKummerCMDefect"),
             ) => self.kummer_cm_cycle_statement(name)?,
+            Token::Word(
+                name @ ("rvbrauermukai"
+                | "rvbrauermukaishift"
+                | "rvbrauermukaialgebraic"
+                | "rvbrauermukaiextend"
+                | "rvbrauermukaimarking"
+                | "rvBrauerMukaiData"
+                | "rvBrauerMukaiPair"),
+            ) => self.brauer_mukai_statement(name)?,
             Token::Word(name @ ("rvkummerbrauerquotient" | "rvKummerBrauerQuotientData")) => {
                 self.kummer_brauer_transfer_statement(name)?
             }
@@ -14535,6 +14648,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::KummerCMCycle(name), 0);
         }
+        if name.text == "RVBrauerMukai" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::BrauerMukai(name), 0);
+        }
         if name.text == "RVKummerBrauerClass" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -16982,6 +17100,16 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.kummer_cm_cycle_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvBrauerMukai"
+                        | "rvBrauerMukaiWitness"
+                        | "rvBrauerMukaiFrob"
+                        | "rvBrauerMukaiTransport"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.brauer_mukai_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

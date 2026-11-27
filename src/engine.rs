@@ -76,6 +76,7 @@ use crate::jacobian_level;
 use crate::jacobian_level::cm_cycles as kummer_cm;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
+use crate::jacobian_level::twisted_mukai as brauer_mukai;
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -703,6 +704,12 @@ struct TypedKummerCM {
     input: TypedExpr,
 }
 
+struct TypedBrauerMukai {
+    modulus: u64,
+    operator: brauer_mukai::Operator,
+    input: TypedExpr,
+}
+
 struct TypedBrauerTransfer {
     target: Rc<brauer_linking::Pairing>,
     level: usize,
@@ -893,6 +900,8 @@ enum TypedForm {
     KummerBrauerLift(Rc<brauer_transfers::Quotient>, Box<TypedExpr>),
     KummerBrauerClassScale(Rc<brauer_transfers::Quotient>, i128, Box<TypedExpr>),
     KummerBrauerTransfer(Box<TypedBrauerTransfer>),
+    BrauerMukai(Box<TypedBrauerMukai>),
+    BrauerMukaiNegate(u64, Box<TypedExpr>),
     KummerCMOperation(Box<TypedKummerCM>),
     KummerCMNegate(Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
@@ -2654,6 +2663,7 @@ impl Engine {
             StatementForm::Hurwitz(query) => return query.report(&mut self.model).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::KummerCMCycle(command) => return self.kummer_cm_statement(*command),
+            StatementForm::BrauerMukai(command) => return self.brauer_mukai_statement(*command),
             StatementForm::KummerBrauerTransfer(command) => {
                 return self.kummer_brauer_transfer_statement(*command)
             }
@@ -7281,6 +7291,103 @@ impl Engine {
         }
     }
 
+    fn brauer_mukai_statement(
+        &mut self,
+        statement: brauer_mukai::Statement,
+    ) -> Result<Option<String>> {
+        use brauer_mukai::Statement;
+        let (name, chart) = match statement {
+            Statement::Define(name, quotient, precision, fixed) => {
+                let quotient = self.model.kummer_brauer_quotient(&quotient.text)?;
+                let input = self.checker().expr(*fixed)?;
+                let expected = self
+                    .model
+                    .kummer_brauer_type(&quotient.pairing_name, quotient.level)?;
+                self.checker()
+                    .require_type(expected, &input, "Brauer Mukai B-field numerator")?;
+                let Value::KummerBrauerFixed(numerator) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let chart =
+                    brauer_mukai::Chart::new(&mut self.model, quotient, precision, numerator)?;
+                (name, chart)
+            }
+            Statement::Shift(name, parent, shift) => {
+                let parent = self.model.brauer_mukai_chart(&parent.text)?;
+                (
+                    name,
+                    brauer_mukai::Chart::shift(&mut self.model, parent, shift)?,
+                )
+            }
+            Statement::Algebraic(name, parent, cycle) => {
+                let parent = self.model.brauer_mukai_chart(&parent.text)?;
+                let cycle = self.checker().expr(*cycle)?;
+                let Kind::KummerCMCycle(cycles) = self.model.kind(cycle.ty) else {
+                    return Err(self.checker().invalid_operand(
+                        &cycle,
+                        "Brauer Mukai algebraic shift",
+                        "an explicit Kummer CM cycle",
+                    ));
+                };
+                let cycles = self.model.kummer_cm_cycles(cycles)?;
+                let Value::KummerCMCycle(cycle) = self.eval(&cycle)? else {
+                    unreachable!()
+                };
+                (
+                    name,
+                    brauer_mukai::Chart::algebraic_shift(&mut self.model, parent, &cycles, cycle)?,
+                )
+            }
+            Statement::Extend(name, parent, quotient) => {
+                let parent = self.model.brauer_mukai_chart(&parent.text)?;
+                let quotient = self.model.kummer_brauer_quotient(&quotient.text)?;
+                (
+                    name,
+                    brauer_mukai::Chart::extend(&mut self.model, parent, quotient)?,
+                )
+            }
+            Statement::Marking(name, parent, quotient) => {
+                let parent = self.model.brauer_mukai_chart(&parent.text)?;
+                let quotient = self.model.kummer_brauer_quotient(&quotient.text)?;
+                (
+                    name,
+                    brauer_mukai::Chart::marking(&mut self.model, parent, quotient)?,
+                )
+            }
+            Statement::Data(name, power) => {
+                let chart = self.model.brauer_mukai_chart(&name.text)?;
+                return chart.report(&mut self.model, &name.text, power).map(Some);
+            }
+            Statement::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let Kind::BrauerMukai(name) = self.model.kind(left.ty) else {
+                    return Err(self.checker().invalid_operand(
+                        &left,
+                        "rvBrauerMukaiPair",
+                        "a typed Brauer Mukai vector",
+                    ));
+                };
+                let chart = self.model.brauer_mukai_chart(name)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "Brauer Mukai pairing argument")?;
+                let (Value::BrauerMukai(left), Value::BrauerMukai(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let modulus = chart.modulus();
+                let value = brauer_mukai::pair(left, right, modulus);
+                return Ok(Some(format!(
+                    "rvBrauerMukaiPair = residue={value}, modulus={modulus}"
+                )));
+            }
+        };
+        self.model.define_brauer_mukai_chart(name, chart)?;
+        Ok(None)
+    }
+
     fn kummer_brauer_transfer_statement(
         &mut self,
         statement: brauer_transfers::Statement,
@@ -10415,6 +10522,15 @@ impl Engine {
                     (BinaryOp::Add, Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => {
                         Ok(Value::KummerCMCycle(kummer_cm::cycle_add(a, b)?))
                     }
+                    (BinaryOp::Add, Value::BrauerMukai(a), Value::BrauerMukai(b)) => {
+                        let Kind::BrauerMukai(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let modulus = self.model.brauer_mukai_chart(name)?.modulus();
+                        Ok(Value::BrauerMukai(std::array::from_fn(|i| {
+                            crate::rv_unram::add_mod(a[i], b[i], modulus)
+                        })))
+                    }
                     (BinaryOp::Add, Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => {
                         let Kind::KummerBrauerClass(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -12189,6 +12305,24 @@ impl Engine {
                     _ => unreachable!(),
                 };
                 Ok(Value::KummerBrauerFixed(result))
+            }
+            TypedForm::BrauerMukai(plan) => {
+                let Value::BrauerMukai(value) = self.eval(&plan.input)? else {
+                    unreachable!()
+                };
+                Ok(Value::BrauerMukai(plan.operator.apply(
+                    &mut self.model,
+                    value,
+                    plan.modulus,
+                )?))
+            }
+            TypedForm::BrauerMukaiNegate(modulus, input) => {
+                let Value::BrauerMukai(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::BrauerMukai(
+                    value.map(|entry| crate::rv_unram::sub_mod(0, entry, *modulus)),
+                ))
             }
             TypedForm::KummerBrauerProject(quotient, algebraic, input) => {
                 let Value::KummerBrauerFixed(value) = self.eval(input)? else {
@@ -15897,6 +16031,7 @@ impl Checker<'_> {
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerBrauerFixed(name, level) => self.model.kummer_brauer_type(&name, level),
             TypeForm::KummerBrauerClass(name) => self.model.kummer_brauer_class_type(&name),
+            TypeForm::BrauerMukai(name) => self.model.brauer_mukai_type(&name),
             TypeForm::KummerCMCycle(name) => self.model.kummer_cm_cycle_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
@@ -17071,6 +17206,7 @@ impl Checker<'_> {
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
                     Kind::KummerBrauerFixed(..) => Value::KummerBrauerFixed([0; 6]),
                     Kind::KummerBrauerClass(..) => Value::KummerBrauerClass([0; 6]),
+                    Kind::BrauerMukai(..) => Value::BrauerMukai([0; 8]),
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
                     Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
@@ -19321,6 +19457,7 @@ impl Checker<'_> {
             }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerCMCycle(expression) => self.kummer_cm_expression(*expression),
+            ExprForm::BrauerMukai(expression) => self.brauer_mukai_expression(*expression),
             ExprForm::KummerBrauerTransfer(expression) => {
                 self.kummer_brauer_transfer_expression(*expression)
             }
@@ -20434,6 +20571,13 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerCMCycle(..)) {
                     return Ok((input.ty, TypedForm::KummerCMNegate(Box::new(input))));
+                }
+                if let Kind::BrauerMukai(name) = self.model.kind(input.ty) {
+                    let modulus = self.model.brauer_mukai_chart(name)?.modulus();
+                    return Ok((
+                        input.ty,
+                        TypedForm::BrauerMukaiNegate(modulus, Box::new(input)),
+                    ));
                 }
                 if let Kind::KummerBrauerClass(name) = self.model.kind(input.ty) {
                     let quotient = self.model.kummer_brauer_quotient(name)?;
@@ -24267,6 +24411,7 @@ impl Checker<'_> {
                         | Kind::KummerDisc(..)
                         | Kind::KummerBrauerFixed(..)
                         | Kind::KummerBrauerClass(..)
+                        | Kind::BrauerMukai(..)
                         | Kind::KummerCMCycle(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
@@ -29750,6 +29895,68 @@ impl Checker<'_> {
                 input,
             })),
         ))
+    }
+
+    fn brauer_mukai_expression(
+        &mut self,
+        expression: brauer_mukai::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use brauer_mukai::Expression;
+        match expression {
+            Expression::Vector(name, coordinates) => {
+                let chart = self.model.brauer_mukai_chart(&name.text)?;
+                let ty = self.model.brauer_mukai_type(&name)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(Value::BrauerMukai(chart.vector(coordinates))),
+                ))
+            }
+            Expression::Witness(name) => {
+                let chart = self.model.brauer_mukai_chart(&name.text)?;
+                let ty = self.model.brauer_mukai_type(&name)?;
+                let value = chart.witness(self.model)?;
+                Ok((ty, TypedForm::Constant(Value::BrauerMukai(value))))
+            }
+            Expression::Frobenius(power, input) => {
+                let input = self.expr(*input)?;
+                let source = self.brauer_mukai_operand(&input)?;
+                let operator = source.power(self.model, power)?;
+                Ok((
+                    input.ty,
+                    TypedForm::BrauerMukai(Box::new(TypedBrauerMukai {
+                        modulus: source.modulus(),
+                        operator,
+                        input,
+                    })),
+                ))
+            }
+            Expression::Transport(name, input) => {
+                let input = self.expr(*input)?;
+                let source = self.brauer_mukai_operand(&input)?;
+                let target = self.model.brauer_mukai_chart(&name.text)?;
+                let operator = brauer_mukai::Chart::transport(&source, &target)?;
+                let ty = self.model.brauer_mukai_type(&name)?;
+                Ok((
+                    ty,
+                    TypedForm::BrauerMukai(Box::new(TypedBrauerMukai {
+                        modulus: target.modulus(),
+                        operator,
+                        input,
+                    })),
+                ))
+            }
+        }
+    }
+
+    fn brauer_mukai_operand(&self, input: &TypedExpr) -> Result<Rc<brauer_mukai::Chart>> {
+        let Kind::BrauerMukai(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(
+                input,
+                "Brauer Mukai operator",
+                "a typed Brauer Mukai vector",
+            ));
+        };
+        self.model.brauer_mukai_chart(name)
     }
 
     fn kummer_brauer_transfer_expression(

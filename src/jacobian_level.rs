@@ -19,6 +19,7 @@ pub(crate) mod cm_cycles;
 pub(crate) mod linking;
 pub(crate) mod richelot;
 pub(crate) mod transfers;
+pub(crate) mod twisted_mukai;
 
 pub(crate) enum Command {
     Define(Label, Label, usize, Box<ParsedExpr>, Vec<ParsedExpr>),

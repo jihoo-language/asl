@@ -150,6 +150,18 @@ impl Quotient {
         })
     }
 
+    pub(super) fn order(&self, class: Class) -> u64 {
+        // Every invariant factor is a power of the same prime.
+        self.orders
+            .into_iter()
+            .zip(class)
+            .map(|(modulus, coefficient)| {
+                modulus / crate::rv_ore::gcd(u128::from(modulus), u128::from(coefficient)) as u64
+            })
+            .max()
+            .unwrap_or(1)
+    }
+
     pub(crate) fn generator(&self, index: usize) -> Result<Class> {
         let slot = (0..6)
             .filter(|&i| self.orders[i] > 1)
@@ -250,13 +262,19 @@ impl Transfer {
     }
 }
 
-fn action(pairing: &Pairing, modulus: u64) -> Exterior {
+pub(super) fn action(pairing: &Pairing, modulus: u64) -> Exterior {
     std::array::from_fn(|i| {
-        std::array::from_fn(|j| sub_mod(u64::from(i == j), pairing.difference[i][j], modulus))
+        std::array::from_fn(|j| {
+            sub_mod(
+                u64::from(i == j),
+                pairing.difference[i][j] % modulus,
+                modulus,
+            )
+        })
     })
 }
 
-fn extension_ratio(base: &Pairing, extension: &Pairing) -> Result<usize> {
+pub(super) fn extension_ratio(base: &Pairing, extension: &Pairing) -> Result<usize> {
     if base.base.text != extension.base.text
         || !Rc::ptr_eq(&base.basis, &extension.basis)
         || !extension.degree.is_multiple_of(base.degree)
