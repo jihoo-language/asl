@@ -4963,6 +4963,7 @@ impl<'src> Parser<'src> {
                 "rvK3FiberReduction" => Command::Reduction(name, Box::new(self.paren_expr(0)?)),
                 "rvK3FiberEuler" => Command::Euler(name, Box::new(self.paren_expr(0)?)),
                 "rvK3PencilLFunction" => Command::LFunction(name),
+                "rvK3PencilBSD" => Command::Bsd(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
                 "rvK3PencilDiscriminant" => Command::Discriminant(name),
                 _ => Command::Census(name),
@@ -6346,7 +6347,8 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilDiscriminant"
                 | "rvK3FiberReduction"
                 | "rvK3FiberEuler"
-                | "rvK3PencilLFunction"),
+                | "rvK3PencilLFunction"
+                | "rvK3PencilBSD"),
             ) => self.k3_pencil_statement(op)?,
             Token::Word(
                 op

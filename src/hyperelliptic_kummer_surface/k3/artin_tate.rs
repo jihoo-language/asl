@@ -17,14 +17,12 @@ pub(super) fn report(
     orbits: &[usize],
     degree: u128,
 ) -> Result<String> {
-    let exponent = u32::try_from(degree).map_err(|_| overflow())?;
-    let field_order = i128::from(q).checked_pow(exponent).ok_or_else(overflow)?;
-    let (a, b) = powered_weil_coefficients(model, weil, exponent as usize, overflow)?;
-    let abelian = abelian_factor(field_order, a, b)?;
-    let product = abelian
-        .checked_mul(exceptional_factor(model, orbits, degree)?)
-        .ok_or_else(overflow)?;
-    let (rank, geometric_rank) = picard_ranks(model, q, weil, orbits, degree)?;
+    let Product {
+        field_order,
+        rank,
+        geometric_rank,
+        magnitude: product,
+    } = data(model, q, weil, orbits, degree)?;
     let sign = if rank.is_multiple_of(2) { "-" } else { "" };
     let mut result = format!(
         "rvKummerK3ArtinTate[{name}, {degree}] = field order={field_order}, rank={rank}, geometric rank={geometric_rank}, finite NS discriminant times Brauer order={sign}{product}, finite NS discriminant square class=[{sign}{product}]"
@@ -45,6 +43,36 @@ pub(super) fn report(
         }
     }
     Ok(result)
+}
+
+pub(in crate::hyperelliptic_kummer_surface) struct Product {
+    pub(in crate::hyperelliptic_kummer_surface) field_order: i128,
+    pub(in crate::hyperelliptic_kummer_surface) rank: u128,
+    pub(in crate::hyperelliptic_kummer_surface) geometric_rank: u8,
+    pub(in crate::hyperelliptic_kummer_surface) magnitude: u128,
+}
+
+pub(in crate::hyperelliptic_kummer_surface) fn data(
+    model: &mut Model,
+    q: u64,
+    weil: &[i128],
+    orbits: &[usize],
+    degree: u128,
+) -> Result<Product> {
+    let exponent = u32::try_from(degree).map_err(|_| overflow())?;
+    let field_order = i128::from(q).checked_pow(exponent).ok_or_else(overflow)?;
+    let (a, b) = powered_weil_coefficients(model, weil, exponent as usize, overflow)?;
+    let abelian = abelian_factor(field_order, a, b)?;
+    let magnitude = abelian
+        .checked_mul(exceptional_factor(model, orbits, degree)?)
+        .ok_or_else(overflow)?;
+    let (rank, geometric_rank) = picard_ranks(model, q, weil, orbits, degree)?;
+    Ok(Product {
+        field_order,
+        rank,
+        geometric_rank,
+        magnitude,
+    })
 }
 
 fn overflow() -> Error {

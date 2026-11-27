@@ -10,7 +10,7 @@ use crate::rv_ore::gcd;
 use crate::rv_qp_quad::Wide;
 use crate::syntax::Label;
 
-mod artin_tate;
+pub(super) mod artin_tate;
 
 pub(crate) enum Query {
     Zeta,

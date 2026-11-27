@@ -11,12 +11,25 @@ use super::{
     MinimalReduction, Parameter, Pencil, RelativeJacobian, DISCRIMINANT_DEGREE,
 };
 
+mod bsd;
+
 type Uniformizer = [Scalar; 2];
 
 struct Components {
     cycles: Vec<usize>,
     tamagawa: usize,
     split: Option<bool>,
+}
+
+struct LFunction {
+    q: u64,
+    polynomial: Vec<Integer>,
+    conductor: usize,
+    ns_rank: usize,
+    rank: usize,
+    trivial_rank: usize,
+    node_orbits: Vec<usize>,
+    places: Vec<(Kodaira, Components)>,
 }
 
 impl Kodaira {
@@ -85,6 +98,26 @@ impl RelativeJacobian {
         pencil: &Pencil,
         name: &str,
     ) -> Result<String> {
+        let LFunction {
+            q,
+            polynomial,
+            conductor,
+            ns_rank,
+            rank,
+            trivial_rank,
+            ..
+        } = self.l_data(model, pencil)?;
+        let degree = polynomial.len() - 1;
+        let coefficients = polynomial
+            .into_iter()
+            .map(|coefficient| coefficient.signed().ok_or_else(polynomial_overflow))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(format!(
+            "rvK3PencilLFunction[{name}] = q={q}, coefficients={coefficients:?}, degree={degree}, conductor degree={conductor}, NS rank={ns_rank}, trivial rank={trivial_rank}, Mordell-Weil rank={rank}"
+        ))
+    }
+
+    fn l_data(&self, model: &mut Model, pencil: &Pencil) -> Result<LFunction> {
         let field = field(&pencil.curve);
         require_tame(field)?;
         self.require_nonconstant_j(model, field)?;
@@ -106,7 +139,7 @@ impl RelativeJacobian {
             places.push(Some(factor));
         }
 
-        let mut component_cycles = Vec::new();
+        let mut local = Vec::with_capacity(places.len());
         let mut conductor = 0;
         for place in &places {
             let place = place.as_ref();
@@ -119,7 +152,7 @@ impl RelativeJacobian {
                     reduction.kodaira.symbol()
                 ))
                 })?;
-            component_cycles.extend(action.cycles);
+            local.push((reduction.kodaira, action));
             conductor += reduction.kodaira.conductor_order();
         }
 
@@ -129,33 +162,39 @@ impl RelativeJacobian {
         let cross = k3::cross_quartic(q, pencil.curve.weil(model)?)?;
         let mut polynomial: Vec<_> = cross.into_iter().map(Integer::from_i128).collect();
         let node_orbits = k3::node_orbits(model, &pencil.curve, q)?;
-        for length in [1, 1].into_iter().chain(node_orbits) {
+        for length in [1, 1].into_iter().chain(node_orbits.iter().copied()) {
             polynomial = multiply_cycle(model, &polynomial, q, length)?;
         }
         if polynomial.len() != 23 {
             return Err(inconsistent_components());
         }
         let ns_rank = root_multiplicity(model, &polynomial, q)?;
-        for length in [1, 1].into_iter().chain(component_cycles.iter().copied()) {
+        let component_cycles = local
+            .iter()
+            .flat_map(|(_, action)| action.cycles.iter().copied());
+        let trivial_rank = 2 + component_cycles.clone().count();
+        for length in [1, 1].into_iter().chain(component_cycles) {
             polynomial = divide_cycle(model, &polynomial, q, length)?.ok_or_else(|| {
                 Error::plain("K3 pencil component factor did not divide H² exactly")
             })?;
         }
         let rank = root_multiplicity(model, &polynomial, q)?;
         let degree = polynomial.len() - 1;
-        let trivial_rank = 2 + component_cycles.len();
         if ns_rank != rank + trivial_rank || conductor.checked_sub(4) != Some(degree) {
             return Err(Error::plain(
                 "K3 pencil L function failed its conductor or rank check",
             ));
         }
-        let coefficients = polynomial
-            .into_iter()
-            .map(|coefficient| coefficient.signed().ok_or_else(polynomial_overflow))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(format!(
-            "rvK3PencilLFunction[{name}] = q={q}, coefficients={coefficients:?}, degree={degree}, conductor degree={conductor}, NS rank={ns_rank}, trivial rank={trivial_rank}, Mordell-Weil rank={rank}"
-        ))
+        Ok(LFunction {
+            q,
+            polynomial,
+            conductor,
+            ns_rank,
+            rank,
+            trivial_rank,
+            node_orbits,
+            places: local,
+        })
     }
 
     fn require_nonconstant_j(&self, model: &mut Model, field: Field<'_>) -> Result<()> {

@@ -1664,6 +1664,14 @@ For a smooth fiber in characteristic at least five, `rvk3fiberjac E[P](p);` regi
 
 The example over $\mathbb F_{13}$ reports conductor degree 10 and arithmetic Mordell–Weil rank two. The marks and heights below describe the explicit marked divisor lattice of the pencil. [Function-field L-polynomial example](examples/hyperelliptic-k3-pencil-l-function.asl)
 
+##### Central special values and the BSD quotient
+
+`rvK3PencilBSD[P];` computes the order $r$ and leading coefficient $L^*$ at $u=0$ in the exact expansion of $L((1-u)/q)$, where $u=1-qT$. It lists the Taylor coefficients in ascending powers of $u$. It verifies $L(T)=w(qT)^dL(1/(q^2T))$ for $d=\deg L$ and checks the root number $w=(-1)^r$. The report uses the same arithmetic scope as the L-polynomial command.
+
+For this elliptic K3 over $\mathbb F_q(\mathbb P^1)$, the geometric height normalization gives the Birch–Swinnerton-Dyer quotient $|\Sha|\operatorname{Reg}/|E(\mathbb F_q(\mathbb P^1))_{\mathrm{tors}}|^2=qL^*/\prod_v c_v$. The factor $q$ comes from $g(\mathbb P^1)-1+\chi(\mathcal O_S)=1$. The interpreter computes the arithmetic trivial lattice determinant from the Gram matrices of the orbit sums of the nonidentity fiber components. It checks that its magnitude is $\prod_v c_v\prod_O |O|$. Independently, the Kummer Artin–Tate computation gives the signed product of the finite-field Néron–Severi discriminant and the Brauer order. Its magnitude is $qL^*\prod_O |O|$, whose ratio to the trivial determinant gives the same BSD quotient. [Shioda, *Some remarks on elliptic curves over function fields*, §2, Theorem 8](https://www.numdam.org/article/AST_1992__209__99_0.pdf) [Milne, *On a conjecture of Artin and Tate*](https://math.stanford.edu/~conrad/BSDseminar/refs/MilneAT.pdf)
+
+The example over $\mathbb F_7$ has rank one, root number $-1$, leading coefficient $32/7$, and BSD quotient $1/16$. The independent marked height calculation gives height one for its chosen trope class. [Pencil BSD example](examples/hyperelliptic-k3-pencil-bsd.asl)
+
 ##### Marked Mordell–Weil coordinates and translations
 
 `rvk3mordell M[P,z];` chooses the strict trope of mask $z$ as the zero section $O$ of a declared pencil `P`. The trope must meet exactly one base node. For the canonical node order $i<j$, put $S=E_i-E_j$. `rvK3MordellCoord[M](D);` gives the degree $d=D\cdot F$ and the integral free coordinate $\ell(D)=(D-dO)\cdot S/2$. The marked height `rvK3MordellHeight[M](D,E);` is $\ell(D)\ell(E)$. Indeed, $S$ is orthogonal to the fiber and its vertical components, and $S^2=-4$.

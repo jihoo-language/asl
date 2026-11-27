@@ -1816,6 +1816,11 @@ impl Engine {
                             .l_function(&mut self.model, &pencil, &name.text)
                             .map(Some)
                     }
+                    Command::Bsd(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        relative.bsd(&mut self.model, &pencil, &name.text).map(Some)
+                    }
                 };
             }
             StatementForm::DeclareEnriques(declaration) => {

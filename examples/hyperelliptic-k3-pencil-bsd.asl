@@ -1,0 +1,23 @@
+rvunram F[7,1]{0,1};
+let z=rvUnramElem[F]{};
+let o=rvUnramElem[F]{1};
+let two=rvUnramElem[F]{2};
+let three=rvUnramElem[F]{3};
+let four=rvUnramElem[F]{4};
+let six=neg(o);
+rvhyperelliptic C[F]{z,two,z,four,z,o};
+let r0=rvJacPoint[C](z,z);
+let r1=rvJacPoint[C](o,z);
+let r2=rvJacPoint[C](three,z);
+let r3=rvJacPoint[C](six,z);
+rvjactorsionbasis B[C,2](neg(o)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),r3)};
+rvk3pencil P[B,0,1];
+
+rvK3FiberEuler[P](rvK3PencilParam[P](o,three));
+rvK3FiberEuler[P](rvK3PencilParam[P](o,four));
+rvK3PencilLFunction[P];
+rvK3PencilBSD[P];
+rvKummerK3ArtinTate[C,1];
+rvk3mordell M[P,4];
+let marked=rvKummerTropeDiv[B,5];
+rvK3MordellHeight[M](marked,marked);

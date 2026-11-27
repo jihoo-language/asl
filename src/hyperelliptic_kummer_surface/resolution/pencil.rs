@@ -25,6 +25,7 @@ pub(crate) enum Command {
     Reduction(Label, Box<ParsedExpr>),
     Euler(Label, Box<ParsedExpr>),
     LFunction(Label),
+    Bsd(Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Operation);
