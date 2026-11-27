@@ -179,6 +179,9 @@ pub(crate) fn remainder(
         let order = numerator.len() - width;
         let factor = field.multiply(model, &top, &inverse)?;
         for (dst, c) in numerator[order..].iter_mut().zip(denominator) {
+            if zero(c) {
+                continue;
+            }
             let product = field.multiply(model, &factor, c)?;
             *dst = field.subtract(model, dst, &product)?;
         }
@@ -188,6 +191,39 @@ pub(crate) fn remainder(
         }
     }
     Ok(numerator)
+}
+
+pub(crate) fn multiply_mod(
+    model: &mut Model,
+    field: Field<'_>,
+    a: &[Scalar],
+    b: &[Scalar],
+    modulus: &[Scalar],
+) -> Result<Polynomial> {
+    let product = multiply(model, field, a, b)?;
+    remainder(model, field, product, modulus)
+}
+
+pub(crate) fn power_mod(
+    model: &mut Model,
+    field: Field<'_>,
+    base: &[Scalar],
+    mut exponent: u64,
+    modulus: &[Scalar],
+) -> Result<Polynomial> {
+    let mut result = remainder(model, field, vec![field.one()], modulus)?;
+    let mut power = remainder(model, field, base.to_vec(), modulus)?;
+    while exponent != 0 {
+        model.spend(1)?;
+        if exponent & 1 != 0 {
+            result = multiply_mod(model, field, &result, &power, modulus)?;
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            power = multiply_mod(model, field, &power, &power, modulus)?;
+        }
+    }
+    Ok(result)
 }
 
 pub(crate) fn coprime(

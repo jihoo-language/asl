@@ -19,6 +19,7 @@ use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::elliptic::{self, Curve as EllipticCurve};
+use crate::elliptic_local;
 use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
@@ -1054,6 +1055,37 @@ impl Engine {
                 }
             },
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
+            StatementForm::EllipticLocal(command) => match *command {
+                elliptic_local::Command::Certificate(name, test) => {
+                    let curve = self.model.ec_curve(&name.text)?;
+                    let certificate = elliptic_local::certificate(&mut self.model, &curve, test)?;
+                    certificate.report(&mut self.model, &name.text, test)?
+                }
+                elliptic_local::Command::Order(name, prime) => {
+                    let curve = self.model.ec_curve(&name.text)?;
+                    let order =
+                        elliptic_local::LocalOrder::compute(&mut self.model, &curve, prime)?;
+                    order.report(&name.text, prime)
+                }
+                elliptic_local::Command::Field(name, curve) => {
+                    let curve = self.model.ec_curve(&curve.text)?;
+                    let family = elliptic_local::cm_family(&mut self.model, &curve)?;
+                    self.model.register_legendre_cm(name, family)?;
+                    return Ok(None);
+                }
+                elliptic_local::Command::Edge(name) => {
+                    let map = self.model.ec_isogeny(&name.text)?;
+                    let source = self.model.ec_curve(&map.source)?;
+                    let target = self.model.ec_curve(&map.target)?;
+                    elliptic_local::edge(
+                        &mut self.model,
+                        &name.text,
+                        &source,
+                        &target,
+                        map.kernel.ell as usize,
+                    )?
+                }
+            },
             StatementForm::Elliptic(command) => match *command {
                 elliptic::Command::Curve(name, ring, args) => {
                     let [a, b] = *args;
@@ -10794,6 +10826,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::Elliptic(expression) => self.ec_expression(*expression),
+            ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
@@ -15756,6 +15789,35 @@ impl Checker<'_> {
         } else {
             Ok((right, TypedForm::Snd(Box::new(pair))))
         }
+    }
+
+    fn ec_local_expression(
+        &mut self,
+        expression: elliptic_local::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        let (ty, value) = match expression {
+            elliptic_local::Expression::Coordinates(name, test) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let proof = elliptic_local::certificate(self.model, &curve, test)?;
+                let (x, y) = proof.checks();
+                let s = self.model.named("S").unwrap();
+                let ty = self.model.product(s, s)?;
+                self.model.allocate(1)?;
+                let value = Value::Pair(Rc::new((
+                    Value::Point(usize::from(x)),
+                    Value::Point(usize::from(y)),
+                )));
+                (ty, value)
+            }
+            elliptic_local::Expression::Generator(field, name, prime) => {
+                let family = self.model.legendre_cm(&field)?;
+                let curve = self.model.ec_curve(&name.text)?;
+                let order = elliptic_local::LocalOrder::compute(self.model, &curve, prime)?;
+                let value = order.generator(self.model, family)?;
+                (self.model.qp_quad_type(&field)?, value)
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn ec_expression(&mut self, form: elliptic::Expression) -> Result<(TypeId, TypedForm)> {

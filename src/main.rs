@@ -25,6 +25,7 @@ mod cyclic;
 mod dependent_sets;
 mod ec_poly;
 mod elliptic;
+mod elliptic_local;
 mod engine;
 mod eo;
 mod error;

@@ -63,7 +63,7 @@ impl Element {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Family {
     pub(crate) prime: usize,
     pub(crate) trace: i128,
@@ -77,6 +77,10 @@ impl Family {
         let prime = ring.prime() as usize;
         let norm = i128::from(ring.size_of_residue_field()?);
         let trace = i128::from(ring.legendre_trace(model, lambda)?);
+        Self::from_frobenius(prime, trace, norm)
+    }
+
+    pub(crate) fn from_frobenius(prime: usize, trace: i128, norm: i128) -> Result<Self> {
         if trace % prime as i128 == 0 {
             return Err(Error::plain("Legendre CM order requires an ordinary curve"));
         }

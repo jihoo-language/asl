@@ -1130,6 +1130,18 @@ The calculation uses Newton power sums and polynomial identities over the declar
 
 The two curves over $\mathbb F_{13}$ in the example both have $19$ rational points. They have one and four rational degree-three kernels respectively. The example also computes the quotient for the irreducible kernel polynomial of the degree-five isogeny $x^2+3x+1$ over $\mathbb F_7$ and a kernel with nonconstant coefficients over $\mathbb F_{25}$. [Cyclic Vélu example](examples/cyclic-velu.asl)
 
+### Local endomorphism orders and Vélu edge directions
+
+`rvEllFrobCert[E,ell,k,a];` tests the arithmetic Frobenius of a named short Weierstrass curve on the full geometric $m$-torsion scheme, where $m=\ell^k$ for an odd prime $\ell\ne p$. It uses the monic $x$-division polynomial $\psi_m$ and reduces $x^q$ and $f(x)^{(q-1)/2}$ modulo it for $E:y^2=f(x)$ over $\mathbb F_q$. The candidate $a$ is an integer prime to $m$. Omitting it uses half the Frobenius trace modulo $m$. The interpreter chooses a congruent signed representative prime to $p$.
+
+If the unreduced multiplication $x$-map is $N/D$, the invariant differential gives the $y$-multiplier $(N'D-ND')/(aD^2)$. The certificate prints the actual reduced Frobenius coordinates and the two remainders obtained by clearing these denominators. The denominators are units on the nonzero $m$-torsion since $a$ and $m$ are coprime. Polynomials appear as lists of exponent and coefficient pairs, with each coefficient in the named field basis. `rvEllFrobCoordinates[E,ell,k,a]` returns the pair of zero tests. This checks the sign even when the two candidate $x$-maps agree.
+
+`rvEllLocalOrder[E,ell];` counts the trace of an ordinary curve and finds the largest $r$ for which Frobenius is scalar on $E[\ell^r]$. It searches through $\lfloor v_\ell(t^2-4q)/2\rfloor$, using the containment of successively larger torsion schemes. The resulting index exponent is $v_\ell([\operatorname{End}(E):\mathbb Z[\pi]])$. If $a$ is the scalar at that level, $\pi-a$ factors through multiplication by $\ell^r$, giving an endomorphism $\omega=(\pi-a)/\ell^r$. The report gives its integral trace, norm and discriminant and determines the order at $\ell$.
+
+`rvellipticcm K[E];` declares the split Frobenius field of an ordinary Weierstrass curve for the existing quadratic and Frobenius-order operations. `rvEllLocalGen[K,E,ell]` gives $\omega$ in the compatible `RVQpQuad(K)` field. `rvEllEdge[I];` computes the two local indices of the named prime-degree Vélu isogeny and reports ascending, horizontal or descending according to the target index minus the source index.
+
+Over $\mathbb F_{61}$ the curve $y^2=x^3+2$ has scalar $5$ on its complete degree-$40$ $9$-division polynomial. The negative candidate agrees on $x$ and fails on $y$. The example verifies $\pi=5+9\omega$ with trace $-1$ and norm $1$ for $\omega$. It also classifies five actual degree-three Vélu edges over $\mathbb F_{13}$. [Ordinary elliptic order example](examples/ordinary-tate-orders.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

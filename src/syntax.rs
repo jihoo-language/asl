@@ -945,6 +945,7 @@ pub(crate) enum ExprForm {
     UnramElement(Label, Vec<i128>),
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
     Elliptic(Box<crate::elliptic::Expression>),
+    EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1105,6 +1106,7 @@ pub(crate) enum StatementForm {
     LeeDt(Box<crate::lee::dt::Command>),
     Khovanov(Box<crate::khovanov::Command>),
     Elliptic(Box<crate::elliptic::Command>),
+    EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
@@ -2836,6 +2838,78 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Elliptic(Box::new(statement)))
     }
 
+    fn ec_local_test(&mut self) -> Result<(Label, crate::elliptic_local::Test)> {
+        self.expect(Token::LBracket)?;
+        let curve = self.label()?;
+        self.expect(Token::Comma)?;
+        let prime = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let level = self.number()?.0;
+        let candidate = if self.eat(Token::Comma)? {
+            Some(self.signed_wide("an integer scalar candidate", "Frobenius scalar candidate")?)
+        } else {
+            None
+        };
+        self.expect(Token::RBracket)?;
+        Ok((
+            curve,
+            crate::elliptic_local::Test {
+                prime,
+                level,
+                candidate,
+            },
+        ))
+    }
+
+    fn ec_local_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::elliptic_local::Command;
+        self.advance()?;
+        let action = match command {
+            "rvEllFrobCert" => {
+                let (curve, test) = self.ec_local_test()?;
+                Command::Certificate(curve, test)
+            }
+            "rvellipticcm" => {
+                let field = self.label()?;
+                self.expect(Token::LBracket)?;
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Field(field, curve)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                let action = if command == "rvEllLocalOrder" {
+                    self.expect(Token::Comma)?;
+                    Command::Order(label, self.number()?.0)
+                } else {
+                    Command::Edge(label)
+                };
+                self.expect(Token::RBracket)?;
+                action
+            }
+        };
+        Ok(StatementForm::EllipticLocal(Box::new(action)))
+    }
+
+    fn ec_local_expression(&mut self, name: &str, span: Span) -> Result<ParsedExpr> {
+        use crate::elliptic_local::Expression;
+        let value = if name == "rvEllFrobCoordinates" {
+            let (curve, test) = self.ec_local_test()?;
+            Expression::Coordinates(curve, test)
+        } else {
+            self.expect(Token::LBracket)?;
+            let field = self.label()?;
+            self.expect(Token::Comma)?;
+            let curve = self.label()?;
+            self.expect(Token::Comma)?;
+            let prime = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Expression::Generator(field, curve, prime)
+        };
+        expr(span, ExprForm::EllipticLocal(Box::new(value)), 0)
+    }
+
     fn ec_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::elliptic::{Expression, MapPolynomial, Unary};
         let mut depth = 0;
@@ -2941,6 +3015,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvec" | "rvecisogeny" | "rvECPointCount" | "rvECIsogenies"
                 | "rvECCertify"),
             ) => self.ec_statement(command)?,
+            Token::Word(
+                command @ ("rvEllFrobCert" | "rvEllLocalOrder" | "rvellipticcm" | "rvEllEdge"),
+            ) => self.ec_local_statement(command)?,
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -7900,6 +7977,11 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.ec_expression(&name.text, span, nest);
+                }
+                if matches!(name.text.as_str(), "rvEllFrobCoordinates" | "rvEllLocalGen")
+                    && self.token() == Token::LBracket
+                {
+                    return self.ec_local_expression(&name.text, span);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;

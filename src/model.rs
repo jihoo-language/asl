@@ -126,7 +126,7 @@ const MAX_TYPE_DEPTH: usize = 64;
 const MAX_ELEMENTS: usize = 4096;
 const MAX_WORK: usize = 25_000_000;
 const MAX_STORAGE: usize = 1_000_000;
-const MAX_SHOWN_BYTES: usize = 65_536;
+pub(crate) const MAX_SHOWN_BYTES: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct TypeId(usize);
