@@ -96,12 +96,8 @@ impl Curve {
                 "Weierstrass coefficients have the wrong residue field",
             ));
         }
-        let a2 = field.multiply(model, &a, &a)?;
-        let a3 = field.multiply(model, &a2, &a)?;
-        let b2 = field.multiply(model, &b, &b)?;
-        let t = field.multiply(model, &a3, &field.signed(4))?;
-        let u = field.multiply(model, &b2, &field.signed(27))?;
-        if poly::zero(&field.add(model, &t, &u)?) {
+        let (_, denominator) = discriminant_parts(model, field, &a, &b)?;
+        if poly::zero(&denominator) {
             return Err(Error::plain("short Weierstrass curve is singular"));
         }
         let polynomial = vec![b.clone(), a.clone(), field.zero(), field.one()];
@@ -122,6 +118,14 @@ impl Curve {
 
     pub(crate) fn polynomial(&self) -> &[Scalar] {
         &self.polynomial
+    }
+
+    pub(crate) fn j_invariant(&self, model: &mut Model) -> Result<Scalar> {
+        let field = self.field();
+        let (a, denominator) = discriminant_parts(model, field, &self.a, &self.b)?;
+        let inverse = field.inverse_unit(model, &denominator)?;
+        let ratio = field.multiply(model, &a, &inverse)?;
+        field.multiply(model, &field.signed(1728), &ratio)
     }
 
     pub(crate) fn trace(&self, model: &mut Model) -> Result<(u64, i64)> {
@@ -382,7 +386,22 @@ fn generator_mod_sign(model: &mut Model, ell: u64) -> Result<u64> {
     Err(Error::plain("unable to find a cyclic generator modulo ell"))
 }
 
-fn integer_power_mod(model: &mut Model, mut a: u64, mut n: u64, m: u64) -> Result<u64> {
+fn discriminant_parts(
+    model: &mut Model,
+    field: Field<'_>,
+    a: &Scalar,
+    b: &Scalar,
+) -> Result<(Scalar, Scalar)> {
+    let a2 = field.multiply(model, a, a)?;
+    let a3 = field.multiply(model, &a2, a)?;
+    let b2 = field.multiply(model, b, b)?;
+    let a_term = field.multiply(model, &a3, &field.signed(4))?;
+    let b_term = field.multiply(model, &b2, &field.signed(27))?;
+    let denominator = field.add(model, &a_term, &b_term)?;
+    Ok((a_term, denominator))
+}
+
+pub(crate) fn integer_power_mod(model: &mut Model, mut a: u64, mut n: u64, m: u64) -> Result<u64> {
     let mut value = 1;
     while n != 0 {
         model.spend(1)?;

@@ -166,6 +166,7 @@ pub(crate) enum TypeForm {
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
     KhovanovMod(Label, usize, Option<usize>, crate::khovanov::Grade, i64),
     CMOrder(Label, usize),
+    ECEndOrder(Label),
     CMClass(Label),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
@@ -1001,6 +1002,7 @@ pub(crate) enum ExprForm {
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
     CMClassPolynomial(Box<crate::cm_class_poly::Expression>),
+    ECEndOrder(Box<crate::elliptic_end_order::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1221,6 +1223,7 @@ pub(crate) enum StatementForm {
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
     CMClassPolynomial(Box<crate::cm_class_poly::Statement>),
+    ECEndOrder(Box<crate::elliptic_end_order::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3538,6 +3541,77 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn ec_end_order_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::Statement;
+        self.advance()?;
+        let command = if matches!(name, "rvECEndTrace" | "rvECEndNorm") {
+            Statement::Invariant(name == "rvECEndNorm", Box::new(self.paren_expr(0)?))
+        } else {
+            let certificate = if name == "rvecendorder" {
+                Some(self.label()?)
+            } else {
+                None
+            };
+            self.expect(Token::LBracket)?;
+            let first = self.label()?;
+            let command = if name == "rvECEndData" {
+                Statement::Data(first)
+            } else {
+                self.expect(Token::Comma)?;
+                let second = self.label()?;
+                if let Some(certificate) = certificate {
+                    Statement::Define(certificate, first, second)
+                } else {
+                    Statement::Check(first, second)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::ECEndOrder(Box::new(command)))
+    }
+
+    fn ec_end_order_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::elliptic_end_order::Expression;
+        let (expression, depth) = match name {
+            "rvECEndElem" | "rvECEndFrobenius" | "rvECEndJ" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                let expression = match name {
+                    "rvECEndElem" => {
+                        self.expect(Token::Comma)?;
+                        let a =
+                            self.signed_wide("a signed coordinate", "CM endomorphism coordinate")?;
+                        self.expect(Token::Comma)?;
+                        let b =
+                            self.signed_wide("a signed coordinate", "CM endomorphism coordinate")?;
+                        Expression::Literal(label, a, b)
+                    }
+                    "rvECEndFrobenius" => Expression::Frobenius(label),
+                    _ => Expression::JInvariant(label),
+                };
+                self.expect(Token::RBracket)?;
+                (expression, 0)
+            }
+            "rvECEndMul" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (Expression::Multiply(Box::new(pair)), depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Conjugate(Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::ECEndOrder(Box::new(expression)), depth)
     }
 
     fn cm_class_poly_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -6475,6 +6549,10 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(
+                name @ ("rvecendorder" | "rvECEndData" | "rvECEndCheck" | "rvECEndTrace"
+                | "rvECEndNorm"),
+            ) => self.ec_end_order_statement(name)?,
             Token::Word(name @ ("rvModularPolyDegree" | "rvModularPolyCoeff")) => {
                 self.elliptic_modular_statement(name)?
             }
@@ -9833,6 +9911,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if name.text == "RVECEnd" && self.eat(Token::LParen)? {
+            let certificate = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ECEndOrder(certificate), 0);
+        }
         if name.text == "RVCMClass" && self.eat(Token::LParen)? {
             let order = self.label()?;
             self.expect(Token::RParen)?;
@@ -12019,6 +12102,15 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.cm_class_poly_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvECEndElem" | "rvECEndFrobenius" | "rvECEndJ"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvECEndMul" | "rvECEndConj")
+                        && self.token() == Token::LParen)
+                {
+                    return self.ec_end_order_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

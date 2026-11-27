@@ -29,6 +29,7 @@ mod ec_morphism;
 mod ec_poly;
 mod elliptic;
 mod elliptic_cm_recognition;
+mod elliptic_end_order;
 mod elliptic_gluing;
 mod elliptic_local;
 mod elliptic_modular;

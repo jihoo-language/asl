@@ -1534,6 +1534,14 @@ The norm $\operatorname{Res}_X(H_D(X),\Phi_\ell(X,Y))$ is the determinant of mul
 
 `rvCMClassPolyData[H];` reports the discriminant and degree. `rvCMClassPolyCoeff[H,i];` gives the exact coefficient of $Y^i$. `rvCMClassPolyModCoeff[H,F,i]` reduces that coefficient in a named precision-one `RVUnram` field, and `rvCMClassPolyEval[H](x)` evaluates there. Reduction retains root multiplicities. For the singular moduli and class polynomials, see Cox, *Primes of the Form $x^2+ny^2$*. For the kernel counts, see Bröker, Lauter and Sutherland, *Modular Polynomials via Isogeny Volcanoes*. [Ring class polynomial example](examples/ring-class-polynomial-norms.asl)
 
+#### Ordinary elliptic endomorphism orders
+
+`rvecendorder R[E,H];` certifies the endomorphism order of a named short Weierstrass curve $E/\mathbb F_q$ using a certified ring class polynomial $H_D$. It computes $j(E)$ and the Frobenius trace $a=q+1-\#E(\mathbb F_q)$. It requires $p\nmid a$, $H_D(j(E))=0$, a split characteristic $p$ prime to $D$, and $a^2-4q=Dm^2$ with $m>0$. The ordinary reduction and canonical lift correspondence identifies the endomorphism order with $\mathcal O_D$. In the ordinary case the geometric endomorphisms commute with Frobenius and are defined over the field of the curve. `rvECEndCheck[E,H];` reports the evidence and the certification result, including the polynomial residual. `rvECEndJ[E]` returns $j(E)$ in the curve's named field.
+
+`rvECEndData[R];` reports the discriminant, Frobenius trace and index $[\mathcal O_D:\mathbb Z[\pi]]=m$. The type `RVECEnd(R)` gives the abstract integral order in the basis $1,\omega=(b+\sqrt D)/2$, where $b\in\{0,1\}$ is the parity of $D$. Enter coordinates with `rvECEndElem[R,x,y]` and use `zero`, `add`, `neg`, `rvECEndMul(x,y)` and `rvECEndConj(x)`. `rvECEndTrace(x);` and `rvECEndNorm(x);` report the quadratic invariants. `rvECEndFrobenius[R]` gives $\pi=(a+m\sqrt D)/2$ up to conjugation. The certificate verifies $\pi^2-a\pi+q=0$ and gives the order and Frobenius coordinates in this abstract basis.
+
+See Deuring, *Die Typen der Multiplikatorenringe elliptischer Funktionenkörper*, Abh. Math. Sem. Hansischen Univ. **14** (1941), 197–272, and Cox, *Primes of the Form $x^2+ny^2$*, for ordinary reduction and its relation to ring class polynomials. [Ordinary endomorphism order example](examples/elliptic-deuring-endomorphism-orders.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

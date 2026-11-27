@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::legendre_closed;
 use crate::model::{Model, Value};
-use crate::rv_qp_quad::{self, Element as QuadElement, Field};
+use crate::rv_qp_quad::{self, Element as QuadElement, Field, Wide};
 use crate::rv_unram::{self, Ring};
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -50,16 +50,25 @@ impl Element {
         ))
     }
 
-    fn product(self, model: &mut Model, other: Self, trace: i128, norm: i128) -> Result<Self> {
-        model.spend(1)?;
-        let product = mul(self.generator, other.generator)?;
-        let constant = sub(mul(self.constant, other.constant)?, mul(norm, product)?)?;
-        let mixed = add(
-            mul(self.constant, other.generator)?,
-            mul(self.generator, other.constant)?,
-        )?;
-        let generator = add(mixed, mul(trace, product)?)?;
-        Ok(Self::new(constant, generator))
+    pub(crate) fn product(
+        self,
+        model: &mut Model,
+        other: Self,
+        trace: i128,
+        norm: i128,
+    ) -> Result<Element> {
+        model.spend(80)?;
+        type Integer = Wide<13>;
+        let product = Integer::product(self.generator, other.generator);
+        let constant = Integer::product(self.constant, other.constant)
+            .add(product.multiply(norm)?.negate())?;
+        let generator = Integer::product(self.constant, other.generator)
+            .add(Integer::product(self.generator, other.constant))?
+            .add(product.multiply(trace)?)?;
+        Ok(Self::new(
+            constant.signed().ok_or_else(arithmetic_limit)?,
+            generator.signed().ok_or_else(arithmetic_limit)?,
+        ))
     }
 }
 

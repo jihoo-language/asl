@@ -22,6 +22,7 @@ use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
+use crate::elliptic_end_order;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
 use crate::elliptic_modular;
@@ -608,6 +609,13 @@ enum EllipticModularAction {
     SpecializeCoefficient(usize, Box<TypedExpr>),
 }
 
+enum ECEndAction {
+    JInvariant(Rc<EllipticCurve>),
+    Multiply(Rc<elliptic_end_order::Certificate>, Box<[TypedExpr; 2]>),
+    Conjugate(Rc<elliptic_end_order::Certificate>, Box<TypedExpr>),
+    Negate(Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -710,6 +718,7 @@ enum TypedForm {
     CMClass(cm_ring::Order, CMClassAction),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
     EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
+    ECEnd(ECEndAction),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -1910,6 +1919,7 @@ impl Engine {
             StatementForm::CMClassPolynomial(command) => {
                 return self.cm_class_poly_statement(*command)
             }
+            StatementForm::ECEndOrder(command) => return self.ec_end_order_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5042,6 +5052,42 @@ impl Engine {
         }
     }
 
+    fn ec_end_order_statement(
+        &mut self,
+        statement: elliptic_end_order::Statement,
+    ) -> Result<Option<String>> {
+        use elliptic_end_order::{Evidence, Statement};
+        let report = match statement {
+            Statement::Define(certificate, curve, polynomial) => {
+                let object = self.model.ec_curve(&curve.text)?;
+                let polynomial = self.model.cm_class_polynomial(&polynomial)?;
+                let evidence = Evidence::read(&mut self.model, &object, &polynomial)?;
+                let value = evidence.certify(&mut self.model, curve.text)?;
+                self.model.define_ec_end_order(certificate, value)?;
+                return Ok(None);
+            }
+            Statement::Check(curve, polynomial) => {
+                let object = self.model.ec_curve(&curve.text)?;
+                let candidate = self.model.cm_class_polynomial(&polynomial)?;
+                Evidence::read(&mut self.model, &object, &candidate)?
+                    .report(&curve.text, &polynomial.text)
+            }
+            Statement::Data(name) => self.model.ec_end_order(&name.text)?.report(&name.text),
+            Statement::Invariant(norm, input) => {
+                let name = if norm { "rvECEndNorm" } else { "rvECEndTrace" };
+                let checker = &mut self.checker();
+                let input = checker.expr(*input)?;
+                let order = checker.ec_end_operand(&input, name)?;
+                let Value::ECEndOrder(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let result = order.invariant(&mut self.model, norm, value)?;
+                format!("{name} = {result}")
+            }
+        };
+        Ok(Some(report))
+    }
+
     fn cm_class_poly_statement(
         &mut self,
         statement: cm_class_poly::Statement,
@@ -6396,6 +6442,36 @@ impl Engine {
         Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
     }
 
+    fn eval_ec_end(&mut self, action: &ECEndAction) -> Result<Value> {
+        let value = match action {
+            ECEndAction::JInvariant(curve) => {
+                let value = curve.j_invariant(&mut self.model)?;
+                return rv_unram::persist(&mut self.model, value);
+            }
+            ECEndAction::Multiply(order, inputs) => {
+                let [x, y] = inputs.as_ref();
+                let (Value::ECEndOrder(x), Value::ECEndOrder(y)) = (self.eval(x)?, self.eval(y)?)
+                else {
+                    unreachable!()
+                };
+                order.multiply(&mut self.model, x, y)?
+            }
+            ECEndAction::Conjugate(order, input) => {
+                let Value::ECEndOrder(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                order.conjugate(&mut self.model, value)?
+            }
+            ECEndAction::Negate(input) => {
+                let Value::ECEndOrder(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.negate(&mut self.model)?
+            }
+        };
+        elliptic_end_order::persist(&mut self.model, value)
+    }
+
     fn eval_elliptic_modular(
         &mut self,
         field: &UnramRing,
@@ -7570,6 +7646,10 @@ impl Engine {
                         let curve = self.model.jacobian_curve(name)?;
                         let sum = a.add(&mut self.model, &curve, &b)?;
                         sum.persist(&mut self.model, &curve)
+                    }
+                    (BinaryOp::Add, Value::ECEndOrder(a), Value::ECEndOrder(b)) => {
+                        let value = a.add(&mut self.model, b)?;
+                        elliptic_end_order::persist(&mut self.model, value)
                     }
                     (BinaryOp::Add, Value::ECPoint(a), Value::ECPoint(b)) => {
                         let Kind::ECPoint(name) = self.model.kind(expr.ty) else {
@@ -9128,6 +9208,7 @@ impl Engine {
             TypedForm::EllipticModular(field, prime, action) => {
                 self.eval_elliptic_modular(field, *prime, action)
             }
+            TypedForm::ECEnd(action) => self.eval_ec_end(action),
             TypedForm::CMClassPolynomialEval(polynomial, field, input) => {
                 let Value::RVUnram(input) = self.eval(input)? else {
                     unreachable!()
@@ -11638,6 +11719,7 @@ impl Checker<'_> {
             }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::CMOrder(name, exponent) => self.model.cm_order_type(&name, exponent),
+            TypeForm::ECEndOrder(name) => self.model.ec_end_order_type(&name),
             TypeForm::CMClass(name) => self.model.cm_class_type(&name),
             TypeForm::HWMatrix(p, g, s) => {
                 let ring = Residues::checked(self.model, p, s)?;
@@ -12750,6 +12832,7 @@ impl Checker<'_> {
                     Kind::RVResSpace(grade) => ResSpace::zero(*grade).persist(self.model)?,
                     Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
                     Kind::CMOrder(..) => Value::CMOrder(legendre_cm::Element::ZERO),
+                    Kind::ECEndOrder(..) => Value::ECEndOrder(legendre_cm::Element::ZERO),
                     Kind::HWMatrix(ring,size)=>ring.zero_matrix(self.model,*size)?,
                     Kind::HWWMatrix(grade) => {
                         let ring = self.model.rv_unram_named(&grade.ring).expect("registered unramified ring");
@@ -14917,6 +15000,7 @@ impl Checker<'_> {
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::CMClassPolynomial(expression) => self.cm_class_poly_expression(*expression),
+            ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
             ExprForm::CMNeighbor(expression) => {
                 let cm_neighbors::Expression(target, ell, address, input) = expression;
                 let input = self.expr(*input)?;
@@ -15756,6 +15840,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::CMUnary(legendre_cm::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::ECEndOrder(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::ECEnd(ECEndAction::Negate(Box::new(input))),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::HWWMatrix(..)) {
@@ -19515,6 +19605,7 @@ impl Checker<'_> {
                         | Kind::LeeDual(..)
                         | Kind::Khovanov(..)
                         | Kind::CMOrder(..)
+                        | Kind::ECEndOrder(..)
                         | Kind::RvTl(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
@@ -21424,6 +21515,64 @@ impl Checker<'_> {
             Ok(name)
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
+        }
+    }
+
+    fn ec_end_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<elliptic_end_order::Certificate>> {
+        let Kind::ECEndOrder(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVECEnd element"));
+        };
+        self.model.ec_end_order(name)
+    }
+
+    fn ec_end_order_expression(
+        &mut self,
+        expression: elliptic_end_order::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use elliptic_end_order::Expression;
+        match expression {
+            Expression::Literal(name, a, b) => {
+                let ty = self.model.ec_end_order_type(&name)?;
+                let value =
+                    elliptic_end_order::persist(self.model, legendre_cm::Element::new(a, b))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Frobenius(name) => {
+                let ty = self.model.ec_end_order_type(&name)?;
+                let pi = self.model.ec_end_order(&name.text)?.frobenius;
+                Ok((
+                    ty,
+                    TypedForm::Constant(elliptic_end_order::persist(self.model, pi)?),
+                ))
+            }
+            Expression::JInvariant(name) => {
+                let curve = self.model.ec_curve(&name.text)?;
+                let ty = self.model.ec_coefficient_type(&curve)?;
+                Ok((ty, TypedForm::ECEnd(ECEndAction::JInvariant(curve))))
+            }
+            Expression::Multiply(inputs) => {
+                let [x, y] = *inputs;
+                let x = self.expr(x)?;
+                let order = self.ec_end_operand(&x, "rvECEndMul")?;
+                let y = self.expr(y)?;
+                self.require_type(x.ty, &y, "rvECEndMul right argument")?;
+                Ok((
+                    x.ty,
+                    TypedForm::ECEnd(ECEndAction::Multiply(order, Box::new([x, y]))),
+                ))
+            }
+            Expression::Conjugate(input) => {
+                let input = self.expr(*input)?;
+                let order = self.ec_end_operand(&input, "rvECEndConj")?;
+                Ok((
+                    input.ty,
+                    TypedForm::ECEnd(ECEndAction::Conjugate(order, Box::new(input))),
+                ))
+            }
         }
     }
 

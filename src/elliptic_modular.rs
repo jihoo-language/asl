@@ -316,7 +316,7 @@ fn add_convolution(
     Ok(())
 }
 
-fn decimal(value: Integer) -> String {
+pub(crate) fn decimal<const N: usize>(value: Wide<N>) -> String {
     if value.is_zero() {
         return "0".into();
     }

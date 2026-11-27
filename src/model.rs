@@ -298,6 +298,7 @@ pub(crate) enum Kind {
     LeeDual(Rc<str>, i64),
     Khovanov(Rc<str>, khovanov::Grade, KhForm),
     CMOrder(legendre_cm::Grade),
+    ECEndOrder(Rc<str>),
     CMClass(Rc<str>),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
@@ -482,6 +483,7 @@ pub(crate) enum Value {
     KhChain(khovanov::Chain),
     KhClass(khovanov::Class),
     CMOrder(legendre_cm::Element),
+    ECEndOrder(legendre_cm::Element),
     CMClass(cm_ring::Class),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
@@ -632,6 +634,7 @@ pub(crate) struct Model {
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     elliptic_curves: HashMap<Rc<str>, Rc<EllipticCurve>>,
+    elliptic_end_orders: HashMap<String, Rc<crate::elliptic_end_order::Certificate>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
@@ -752,6 +755,7 @@ impl Model {
             rv_as_two_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
             elliptic_curves: HashMap::new(),
+            elliptic_end_orders: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
             hyperelliptic: HashMap::new(),
@@ -1045,6 +1049,7 @@ impl Model {
             | Kind::RVCycloQ(..)
             | Kind::RVQpQuad(..)
             | Kind::CMOrder(..)
+            | Kind::ECEndOrder(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
             Kind::RVResSpace(grade) => grade.count(),
@@ -1335,6 +1340,7 @@ impl Model {
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
                 | Kind::CMOrder(..)
+                | Kind::ECEndOrder(..)
                 | Kind::CMClass(..)
                 | Kind::RVWzw(..)
                 | Kind::Lee(..)
@@ -3412,6 +3418,38 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown cyclic isogeny '{name}'")))
+    }
+
+    pub(crate) fn define_ec_end_order(
+        &mut self,
+        name: Label,
+        certificate: crate::elliptic_end_order::Certificate,
+    ) -> Result<()> {
+        if self.elliptic_end_orders.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "elliptic endomorphism-order certificate is already defined",
+            ));
+        }
+        self.elliptic_end_orders
+            .insert(name.text, Rc::new(certificate));
+        Ok(())
+    }
+
+    pub(crate) fn ec_end_order(
+        &self,
+        name: &str,
+    ) -> Result<Rc<crate::elliptic_end_order::Certificate>> {
+        self.elliptic_end_orders.get(name).cloned().ok_or_else(|| {
+            Error::plain(format!(
+                "unknown elliptic endomorphism-order certificate '{name}'"
+            ))
+        })
+    }
+
+    pub(crate) fn ec_end_order_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.ec_end_order(&name.text)?;
+        self.inhabited_type(Kind::ECEndOrder(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_ec_curve(
@@ -5658,6 +5696,7 @@ impl Model {
             | Kind::ModularHecke(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
+            | Kind::ECEndOrder(..)
             | Kind::ECKernel(..)
             | Kind::ECIso(..)
             | Kind::HWMatrix(..)
@@ -6153,6 +6192,7 @@ impl Model {
             Kind::CMOrder(grade) => {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
+            Kind::ECEndOrder(name) => out.push(&format!("RVECEnd({name})")),
             Kind::CMClass(name) => out.push(&format!("RVCMClass({name})")),
             Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
             Kind::Jacobian(name) => out.push(&format!("RVJac({name})")),
@@ -6441,6 +6481,7 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left == right),
+            (Value::ECEndOrder(left), Value::ECEndOrder(right)) => Ok(left == right),
             (Value::CMClass(left), Value::CMClass(right)) => Ok(left == right),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
@@ -6789,6 +6830,7 @@ impl Model {
                 }
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left.cmp(right)),
+            (Value::ECEndOrder(left), Value::ECEndOrder(right)) => Ok(left.cmp(right)),
             (Value::CMClass(left), Value::CMClass(right)) => Ok(left.cmp(right)),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
@@ -7112,6 +7154,11 @@ impl Model {
                 }
                 Kind::CMOrder(..) => {
                     return Err(Error::plain("cannot enumerate an integral CM order"));
+                }
+                Kind::ECEndOrder(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an integral elliptic endomorphism order",
+                    ));
                 }
                 Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()]
                     .elements(self, MAX_ELEMENTS)?
@@ -8653,7 +8700,7 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}, {}}}", value.a, value.b, value.c))
             }
-            Value::CMOrder(value) => {
+            Value::CMOrder(value) | Value::ECEndOrder(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", value.constant, value.generator))
             }
