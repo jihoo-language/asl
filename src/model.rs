@@ -621,6 +621,7 @@ pub(crate) struct Model {
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
+    k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     mukai_moduli: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>>,
@@ -723,6 +724,7 @@ impl Model {
             jacobian_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_automorphisms: HashMap::new(),
+            k3_periods: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
@@ -3624,6 +3626,34 @@ impl Model {
         self.allocate(5 + name.text.len() + word.generators.len())?;
         self.k3_automorphisms.insert(name.text, Rc::new(word));
         Ok(())
+    }
+
+    pub(crate) fn define_k3_period(
+        &mut self,
+        name: Label,
+        marking: Rc<str>,
+        u: Rc<unimodular::Vector>,
+        v: Rc<unimodular::Vector>,
+    ) -> Result<()> {
+        if self.k3_periods.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("K3 period '{}' is already defined", name.text),
+            ));
+        }
+        let period = hyperelliptic_kummer_surface::period::Period::new(self, marking, u, v)?;
+        self.k3_periods.insert(name.text, Rc::new(period));
+        Ok(())
+    }
+
+    pub(crate) fn k3_period(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::period::Period>> {
+        self.k3_periods
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown K3 period '{}'", name.text)))
     }
 
     pub(crate) fn k3_automorphism(

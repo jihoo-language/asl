@@ -287,7 +287,7 @@ impl<D: Domain> Coefficients<D> {
     }
 }
 
-fn decimal(mut magnitude: Denominator) -> String {
+pub(super) fn decimal<const N: usize>(mut magnitude: Natural<N>) -> String {
     if let Some(value) = magnitude.small() {
         return value.to_string();
     }

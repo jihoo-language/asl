@@ -1396,6 +1396,14 @@ The basis comes from the graded tensor product of three two-dimensional wedge bl
 
 The nondegenerate full Clifford algebra acts faithfully on the $2048$-dimensional combined space because it is central simple. Its dimension $2^{22}$ equals the dimension of the full endomorphism algebra. Its even part acts on the two volume eigenspaces, and dimensional equality gives the full endomorphism algebra on each, proving irreducibility. [Rational half-spin example](examples/hyperelliptic-k3-rational-half-spin.asl)
 
+#### Rational K3 periods and the Kuga–Satake action
+
+`rvk3period P(u,v);` registers an oriented rational period plane in the marked K3 lattice. Its two ordered generators must have the same marking and a positive definite Gram matrix. Write $D=(u,u)(v,v)-(u,v)^2$. `rvK3PeriodBlade[P]` gives the even Clifford element $\Omega=2uv-(u,v)1$ with $\Omega^2=-D$. `rvK3PeriodCM[P](s)` acts by $\Omega$ on either half-spin module with that marking. The action of $\mathbb Q(\sqrt{-D})$ is faithful and each half-spin module has rank $512$ over this field. The real complex structure is $J=\Omega/\sqrt D$. A change of generators with determinant $k$ scales $\Omega$ by $k$ and $D$ by $k^2$, so $J$ depends on the orientation of the plane.
+
+`rvK3PeriodReport[P];` gives $D$ and the saturation index $I$, the gcd of the two-by-two minors in the integral unimodular basis. The primitive transcendental lattice has discriminant $D/I^2$. Its orthogonal Néron–Severi lattice has rank $20$, signature $(1,19)$ and determinant $-D/I^2$. `rvK3PeriodIs11[P](x);` tests orthogonality to both generators. The report also gives the half-spin dimension and the dimension $2^{21}$ of the full regular even Clifford realization of weight one.
+
+The supplied plane defines an abstract marked Hodge structure. The finite-field curve supplies the level-two marking. The commands report lattice invariants and construct the rational Clifford action, with the existing exact coefficient bounds for blades and spinors. See Kuga and Satake, *Abelian varieties attached to polarized K3-surfaces* (1967), Deligne, *La conjecture de Weil pour les surfaces K3* (1972), and Huybrechts, *Lectures on K3 Surfaces* (2016). [Rational period example](examples/hyperelliptic-k3-kuga-satake-period.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

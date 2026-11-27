@@ -35,6 +35,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai;
+use crate::hyperelliptic_kummer_surface::period as k3_period;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
@@ -1706,6 +1707,7 @@ impl Engine {
                 return self.spinor_coefficient(command).map(Some)
             }
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
+            StatementForm::K3Period(command) => return self.k3_period_statement(*command),
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
@@ -4794,6 +4796,43 @@ impl Engine {
                 };
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
+            }
+        }
+    }
+
+    fn k3_period_statement(&mut self, command: k3_period::Statement) -> Result<Option<String>> {
+        use k3_period::Statement;
+        match command {
+            Statement::Define(name, inputs) => {
+                let [u, v] = *inputs;
+                let checker = &mut self.checker();
+                let u = checker.expr(u)?;
+                let marking = Rc::clone(checker.k3_lattice_operand(&u, "rvk3period")?);
+                let v = checker.expr(v)?;
+                checker.require_type(u.ty, &v, "rvk3period second vector")?;
+                let (Value::K3Lattice(u), Value::K3Lattice(v)) = (self.eval(&u)?, self.eval(&v)?)
+                else {
+                    unreachable!()
+                };
+                self.model.define_k3_period(name, marking, u, v)?;
+                Ok(None)
+            }
+            Statement::Report(name) => Ok(Some(self.model.k3_period(&name)?.report(&name.text))),
+            Statement::Is11(name, input) => {
+                let period = self.model.k3_period(&name)?;
+                let checker = &mut self.checker();
+                let input = checker.expr(*input)?;
+                let marking = Label {
+                    text: period.marking().into(),
+                    span: name.span,
+                };
+                let expected = checker.model.k3_lattice_type(&marking)?;
+                checker.require_type(expected, &input, "rvK3PeriodIs11 vector")?;
+                let Value::K3Lattice(input) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let result = period.is_11(&mut self.model, &input)?;
+                Ok(Some(format!("rvK3PeriodIs11[{}] = {result}", name.text)))
             }
         }
     }
@@ -13612,6 +13651,7 @@ impl Checker<'_> {
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
+            ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
@@ -19819,6 +19859,40 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
         }
+    }
+
+    fn k3_period_expression(
+        &mut self,
+        expression: k3_period::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use k3_period::Expression;
+        let (name, optional_spinor) = match expression {
+            Expression::Blade(name) => (name, None),
+            Expression::CM(name, spinor) => (name, Some(self.expr(*spinor)?)),
+        };
+        let period = self.model.k3_period(&name)?;
+        let marking = Label {
+            text: period.marking().into(),
+            span: name.span,
+        };
+        let actor_ty = self.model.k3_clifford_type(&marking, 0)?;
+        if let Some(spinor) = optional_spinor {
+            let (_, chirality) = self.spinor_operand(&spinor, "rvK3PeriodCM")?;
+            let expected = self.model.k3_spinor_type(&marking, chirality)?;
+            self.require_type(expected, &spinor, "rvK3PeriodCM spinor")?;
+            let blade = period.blade(self.model)?.persist(self.model)?;
+            let actor = TypedExpr {
+                span: name.span,
+                ty: actor_ty,
+                kind: TypedForm::Constant(blade),
+            };
+            return Ok((
+                expected,
+                TypedForm::K3Spinor(SpinorAction::Act(chirality, Box::new([actor, spinor]))),
+            ));
+        }
+        let blade = period.blade(self.model)?.persist(self.model)?;
+        Ok((actor_ty, TypedForm::Constant(blade)))
     }
 
     fn spinor_operand(&self, input: &TypedExpr, operation: &str) -> Result<(&Rc<str>, u8)> {

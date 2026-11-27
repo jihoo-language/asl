@@ -55,19 +55,27 @@ impl Vector {
     }
 
     pub(super) fn basis_coordinates(&self, model: &mut Model) -> Result<[i128; RANK]> {
-        let (rows, pivots) = glue_basis(model)?;
         let mut output = [0; RANK];
+        for (target, entry) in output.iter_mut().zip(self.wide_basis_coordinates(model)?) {
+            *target = entry.signed().ok_or_else(coordinate_range)?;
+        }
+        Ok(output)
+    }
+
+    pub(super) fn wide_basis_coordinates(&self, model: &mut Model) -> Result<[Integer; RANK]> {
+        let (rows, pivots) = glue_basis(model)?;
+        let mut output = [Integer::from_i128(0); RANK];
         // The first eleven basis vectors have an identity block on the RREF
         // pivot columns. The remaining vectors are doubled coordinate vectors.
         for (index, &pivot) in pivots.iter().enumerate() {
-            output[index] = self.coordinate(pivot);
+            output[index] = Integer::from_i128(self.coordinate(pivot));
         }
         model.spend(RANK * GLUE_DIMENSION * 30)?;
         for (index, column) in (0..RANK).filter(|i| !pivots.contains(i)).enumerate() {
             let mut residual = Integer::from_i128(self.coordinate(column));
             for (&row, &coefficient) in rows.iter().zip(&output) {
                 if row & (1 << column) != 0 {
-                    residual = residual.add(Integer::from_i128(coefficient).negate())?;
+                    residual = residual.add(coefficient.negate())?;
                 }
             }
             let (magnitude, remainder) = residual.magnitude.divide_u32(2);
@@ -76,12 +84,10 @@ impl Vector {
                     "K3 lattice basis coordinates must be integral",
                 ));
             }
-            output[GLUE_DIMENSION + index] = (Integer {
+            output[GLUE_DIMENSION + index] = Integer {
                 magnitude,
                 negative: residual.negative,
-            })
-            .signed()
-            .ok_or_else(coordinate_range)?;
+            };
         }
         Ok(output)
     }

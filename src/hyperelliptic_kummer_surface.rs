@@ -21,6 +21,7 @@ pub(crate) mod mukai;
 pub(crate) mod nakajima;
 pub(crate) mod newton;
 pub(crate) mod nikulin;
+pub(crate) mod period;
 pub(crate) mod polarized;
 pub(crate) mod rational_sparse;
 pub(crate) mod resolution;

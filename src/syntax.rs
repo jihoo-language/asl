@@ -984,6 +984,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
+    K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -1182,6 +1183,7 @@ pub(crate) enum StatementForm {
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
+    K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
@@ -3135,6 +3137,40 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn k3_period_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::period::Statement;
+        self.advance()?;
+        let statement = if command == "rvk3period" {
+            let period = self.label()?;
+            Statement::Define(period, Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let period = self.label()?;
+            self.expect(Token::RBracket)?;
+            if command == "rvK3PeriodReport" {
+                Statement::Report(period)
+            } else {
+                Statement::Is11(period, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::K3Period(Box::new(statement)))
+    }
+
+    fn k3_period_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::period::Expression;
+        self.expect(Token::LBracket)?;
+        let period = self.label()?;
+        self.expect(Token::RBracket)?;
+        let (expression, depth) = if name == "rvK3PeriodBlade" {
+            (Expression::Blade(period), 0)
+        } else {
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::CM(period, Box::new(input)), depth)
+        };
+        expr(span, ExprForm::K3Period(Box::new(expression)), depth)
     }
 
     fn spinor_coefficient_statement(&mut self) -> Result<StatementForm> {
@@ -5152,6 +5188,9 @@ impl<'src> Parser<'src> {
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
             Token::Word(name @ ("rvNakajimaPrimaryDim" | "rvNakajimaIsPrimary")) => {
                 self.nakajima_primary_statement(name)?
+            }
+            Token::Word(command @ ("rvk3period" | "rvK3PeriodReport" | "rvK3PeriodIs11")) => {
+                self.k3_period_statement(command)?
             }
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
@@ -10503,6 +10542,11 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvK3SpinAct" && self.token() == Token::LParen)
                 {
                     return self.spinor_expression(&name.text, span, nest);
+                }
+                if matches!(name.text.as_str(), "rvK3PeriodBlade" | "rvK3PeriodCM")
+                    && self.token() == Token::LBracket
+                {
+                    return self.k3_period_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

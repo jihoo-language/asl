@@ -51,6 +51,33 @@ impl Element {
         )
     }
 
+    pub(super) fn blade(model: &mut Model, u: &Vector, v: &Vector) -> Result<Self> {
+        let left = vector_numerators(u)?;
+        let right = vector_numerators(v)?;
+        model.spend(4 * WORK_LIMBS * left.len() * right.len())?;
+        let mut terms = BTreeMap::new();
+        // Antisymmetrize 2uv, so the scalar cancels before the coefficient
+        // range check. Both embedded vectors have raw denominator four.
+        for &(i, a) in &left {
+            for &(j, b) in &right {
+                if i != j {
+                    let coefficient = a.multiply_wide(b)?;
+                    let coefficient = if i < j {
+                        coefficient
+                    } else {
+                        coefficient.negate()
+                    };
+                    Self::accumulate(&mut terms, i | j, coefficient)?;
+                }
+            }
+        }
+        Self::normalized(
+            model,
+            terms.iter().map(|(&mask, entry)| (mask, entry)),
+            Magnitude::from_small(8),
+        )
+    }
+
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
         self.charge_storage(model)?;
         Ok(Value::K3Clifford(Rc::new(self)))
