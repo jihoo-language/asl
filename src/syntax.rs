@@ -167,6 +167,10 @@ pub(crate) enum TypeForm {
     HodgeTensor(Label, i128, i128),
     Verbitsky(Label, i128, i128),
     VerbitskyKoszul(Label, i128, i128, i128, bool),
+    VerbitskyCyclic(
+        crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::SyntaxGrade,
+        bool,
+    ),
     VerbitskyHochschild(Label, i128, i128, i128, bool),
     VerbitskyDeformation(Label, i128, i128, bool),
     VerbitskyFree(Label, i128, i128, i128),
@@ -1079,6 +1083,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
+    VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
@@ -1351,6 +1356,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
+    VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
@@ -7783,6 +7789,99 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_cyclic_grade(
+        &mut self,
+    ) -> Result<
+        crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::SyntaxGrade,
+    > {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::{
+            Flavor, SyntaxGrade,
+        };
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+        self.expect(Token::Comma)?;
+        let name = self.label()?;
+        let flavor = match name.text.as_str() {
+            "hh" => Flavor::Hochschild,
+            "hc" => Flavor::Cyclic,
+            "hn" => Flavor::Negative,
+            "hp" => Flavor::Periodic,
+            _ => return Err(Error::new(name.span, "expected hh, hc, hn, or hp")),
+        };
+        self.expect(Token::Comma)?;
+        let degree = self.signed_wide("a homological degree", "cyclic homological degree")?;
+        self.expect(Token::Comma)?;
+        let weight = self.signed_wide("an internal weight", "cyclic internal weight")?;
+        Ok(SyntaxGrade(basis, length, flavor, degree, weight))
+    }
+
+    fn verbitsky_cyclic_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command;
+        self.advance()?;
+        let command = if name == "rvVerbitskyHHChainPair" {
+            Command::Pair(Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let command = if name == "rvVerbitskySBI" {
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+                self.expect(Token::Comma)?;
+                let degree = self.signed_wide("a homological degree", "SBI homological degree")?;
+                self.expect(Token::Comma)?;
+                let weight = self.signed_wide("an internal weight", "SBI internal weight")?;
+                Command::Sbi(basis, length, degree, weight)
+            } else {
+                Command::Dims(self.verbitsky_cyclic_grade()?)
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::VerbitskyCyclic(Box::new(command)))
+    }
+
+    fn verbitsky_cyclic_coordinate(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression;
+        self.expect(Token::LBracket)?;
+        let (operation, depth) = if name == "rvVerbitskyCyclicScale" {
+            let numerator = self.signed_wide("an integer numerator", "cyclic numerator")?;
+            self.expect(Token::Comma)?;
+            let denominator = self.signed_wide("a positive denominator", "cyclic denominator")?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (
+                Expression::Scale((numerator, denominator), Box::new(input)),
+                depth,
+            )
+        } else {
+            let grade = self.verbitsky_cyclic_grade()?;
+            self.expect(Token::Comma)?;
+            if name == "rvVerbitskyCyclicBasis" {
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(grade, index), 0)
+            } else {
+                let exponent = self.signed_wide("a u exponent", "u exponent")?;
+                let coefficient = if self.eat(Token::Comma)? {
+                    self.rational_entry("chain numerator", "chain denominator")?
+                } else {
+                    (1, 1)
+                };
+                self.expect(Token::RBracket)?;
+                let word = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+                (Expression::Term(grade, exponent, word, coefficient), 0)
+            }
+        };
+        expr(span, ExprForm::VerbitskyCyclic(Box::new(operation)), depth)
+    }
+
     fn verbitsky_associative_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command;
         self.advance()?;
@@ -11383,6 +11482,9 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word(
+                command @ ("rvVerbitskyCyclicDims" | "rvVerbitskySBI" | "rvVerbitskyHHChainPair"),
+            ) => self.verbitsky_cyclic_statement(command)?,
             Token::Word(command @ ("rvVerbitskyHHDims" | "rvVerbitskyHHCoeff")) => {
                 self.verbitsky_hh_statement(command)?
             }
@@ -15830,6 +15932,19 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
+            "RVVerbitskyCyclicChain" | "RVVerbitskyCyclic"
+        ) && self.eat(Token::LParen)?
+        {
+            let grade = self.verbitsky_cyclic_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::VerbitskyCyclic(grade, name.text == "RVVerbitskyCyclic"),
+                0,
+            );
+        }
+        if matches!(
+            name.text.as_str(),
             "RVVerbitskyHochschildCochain" | "RVVerbitskyHH"
         ) && self.eat(Token::LParen)?
         {
@@ -17741,6 +17856,28 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyCyclicTerm" | "rvVerbitskyCyclicBasis" | "rvVerbitskyCyclicScale"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.verbitsky_cyclic_coordinate(&name.text, span, nest);
+                }
+                if self.token() == Token::LParen {
+                    use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::{Expression, Operation};
+                    if let Some(operation) = Operation::named(&name.text) {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::VerbitskyCyclic(Box::new(Expression::Apply(
+                                operation,
+                                Box::new(input),
+                            ))),
+                            depth,
+                        );
+                    }
                 }
                 if matches!(
                     name.text.as_str(),

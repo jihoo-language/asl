@@ -13,6 +13,7 @@ use super::{linear, Grade as RingGrade, Monomial};
 
 mod algebra;
 mod complex;
+pub(crate) mod cyclic;
 pub(crate) mod kuranishi;
 mod operations;
 use algebra::Algebra;

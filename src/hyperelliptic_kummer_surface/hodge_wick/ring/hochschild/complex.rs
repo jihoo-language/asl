@@ -275,7 +275,7 @@ impl Complex {
     }
 }
 
-fn annihilates(
+pub(super) fn annihilates(
     model: &mut Model,
     equations: &linear::Echelon,
     coordinates: &[Rational],

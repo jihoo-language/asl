@@ -1,6 +1,7 @@
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
+use hochschild::cyclic as verbitsky_cyclic;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use verbitsky_resolution::deformation;
@@ -972,6 +973,8 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    VerbitskyCyclicApply(verbitsky_cyclic::Operation, Box<TypedExpr>),
+    VerbitskyCyclicScale(hodge_wick::Entry, Box<TypedExpr>),
     VerbitskyHHScale(hodge_wick::Entry, Box<TypedExpr>),
     VerbitskyTangentLiteral(Vec<(usize, TypedExpr)>),
     VerbitskyDeformationCast(bool, Box<TypedExpr>),
@@ -2577,6 +2580,9 @@ impl Engine {
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
+            }
+            StatementForm::VerbitskyCyclic(command) => {
+                return self.verbitsky_cyclic_command(*command).map(Some)
             }
             StatementForm::VerbitskyHochschild(command) => {
                 return self.verbitsky_hh_command(*command).map(Some)
@@ -6488,6 +6494,68 @@ impl Engine {
                     "rvVerbitskyAssocDirection[{}] = {report}",
                     name.text
                 )))
+            }
+        }
+    }
+
+    fn verbitsky_cyclic_command(&mut self, command: verbitsky_cyclic::Command) -> Result<String> {
+        use verbitsky_cyclic::{Command, Flavor, Grade};
+        match command {
+            Command::Dims(grade) => {
+                let grade = Grade::from(grade);
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let [c, z, b, h] = form.cyclic_dimensions(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyCyclicDims[{}, {}, {}, {}, {}] = (C={c}, Z={z}, B={b}, H={h})",
+                    grade.basis,
+                    grade.length,
+                    grade.flavor.name(),
+                    grade.degree,
+                    grade.weight
+                ))
+            }
+            Command::Sbi(name, length, degree, weight) => {
+                let grade = Grade {
+                    basis: name.text.into(),
+                    length,
+                    flavor: Flavor::Cyclic,
+                    degree,
+                    weight,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let report = form.cyclic_sbi(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskySBI[{}, {length}, {degree}, {weight}] = {report}",
+                    grade.basis
+                ))
+            }
+            Command::Pair(args) => {
+                let [cochain, chain] = *args;
+                let cochain = self.checker().expr(cochain)?;
+                let chain = self.checker().expr(chain)?;
+                let checker = self.checker();
+                let (cochain_grade, cohomology) =
+                    checker.verbitsky_hh_operand(&cochain, "rvVerbitskyHHChainPair")?;
+                let (grade, homology) =
+                    checker.verbitsky_cyclic_operand(&chain, "rvVerbitskyHHChainPair")?;
+                if grade.flavor != Flavor::Hochschild
+                    || grade.basis != cochain_grade.basis
+                    || grade.length != cochain_grade.length
+                    || grade.degree != cochain_grade.arity
+                    || cohomology != homology
+                {
+                    return Err(Error::plain("Verbitsky Hochschild pairing requires matching chain and cochain arities and markings, both raw or both classes"));
+                }
+                let grade = grade.clone();
+                let Value::VerbitskyHochschild(cochain) = self.eval(&cochain)? else {
+                    unreachable!()
+                };
+                let Value::VerbitskyCyclic(chain) = self.eval(&chain)? else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.cyclic_pair(&mut self.model, &grade, &cochain, &chain)?;
+                Ok(format!("rvVerbitskyHHChainPair = {value}"))
             }
         }
     }
@@ -11159,6 +11227,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (
                         BinaryOp::Add,
                         Value::VerbitskyHochschild(a),
@@ -13370,6 +13441,30 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyCyclicApply(operation, input) => {
+                let Kind::VerbitskyCyclic(grade, class) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let class = *class;
+                let Value::VerbitskyCyclic(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if matches!(operation, verbitsky_cyclic::Operation::Representative) {
+                    return Ok(Value::VerbitskyCyclic(value));
+                }
+                let form = self.model.hodge_wick(&grade.basis)?;
+                form.cyclic_operation(&mut self.model, &grade, *operation, class, &value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyCyclicScale(scalar, input) => {
+                let Value::VerbitskyCyclic(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .scale(&mut self.model, *scalar)?
                     .persist(&mut self.model)
             }
             TypedForm::VerbitskyHHUnary(operation, input) => {
@@ -16857,6 +16952,9 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::VerbitskyCyclic(grade, class) => {
+                self.model.verbitsky_cyclic_type(grade.into(), class)
+            }
             TypeForm::VerbitskyHochschild(name, length, arity, shift, class) => {
                 self.model.verbitsky_hh_type(
                     hochschild::Grade {
@@ -18051,6 +18149,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
+                    Kind::VerbitskyCyclic(..) => verbitsky_cyclic::Chain::default().persist(self.model)?,
                     Kind::VerbitskyHochschild(..) => hochschild::Cochain::default().persist(self.model)?,
                     Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
@@ -20333,6 +20432,7 @@ impl Checker<'_> {
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::VerbitskyCyclic(expression) => self.verbitsky_cyclic_expression(*expression),
             ExprForm::VerbitskyHochschild(expression) => self.verbitsky_hh_expression(*expression),
             ExprForm::VerbitskyDeformation(operation) => {
                 self.verbitsky_deformation_expression(*operation)
@@ -21236,6 +21336,12 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::VerbitskyCyclic(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::VerbitskyCyclicScale((-1, 1), Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::VerbitskyHochschild(..)) {
                     return Ok((
                         input.ty,
@@ -25369,6 +25475,7 @@ impl Checker<'_> {
                         | Kind::Verbitsky(..)
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
+                        | Kind::VerbitskyCyclic(..)
                         | Kind::VerbitskyHochschild(..)
                         | Kind::VerbitskyDeformation(..)
                         | Kind::VerbitskyFree(..)
@@ -27074,6 +27181,72 @@ impl Checker<'_> {
                 Ok((
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn verbitsky_cyclic_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(&verbitsky_cyclic::Grade, bool)> {
+        if let Kind::VerbitskyCyclic(grade, class) = self.model.kind(input.ty) {
+            Ok((grade, *class))
+        } else {
+            Err(self.invalid_operand(
+                input,
+                operation,
+                "a Verbitsky cyclic chain or homology class",
+            ))
+        }
+    }
+
+    fn verbitsky_cyclic_expression(
+        &mut self,
+        expression: verbitsky_cyclic::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use verbitsky_cyclic::{Expression, Grade};
+        match expression {
+            Expression::Term(grade, power, word, scalar) => {
+                let grade = Grade::from(grade);
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let ty = self.model.verbitsky_cyclic_type(grade.clone(), false)?;
+                let value = form
+                    .cyclic_term(self.model, &grade, power, word, scalar)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Basis(grade, index) => {
+                let grade = Grade::from(grade);
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let ty = self.model.verbitsky_cyclic_type(grade.clone(), true)?;
+                let value = form
+                    .cyclic_basis(self.model, &grade, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Scale(scalar, input) => {
+                if scalar.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                self.verbitsky_cyclic_operand(&input, "rvVerbitskyCyclicScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::VerbitskyCyclicScale(scalar, Box::new(input)),
+                ))
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) = self.verbitsky_cyclic_operand(&input, operation.name())?;
+                let (target, target_class) = operation.transition(grade, class)?;
+                let ty = self.model.verbitsky_cyclic_type(target, target_class)?;
+                Ok((
+                    ty,
+                    TypedForm::VerbitskyCyclicApply(operation, Box::new(input)),
                 ))
             }
         }

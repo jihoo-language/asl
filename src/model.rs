@@ -1,6 +1,7 @@
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
+use hochschild::cyclic as verbitsky_cyclic;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -321,6 +322,7 @@ pub(crate) enum Kind {
     Verbitsky(nakajima::Grade),
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
+    VerbitskyCyclic(verbitsky_cyclic::Grade, bool),
     VerbitskyHochschild(hochschild::Grade, bool),
     VerbitskyDeformation(deformation::Grade, bool),
     VerbitskyFree(verbitsky_resolution::Grade),
@@ -554,6 +556,7 @@ pub(crate) enum Value {
     HodgeTensor(Rc<hyperelliptic_kummer_surface::hodge_wick::Tensor>),
     VerbitskyKoszul(Rc<koszul::Chain>),
     VerbitskyFree(Rc<verbitsky_resolution::Vector>),
+    VerbitskyCyclic(Rc<verbitsky_cyclic::Chain>),
     VerbitskyHochschild(Rc<hochschild::Cochain>),
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
@@ -1579,6 +1582,13 @@ impl Model {
                     1
                 }
             }
+            Kind::VerbitskyCyclic(ref grade, _) => {
+                if grade.possible() {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::VerbitskyHochschild(ref grade, _) => {
                 if grade.possible() {
                     usize::MAX
@@ -1872,6 +1882,7 @@ impl Model {
                 | Kind::Verbitsky(..)
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
+                | Kind::VerbitskyCyclic(..)
                 | Kind::VerbitskyHochschild(..)
                 | Kind::VerbitskyDeformation(..)
                 | Kind::VerbitskyFree(..)
@@ -5690,6 +5701,15 @@ impl Model {
             })
     }
 
+    pub(crate) fn verbitsky_cyclic_type(
+        &mut self,
+        grade: verbitsky_cyclic::Grade,
+        class: bool,
+    ) -> Result<TypeId> {
+        self.hodge_wick(&grade.basis)?.cyclic_validate(&grade)?;
+        self.inhabited_type(Kind::VerbitskyCyclic(grade, class), 0)
+    }
+
     pub(crate) fn verbitsky_hh_type(
         &mut self,
         grade: hochschild::Grade,
@@ -7388,6 +7408,7 @@ impl Model {
             | Kind::Verbitsky(..)
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
+            | Kind::VerbitskyCyclic(..)
             | Kind::VerbitskyHochschild(..)
             | Kind::VerbitskyDeformation(..)
             | Kind::VerbitskyFree(..)
@@ -7955,6 +7976,21 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::VerbitskyCyclic(grade, class) => {
+                let name = if *class {
+                    "RVVerbitskyCyclic"
+                } else {
+                    "RVVerbitskyCyclicChain"
+                };
+                out.push(&format!(
+                    "{name}({},{},{},{},{})",
+                    grade.basis,
+                    grade.length,
+                    grade.flavor.name(),
+                    grade.degree,
+                    grade.weight
+                ))
+            }
             Kind::VerbitskyHochschild(grade, class) => {
                 let name = if *class {
                     "RVVerbitskyHH"
@@ -8412,6 +8448,9 @@ impl Model {
             }
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8813,6 +8852,7 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
+            (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => a.compare(self, b),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => a.compare(self, b),
             (Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => a.compare(self, b),
             (Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => a.compare(self, b),
@@ -9313,6 +9353,14 @@ impl Model {
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
+                Kind::VerbitskyCyclic(ref grade, _) => {
+                    if grade.possible() {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Verbitsky cyclic component",
+                        ));
+                    }
+                    vec![verbitsky_cyclic::Chain::default().persist(self)?]
                 }
                 Kind::VerbitskyHochschild(ref grade, _) => {
                     if grade.possible() {
@@ -11228,6 +11276,10 @@ impl Model {
             Value::Nakajima(state) => {
                 self.write_type(out, ty, 0)?;
                 self.write_nakajima_terms(out, state, 1)
+            }
+            Value::VerbitskyCyclic(chain) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&chain.text(self)?)
             }
             Value::VerbitskyHochschild(cochain) => {
                 self.write_type(out, ty, 0)?;
