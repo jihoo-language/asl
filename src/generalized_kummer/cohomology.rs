@@ -8,7 +8,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::{
 use crate::jacobian_level::Basis;
 use crate::model::Model;
 
-use super::{require_level_basis, require_translation_order, torsion_fixed};
+use super::{inversion, require_level_basis, require_translation_order, torsion_fixed};
 
 pub(crate) fn hilbert_betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
     let Some((degree, _)) = dual_degree(n, i) else {
@@ -191,6 +191,36 @@ pub(crate) fn trace(
         .map(|t| basis.translation_coordinates(model, t))
         .transpose()?;
     let n = u128::from(basis.prime.get());
+    trace_for_action(model, curve, n, r, i, false, |model| {
+        let degree = usize::try_from(r).map_err(|_| intermediate_overflow())?;
+        torsion_fixed(model, basis, curve, degree, coordinates.as_deref())
+    })
+}
+
+pub(crate) fn inversion_trace(
+    model: &mut Model,
+    basis: &Basis,
+    curve: &Curve,
+    r: u128,
+    i: u128,
+    translation: &Divisor,
+) -> Result<i128> {
+    let coordinates = inversion::coordinates(model, basis, curve, translation)?;
+    let n = u128::from(basis.prime.get());
+    trace_for_action(model, curve, n, r, i, !r.is_multiple_of(2), |model| {
+        inversion::fixed_torsion(model, basis, curve, r, &coordinates)
+    })
+}
+
+fn trace_for_action(
+    model: &mut Model,
+    curve: &Curve,
+    n: u128,
+    r: u128,
+    i: u128,
+    inversion: bool,
+    fixed_torsion: impl FnOnce(&mut Model) -> Result<u128>,
+) -> Result<i128> {
     let Some((degree, twist)) = dual_degree(n - 1, i) else {
         return Ok(0);
     };
@@ -208,22 +238,37 @@ pub(crate) fn trace(
             )?;
             let value = quotient(model, rows[length as usize].clone(), &rows[1])?;
             if degree == 2 * (n - 1) {
-                let power_index = usize::try_from(r).map_err(|_| intermediate_overflow())?;
-                let fixed =
-                    torsion_fixed(model, basis, curve, power_index, coordinates.as_deref())?;
-                let factor = if fixed == 0 {
-                    Integer::from_i128(-1)
-                } else {
-                    nonnegative(fixed - 1)
-                };
-                let correction = tate(model, curve, r, n - 1, factor)?;
+                let fixed = fixed_torsion(model)?;
+                let correction = torsion_correction(model, curve, r, n, fixed)?;
                 value.add(correction).map_err(|_| intermediate_overflow())?
             } else {
                 value
             }
         }
     };
+    let value = if inversion {
+        // The invariant part carries the usual inversion parity. The
+        // extra torsion classes lie in even middle degree.
+        cohomology_sign(value, degree)
+    } else {
+        value
+    };
     trace_value(model, curve, r, degree, twist, value)
+}
+
+pub(super) fn torsion_correction(
+    model: &mut Model,
+    curve: &Curve,
+    r: u128,
+    n: u128,
+    fixed: u128,
+) -> Result<Integer> {
+    let factor = if fixed == 0 {
+        Integer::from_i128(-1)
+    } else {
+        nonnegative(fixed - 1)
+    };
+    tate(model, curve, r, n - 1, factor)
 }
 
 // The space has dimension 2*length. Mirror high degrees by duality while

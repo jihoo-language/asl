@@ -161,16 +161,39 @@ pub(crate) fn coefficients(
     arithmetic: Option<(&Curve, u128)>,
     kind: SurfaceKind,
 ) -> Result<Vec<Vec<Integer>>> {
-    coefficients_from_surface(
+    coefficients_with_action(model, length, degree, arithmetic, kind, false)
+}
+
+pub(crate) fn inversion_lefschetz(
+    model: &mut Model,
+    length: u128,
+    arithmetic: Option<(&Curve, u128)>,
+) -> Result<Vec<Vec<Integer>>> {
+    let inversion = arithmetic.is_none_or(|(_, r)| !r.is_multiple_of(2));
+    coefficients_with_action(
         model,
         length,
-        degree,
-        kind,
-        |model, limit| match arithmetic {
+        None,
+        arithmetic,
+        SurfaceKind::Abelian,
+        inversion,
+    )
+}
+
+fn coefficients_with_action(
+    model: &mut Model,
+    length: u128,
+    degree: Option<u128>,
+    arithmetic: Option<(&Curve, u128)>,
+    kind: SurfaceKind,
+    inversion: bool,
+) -> Result<Vec<Vec<Integer>>> {
+    coefficients_from_surface(model, length, degree, kind, inversion, |model, limit| {
+        match arithmetic {
             None => Ok(Surface::Betti(kind)),
             Some((curve, r)) => Surface::arithmetic(model, curve, r, limit, kind),
-        },
-    )
+        }
+    })
 }
 
 pub(super) fn semilinear_coefficient(
@@ -181,8 +204,13 @@ pub(super) fn semilinear_coefficient(
     r: u128,
     traces: impl FnOnce(&mut Model, &[Magnitude]) -> Result<Vec<Integer>>,
 ) -> Result<Integer> {
-    let rows =
-        coefficients_from_surface(model, length, degree, SurfaceKind::K3, |model, limit| {
+    let rows = coefficients_from_surface(
+        model,
+        length,
+        degree,
+        SurfaceKind::K3,
+        false,
+        |model, limit| {
             let q = curve.ring.size_of_residue_field()?;
             let powers = field_powers(model, q, r, limit)?;
             let middle = traces(model, &powers)?;
@@ -191,7 +219,8 @@ pub(super) fn semilinear_coefficient(
                 middle,
                 first: Vec::new(),
             })
-        })?;
+        },
+    )?;
     Ok(*rows.last().unwrap().last().unwrap())
 }
 
@@ -200,6 +229,7 @@ fn coefficients_from_surface(
     length: u128,
     degree: Option<u128>,
     kind: SurfaceKind,
+    inversion: bool,
     prepare: impl FnOnce(&mut Model, usize) -> Result<Surface>,
 ) -> Result<Vec<Vec<Integer>>> {
     let length = usize::try_from(length).map_err(|_| storage_limit())?;
@@ -211,7 +241,7 @@ fn coefficients_from_surface(
     check_storage(model, length, top, 1 + 4 / kind.grading_unit())?;
     let limit = length.min(degree.unwrap_or(length));
     let surface = prepare(model, limit)?;
-    let weights = log_coefficients(model, length, degree, &surface, kind)?;
+    let weights = log_coefficients(model, length, degree, &surface, kind, inversion)?;
     let zero = Integer::from_i128(0);
     let mut first = vec![zero; top + 1];
     first[0] = Integer::from_i128(1);
@@ -255,6 +285,7 @@ fn log_coefficients(
     degree: Option<usize>,
     surface: &Surface,
     kind: SurfaceKind,
+    inversion: bool,
 ) -> Result<Vec<Vec<Term>>> {
     let mut result = vec![Vec::new(); length + 1];
     let unit = kind.grading_unit();
@@ -283,6 +314,13 @@ fn log_coefficients(
                 // Odd oscillators give exterior powers. Their logarithmic
                 // coefficient has a minus sign at every power l.
                 let trace = surface.signed_trace(model, b * unit, l)?;
+                // Inversion multiplies odd surface cohomology by −1.
+                // At the l-th ghost power this contributes (−1)^l.
+                let trace = if inversion && !(b * unit).is_multiple_of(2) && !l.is_multiple_of(2) {
+                    trace.negate()
+                } else {
+                    trace
+                };
                 if !trace.is_zero() {
                     result[j].push((shift, checked_product(model, factor, trace)?));
                 }

@@ -3888,7 +3888,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name,
-            "rvGenKummerTranslateChar" | "rvGenKummerTranslateFixed"
+            "rvGenKummerTranslateChar" | "rvGenKummerTranslateFixed" | "rvGenKummerInversionEuler"
         ) {
             let length = self.wide_unsigned("generalized Kummer length")?;
             self.expect(Token::Comma)?;
@@ -3896,6 +3896,8 @@ impl<'src> Parser<'src> {
             let command = if name == "rvGenKummerTranslateChar" {
                 self.expect(Token::Comma)?;
                 Command::TranslateChar(length, order, self.wide_unsigned("cohomological degree")?)
+            } else if name == "rvGenKummerInversionEuler" {
+                Command::InversionEuler(length, order)
             } else {
                 Command::TranslateFixed(length, order)
             };
@@ -3918,11 +3920,16 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerTrace"
                 | "rvGenKummerTranslateFrob"
                 | "rvGenKummerTranslatePoints"
+                | "rvGenKummerInversionFrob"
+                | "rvGenKummerInversionPoints"
         ) {
             let base = self.label()?;
             self.expect(Token::Comma)?;
             let degree = positive_degree(self)?;
-            let i = if matches!(name, "rvGenKummerTrace" | "rvGenKummerTranslateFrob") {
+            let i = if matches!(
+                name,
+                "rvGenKummerTrace" | "rvGenKummerTranslateFrob" | "rvGenKummerInversionFrob"
+            ) {
                 self.expect(Token::Comma)?;
                 Some(self.wide_unsigned("cohomological degree")?)
             } else {
@@ -3940,6 +3947,16 @@ impl<'src> Parser<'src> {
                 ),
                 "rvGenKummerTranslatePoints" => {
                     Command::TranslatePoints(first, base, degree, Box::new(self.paren_expr(0)?))
+                }
+                "rvGenKummerInversionFrob" => Command::InversionFrob(
+                    first,
+                    base,
+                    degree,
+                    i.unwrap(),
+                    Box::new(self.paren_expr(0)?),
+                ),
+                "rvGenKummerInversionPoints" => {
+                    Command::InversionPoints(first, base, degree, Box::new(self.paren_expr(0)?))
                 }
                 _ => Command::Level(first, base, degree),
             }
@@ -4213,10 +4230,10 @@ impl<'src> Parser<'src> {
             _ => {
                 let h = self.wide_unsigned("translation order")?;
                 self.expect(Token::Comma)?;
-                if name == "rvGenKummerTranslateHodge" {
-                    Operation::Translate(h)
-                } else {
-                    Operation::Spectrum(h)
+                match name {
+                    "rvGenKummerTranslateHodge" => Operation::Translate(h),
+                    "rvGenKummerInversionHodge" => Operation::Invert(h),
+                    _ => Operation::Spectrum(h),
                 }
             }
         };
@@ -5452,6 +5469,7 @@ impl<'src> Parser<'src> {
                 | "rvJacHilbHodge"
                 | "rvGenKummerHodge"
                 | "rvGenKummerTranslateHodge"
+                | "rvGenKummerInversionHodge"
                 | "rvGenKummerHodgeSpectrum"),
             ) => self.hodge_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
@@ -5547,6 +5565,9 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerTranslateFixed"
                 | "rvGenKummerTranslateFrob"
                 | "rvGenKummerTranslatePoints"
+                | "rvGenKummerInversionEuler"
+                | "rvGenKummerInversionFrob"
+                | "rvGenKummerInversionPoints"
                 | "rvJacHilbBetti"
                 | "rvJacHilbTrace"),
             ) => self.generalized_kummer_statement(command)?,

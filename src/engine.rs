@@ -5123,7 +5123,7 @@ impl Engine {
         &mut self,
         command: crate::generalized_kummer::Command,
     ) -> Result<String> {
-        use crate::generalized_kummer::{self as kummer, cohomology, Command};
+        use crate::generalized_kummer::{self as kummer, cohomology, inversion, Command};
         let curve_for = |model: &Model, name: &Label| {
             let curve = model
                 .jacobian_curve(&name.text)
@@ -5201,6 +5201,38 @@ impl Engine {
                     kummer::level(&mut self.model, &basis, &curve, degree, Some(&translation))?;
                 Ok(format!(
                     "rvGenKummerTranslatePoints[{}, {}, {degree}] = {count}, affine torsion fixed points={fixed}",
+                    name.text, base.text
+                ))
+            }
+            Command::InversionEuler(n, h) => {
+                let euler = inversion::euler(&mut self.model, n, h)?;
+                Ok(format!("rvGenKummerInversionEuler[{n}, {h}] = {euler}"))
+            }
+            Command::InversionFrob(name, base, degree, i, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let translation = translation_input(self, &basis, *input)?;
+                let value = cohomology::inversion_trace(
+                    &mut self.model,
+                    &basis,
+                    &curve,
+                    degree,
+                    i,
+                    &translation,
+                )?;
+                Ok(format!(
+                    "rvGenKummerInversionFrob[{}, {}, {degree}, {i}] = {value}",
+                    name.text, base.text
+                ))
+            }
+            Command::InversionPoints(name, base, degree, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let translation = translation_input(self, &basis, *input)?;
+                let (count, fixed) =
+                    inversion::points(&mut self.model, &basis, &curve, degree, &translation)?;
+                Ok(format!(
+                    "rvGenKummerInversionPoints[{}, {}, {degree}] = {count}, affine torsion fixed points={fixed}",
                     name.text, base.text
                 ))
             }

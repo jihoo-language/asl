@@ -5,12 +5,14 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::k3::{node_orbits, powered_weil_coefficients};
 use crate::jacobian_level::Basis;
 use crate::model::Model;
+use crate::odd_cobar::Prime;
 use crate::prime_linear;
 use crate::rv_ore::gcd;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod cohomology;
 pub(crate) mod hodge;
+pub(crate) mod inversion;
 
 pub(crate) enum Command {
     Hilbert(Label, u128, u128),
@@ -25,6 +27,9 @@ pub(crate) enum Command {
     TranslateFixed(u128, u128),
     TranslateFrob(Label, Label, u128, u128, Box<ParsedExpr>),
     TranslatePoints(Label, Label, u128, Box<ParsedExpr>),
+    InversionEuler(u128, u128),
+    InversionFrob(Label, Label, u128, u128, Box<ParsedExpr>),
+    InversionPoints(Label, Label, u128, Box<ParsedExpr>),
 }
 
 pub(crate) fn require_curve(curve: &Curve) -> Result<()> {
@@ -167,15 +172,26 @@ fn torsion_fixed(
     coordinates: Option<&[u32]>,
 ) -> Result<u128> {
     let frobenius = basis.frobenius(model, base, degree)?;
-    let matrix = frobenius.matrix;
-    let prime = basis.prime;
+    affine_fixed(
+        model,
+        basis.prime,
+        |row, column| *frobenius.matrix.entry(row, column) as u32,
+        coordinates,
+    )
+}
+
+fn affine_fixed(
+    model: &mut Model,
+    prime: Prime,
+    entry: impl Fn(usize, usize) -> u32,
+    coordinates: Option<&[u32]>,
+) -> Result<u128> {
     let mut image = prime_linear::Basis::default();
-    // The fixed points of x ↦ F^r x + t solve (I − F^r)x = t.
+    // The fixed points of x ↦ Lx + t solve (I − L)x = t.
     for column in 0..4 {
         let vector = (0..4)
             .filter_map(|row| {
-                let entry = prime.negate(*matrix.entry(row, column) as u32);
-                let value = prime.add(u32::from(row == column), entry);
+                let value = prime.add(u32::from(row == column), prime.negate(entry(row, column)));
                 (value != 0).then_some((row, value))
             })
             .collect();

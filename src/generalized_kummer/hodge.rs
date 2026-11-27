@@ -17,6 +17,7 @@ pub(crate) enum Operation {
     JacobianHilbert,
     Generalized,
     Translate(u128),
+    Invert(u128),
     Spectrum(u128),
 }
 
@@ -34,13 +35,13 @@ impl Command {
             }
             Operation::Generalized => {
                 require_translation_order(n, 1)?;
-                let value = Character::new(model, n, p, q)?.evaluate(model, 1)?;
+                let value = Character::new(model, n, p, q, false)?.evaluate(model, 1)?;
                 let count = hodge_dimension(value)?;
                 Ok(format!("rvGenKummerHodge[{n}, {p}, {q}] = {count}"))
             }
             Operation::Translate(h) => {
                 require_translation_order(n, h)?;
-                let value = Character::new(model, n, p, q)?.evaluate(model, h)?;
+                let value = Character::new(model, n, p, q, false)?.evaluate(model, h)?;
                 let trace = value
                     .signed()
                     .ok_or_else(|| Error::plain("Hodge character exceeds signed 128-bit range"))?;
@@ -48,9 +49,19 @@ impl Command {
                     "rvGenKummerTranslateHodge[{n}, {h}, {p}, {q}] = {trace}"
                 ))
             }
+            Operation::Invert(h) => {
+                require_translation_order(n, h)?;
+                let value = Character::new(model, n, p, q, true)?.evaluate(model, h)?;
+                let trace = remove_parity_sign(value, p, q)
+                    .signed()
+                    .ok_or_else(|| Error::plain("Hodge character exceeds signed 128-bit range"))?;
+                Ok(format!(
+                    "rvGenKummerInversionHodge[{n}, {h}, {p}, {q}] = {trace}"
+                ))
+            }
             Operation::Spectrum(h) => {
                 require_translation_order(n, h)?;
-                let spectrum = Character::new(model, n, p, q)?.spectrum(model, h)?;
+                let spectrum = Character::new(model, n, p, q, false)?.spectrum(model, h)?;
                 Ok(format!(
                     "rvGenKummerHodgeSpectrum[{n}, {h}, {p}, {q}] = {spectrum:?}"
                 ))
@@ -230,7 +241,7 @@ struct Character {
 }
 
 impl Character {
-    fn new(model: &mut Model, n: u128, p: u128, q: u128) -> Result<Self> {
+    fn new(model: &mut Model, n: u128, p: u128, q: u128, inversion: bool) -> Result<Self> {
         let mut divisors = vec![1];
         let contributions = match hodge_indices(n - 1, p, q) {
             None => vec![Integer::from_i128(0)],
@@ -239,7 +250,13 @@ impl Character {
             Some((0, q)) => vec![Integer::from_i128(i128::from(q.is_multiple_of(2)))],
             Some((p, q)) => {
                 let table = Fock::new(model, n, p, q, &ABELIAN)?;
-                if p >= n.div_ceil(2) {
+                if inversion {
+                    // Inversion interchanges χ and χ^{-1}. Only the
+                    // character of order 1 and the order-2 terms contribute.
+                    if n.is_multiple_of(2) && p >= n / 2 {
+                        divisors.push(2);
+                    }
+                } else if p >= n.div_ceil(2) {
                     // Each nontrivial divisor shifts both indices by at least
                     // n/2. If any term can contribute, n fits the table bound.
                     divisors = torsion_divisors(model, n as usize, table.p)?;
