@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use super::clifford;
+use super::cm;
 use super::rational_sparse::decimal;
 use super::spinor;
 use super::unimodular::{self, Vector, RANK};
@@ -19,11 +20,13 @@ pub(crate) enum Statement {
     Define(Label, Box<[ParsedExpr; 2]>),
     Report(Label),
     Is11(Label, Box<ParsedExpr>),
+    CM(cm::Command),
 }
 
 pub(crate) enum Expression {
     Blade(Label),
     CM(Label, Box<ParsedExpr>),
+    CMBasis(Label, usize),
 }
 
 pub(crate) struct Period {
@@ -95,6 +98,18 @@ impl Period {
 
     pub(crate) fn blade(&self, model: &mut Model) -> Result<clifford::Element> {
         clifford::Element::blade(model, &self.u, &self.v)
+    }
+
+    pub(crate) fn cm_form(&self, model: &mut Model) -> Result<cm::Reduced> {
+        cm::Reduced::new(
+            model,
+            &self.u,
+            &self.v,
+            self.index.resize().ok_or_else(arithmetic)?,
+            self.primitive_discriminant
+                .resize()
+                .ok_or_else(arithmetic)?,
+        )
     }
 
     pub(crate) fn is_11(&self, model: &mut Model, vector: &Vector) -> Result<bool> {

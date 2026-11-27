@@ -3219,6 +3219,7 @@ impl<'src> Parser<'src> {
     }
 
     fn k3_period_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::cm::Command;
         use crate::hyperelliptic_kummer_surface::period::Statement;
         self.advance()?;
         let statement = if command == "rvk3period" {
@@ -3227,11 +3228,20 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let period = self.label()?;
-            self.expect(Token::RBracket)?;
-            if command == "rvK3PeriodReport" {
-                Statement::Report(period)
+            if command == "rvK3CMEquivalent" {
+                self.expect(Token::Comma)?;
+                let other = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::CM(Command::Equivalent(period, other))
             } else {
-                Statement::Is11(period, Box::new(self.paren_expr(0)?))
+                self.expect(Token::RBracket)?;
+                match command {
+                    "rvK3PeriodReport" => Statement::Report(period),
+                    "rvK3CMForm" => Statement::CM(Command::Form(period)),
+                    "rvK3CMPeriods" => Statement::CM(Command::Periods(period)),
+                    "rvK3CMClassNumber" => Statement::CM(Command::ClassNumber(period)),
+                    _ => Statement::Is11(period, Box::new(self.paren_expr(0)?)),
+                }
             }
         };
         Ok(StatementForm::K3Period(Box::new(statement)))
@@ -3241,6 +3251,19 @@ impl<'src> Parser<'src> {
         use crate::hyperelliptic_kummer_surface::period::Expression;
         self.expect(Token::LBracket)?;
         let period = self.label()?;
+        if name == "rvK3CMBasis" {
+            self.expect(Token::Comma)?;
+            let (index, at) = self.number()?;
+            if index > 1 {
+                return Err(Error::new(at, "K3 CM basis index must be 0 or 1"));
+            }
+            self.expect(Token::RBracket)?;
+            return expr(
+                span,
+                ExprForm::K3Period(Box::new(Expression::CMBasis(period, index))),
+                0,
+            );
+        }
         self.expect(Token::RBracket)?;
         let (expression, depth) = if name == "rvK3PeriodBlade" {
             (Expression::Blade(period), 0)
@@ -5355,9 +5378,10 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvNakajimaPrimaryDim" | "rvNakajimaIsPrimary")) => {
                 self.nakajima_primary_statement(name)?
             }
-            Token::Word(command @ ("rvk3period" | "rvK3PeriodReport" | "rvK3PeriodIs11")) => {
-                self.k3_period_statement(command)?
-            }
+            Token::Word(
+                command @ ("rvk3period" | "rvK3PeriodReport" | "rvK3PeriodIs11" | "rvK3CMForm"
+                | "rvK3CMPeriods" | "rvK3CMEquivalent" | "rvK3CMClassNumber"),
+            ) => self.k3_period_statement(command)?,
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
@@ -10747,8 +10771,10 @@ impl<'src> Parser<'src> {
                 {
                     return self.spinor_expression(&name.text, span, nest);
                 }
-                if matches!(name.text.as_str(), "rvK3PeriodBlade" | "rvK3PeriodCM")
-                    && self.token() == Token::LBracket
+                if matches!(
+                    name.text.as_str(),
+                    "rvK3PeriodBlade" | "rvK3PeriodCM" | "rvK3CMBasis"
+                ) && self.token() == Token::LBracket
                 {
                     return self.k3_period_expression(&name.text, span, nest);
                 }

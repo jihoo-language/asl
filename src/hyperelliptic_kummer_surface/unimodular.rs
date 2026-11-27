@@ -124,27 +124,7 @@ impl Vector {
 
     pub(crate) fn wide_pair(&self, model: &mut Model, rhs: &Self) -> Result<Integer> {
         model.spend(30 * RANK)?;
-        let mut sum = Integer::from_i128(0);
-        // Complementary wedge pairs, with orientation making e02+e13 positive.
-        for i in 0..6 {
-            let term = Integer::product(self.w[i], rhs.w[5 - i]);
-            sum = sum.add(if i == 1 || i == 4 {
-                term
-            } else {
-                term.negate()
-            })?;
-        }
-        for (&left, &right) in self.b.iter().zip(&rhs.b) {
-            sum = sum.add(Integer::product(left, right).negate())?;
-        }
-        let (magnitude, remainder) = sum.magnitude.divide_u32(2);
-        if remainder != 0 {
-            return Err(Error::plain("K3 lattice pairing must be integral"));
-        }
-        Ok(Integer {
-            magnitude,
-            negative: sum.negative,
-        })
+        pair_coordinates(|i, j| Ok(Integer::product(self.coordinate(i), rhs.coordinate(j))))
     }
 
     pub(crate) fn reflect(&self, model: &mut Model, root: &Self) -> Result<Self> {
@@ -218,6 +198,30 @@ impl Vector {
             self.b[i - self.w.len()]
         }
     }
+}
+
+pub(super) fn pair_coordinates<const N: usize>(
+    mut product: impl FnMut(usize, usize) -> Result<Wide<N>>,
+) -> Result<Wide<N>> {
+    let mut sum = Wide::from_i128(0);
+    // Complementary wedge pairs have signs −,+,− and exceptional signs are negative.
+    for i in 0..RANK {
+        let j = if i < 6 { 5 - i } else { i };
+        let term = product(i, j)?;
+        sum = sum.add(if matches!(i, 1 | 4) {
+            term
+        } else {
+            term.negate()
+        })?;
+    }
+    let (magnitude, remainder) = sum.magnitude.divide_u32(2);
+    if remainder != 0 {
+        return Err(Error::plain("K3 lattice pairing must be integral"));
+    }
+    Ok(Wide {
+        magnitude,
+        negative: sum.negative,
+    })
 }
 
 fn coordinate_range() -> Error {

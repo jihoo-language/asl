@@ -1412,6 +1412,14 @@ The nondegenerate full Clifford algebra acts faithfully on the $2048$-dimensiona
 
 The supplied plane defines an abstract marked Hodge structure. The finite-field curve supplies the level-two marking. The commands report lattice invariants and construct the rational Clifford action, with the existing exact coefficient bounds for blades and spinors. See Kuga and Satake, *Abelian varieties attached to polarized K3-surfaces* (1967), Deligne, *La conjecture de Weil pour les surfaces K3* (1972), and Huybrechts, *Lectures on K3 Surfaces* (2016). [Rational period example](examples/hyperelliptic-k3-kuga-satake-period.asl)
 
+#### Shioda–Inose CM data
+
+`rvK3CMForm[P];` saturates the period plane in the integral K3 lattice and reduces its oriented binary form $[a,b,c]$ by $\mathrm{SL}_2(\mathbb Z)$. The basis has Gram matrix $\begin{pmatrix}2a&b\\b&2c\end{pmatrix}$. The reduced form satisfies $|b|\le a\le c$ with $b\ge0$ when $|b|=a$ or $a=c$. The report gives the content $m=\gcd(a,b,c)$, the discriminant $d=b^2-4ac$, and the CM order discriminant $d/m^2$. `rvK3CMBasis[P,j]` gives the corresponding lattice vector for $j=0$ or $1$, within the lattice coordinate bounds. `rvK3CMEquivalent[P,Q];` compares the oriented transcendental lattices by their proper reduced forms. These forms classify the associated singular complex K3 surfaces up to isomorphism, independently of their lattice markings.
+
+`rvK3CMPeriods[P];` gives the Shioda–Mitani periods $\tau_1=(-b+\sqrt d)/(2a)$ and $\tau_2=(b+\sqrt d)/2$ with positive imaginary part. For their product abelian surface $A$, the Shioda–Inose K3 has transcendental lattice $T_A$, and the Kummer resolution of $A$ has $T_A(2)$. `rvK3CMClassNumber[P];` counts the proper classes of the primitive order by enumerating primitive reduced forms up to $a\le\sqrt{|d/m^2|/3}$ within the computation budget. Form and period queries use direct reduction.
+
+See Shioda and Mitani, *Singular abelian surfaces and binary quadratic forms* (1974), and Shioda and Inose, *On singular K3 surfaces* (1977). [Shioda–Inose CM example](examples/hyperelliptic-k3-shioda-inose.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

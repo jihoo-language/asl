@@ -4890,6 +4890,34 @@ impl Engine {
                 let result = period.is_11(&mut self.model, &input)?;
                 Ok(Some(format!("rvK3PeriodIs11[{}] = {result}", name.text)))
             }
+            Statement::CM(command) => self.k3_cm_command(command).map(Some),
+        }
+    }
+
+    fn k3_cm_command(&mut self, command: kummer_surface::cm::Command) -> Result<String> {
+        use kummer_surface::cm::Command;
+        let name = match &command {
+            Command::Form(name)
+            | Command::Periods(name)
+            | Command::Equivalent(name, _)
+            | Command::ClassNumber(name) => name,
+        };
+        let form = self.model.k3_period(name)?.cm_form(&mut self.model)?;
+        match command {
+            Command::Form(name) => form.form_report(&mut self.model, &name.text),
+            Command::Periods(name) => form.periods_report(&name.text),
+            Command::Equivalent(name, other) => {
+                let other_form = self.model.k3_period(&other)?.cm_form(&mut self.model)?;
+                let equivalent = form.equivalent(&other_form);
+                Ok(format!(
+                    "rvK3CMEquivalent[{},{}] = {equivalent}",
+                    name.text, other.text
+                ))
+            }
+            Command::ClassNumber(name) => {
+                let count = form.class_number(&mut self.model)?;
+                Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
         }
     }
 
@@ -20115,6 +20143,19 @@ impl Checker<'_> {
         let (name, optional_spinor) = match expression {
             Expression::Blade(name) => (name, None),
             Expression::CM(name, spinor) => (name, Some(self.expr(*spinor)?)),
+            Expression::CMBasis(name, index) => {
+                let period = self.model.k3_period(&name)?;
+                let marking = Label {
+                    text: period.marking().into(),
+                    span: name.span,
+                };
+                let ty = self.model.k3_lattice_type(&marking)?;
+                let basis = period
+                    .cm_form(self.model)?
+                    .basis(index)?
+                    .persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(basis)));
+            }
         };
         let period = self.model.k3_period(&name)?;
         let marking = Label {
