@@ -233,6 +233,7 @@ pub(super) fn k3_lefschetz_coefficient(
         length,
         None,
         SurfaceKind::K3,
+        false,
         usize::MAX,
         |model, limit| sampled_k3(model, fields, middle, step, limit),
     )?;
