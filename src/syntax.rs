@@ -782,6 +782,9 @@ pub(crate) enum StatementForm {
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
+    SheafSerre(Label, Label),
+    SheafSerreShift(Label),
+    SheafStalkCohomology(Label, Label, usize),
     SheafLeray(SheafInputForm, Label, Label, Label),
     SheafTruncate(Label, Label, usize),
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
@@ -1592,6 +1595,31 @@ impl<'src> Parser<'src> {
                 let source = self.label()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafLeray(form, name, map, source)
+            }
+            Token::Word("shserre") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let sheaf = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafSerre(name, sheaf)
+            }
+            Token::Word("shserreshift") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafSerreShift(name)
+            }
+            Token::Word("shcohomology") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let complex = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafStalkCohomology(name, complex, degree)
             }
             Token::Word("shpull" | "shpush") => {
                 let pull = self.token() == Token::Word("shpull");

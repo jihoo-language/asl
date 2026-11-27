@@ -105,7 +105,6 @@ use crate::sheaf_leray::{Input as LerayInput, InputForm as SheafInputForm, Leray
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
-use crate::sheaf_truncate;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
@@ -125,6 +124,7 @@ use crate::v_koszul;
 use crate::vbock;
 use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial, bp_rel};
 use crate::{mixed, mixed_page};
+use crate::{sheaf_serre, sheaf_stalk, sheaf_truncate};
 
 pub(crate) struct Engine {
     model: Model,
@@ -567,6 +567,30 @@ impl Engine {
                 })?;
                 let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
                 self.model.define_sheaf(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafSerre(name, source) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let source = self.model.sheaf(&source)?;
+                let (shift, components, complex) =
+                    sheaf_serre::build(&mut self.model, &name, &source)?;
+                for component in components {
+                    self.model
+                        .define_sheaf_shared(component.name.to_string(), component.sheaf);
+                }
+                self.model.define_sheaf_complex(name.text.clone(), complex);
+                self.model.define_serre_shift(name.text, shift);
+                return Ok(None);
+            }
+            StatementForm::SheafSerreShift(name) => {
+                let shift = self.model.serre_shift(&name)?;
+                format!("shserreshift[{}] = {shift}", name.text)
+            }
+            StatementForm::SheafStalkCohomology(name, complex, degree) => {
+                self.model.check_new_sheaf(&name)?;
+                let complex = self.model.sheaf_complex(&complex)?;
+                let sheaf = sheaf_stalk::cohomology(&mut self.model, &complex, degree)?;
+                self.model.define_sheaf(name.text, sheaf);
                 return Ok(None);
             }
             StatementForm::SheafTruncate(name, original, degree) => {

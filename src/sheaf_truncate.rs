@@ -1,14 +1,12 @@
 use std::rc::Rc;
 
-use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::Model;
-use crate::odd_cobar::Prime;
-use crate::prime_linear::{Basis, Coordinate, QuotientBasis};
-use crate::sheaf::{self, Cochains, Matrix, Sheaf};
+use crate::sheaf::{self, Cochains, Matrix};
 use crate::sheaf_hyper::{Complex, Map, NamedSheaf};
 use crate::sheaf_image::Site;
 use crate::sheaf_leray::{component_name, Input, InputForm, Leray};
+use crate::sheaf_stalk::{self, StalkQuotient};
 use crate::syntax::Label;
 
 pub(crate) fn truncate(
@@ -28,24 +26,10 @@ pub(crate) fn truncate(
         .dims()
         .iter()
         .enumerate()
-        .map(|(p, &rank)| Kernel::build(model, prime, rank, outgoing.matrix(p)))
+        .map(|(p, &rank)| StalkQuotient::build(model, prime, rank, None, Some(outgoing.matrix(p))))
         .collect::<Result<Vec<_>>>()?;
 
-    let dims = kernels.iter().map(Kernel::rank).collect();
-    let sheaf =
-        Sheaf::from_cover_maps(model, original.sheaf.base(), prime, dims, |model, a, b| {
-            let map = original.sheaf.restriction(a, b);
-            let restricted = if map.is_zero() {
-                Matrix::default()
-            } else {
-                Matrix::from_action(model, kernels[a].rank(), |model, index| {
-                    let lift = kernels[a].representative(model, prime, index)?;
-                    let image = map.apply(model, prime, &lift)?;
-                    kernels[b].coordinates(model, prime, image)
-                })?
-            };
-            Ok(Rc::new(restricted))
-        })?;
+    let sheaf = sheaf_stalk::induced_sheaf(model, &original.sheaf, &kernels)?;
     let terminal = NamedSheaf {
         name: terminal_name,
         sheaf: Rc::new(sheaf),
@@ -117,64 +101,5 @@ fn differential_label(name: &Label, degree: usize) -> Label {
     Label {
         span: name.span,
         text: format!("{} differential at {}", name.text, degree),
-    }
-}
-
-enum Kernel {
-    Full(usize),
-    Computed(QuotientBasis),
-}
-
-impl Kernel {
-    fn build(model: &mut Model, prime: Prime, rank: usize, differential: &Matrix) -> Result<Self> {
-        if differential.is_zero() {
-            return Ok(Self::Full(rank));
-        }
-        if rank > MAX_PIVOT_CELLS {
-            return Err(Error::plain(
-                "smart truncation stalk exceeds the storage limit",
-            ));
-        }
-        let basis = QuotientBasis::build(model, prime, Basis::default(), rank, |model, i| {
-            let column = differential.column(i);
-            model.spend(1 + column.len())?;
-            Ok(column.to_vec())
-        })?;
-        Ok(Self::Computed(basis))
-    }
-
-    fn rank(&self) -> usize {
-        match self {
-            Self::Full(rank) => *rank,
-            Self::Computed(basis) => basis.rank(),
-        }
-    }
-
-    fn representative(
-        &self,
-        model: &mut Model,
-        prime: Prime,
-        index: usize,
-    ) -> Result<Vec<Coordinate>> {
-        match self {
-            Self::Full(_) => Ok(vec![(index, 1)]),
-            Self::Computed(basis) => basis.representative(model, prime, &[(index, 1)]),
-        }
-    }
-
-    fn coordinates(
-        &self,
-        model: &mut Model,
-        prime: Prime,
-        raw: Vec<Coordinate>,
-    ) -> Result<Vec<Coordinate>> {
-        match self {
-            Self::Full(_) => Ok(raw),
-            Self::Computed(basis) => basis.project(model, prime, raw)?.ok_or_else(|| {
-                Error::plain(
-                    "smart truncation encountered a map that does not preserve the stalk kernel",
-                )
-            }),
-        }
     }
 }

@@ -401,6 +401,7 @@ pub(crate) struct Model {
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
     leray_complexes: HashMap<String, Rc<Leray>>,
+    serre_shifts: HashMap<String, usize>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     cyclotomics: HashMap<usize, rv_cyclotomic::Polynomial>,
@@ -444,6 +445,7 @@ impl Model {
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
             leray_complexes: HashMap::new(),
+            serre_shifts: HashMap::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             cyclotomics: HashMap::new(),
@@ -1080,6 +1082,19 @@ impl Model {
         complex: Rc<sheaf_hyper::Complex>,
     ) {
         self.sheaf_complexes.insert(name, complex);
+    }
+
+    pub(crate) fn define_serre_shift(&mut self, name: String, shift: usize) {
+        self.serre_shifts.insert(name, shift);
+    }
+
+    pub(crate) fn serre_shift(&self, name: &Label) -> Result<usize> {
+        self.serre_shifts.get(&name.text).copied().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("'{}' is not a declared Serre complex", name.text),
+            )
+        })
     }
 
     pub(crate) fn define_leray_complex(&mut self, name: String, leray: Leray) {

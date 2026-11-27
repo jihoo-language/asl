@@ -167,6 +167,14 @@ The example suspends the finite product of two circles. For the constant sheaf o
 
 `shdelignecomplex T[j,K,c];` extends a bounded complex along a named open embedding and applies the same smart cutoff. This permits successive Deligne steps with different cutoffs. The double-suspension example adds two tips at each step to the finite torus. Cutoffs $(0,1)$ give ranks $1,0,0,2,1$ and cutoffs $(1,1)$ give $1,2,0,0,1$. The ranks agree in complementary degrees on the four-dimensional model. [Iterated Deligne example](examples/sheaf-iterated-deligne.asl)
 
+### Stalk cohomology and the Serre functor
+
+`shcohomology H[K,q];` takes stalk cohomology of a bounded complex of sheaves. At each point it computes the kernel of the outgoing differential modulo the image of the incoming differential. A restriction transports a representative and projects it into the target stalk cohomology.
+
+`shserre K[F];` computes the incidence-algebra derived Serre functor on an ordinary sheaf. Write $h$ for the maximum number of strict arrows in a chain, printed by `shserreshift[K];`. For each chain $x_0<\cdots<x_\ell$, the complex has a summand $I_{x_\ell}\otimes F(x_0)$ in declared degree $h-\ell$. Here $I_x(y)=\mathbb F_p$ for $y\le x$ and is zero elsewhere. The bar boundary alternates over deleted points. The first face applies $F(x_0\to x_1)$, the interior faces retain the coefficient, and the last face projects $I_{x_\ell}$ to $I_{x_{\ell-1}}$. The generated sheaves are named `K__0`, `K__1`, and so on. Declared degree $q$ corresponds to cohomological degree $q-h$ in $S(F)$.
+
+On the linearly ordered site $A_n$, the Serre image of the projective interval $[a,n]$ is the injective interval $[1,a]$. If $b<n$, the image of $[a,b]$ is $[a+1,b+1][1]$. The example follows the simple at the first point of $A_3$ through four Serre steps and recovers it with accumulated shift two. [Sheaf Serre example](examples/sheaf-serre.asl)
+
 ### Derived sheaf Hom and Yoneda products
 
 For two sheaves `F` and `G` on the same named poset over the same prime field, `ShHomC(F,G,n)` has one matrix factor $\operatorname{Hom}(F(x_0),G(x_n))$ for every strict chain $x_0<\cdots<x_n$. This is Hom out of the normalized bar projective resolution of $F$. The differential uses the source restriction on the first face, the target restriction on the last face, and the unchanged matrix on the other faces, with alternating signs. If `F` is constant of rank one, this is the Roos complex of `G`.
