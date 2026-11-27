@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
+use crate::legendre_cm;
 use crate::map_cochain;
 use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
@@ -237,6 +238,7 @@ pub(crate) enum Kind {
     RVStableMarks(u32, usize),
     Lee(Rc<str>, crate::lee::Grade),
     Khovanov(Rc<str>, khovanov::Grade, KhForm),
+    CMOrder(legendre_cm::Grade),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -388,6 +390,7 @@ pub(crate) enum Value {
     LeeChain(crate::lee::Chain),
     KhChain(khovanov::Chain),
     KhClass(khovanov::Class),
+    CMOrder(legendre_cm::Element),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -520,6 +523,7 @@ pub(crate) struct Model {
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_phodge_modules: HashMap<String, Rc<PHodgeModule>>,
     rv_qp_quadratics: HashMap<String, QuadField>,
+    legendre_cm_families: HashMap<String, legendre_cm::Family>,
     rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
@@ -594,6 +598,7 @@ impl Model {
             rv_as_covers: HashMap::new(),
             rv_phodge_modules: HashMap::new(),
             rv_qp_quadratics: HashMap::new(),
+            legendre_cm_families: HashMap::new(),
             rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
@@ -840,6 +845,7 @@ impl Model {
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
             | Kind::RVQpQuad(..)
+            | Kind::CMOrder(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
             Kind::RVResSpace(grade) => grade.count(),
@@ -1047,6 +1053,7 @@ impl Model {
                 | Kind::RVValMat(..)
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
+                | Kind::CMOrder(..)
                 | Kind::RVWzw(..)
                 | Kind::Lee(..)
                 | Kind::Khovanov(..)
@@ -3238,6 +3245,45 @@ impl Model {
         self.inhabited_type(Kind::RVQpQuad(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn register_legendre_cm(
+        &mut self,
+        name: Label,
+        family: legendre_cm::Family,
+    ) -> Result<()> {
+        self.allocate(8)?;
+        self.register_qp_quad(
+            name.clone(),
+            family.prime,
+            family.discriminant,
+            family.trace,
+        )?;
+        self.legendre_cm_families.insert(name.text, family);
+        Ok(())
+    }
+
+    pub(crate) fn legendre_cm_named(&self, name: &str) -> Option<legendre_cm::Family> {
+        self.legendre_cm_families.get(name).copied()
+    }
+
+    pub(crate) fn legendre_cm(&self, name: &Label) -> Result<legendre_cm::Family> {
+        self.legendre_cm_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Legendre CM field '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn cm_order_type(&mut self, name: &Label, exponent: usize) -> Result<TypeId> {
+        self.legendre_cm(name)?;
+        legendre_cm::require_positive(exponent)?;
+        let grade = legendre_cm::Grade {
+            family: name.text.as_str().into(),
+            exponent,
+        };
+        self.inhabited_type(Kind::CMOrder(grade), 0)
+    }
+
     pub(crate) fn register_rv_phodge_quad(
         &mut self,
         name: Label,
@@ -3898,6 +3944,7 @@ impl Model {
             | Kind::RVStableTree(..)
             | Kind::RVStableMarks(..)
             | Kind::RVQpQuad(..)
+            | Kind::CMOrder(..)
             | Kind::RVWzw(..)
             | Kind::Lee(..)
             | Kind::Khovanov(..)
@@ -4337,6 +4384,9 @@ impl Model {
                 grade.prime, grade.ground, grade.rank
             )),
             Kind::RVQpQuad(name) => out.push(&format!("RVQpQuad({name})")),
+            Kind::CMOrder(grade) => {
+                out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
+            }
             Kind::RVUnram(name) => out.push(&format!("RVUnram({name})")),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
@@ -4570,6 +4620,7 @@ impl Model {
             (Value::RVValMat(left), Value::RVValMat(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
+            (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left == right),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
             }
@@ -4859,6 +4910,7 @@ impl Model {
                     left.compare(self, right)
                 }
             }
+            (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left.cmp(right)),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
@@ -5129,6 +5181,9 @@ impl Model {
                 }
                 Kind::RVQpQuad(..) => {
                     return Err(Error::plain("cannot enumerate a quadratic field"));
+                }
+                Kind::CMOrder(..) => {
+                    return Err(Error::plain("cannot enumerate an integral CM order"));
                 }
                 Kind::RVUnram(ref name) => {
                     let ring = self
@@ -6474,6 +6529,10 @@ impl Model {
             Value::RVQpQuad(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}, {}}}", value.a, value.b, value.c))
+            }
+            Value::CMOrder(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}, {}}}", value.constant, value.generator))
             }
             Value::RVUnram(values) => {
                 self.write_type(out, ty, 0)?;

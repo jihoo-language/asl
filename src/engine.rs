@@ -23,6 +23,7 @@ use crate::error::{Error, Result, Span};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
+use crate::legendre_cm;
 use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
@@ -464,6 +465,8 @@ enum TypedForm {
     ValDual(Box<TypedExpr>),
     StableLineQuad(QuadField, Vec<[TypedExpr; 2]>),
     StableProjection(Box<TypedExpr>),
+    QpQuadSpecialize(QuadField, Rc<UnramRing>, Box<TypedExpr>),
+    CMUnary(legendre_cm::Unary, Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
@@ -2632,6 +2635,21 @@ impl Engine {
                 };
                 query.report(&mut self.model, &value)?
             }
+            StatementForm::LegendreCM(name, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, "rvlegendrecm")?;
+                let Value::RVUnram(lambda) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let family = legendre_cm::Family::new(&mut self.model, &ring, &lambda)
+                    .map_err(|error| error.at(input.span))?;
+                self.model.register_legendre_cm(name, family)?;
+                return Ok(None);
+            }
+            StatementForm::CMReport(query, name, exponent) => {
+                let family = self.model.legendre_cm(&name)?;
+                family.report(&mut self.model, &name.text, exponent, query)?
+            }
             StatementForm::RvQpQuadReport(precision, input) => {
                 let input = self.checker().expr(input)?;
                 let operation = if precision.is_some() {
@@ -3592,6 +3610,17 @@ impl Engine {
         }
     }
 
+    fn cm_parameters(&self, ty: TypeId) -> (legendre_cm::Family, usize) {
+        let Kind::CMOrder(grade) = self.model.kind(ty) else {
+            unreachable!()
+        };
+        let family = self
+            .model
+            .legendre_cm_named(&grade.family)
+            .expect("registered CM family");
+        (family, grade.exponent)
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -4043,6 +4072,19 @@ impl Engine {
                             ring.multiply(&mut self.model, &a, &b)?
                         };
                         rv_unram::persist(&mut self.model, value)
+                    }
+                    (
+                        op @ (BinaryOp::Add | BinaryOp::CMMultiply),
+                        Value::CMOrder(a),
+                        Value::CMOrder(b),
+                    ) => {
+                        let value = if matches!(op, BinaryOp::Add) {
+                            a.add(&mut self.model, b)?
+                        } else {
+                            let (family, exponent) = self.cm_parameters(expr.ty);
+                            family.multiply(&mut self.model, exponent, a, b)?
+                        };
+                        legendre_cm::persist(&mut self.model, value)
                     }
                     (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
                         rv_lens::add(&mut self.model, &a, &b)
@@ -5069,6 +5111,28 @@ impl Engine {
                 };
                 let value = operation.apply(&mut self.model, *field, value)?;
                 rv_qp_quad::persist(&mut self.model, value)
+            }
+            TypedForm::QpQuadSpecialize(field, ring, input) => {
+                let Value::RVQpQuad(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                legendre_cm::specialize(&mut self.model, *field, ring, value)
+            }
+            TypedForm::CMUnary(operation, input) => {
+                let Value::CMOrder(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let (family, exponent) = self.cm_parameters(input.ty);
+                let value = match operation {
+                    legendre_cm::Unary::Lift => {
+                        return family.lift(&mut self.model, exponent, value)
+                    }
+                    legendre_cm::Unary::Include(target) => {
+                        family.include(&mut self.model, *target, exponent, value)?
+                    }
+                    legendre_cm::Unary::Negate => value.negate(&mut self.model)?,
+                };
+                legendre_cm::persist(&mut self.model, value)
             }
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -7113,6 +7177,7 @@ impl Checker<'_> {
                 self.model.rv_valuated_matroid_type(grade)
             }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
+            TypeForm::CMOrder(name, exponent) => self.model.cm_order_type(&name, exponent),
             TypeForm::RVUnram(ring) => self.model.rv_unram_type(&ring),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
@@ -7924,6 +7989,7 @@ impl Checker<'_> {
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVResSpace(grade) => ResSpace::zero(*grade).persist(self.model)?,
                     Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
+                    Kind::CMOrder(..) => Value::CMOrder(legendre_cm::Element::ZERO),
                     Kind::RVUnram(name) => {
                         let ring = self.model.rv_unram_named(name).expect("registered unramified ring");
                         rv_unram::persist(self.model,ring.scalar(0))?
@@ -9804,6 +9870,54 @@ impl Checker<'_> {
                     TypedForm::QpQuadUnary(field, operation, Box::new(input)),
                 ))
             }
+            ExprForm::QpQuadSpecialize(name, input) => {
+                let input = self.expr(*input)?;
+                let field = self.qp_quad_field(&input, "rvQpQuadSpecialize")?;
+                let ring = self.model.rv_unram(&name)?;
+                legendre_cm::require_same_prime(field, &ring)?;
+                let ty = self.model.rv_unram_type(&name)?;
+                Ok((
+                    ty,
+                    TypedForm::QpQuadSpecialize(field, ring, Box::new(input)),
+                ))
+            }
+            ExprForm::CMPi(name, exponent) => {
+                let family = self.model.legendre_cm(&name)?;
+                let ty = self.model.qp_quad_type(&name)?;
+                let value = family.pi(self.model, exponent)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CMTerm(name, exponent, constant, generator) => {
+                let ty = self.model.cm_order_type(&name, exponent)?;
+                let value = legendre_cm::persist(
+                    self.model,
+                    legendre_cm::Element::new(constant, generator),
+                )?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CMUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::CMOrder(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "an integral CM order element",
+                    ));
+                };
+                let name = Label {
+                    text: grade.family.to_string(),
+                    span: input.span,
+                };
+                let ty = match operation {
+                    legendre_cm::Unary::Lift => self.model.qp_quad_type(&name)?,
+                    legendre_cm::Unary::Include(target) => {
+                        legendre_cm::require_inclusion(target, grade.exponent)?;
+                        self.model.cm_order_type(&name, target)?
+                    }
+                    legendre_cm::Unary::Negate => unreachable!(),
+                };
+                Ok((ty, TypedForm::CMUnary(operation, Box::new(input))))
+            }
             ExprForm::UnramElement(name, coefficients) => {
                 let ring = self.model.rv_unram(&name)?;
                 let ty = self.model.rv_unram_type(&name)?;
@@ -10492,6 +10606,12 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::CMOrder(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMUnary(legendre_cm::Unary::Negate, Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVQpQuad(..)) {
                     let field = self.qp_quad_field(&input, "neg")?;
                     return Ok((
@@ -13968,6 +14088,7 @@ impl Checker<'_> {
                         | Kind::RVQpQuad(..)
                         | Kind::Lee(..)
                         | Kind::Khovanov(..)
+                        | Kind::CMOrder(..)
                         | Kind::RvTl(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
@@ -14198,6 +14319,17 @@ impl Checker<'_> {
             BinaryOp::QpQuadMultiply => {
                 self.qp_quad_field(left, "rvQpQuadMul")?;
                 self.require_type(left.ty, right, "rvQpQuadMul")?;
+                Ok(left.ty)
+            }
+            BinaryOp::CMMultiply => {
+                if !matches!(self.model.kind(left.ty), Kind::CMOrder(..)) {
+                    return Err(self.invalid_operand(
+                        left,
+                        "rvCMMul",
+                        "an integral CM order element",
+                    ));
+                }
+                self.require_type(left.ty, right, "rvCMMul")?;
                 Ok(left.ty)
             }
             BinaryOp::UnramMultiply => {

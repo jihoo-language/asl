@@ -101,7 +101,7 @@ impl Query {
     }
 }
 
-fn validate(ring: &Ring, lambda: &[u64]) -> Result<()> {
+pub(crate) fn validate(ring: &Ring, lambda: &[u64]) -> Result<()> {
     if ring.prime() == 2 {
         return Err(Error::plain(
             "Legendre closed point requires an odd residue characteristic",

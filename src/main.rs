@@ -34,6 +34,7 @@ mod lee;
 mod lee_linear;
 mod legendre;
 mod legendre_closed;
+mod legendre_cm;
 mod linear;
 mod map_bracket;
 mod map_cochain;

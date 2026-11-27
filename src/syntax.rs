@@ -128,6 +128,7 @@ pub(crate) enum TypeForm {
     StableMarks(usize, usize),
     Lee(Label, crate::lee::Grade),
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
+    CMOrder(Label, usize),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -543,6 +544,7 @@ pub(crate) enum BinaryOp {
     ResSum,
     ResIntersection,
     QpQuadMultiply,
+    CMMultiply,
 }
 
 impl BinaryOp {
@@ -581,6 +583,7 @@ impl BinaryOp {
             "rvResSum" => Some(Self::ResSum),
             "rvResIntersection" => Some(Self::ResIntersection),
             "rvQpQuadMul" => Some(Self::QpQuadMultiply),
+            "rvCMMul" => Some(Self::CMMultiply),
             _ => None,
         }
     }
@@ -921,6 +924,10 @@ pub(crate) enum ExprForm {
     CrystalEO(Label),
     CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
+    QpQuadSpecialize(Label, Box<ParsedExpr>),
+    CMPi(Label, usize),
+    CMTerm(Label, usize, i128, i128),
+    CMUnary(crate::legendre_cm::Unary, Box<ParsedExpr>),
     UnramElement(Label, Vec<i128>),
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1076,6 +1083,8 @@ pub(crate) enum StatementForm {
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
     LegendreClosedReport(crate::legendre_closed::Query, ParsedExpr),
+    LegendreCM(Label, ParsedExpr),
+    CMReport(crate::legendre_cm::Query, Label, usize),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
@@ -4109,6 +4118,31 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::StableReport(query, self.paren_expr(0)?)
             }
+            Token::Word("rvlegendrecm") => {
+                self.advance()?;
+                let field = self.label()?;
+                StatementForm::LegendreCM(field, self.paren_expr(0)?)
+            }
+            Token::Word("rvCMOrder" | "rvCMTrace" | "rvCMIndex" | "rvCMNorm") => {
+                use crate::legendre_cm::Query;
+                let kind = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let field = self.label()?;
+                self.expect(Token::Comma)?;
+                let exponent = self.number()?.0;
+                let query = match kind {
+                    Token::Word("rvCMOrder") => Query::Order,
+                    Token::Word("rvCMTrace") => Query::Trace,
+                    Token::Word("rvCMNorm") => Query::Norm,
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        Query::Index(self.number()?.0)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::CMReport(query, field, exponent)
+            }
             Token::Word("rvQpQuadVal" | "rvQpQuadResidue") => {
                 let valuation = self.token() == Token::Word("rvQpQuadVal");
                 self.advance()?;
@@ -5453,6 +5487,13 @@ impl<'src> Parser<'src> {
             let field = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVQpQuad(field), 0);
+        }
+        if name.text == "RVCMOrder" && self.eat(Token::LParen)? {
+            let field = self.label()?;
+            self.expect(Token::Comma)?;
+            let exponent = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
         if name.text == "RVUnram" && self.eat(Token::LParen)? {
             let ring = self.label()?;
@@ -7039,6 +7080,67 @@ impl<'src> Parser<'src> {
                     let c = self.signed_wide("a positive denominator", "quadratic denominator")?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QpQuadElement(field, a, b, c), 0);
+                }
+                if name.text == "rvQpQuadSpecialize" && self.eat(Token::LBracket)? {
+                    let ring = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QpQuadSpecialize(ring, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvCMPi" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    let exponent = if self.eat(Token::Comma)? {
+                        self.number()?.0
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::CMPi(field, exponent), 0);
+                }
+                if name.text == "rvCMTerm" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let exponent = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let constant =
+                        self.signed_wide("a signed coefficient", "CM order coefficient")?;
+                    self.expect(Token::Comma)?;
+                    let generator =
+                        self.signed_wide("a signed coefficient", "CM order coefficient")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::CMTerm(field, exponent, constant, generator),
+                        0,
+                    );
+                }
+                if name.text == "rvCMInclude" && self.eat(Token::LBracket)? {
+                    let exponent = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::CMUnary(
+                            crate::legendre_cm::Unary::Include(exponent),
+                            Box::new(input),
+                        ),
+                        depth,
+                    );
+                }
+                if name.text == "rvCMLift" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::CMUnary(crate::legendre_cm::Unary::Lift, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvQpQuadPow" && self.eat(Token::LBracket)? {
                     let power = self.number()?.0;
