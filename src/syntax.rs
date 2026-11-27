@@ -190,6 +190,12 @@ pub(crate) enum TypeForm {
         crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::SyntaxGrade,
         bool,
     ),
+    VerbitskyTate(
+        Label,
+        crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Mode,
+        i128,
+        i128,
+    ),
     VerbitskyHochschild(Label, i128, i128, i128, bool),
     VerbitskyDeformation(Label, i128, i128, bool),
     VerbitskyFree(Label, i128, i128, i128),
@@ -1117,6 +1123,7 @@ pub(crate) enum ExprForm {
     VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Expression>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
+    VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Expression>),
@@ -1402,6 +1409,7 @@ pub(crate) enum StatementForm {
     MonomialCICotangent(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
+    VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Command>),
@@ -8862,6 +8870,145 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_tate_mode(
+        &mut self,
+    ) -> Result<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Mode> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Mode;
+        let name = self.label()?;
+        match name.text.as_str() {
+            "ordinary" => Ok(Mode::Ordinary),
+            "stable" => Ok(Mode::Stable),
+            _ => Err(Error::new(
+                name.span,
+                "expected ordinary or stable Tate mode",
+            )),
+        }
+    }
+
+    fn verbitsky_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Command;
+        self.advance()?;
+        let command = if name == "rvverbitskytate" {
+            let mark = self.label()?;
+            let powers = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            Command::Declare(mark, powers)
+        } else if name == "rvVerbitskyTateTensorPeriod" {
+            self.expect(Token::LBracket)?;
+            let mark = self.label()?;
+            self.expect(Token::RBracket)?;
+            let degrees = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            let left = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            let right = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            Command::TensorPeriod(mark, degrees, left, right)
+        } else {
+            self.expect(Token::LBracket)?;
+            let mark = self.label()?;
+            self.expect(Token::Comma)?;
+            let factor = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let mode = self.verbitsky_tate_mode()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_wide("a resolution degree", "Tate resolution degree")?;
+            let command = match name {
+                "rvVerbitskyTatePeriod" => {
+                    self.expect(Token::Comma)?;
+                    let a = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let b = self.number()?.0;
+                    Command::Period(mark, factor, mode, degree, a, b)
+                }
+                "rvVerbitskyTateComplexMap" => {
+                    self.expect(Token::Comma)?;
+                    let kind = self.label()?;
+                    let cochain = match kind.text.as_str() {
+                        "chain" => false,
+                        "cochain" => true,
+                        _ => return Err(Error::new(kind.span, "expected chain or cochain")),
+                    };
+                    self.expect(Token::Comma)?;
+                    let exponent = self.number()?.0;
+                    Command::ComplexMap(mark, factor, mode, degree, cochain, exponent)
+                }
+                _ => Command::Check(mark, factor, mode, degree),
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::VerbitskyTate(Box::new(command)))
+    }
+
+    fn verbitsky_tate_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::{
+            Bilinear, Expression, Unary,
+        };
+        let (operation, depth) = match name {
+            "rvVerbitskyTateTerm" => {
+                self.expect(Token::LBracket)?;
+                let mark = self.label()?;
+                self.expect(Token::Comma)?;
+                let mode = self.verbitsky_tate_mode()?;
+                self.expect(Token::RBracket)?;
+                let monomial =
+                    self.set_named_rows(|parser| parser.wide_unsigned("Tate monomial exponent"))?;
+                let exterior = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+                let periodic = self.set_named_rows(|parser| {
+                    parser.signed_wide("an integer exponent", "Tate periodic exponent")
+                })?;
+                (
+                    Expression::Term(mark, mode, monomial, exterior, periodic),
+                    0,
+                )
+            }
+            "rvVerbitskyTateCup" | "rvVerbitskyTateBracket" => {
+                let args = self.paren_pair(nest)?;
+                let depth = args[0].depth.max(args[1].depth) + 1;
+                let operation = if name == "rvVerbitskyTateCup" {
+                    Bilinear::Cup
+                } else {
+                    Bilinear::Bracket
+                };
+                (Expression::Bilinear(operation, Box::new(args)), depth)
+            }
+            "rvVerbitskyTateBar" => {
+                self.expect(Token::LBracket)?;
+                let mark = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Bar(mark, length, Box::new(input)), depth)
+            }
+            _ => {
+                let operation = if name == "rvVerbitskyTateHodge" {
+                    self.expect(Token::LBracket)?;
+                    let index = self.signed_wide("a Hodge index", "Tate Hodge index")?;
+                    self.expect(Token::RBracket)?;
+                    Unary::Hodge(index)
+                } else if name == "rvVerbitskyTateScale" {
+                    self.expect(Token::LBracket)?;
+                    let numerator = self.signed_wide("an integer numerator", "Tate numerator")?;
+                    self.expect(Token::Comma)?;
+                    let denominator =
+                        self.signed_wide("a positive denominator", "Tate denominator")?;
+                    self.expect(Token::RBracket)?;
+                    Unary::Scale((numerator, denominator))
+                } else {
+                    Unary::Bv
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::VerbitskyTate(Box::new(operation)), depth)
+    }
+
     fn verbitsky_eulerian_statement(&mut self) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Command;
         self.advance()?;
@@ -12755,6 +12902,13 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word(
+                command @ ("rvverbitskytate"
+                | "rvVerbitskyTatePeriod"
+                | "rvVerbitskyTateCheck"
+                | "rvVerbitskyTateComplexMap"
+                | "rvVerbitskyTateTensorPeriod"),
+            ) => self.verbitsky_tate_statement(command)?,
             Token::Word("rvVerbitskyHodgeDim") => self.verbitsky_eulerian_statement()?,
             Token::Word(command @ ("rvMonomialCICotangentDim" | "rvMonomialCICotangentDiff")) => {
                 self.monomial_ci_cotangent_statement(command)?
@@ -17487,6 +17641,17 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if name.text == "RVVerbitskyTate" && self.eat(Token::LParen)? {
+            let mark = self.label()?;
+            self.expect(Token::Comma)?;
+            let mode = self.verbitsky_tate_mode()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_wide("a Hochschild degree", "Tate degree")?;
+            self.expect(Token::Comma)?;
+            let shift = self.signed_wide("an internal shift", "Tate shift")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::VerbitskyTate(mark, mode, degree, shift), 0);
+        }
         if matches!(
             name.text.as_str(),
             "RVVerbitskyHochschildCochain" | "RVVerbitskyHH"
@@ -19439,6 +19604,20 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyTateTerm"
+                        | "rvVerbitskyTateScale"
+                        | "rvVerbitskyTateHodge"
+                        | "rvVerbitskyTateBar"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyTateCup" | "rvVerbitskyTateBracket" | "rvVerbitskyTateBV"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.verbitsky_tate_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

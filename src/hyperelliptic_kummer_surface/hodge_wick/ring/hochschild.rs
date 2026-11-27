@@ -16,6 +16,7 @@ mod complex;
 pub(crate) mod cyclic;
 pub(crate) mod kuranishi;
 mod operations;
+pub(crate) mod tate;
 use algebra::Algebra;
 use complex::Complex;
 
@@ -299,8 +300,13 @@ impl Form {
         if value.empty() {
             return Ok(Cochain::default());
         }
+        if !self.hochschild_differential(model, grade, value)?.empty() {
+            return Err(Error::plain(
+                "normalized Hochschild cochain is not a cocycle",
+            ));
+        }
         let algebra = self.hochschild_algebra(model, grade)?;
-        Complex::new(model, &algebra, grade)?.project(model, value)
+        complex::sparse_project(model, &algebra, grade, value)
     }
 }
 

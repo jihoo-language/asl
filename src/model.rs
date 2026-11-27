@@ -2,6 +2,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
+use hochschild::tate as verbitsky_tate;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -343,6 +344,7 @@ pub(crate) enum Kind {
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
     VerbitskyCyclic(verbitsky_cyclic::Grade, bool),
+    VerbitskyTate(verbitsky_tate::Grade),
     VerbitskyHochschild(hochschild::Grade, bool),
     VerbitskyDeformation(deformation::Grade, bool),
     VerbitskyFree(verbitsky_resolution::Grade),
@@ -595,6 +597,7 @@ pub(crate) enum Value {
     VerbitskyKoszul(Rc<koszul::Chain>),
     VerbitskyFree(Rc<verbitsky_resolution::Vector>),
     VerbitskyCyclic(Rc<verbitsky_cyclic::Chain>),
+    VerbitskyTate(Rc<verbitsky_tate::State>),
     VerbitskyHochschild(Rc<hochschild::Cochain>),
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
@@ -884,6 +887,7 @@ pub(crate) struct Model {
     cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    verbitsky_tate: HashMap<String, Rc<verbitsky_tate::Definition>>,
     verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
     hodge_wick_forms: HashMap<String, Rc<hyperelliptic_kummer_surface::hodge_wick::Form>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -1049,6 +1053,7 @@ impl Model {
             cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
+            verbitsky_tate: HashMap::new(),
             verbitsky_associative: HashMap::new(),
             hodge_wick_forms: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -1710,6 +1715,13 @@ impl Model {
                     1
                 }
             }
+            Kind::VerbitskyTate(ref grade) => {
+                if grade.mode == verbitsky_tate::Mode::Ordinary && grade.degree < 0 {
+                    1
+                } else {
+                    usize::MAX
+                }
+            }
             Kind::VerbitskyHochschild(ref grade, _) => {
                 if grade.possible() {
                     usize::MAX
@@ -2018,6 +2030,7 @@ impl Model {
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
                 | Kind::VerbitskyCyclic(..)
+                | Kind::VerbitskyTate(..)
                 | Kind::VerbitskyHochschild(..)
                 | Kind::VerbitskyDeformation(..)
                 | Kind::VerbitskyFree(..)
@@ -5907,6 +5920,38 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn register_verbitsky_tate(
+        &mut self,
+        name: Label,
+        powers: Vec<usize>,
+    ) -> Result<()> {
+        if self.verbitsky_tate.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "Verbitsky Tate definition '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let definition = verbitsky_tate::Definition::new(self, powers)?;
+        self.verbitsky_tate.insert(name.text, Rc::new(definition));
+        Ok(())
+    }
+
+    pub(crate) fn verbitsky_tate(&self, name: &str) -> Result<Rc<verbitsky_tate::Definition>> {
+        self.verbitsky_tate
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Verbitsky Tate definition '{name}'")))
+    }
+
+    pub(crate) fn verbitsky_tate_type(&mut self, grade: verbitsky_tate::Grade) -> Result<TypeId> {
+        self.verbitsky_tate(&grade.name)?
+            .validate_mode(grade.mode)?;
+        self.inhabited_type(Kind::VerbitskyTate(grade), 0)
+    }
+
     pub(crate) fn register_verbitsky_associative(
         &mut self,
         name: Label,
@@ -7840,6 +7885,7 @@ impl Model {
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
             | Kind::VerbitskyCyclic(..)
+            | Kind::VerbitskyTate(..)
             | Kind::VerbitskyHochschild(..)
             | Kind::VerbitskyDeformation(..)
             | Kind::VerbitskyFree(..)
@@ -8441,6 +8487,13 @@ impl Model {
                     grade.weight
                 ))
             }
+            Kind::VerbitskyTate(grade) => out.push(&format!(
+                "RVVerbitskyTate({},{},{},{})",
+                grade.name,
+                grade.mode.name(),
+                grade.degree,
+                grade.shift
+            )),
             Kind::VerbitskyHochschild(grade, class) => {
                 let name = if *class {
                     "RVVerbitskyHH"
@@ -8929,6 +8982,7 @@ impl Model {
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
+            (Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -9352,6 +9406,7 @@ impl Model {
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => a.compare(self, b),
+            (Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => a.compare(self, b),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => a.compare(self, b),
             (Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => a.compare(self, b),
             (Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => a.compare(self, b),
@@ -9885,6 +9940,14 @@ impl Model {
                         ));
                     }
                     vec![verbitsky_cyclic::Chain::default().persist(self)?]
+                }
+                Kind::VerbitskyTate(ref grade) => {
+                    if grade.mode == verbitsky_tate::Mode::Stable || grade.degree >= 0 {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Tate cohomology component",
+                        ));
+                    }
+                    vec![verbitsky_tate::State::default().persist(self)?]
                 }
                 Kind::VerbitskyHochschild(ref grade, _) => {
                     if grade.possible() {
@@ -11907,6 +11970,10 @@ impl Model {
             Value::VerbitskyCyclic(chain) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&chain.text(self)?)
+            }
+            Value::VerbitskyTate(state) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&state.text(self)?)
             }
             Value::VerbitskyHochschild(cochain) => {
                 self.write_type(out, ty, 0)?;

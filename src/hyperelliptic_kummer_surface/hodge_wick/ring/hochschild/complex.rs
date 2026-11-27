@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::error::Error;
 
 use super::{
@@ -291,4 +293,60 @@ pub(super) fn annihilates(
         }
     }
     Ok(true)
+}
+
+// The same pivot complement as dense RREF, without materializing empty
+// entries of the adjacent differential matrices. Cocycles have been checked
+// by the direct sparse differential before entering this reduction.
+pub(super) fn sparse_project(
+    model: &mut Model,
+    algebra: &Algebra,
+    grade: &Grade,
+    value: &Cochain,
+) -> Result<Cochain> {
+    let previous = Axis::new(model, algebra, &grade.with_arity_offset(-1)?)?;
+    let mut pivots = BTreeMap::<Key, Cochain>::new();
+    let mut cells = 0;
+    for key in previous.0 {
+        let mut image = Cochain::default();
+        differential_terms(model, algebra, &key, |model, key, coefficient| {
+            image.insert(model, key, coefficient)
+        })?;
+        while let Some((pivot, &coefficient)) = image.entries.first_key_value() {
+            if let Some(row) = pivots.get(pivot) {
+                subtract_row(model, &mut image, row, coefficient)?;
+            } else {
+                let pivot = pivot.clone();
+                let inverse = coefficient.inverse()?;
+                for value in image.entries.values_mut() {
+                    *value = value.multiply(model, inverse)?;
+                }
+                cells += image.cells + pivot.word.len() + 12;
+                storage(cells)?;
+                pivots.insert(pivot, image);
+                break;
+            }
+        }
+    }
+    let mut result = value.add(model, &Cochain::default())?;
+    for (pivot, row) in pivots {
+        if let Some(&coefficient) = result.entries.get(&pivot) {
+            subtract_row(model, &mut result, &row, coefficient)?;
+        }
+    }
+    Ok(result)
+}
+
+fn subtract_row(
+    model: &mut Model,
+    value: &mut Cochain,
+    row: &Cochain,
+    scale: Rational,
+) -> Result<()> {
+    let scale = scale.negate();
+    for (key, &coefficient) in &row.entries {
+        let correction = coefficient.multiply(model, scale)?;
+        value.insert(model, key.clone(), correction)?;
+    }
+    Ok(())
 }

@@ -2,6 +2,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
+use hochschild::tate as verbitsky_tate;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use verbitsky_cyclic::eulerian;
@@ -1067,6 +1068,9 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    VerbitskyTateUnary(verbitsky_tate::Unary, Box<TypedExpr>),
+    VerbitskyTateBilinear(verbitsky_tate::Bilinear, Box<[TypedExpr; 2]>),
+    VerbitskyTateBar(Box<TypedExpr>),
     VerbitskyEulerian(eulerian::Operation, Box<TypedExpr>),
     VerbitskyCyclicApply(verbitsky_cyclic::Operation, Box<TypedExpr>),
     VerbitskyCyclicScale(hodge_wick::Entry, Box<TypedExpr>),
@@ -2759,6 +2763,7 @@ impl Engine {
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
             }
+            StatementForm::VerbitskyTate(command) => return self.verbitsky_tate_command(*command),
             StatementForm::VerbitskyEulerian(command) => {
                 let eulerian::Command(grade, index) = *command;
                 let grade = verbitsky_cyclic::Grade::from(grade);
@@ -6758,6 +6763,51 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn verbitsky_tate_command(
+        &mut self,
+        command: verbitsky_tate::Command,
+    ) -> Result<Option<String>> {
+        use verbitsky_tate::Command;
+        match command {
+            Command::Declare(name, powers) => {
+                self.model.register_verbitsky_tate(name, powers)?;
+                Ok(None)
+            }
+            Command::Period(name, i, mode, degree, a, b) => {
+                let definition = self.model.verbitsky_tate(&name.text)?;
+                let value = definition.period_map(&mut self.model, i, mode, degree, a, b)?;
+                Ok(Some(format!(
+                    "rvVerbitskyTatePeriod[{}, {i}, {}, {degree}, {a}, {b}] = {value}",
+                    name.text,
+                    mode.name()
+                )))
+            }
+            Command::TensorPeriod(name, degrees, left, right) => {
+                let definition = self.model.verbitsky_tate(&name.text)?;
+                let value = definition.tensor_period(&mut self.model, &degrees, &left, &right)?;
+                Ok(Some(format!(
+                    "rvVerbitskyTateTensorPeriod[{}] = {value}",
+                    name.text
+                )))
+            }
+            Command::Check(name, i, mode, degree) => {
+                let definition = self.model.verbitsky_tate(&name.text)?;
+                let value = definition.resolution_check(&mut self.model, i, mode, degree)?;
+                Ok(Some(format!(
+                    "rvVerbitskyTateCheck[{}, {i}, {}, {degree}] = {value}",
+                    name.text,
+                    mode.name()
+                )))
+            }
+            Command::ComplexMap(name, i, mode, degree, cochain, exponent) => {
+                let definition = self.model.verbitsky_tate(&name.text)?;
+                let value = definition.complex_map(i, mode, degree, cochain, exponent)?;
+                let kind = if cochain { "cochain" } else { "chain" };
+                Ok(Some(format!("rvVerbitskyTateComplexMap[{}, {i}, {}, {degree}, {kind}, {exponent}] = {value}", name.text, mode.name())))
             }
         }
     }
@@ -12481,6 +12531,9 @@ impl Engine {
                     (BinaryOp::Add, Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (
                         BinaryOp::Add,
                         Value::VerbitskyHochschild(a),
@@ -14784,6 +14837,68 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyTateUnary(operation, input) => {
+                let Kind::VerbitskyTate(grade) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let definition = self.model.verbitsky_tate(&grade.name)?;
+                let Value::VerbitskyTate(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let result = match operation {
+                    verbitsky_tate::Unary::Bv => definition.bv(&mut self.model, &value)?,
+                    verbitsky_tate::Unary::Hodge(index) => {
+                        value.hodge_project(&mut self.model, *index)?
+                    }
+                    verbitsky_tate::Unary::Scale(scalar) => {
+                        value.scale(&mut self.model, *scalar)?
+                    }
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::VerbitskyTateBilinear(operation, inputs) => {
+                let Kind::VerbitskyTate(left) = self.model.kind(inputs[0].ty) else {
+                    unreachable!()
+                };
+                let Kind::VerbitskyTate(right) = self.model.kind(inputs[1].ty) else {
+                    unreachable!()
+                };
+                let definition = self.model.verbitsky_tate(&left.name)?;
+                let (mode, p, q) = (left.mode, left.degree, right.degree);
+                let Value::VerbitskyTate(a) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::VerbitskyTate(b) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                let result = match operation {
+                    verbitsky_tate::Bilinear::Cup => {
+                        definition.cup(&mut self.model, mode, &a, &b)?
+                    }
+                    verbitsky_tate::Bilinear::Bracket => {
+                        definition.bracket(&mut self.model, mode, p, q, &a, &b)?
+                    }
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::VerbitskyTateBar(input) => {
+                let Kind::VerbitskyTate(grade) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Kind::VerbitskyHochschild(target, true) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let target = target.clone();
+                let form = self.model.hodge_wick(&target.basis)?;
+                let definition = self.model.verbitsky_tate(&grade.name)?;
+                let Value::VerbitskyTate(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                definition
+                    .bar_class(&mut self.model, &form, &grade, &target, &state)?
                     .persist(&mut self.model)
             }
             TypedForm::VerbitskyEulerian(operation, input) => {
@@ -18718,6 +18833,14 @@ impl Checker<'_> {
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
             }
+            TypeForm::VerbitskyTate(name, mode, degree, shift) => {
+                self.model.verbitsky_tate_type(verbitsky_tate::Grade {
+                    name: name.text.into(),
+                    mode,
+                    degree,
+                    shift,
+                })
+            }
             TypeForm::VerbitskyHochschild(name, length, arity, shift, class) => {
                 self.model.verbitsky_hh_type(
                     hochschild::Grade {
@@ -19946,6 +20069,7 @@ impl Checker<'_> {
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
                     Kind::VerbitskyCyclic(..) => verbitsky_cyclic::Chain::default().persist(self.model)?,
+                    Kind::VerbitskyTate(..) => verbitsky_tate::State::default().persist(self.model)?,
                     Kind::VerbitskyHochschild(..) => hochschild::Cochain::default().persist(self.model)?,
                     Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
@@ -22246,6 +22370,7 @@ impl Checker<'_> {
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::VerbitskyTate(expression) => self.verbitsky_tate_expression(*expression),
             ExprForm::VerbitskyEulerian(expression) => {
                 let eulerian::Expression(operation, input) = *expression;
                 let input = self.expr(*input)?;
@@ -23207,6 +23332,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::VerbitskyCyclicScale((-1, 1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::VerbitskyTate(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::VerbitskyTateUnary(
+                            verbitsky_tate::Unary::Scale((-1, 1)),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::VerbitskyHochschild(..)) {
@@ -27422,6 +27556,7 @@ impl Checker<'_> {
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
                         | Kind::VerbitskyCyclic(..)
+                        | Kind::VerbitskyTate(..)
                         | Kind::VerbitskyHochschild(..)
                         | Kind::VerbitskyDeformation(..)
                         | Kind::VerbitskyFree(..)
@@ -29133,6 +29268,91 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
                 ))
+            }
+        }
+    }
+
+    fn verbitsky_tate_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<&verbitsky_tate::Grade> {
+        if let Kind::VerbitskyTate(grade) = self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVVerbitskyTate class"))
+        }
+    }
+
+    fn verbitsky_tate_expression(
+        &mut self,
+        expression: verbitsky_tate::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use verbitsky_tate::{Bilinear, Expression, Mode, Unary};
+        match expression {
+            Expression::Term(name, mode, exponents, wedge, period) => {
+                let definition = self.model.verbitsky_tate(&name.text)?;
+                let (grade, value) = definition.term(
+                    self.model,
+                    name.text.into(),
+                    mode,
+                    exponents,
+                    wedge,
+                    period,
+                )?;
+                let ty = self.model.verbitsky_tate_type(grade)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Bilinear(operation, args) => {
+                let [left, right] = *args;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let name = match operation {
+                    Bilinear::Cup => "rvVerbitskyTateCup",
+                    Bilinear::Bracket => "rvVerbitskyTateBracket",
+                };
+                let a = self.verbitsky_tate_operand(&left, name)?;
+                let b = self.verbitsky_tate_operand(&right, name)?;
+                let grade = a.target(b, operation)?;
+                let ty = self.model.verbitsky_tate_type(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::VerbitskyTateBilinear(operation, Box::new([left, right])),
+                ))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let name = match operation {
+                    Unary::Bv => "rvVerbitskyTateBV",
+                    Unary::Hodge(_) => "rvVerbitskyTateHodge",
+                    Unary::Scale(_) => "rvVerbitskyTateScale",
+                };
+                let grade = self.verbitsky_tate_operand(&input, name)?;
+                let ty = match operation {
+                    Unary::Bv => self.model.verbitsky_tate_type(grade.lower()?)?,
+                    Unary::Hodge(_) if grade.mode != Mode::Ordinary => {
+                        return Err(Error::plain(
+                            "Eulerian Hodge projection requires ordinary Tate coordinates",
+                        ));
+                    }
+                    Unary::Scale((_, denominator)) if denominator <= 0 => {
+                        return Err(Error::plain(
+                            "Hodge Wick rational denominator must be positive",
+                        ));
+                    }
+                    _ => input.ty,
+                };
+                Ok((
+                    ty,
+                    TypedForm::VerbitskyTateUnary(operation, Box::new(input)),
+                ))
+            }
+            Expression::Bar(mark, length, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.verbitsky_tate_operand(&input, "rvVerbitskyTateBar")?;
+                let target = grade.bar_grade(mark.text.into(), length)?;
+                let ty = self.model.verbitsky_hh_type(target, true)?;
+                Ok((ty, TypedForm::VerbitskyTateBar(Box::new(input))))
             }
         }
     }
