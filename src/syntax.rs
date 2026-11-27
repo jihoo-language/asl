@@ -744,6 +744,7 @@ pub(crate) enum ExprForm {
     Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Expression>),
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Expression>),
+    DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1211,6 +1212,7 @@ pub(crate) enum StatementForm {
     DijkgraafWitten(Box<crate::rv_crossed::dijkgraaf_witten::Command>),
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Command>),
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Command>),
+    DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3799,6 +3801,36 @@ impl<'src> Parser<'src> {
             *i = self.number()?.0;
         }
         Ok(indices)
+    }
+
+    fn double_fusion_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::fusion_symbols::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let command = match operation {
+            "rvDoubleFusionSpace" => Command::Space(name, self.following_indices()?),
+            "rvDoubleFData" => Command::FData(name, self.following_indices()?),
+            "rvDoublePentagon" => Command::Pentagon(name, self.following_indices()?),
+            _ => Command::Hexagon(name, self.following_indices()?),
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::DoubleFusion(Box::new(command)))
+    }
+
+    fn double_fusion_expression(&mut self, operation: &str, span: Span) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::fusion_symbols::Expression;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let operation = match operation {
+            "rvDoubleVertex" => Expression::Vertex(name, self.following_indices()?),
+            "rvDoubleF" | "rvDoubleFInv" => {
+                Expression::F(name, self.following_indices()?, operation == "rvDoubleFInv")
+            }
+            _ => Expression::R(name, self.following_indices()?, operation == "rvDoubleRInv"),
+        };
+        self.expect(Token::RBracket)?;
+        expr(span, ExprForm::DoubleFusion(Box::new(operation)), 0)
     }
 
     fn double_braid_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -10897,6 +10929,12 @@ impl<'src> Parser<'src> {
             Token::Word(op @ ("rvDoubleRepData" | "rvDoubleRep" | "rvDoubleBraidImage")) => {
                 self.double_braid_statement(op)?
             }
+            Token::Word(
+                op @ ("rvDoubleFusionSpace"
+                | "rvDoubleFData"
+                | "rvDoublePentagon"
+                | "rvDoubleHexagon"),
+            ) => self.double_fusion_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -17624,6 +17662,13 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.double_braid_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDoubleVertex" | "rvDoubleF" | "rvDoubleFInv" | "rvDoubleR" | "rvDoubleRInv"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.double_fusion_expression(&name.text, span);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

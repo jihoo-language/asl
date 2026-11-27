@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use super::{Choices, Crossed};
@@ -60,12 +61,35 @@ pub(crate) struct Postnikov {
     pub(super) action: Vec<u32>,
     kernel_coordinates: Vec<Option<u32>>,
     canonical: Rc<Cochain>,
-    boundaries: Basis,
-    rank_d3: usize,
+    boundaries: OnceCell<Basis>,
+    rank_d3: OnceCell<usize>,
 }
 
 impl Postnikov {
     pub(crate) fn new(model: &mut Model, crossed: Rc<Crossed>, generator: usize) -> Result<Self> {
+        if (crossed.order() - 1).pow(4) > MAX_PIVOT_CELLS {
+            return Err(Error::plain(
+                "normalized Postnikov bar complex exceeds its degree-four size limit",
+            ));
+        }
+        let post = Self::carrier(model, crossed, generator)?;
+        post.boundary_basis(model)?;
+        post.rank_d3(model)?;
+        Ok(post)
+    }
+
+    pub(super) fn carrier(
+        model: &mut Model,
+        crossed: Rc<Crossed>,
+        generator: usize,
+    ) -> Result<Self> {
+        // Checking a supplied cocycle streams over the bar rows. Computing
+        // cohomology ranks also retains a sparse elimination basis.
+        if (crossed.order() - 1).pow(4) > 1_000_000 {
+            return Err(Error::plain(
+                "normalized Postnikov cocycle exceeds its degree-four size limit",
+            ));
+        }
         let size = crossed.kernel.len();
         let prime = if size == 2 {
             Prime::validated(2)
@@ -77,11 +101,6 @@ impl Postnikov {
         if generator == 0 || crossed.boundary.get(generator) != Some(&0) {
             return Err(Error::plain(
                 "Postnikov generator must be a nonidentity kernel element",
-            ));
-        }
-        if (crossed.order() - 1).pow(4) > MAX_PIVOT_CELLS {
-            return Err(Error::plain(
-                "normalized Postnikov bar complex exceeds its degree-four size limit",
             ));
         }
         let mut kernel_coordinates = vec![None; crossed.h.order()];
@@ -107,36 +126,52 @@ impl Postnikov {
             action,
             kernel_coordinates,
             canonical: Rc::new(Cochain::zero()),
-            boundaries: Basis::default(),
-            rank_d3: 0,
+            boundaries: OnceCell::new(),
+            rank_d3: OnceCell::new(),
         };
         let canonical = post.compute(model, &post.crossed.standard)?;
         post.require_cocycle(model, &canonical)?;
         post.canonical = Rc::new(canonical);
-        let mut delta2 = vec![Vec::new(); post.size(2)];
-        for i in 0..post.size(3) {
-            for (j, coefficient) in post.row(model, 2, i)? {
-                delta2[j].push((i, coefficient));
-            }
-        }
-        for (i, column) in delta2.into_iter().enumerate() {
-            post.boundaries
-                .insert_with_witness(model, prime, column, vec![(i, 1)])?;
-        }
-        let mut delta3 = Basis::default();
-        for i in 0..post.size(4) {
-            let row = post.row(model, 3, i)?;
-            delta3.insert(model, prime, row)?;
-        }
-        post.rank_d3 = delta3.rank();
         Ok(post)
     }
 
+    fn boundary_basis(&self, model: &mut Model) -> Result<&Basis> {
+        if let Some(basis) = self.boundaries.get() {
+            return Ok(basis);
+        }
+        let mut delta2 = vec![Vec::new(); self.size(2)];
+        for i in 0..self.size(3) {
+            for (j, coefficient) in self.row(model, 2, i)? {
+                delta2[j].push((i, coefficient));
+            }
+        }
+        let mut basis = Basis::default();
+        for (i, column) in delta2.into_iter().enumerate() {
+            basis.insert_with_witness(model, self.prime, column, vec![(i, 1)])?;
+        }
+        model.allocate(basis.cells())?;
+        Ok(self.boundaries.get_or_init(|| basis))
+    }
+
+    fn rank_d3(&self, model: &mut Model) -> Result<usize> {
+        if let Some(&rank) = self.rank_d3.get() {
+            return Ok(rank);
+        }
+        if self.size(4) > MAX_PIVOT_CELLS {
+            return Err(Error::plain(
+                "normalized Postnikov cohomology rank exceeds its degree-four size limit",
+            ));
+        }
+        let mut delta3 = Basis::default();
+        for i in 0..self.size(4) {
+            let row = self.row(model, 3, i)?;
+            delta3.insert(model, self.prime, row)?;
+        }
+        Ok(*self.rank_d3.get_or_init(|| delta3.rank()))
+    }
+
     pub(crate) fn cells(&self) -> usize {
-        8 + self.action.len()
-            + self.kernel_coordinates.len()
-            + 2 * self.canonical.0.len()
-            + self.boundaries.cells()
+        12 + self.action.len() + self.kernel_coordinates.len() + 2 * self.canonical.0.len()
     }
 
     pub(crate) fn order(&self) -> usize {
@@ -350,7 +385,7 @@ impl Postnikov {
         let difference =
             prime_linear::add_scaled(model, self.prime, &second.0, &first.0, self.prime.negate(1))?;
         let (rest, witness) = self
-            .boundaries
+            .boundary_basis(model)?
             .reduce_with_witness(model, self.prime, difference)?;
         if !rest.is_empty() {
             return Err(Error::plain("Postnikov cocycles are not gauge equivalent"));
@@ -361,7 +396,7 @@ impl Postnikov {
     pub(crate) fn class_report(&self, model: &mut Model, cochain: &Cochain) -> Result<String> {
         self.require_cocycle(model, cochain)?;
         let remainder = self
-            .boundaries
+            .boundary_basis(model)?
             .reduce(model, self.prime, cochain.0.clone())?;
         Ok(format!(
             "rvPostnikovClass = nonzero={}, reduced={remainder:?}",
@@ -370,16 +405,17 @@ impl Postnikov {
     }
 
     pub(crate) fn data(&self, model: &mut Model, name: &str) -> Result<String> {
-        let rank_d2 = self.boundaries.rank();
+        let rank_d3 = self.rank_d3(model)?;
+        let basis = self.boundary_basis(model)?;
+        let rank_d2 = basis.rank();
         let dimension = self
             .size(3)
-            .checked_sub(rank_d2 + self.rank_d3)
+            .checked_sub(rank_d2 + rank_d3)
             .ok_or_else(|| Error::plain("normalized Postnikov bar ranks are inconsistent"))?;
-        let nonzero = !self
-            .boundaries
+        let nonzero = !basis
             .reduce(model, self.prime, self.canonical.0.clone())?
             .is_empty();
-        Ok(format!("rvPostnikovData[{name}] = quotient={}, prime={}, action={:?}, rank_d2={rank_d2}, rank_d3={}, dim_h3={dimension}, nonzero={nonzero}", self.order(), self.prime.get(), self.action, self.rank_d3))
+        Ok(format!("rvPostnikovData[{name}] = quotient={}, prime={}, action={:?}, rank_d2={rank_d2}, rank_d3={rank_d3}, dim_h3={dimension}, nonzero={nonzero}", self.order(), self.prime.get(), self.action))
     }
 
     pub(crate) fn cell(&self, object: usize, value: usize) -> Result<Cell> {

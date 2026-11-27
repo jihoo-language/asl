@@ -2478,6 +2478,9 @@ impl Engine {
             StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
+            StatementForm::DoubleFusion(command) => {
+                return self.double_fusion_command(*command).map(Some)
+            }
             StatementForm::HomotopyIntegral(command) => {
                 return self.homotopy_integral_command(*command)
             }
@@ -8154,6 +8157,32 @@ impl Engine {
             }
         };
         Ok(Some(report))
+    }
+
+    fn double_fusion_command(&mut self, command: dd::fusion_symbols::Command) -> Result<String> {
+        use dd::fusion_symbols::Command;
+        match command {
+            Command::Space(name, key) => {
+                self.model
+                    .drinfeld_double(&name)?
+                    .fusion_space(&mut self.model, &name.text, key)
+            }
+            Command::FData(name, key) => {
+                self.model
+                    .drinfeld_double(&name)?
+                    .f_data(&mut self.model, &name.text, key)
+            }
+            Command::Pentagon(name, key) => {
+                self.model
+                    .drinfeld_double(&name)?
+                    .pentagon(&mut self.model, &name.text, key)
+            }
+            Command::Hexagon(name, key) => {
+                self.model
+                    .drinfeld_double(&name)?
+                    .hexagon(&mut self.model, &name.text, key)
+            }
+        }
     }
 
     fn double_braid_command(&mut self, command: dd::braid::Command) -> Result<Option<String>> {
@@ -17060,6 +17089,7 @@ impl Checker<'_> {
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
             ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
+            ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
@@ -28471,6 +28501,24 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Flat(action)))
+    }
+
+    fn double_fusion_expression(
+        &mut self,
+        expression: dd::fusion_symbols::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::fusion_symbols::Expression;
+        let name = match &expression {
+            Expression::Vertex(name, _) | Expression::F(name, ..) | Expression::R(name, ..) => name,
+        };
+        let double = self.model.drinfeld_double(name)?;
+        let ty = self.model.cyclotomic_rational_type(double.conductor)?;
+        let value = match expression {
+            Expression::Vertex(_, key) => double.fusion_vertex(self.model, key)?,
+            Expression::F(_, key, inverse) => double.f_entry(self.model, key, inverse)?,
+            Expression::R(_, key, inverse) => double.r_entry(self.model, key, inverse)?,
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn double_braid_operand(

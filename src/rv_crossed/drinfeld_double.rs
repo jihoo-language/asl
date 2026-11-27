@@ -12,6 +12,7 @@ use super::postnikov::{Cochain, Postnikov};
 
 pub(crate) mod braid;
 mod characters;
+pub(crate) mod fusion_symbols;
 mod representations;
 
 const MAX_SIMPLES: usize = 256;

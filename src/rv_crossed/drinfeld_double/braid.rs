@@ -146,9 +146,10 @@ impl Double {
     }
 
     fn associator_phase(&self, [a, b, c]: Colors) -> usize {
-        let [g, h, j] = [a, b, c].map(|i| self.simples[i].flux);
-        let n = self.group.order();
-        negate_phase(self.conductor, self.cocycle[(g * n + h) * n + j])
+        negate_phase(
+            self.conductor,
+            self.cocycle_phase([a, b, c].map(|i| self.simples[i].flux)),
+        )
     }
 
     pub(crate) fn associator(&self, model: &mut Model, colors: Colors) -> Result<Value> {

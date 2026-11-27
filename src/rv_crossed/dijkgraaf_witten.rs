@@ -50,7 +50,7 @@ pub(crate) fn coefficients(
         action,
     )?;
     model.allocate(kernel.cells() + crossed.cells())?;
-    Postnikov::new(model, Rc::new(crossed), 1)
+    Postnikov::carrier(model, Rc::new(crossed), 1)
 }
 
 pub(crate) struct Integral {
