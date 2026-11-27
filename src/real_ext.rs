@@ -7,7 +7,7 @@ use crate::cohomology;
 use crate::error::{Error, Result};
 use crate::linear::{Basis, QuotientBasis};
 use crate::may::Rows;
-use crate::model::{Model, TypeId, Value};
+use crate::model::{Kind, Model, TypeId, Value};
 use crate::motivic::{self, Grade};
 use crate::real_bars;
 use crate::real_motivic::{self, Term};
@@ -30,6 +30,11 @@ impl Group {
     ) -> Result<Self> {
         if let Some(cycles) = degree_one_cycles(model, grade, cutoff)? {
             return Self::from_cycle_supports(model, cycles);
+        }
+        if bars.is_none() {
+            if let Some(cycles) = filtered_degree_one_cycles(model, grade, cutoff)? {
+                return Self::from_cycle_supports(model, cycles);
+            }
         }
         Self::from_matrix(model, grade, cutoff, bars)
     }
@@ -123,30 +128,56 @@ impl Group {
     }
 }
 
+fn degree_one_window(grade: Grade, cutoff: Option<usize>) -> Option<(i128, usize, usize)> {
+    if grade.s != 1 || grade.t <= 0 {
+        // At positive t there are no boundaries from scalar degree.
+        return None;
+    }
+    let k = grade.t.checked_sub(i128::from(grade.w))?;
+    let mut upper = k.checked_mul(2)?;
+    if let Some(e) = cutoff {
+        upper = upper.min(grade.t.saturating_add(e as i128 - 1));
+    }
+    let lower = usize::try_from(grade.t).ok()?;
+    let upper = usize::try_from(upper.max(0)).ok()?;
+    Some((k, lower, upper))
+}
+
+fn scalar_degree_one_cycle(
+    model: &mut Model,
+    top: usize,
+    lower: usize,
+    bound: u128,
+) -> Result<Vec<Term>> {
+    let scalar = Term {
+        rho: 0,
+        tau: top,
+        word: [].into(),
+    };
+    let mut cycle = real_motivic::differential_below(model, &[scalar], lower as u128 + bound)?;
+    for term in &mut cycle {
+        term.rho = term
+            .rho
+            .checked_sub(lower)
+            .ok_or_else(|| Error::plain("rho primitive has insufficient filtration"))?;
+    }
+    if cycle.first().map(|term| term.rho) != Some(top - lower) {
+        return Err(Error::plain("rho primitive has an unexpected leading term"));
+    }
+    Ok(cycle)
+}
+
 fn degree_one_cycles(
     model: &mut Model,
     grade: Grade,
     cutoff: Option<usize>,
 ) -> Result<Option<Vec<Vec<Term>>>> {
-    if grade.s != 1 || grade.t <= 0 {
-        // At positive t there are no boundaries from scalar degree.
-        return Ok(None);
-    }
-    let Some(k) = grade.t.checked_sub(i128::from(grade.w)) else {
+    let Some((k, lower, upper)) = degree_one_window(grade, cutoff) else {
         return Ok(None);
     };
-    let Some(mut upper) = k.checked_mul(2) else {
-        return Ok(None);
-    };
-    if let Some(e) = cutoff {
-        upper = upper.min(grade.t.saturating_add(e as i128 - 1));
-    }
-    if upper < grade.t {
+    if upper < lower {
         return Ok(Some(Vec::new()));
     }
-    let (Ok(lower), Ok(upper)) = (usize::try_from(grade.t), usize::try_from(upper)) else {
-        return Ok(None);
-    };
     let mut powers = Vec::new();
     let mut top = 1usize;
     while top <= upper {
@@ -171,23 +202,8 @@ fn degree_one_cycles(
     let mut cycles = Vec::new();
     for top in powers {
         if top as i128 == k {
-            let scalar = Term {
-                rho: 0,
-                tau: top,
-                word: [].into(),
-            };
-            let bound = cutoff.map_or(u128::MAX, |e| lower as u128 + e as u128);
-            let mut cycle = real_motivic::differential_below(model, &[scalar], bound)?;
-            for term in &mut cycle {
-                term.rho = term
-                    .rho
-                    .checked_sub(lower)
-                    .ok_or_else(|| Error::plain("rho primitive has insufficient filtration"))?;
-            }
-            if cycle.first().map(|term| term.rho) != Some(top - lower) {
-                return Err(Error::plain("rho primitive has an unexpected leading term"));
-            }
-            cycles.push(cycle);
+            let bound = (upper - lower) as u128 + 1;
+            cycles.push(scalar_degree_one_cycle(model, top, lower, bound)?);
         } else {
             let factor: Monomial = [top].into();
             cycles.push(vec![Term {
@@ -198,6 +214,151 @@ fn degree_one_cycles(
         }
     }
     Ok(Some(cycles))
+}
+
+type FilteredDirection = (Vec<Term>, Vec<Term>);
+
+#[derive(Default)]
+struct FilteredKernel {
+    cycles: Vec<Vec<Term>>,
+    pending: Vec<FilteredDirection>,
+    cells: usize,
+}
+
+impl FilteredKernel {
+    fn retain(&mut self, model: &mut Model, cochain: &[Term], image: &[Term]) -> Result<()> {
+        model.spend(cochain.len() + image.len())?;
+        self.cells += degree_one_cells(cochain, image);
+        cobar::check_storage(self.cells)
+    }
+
+    fn insert(&mut self, model: &mut Model, cochain: Vec<Term>, image: Vec<Term>) -> Result<()> {
+        self.retain(model, &cochain, &image)?;
+        if image.is_empty() {
+            self.cycles.push(cochain);
+        } else {
+            self.pending.push((cochain, image));
+        }
+        Ok(())
+    }
+}
+
+fn degree_one_cells(cochain: &[Term], image: &[Term]) -> usize {
+    cochain.iter().chain(image).map(Term::cells).sum()
+}
+
+fn filtered_degree_one_cycles(
+    model: &mut Model,
+    grade: Grade,
+    cutoff: Option<usize>,
+) -> Result<Option<Vec<Vec<Term>>>> {
+    let Some((k, lower, upper)) = degree_one_window(grade, cutoff) else {
+        return Ok(None);
+    };
+    if upper < lower {
+        return Ok(Some(Vec::new()));
+    }
+    let bound = (upper - lower) as u128 + 1;
+    let mut kernel = FilteredKernel::default();
+    let mut top = 1usize;
+    while top <= upper {
+        model.spend(1)?;
+        if top >= lower {
+            if top as i128 == k {
+                let cycle = scalar_degree_one_cycle(model, top, lower, bound)?;
+                kernel.insert(model, cycle, Vec::new())?;
+            } else {
+                let tau = usize::try_from(k - top.div_ceil(2) as i128)
+                    .map_err(|_| Error::plain("degree-one primitive weight exceeds its range"))?;
+                let factor: Monomial = [top].into();
+                let cochain = vec![Term {
+                    rho: top - lower,
+                    tau,
+                    word: [factor].into(),
+                }];
+                let image = real_motivic::differential_below(model, &cochain, bound)?;
+                kernel.insert(model, cochain, image)?;
+            }
+        }
+        let Some(next) = top.checked_mul(2) else {
+            break;
+        };
+        top = next;
+    }
+
+    // Every cycle's first term in the rho filtration is a d0-primitive.
+    // Correct the first obstruction by a d0-preimage, then retain precisely
+    // the combinations whose obstruction class cancels at that level.
+    while let Some(level) = kernel.pending.iter().map(|(_, image)| image[0].rho).min() {
+        model.spend(kernel.pending.len())?;
+        let (front, later): (Vec<_>, Vec<_>) = kernel
+            .pending
+            .into_iter()
+            .partition(|(_, image)| image[0].rho == level);
+        kernel.pending = later;
+        resolve_degree_one_layer(model, grade, level, bound, front, &mut kernel)?;
+    }
+    Ok(Some(kernel.cycles))
+}
+
+fn resolve_degree_one_layer(
+    model: &mut Model,
+    grade: Grade,
+    level: usize,
+    bound: u128,
+    front: Vec<FilteredDirection>,
+    kernel: &mut FilteredKernel,
+) -> Result<()> {
+    let source = real_motivic::basis_window(model, grade, level..=level, MAX_BASIS)?;
+    let mut rows = real_motivic::Rows::default();
+    let mut boundaries = Basis::default();
+    for (index, term) in source.iter().enumerate() {
+        let image =
+            real_motivic::differential_below(model, std::slice::from_ref(term), level as u128 + 1)?;
+        let column = rows.column(model, &image)?;
+        if !column.is_empty() {
+            boundaries.insert_with_witness(model, column, vec![index])?;
+        }
+    }
+
+    let mut directions = Vec::new();
+    let mut obstructions = Basis::default();
+    for (mut cochain, mut image) in front {
+        kernel.cells -= degree_one_cells(&cochain, &image);
+        let current = &image[..image.partition_point(|term| term.rho == level)];
+        let encoded = rows.column(model, current)?;
+        // Remove the part in the d0 image using an actual cochain at this level.
+        let (remainder, correction) = boundaries.reduce_with_witness(model, encoded, Vec::new())?;
+        if !correction.is_empty() {
+            let correction: Vec<_> = correction.into_iter().map(|i| source[i].clone()).collect();
+            let delta = real_motivic::differential_below(model, &correction, bound)?;
+            cochain = real_motivic::add(model, &cochain, &correction)?;
+            image = real_motivic::add(model, &image, &delta)?;
+        }
+        let index = directions.len();
+        kernel.retain(model, &cochain, &image)?;
+        directions.push((cochain, image));
+        // The kernel of the remaining obstruction matrix is exactly the
+        // space of combinations that can persist to a higher rho level.
+        if let Some(relation) = obstructions.insert_with_witness(model, remainder, vec![index])? {
+            let (mut combined, mut image) = (Vec::new(), Vec::new());
+            for index in relation {
+                let (c, d) = &directions[index];
+                combined = real_motivic::add(model, &combined, c)?;
+                image = real_motivic::add(model, &image, d)?;
+            }
+            if image.first().is_some_and(|first| first.rho <= level) {
+                return Err(Error::plain(
+                    "degree-one obstruction did not cancel at its rho level",
+                ));
+            }
+            kernel.insert(model, combined, image)?;
+        }
+    }
+    for (cochain, image) in directions {
+        kernel.cells -= degree_one_cells(&cochain, &image);
+    }
+    Ok(())
 }
 
 fn not_closed() -> Error {
@@ -283,6 +444,17 @@ pub(crate) fn shift(
     }
     let lift = model.real_ext(input)?.representative(model, coords)?;
     let terms = real_motivic::shift_support(model, &lift, power)?;
+    let Kind::RMExt(grade) = *model.kind(output) else {
+        unreachable!();
+    };
+    if grade.s == 1
+        && grade.t <= 0
+        && !model.has_real_ext(output)
+        && real_preimage(model, grade, &terms, false)?.is_some()
+    {
+        // A scalar primitive already certifies a zero in the target group.
+        return Ok(cohomology::zero());
+    }
     class(model, output, &terms)
 }
 
@@ -748,17 +920,24 @@ mod tests {
 
     #[test]
     fn degree_one_shortcut_preserves_ordinary_and_truncated_canonical_representatives() {
-        check_degree_one().unwrap_or_else(|error| panic!("{error}"));
+        check_degree_one(degree_one_cycles).unwrap_or_else(|error| panic!("{error}"));
     }
 
-    fn check_degree_one() -> Result<()> {
+    #[test]
+    fn filtered_degree_one_preserves_ordinary_and_truncated_canonical_representatives() {
+        check_degree_one(filtered_degree_one_cycles).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    fn check_degree_one(
+        build: impl Fn(&mut Model, Grade, Option<usize>) -> Result<Option<Vec<Vec<Term>>>>,
+    ) -> Result<()> {
         let mut compared = 0;
         for cutoff in [None, Some(1), Some(2), Some(3), Some(5)] {
             for t in 1..=8 {
                 for w in -4..=4 {
                     let grade = Grade { s: 1, t, w };
                     let mut model = Model::new();
-                    if let Some(cycles) = degree_one_cycles(&mut model, grade, cutoff)? {
+                    if let Some(cycles) = build(&mut model, grade, cutoff)? {
                         let compact = Group::from_cycle_supports(&mut model, cycles)?;
                         let matrix = Group::from_matrix(&mut model, grade, cutoff, None)?;
                         assert_eq!(compact.rank(), matrix.rank(), "{grade:?}, {cutoff:?}");
@@ -768,6 +947,12 @@ mod tests {
                             assert_eq!(fast, ordinary, "{grade:?}, {cutoff:?}");
                             assert_eq!(compact.project(&mut model, &fast)?, [i]);
                             compared += 1;
+                        }
+                        if matrix.rank() > 1 {
+                            let coords: Vec<_> = (0..matrix.rank()).collect();
+                            let sum = matrix.representative(&mut model, &coords)?;
+                            assert_eq!(compact.representative(&mut model, &coords)?, sum);
+                            assert_eq!(compact.project(&mut model, &sum)?, coords);
                         }
                     }
                 }

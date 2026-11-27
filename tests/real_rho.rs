@@ -18,19 +18,51 @@ fn truncated_real_cobar_has_an_actual_nonzero_internal_bockstein() {
 }
 
 #[test]
-fn high_scalar_connecting_representatives_have_exact_orders_for_all_lower_exponents() {
+fn high_scalar_connecting_classes_have_exact_representatives_and_orders_at_every_cutoff() {
     for e in 1..=32 {
         let source = format!(
             "let tau = rmcword[0,32]{{}};
              let cycle = extClass(rhoReduce[{e}](tau));
              let conn = rhoConnectRep(cycle);
+             let x = rhoConnect(cycle);
              assert conn == rhoShift[{}](rmcword[0,0]{{([],[32])}});
              assert rhoShift[{e}](conn) == cobarD(tau);
-             rhoorder(conn);",
+             assert extRep(x) == conn;
+             let reduced = rhoReduce[{e}](x);
+             assert rhoBeta(cycle) == reduced;
+             assert realComplex(reduced) == realComplex(x);
+             let residue = rhoReduce[1](cycle);
+             assert rhoConnect(residue) == rhoShift[{}](x);
+             assert rhoShift[{e}](x) == zero[RMExt(1,0,-32)];
+             rhoorder(x);",
             32 - e,
+            e - 1,
         );
         assert_eq!(stdout(interpret(&source)), format!("rhoorder = {e}\n"));
     }
+}
+
+#[test]
+fn degree_one_obstruction_corrections_give_both_classes_and_preserve_sums() {
+    let source = r"
+        let rawX = rhoReduce[3](rmcword[1,2]{([1],[])});
+        let rawY = rhoReduce[3](add(rmcword[0,2]{([],[1])},rmcword[2,1]{([],[0,1])}));
+        let x = extClass(rawX);
+        let y = extClass(rawY);
+        assert extRep(x) == rawX;
+        assert extRep(y) == rawY;
+        assert x == rmrhoextgen[3,1,1,-2,0];
+        assert y == rmrhoextgen[3,1,1,-2,1];
+        assert extClass(add(rawX,rawY)) == add(x,y);
+        assert rhoConnect(add(x,y)) == add(rhoConnect(x),rhoConnect(y));
+        let boundary = cobarD(rhoReduce[3](rmcword[0,3]{}));
+        assert boundary == rhoReduce[3](add(rmcword[1,2]{([],[1])},rmcword[2,2]{([1],[])}));
+        assert extClass(boundary) == zero[RMRhoExt(3,1,0,-3)];
+        let z = rhoShift[1](x);
+        assert extClass(add(extRep(z),boundary)) == z;
+        rmrhoextdim[3,1,1,-2];
+    ";
+    assert_eq!(stdout(interpret(source)), "rmrhoextdim[3, 1, 1, -2] = 2\n");
 }
 
 #[test]
