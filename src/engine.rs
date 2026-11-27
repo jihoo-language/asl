@@ -12,6 +12,7 @@ use crate::bp_triple;
 use crate::bp_vpage;
 use crate::bracket;
 use crate::ce;
+use crate::cm_class_poly;
 use crate::cobar;
 use crate::cobar_squares;
 use crate::cohomology;
@@ -708,6 +709,7 @@ enum TypedForm {
     CMClass(cm_ring::Order, CMClassAction),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
     EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
+    CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
     AbMukaiNegate(Box<TypedExpr>),
@@ -1896,6 +1898,9 @@ impl Engine {
             StatementForm::CMClass(command) => return self.cm_class_statement(*command),
             StatementForm::EllipticModular(command) => {
                 return self.elliptic_modular_statement(command).map(Some)
+            }
+            StatementForm::CMClassPolynomial(command) => {
+                return self.cm_class_poly_statement(*command)
             }
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
@@ -5015,6 +5020,54 @@ impl Engine {
                 };
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
+            }
+        }
+    }
+
+    fn cm_class_poly_statement(
+        &mut self,
+        statement: cm_class_poly::Statement,
+    ) -> Result<Option<String>> {
+        use cm_class_poly::Statement;
+        match statement {
+            Statement::Seed(name, discriminant) => {
+                let polynomial = cm_class_poly::Polynomial::seed(&mut self.model, discriminant)?;
+                self.model.define_cm_class_polynomial(name, polynomial)?;
+                Ok(None)
+            }
+            Statement::Lift(name, source, degree) => {
+                let source = self.model.cm_class_polynomial(&source)?;
+                let degree = elliptic_modular::prime(&mut self.model, degree)?;
+                let square = i128::from(degree.get()).pow(2);
+                let ascending = self
+                    .model
+                    .cm_class_polynomial_at(source.discriminant / square);
+                let polynomial = cm_class_poly::Polynomial::lift(
+                    &mut self.model,
+                    &source,
+                    ascending.as_deref(),
+                    degree,
+                )?;
+                self.model.define_cm_class_polynomial(name, polynomial)?;
+                Ok(None)
+            }
+            Statement::Data(name) => {
+                let polynomial = self.model.cm_class_polynomial(&name)?;
+                Ok(Some(format!(
+                    "rvCMClassPolyData[{}] = discriminant={}, degree={}",
+                    name.text,
+                    polynomial.discriminant,
+                    polynomial.degree()
+                )))
+            }
+            Statement::Coefficient(name, index) => {
+                let polynomial = self.model.cm_class_polynomial(&name)?;
+                Ok(Some(format!(
+                    "rvCMClassPolyCoeff[{},{}] = {}",
+                    name.text,
+                    index,
+                    polynomial.coefficient_text(index)
+                )))
             }
         }
     }
@@ -9053,6 +9106,13 @@ impl Engine {
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
             TypedForm::EllipticModular(field, prime, action) => {
                 self.eval_elliptic_modular(field, *prime, action)
+            }
+            TypedForm::CMClassPolynomialEval(polynomial, field, input) => {
+                let Value::RVUnram(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = polynomial.evaluate(&mut self.model, field, &input)?;
+                rv_unram::persist(&mut self.model, value)
             }
             TypedForm::CMNeighbor(source, target, ell, address, input) => {
                 let Value::CMClass(class) = self.eval(input)? else {
@@ -14808,6 +14868,7 @@ impl Checker<'_> {
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
+            ExprForm::CMClassPolynomial(expression) => self.cm_class_poly_expression(*expression),
             ExprForm::CMNeighbor(expression) => {
                 let cm_neighbors::Expression(target, ell, address, input) = expression;
                 let input = self.expr(*input)?;
@@ -21282,6 +21343,45 @@ impl Checker<'_> {
             Ok(name)
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
+        }
+    }
+
+    fn cm_class_poly_expression(
+        &mut self,
+        expression: cm_class_poly::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_class_poly::Expression;
+        let require_field = |field: &UnramRing| {
+            if field.precision() == 1 {
+                Ok(())
+            } else {
+                Err(Error::plain(
+                    "CM class polynomial specialization requires a precision-one RVUnram field",
+                ))
+            }
+        };
+        match expression {
+            Expression::Evaluate(name, input) => {
+                let polynomial = self.model.cm_class_polynomial(&name)?;
+                let input = self.expr(*input)?;
+                let field = self.unram_ring(&input, "rvCMClassPolyEval")?;
+                require_field(&field)?;
+                Ok((
+                    input.ty,
+                    TypedForm::CMClassPolynomialEval(polynomial, field, Box::new(input)),
+                ))
+            }
+            Expression::ModularCoefficient(name, field, index) => {
+                let polynomial = self.model.cm_class_polynomial(&name)?;
+                let ty = self.model.rv_unram_type(&field)?;
+                let field = self.model.rv_unram(&field)?;
+                require_field(&field)?;
+                let value = polynomial.modular_coefficient(self.model, &field, index)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(rv_unram::persist(self.model, value)?),
+                ))
+            }
         }
     }
 

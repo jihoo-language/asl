@@ -998,6 +998,7 @@ pub(crate) enum ExprForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
+    CMClassPolynomial(Box<crate::cm_class_poly::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1216,6 +1217,7 @@ pub(crate) enum StatementForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
+    CMClassPolynomial(Box<crate::cm_class_poly::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3532,6 +3534,68 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn cm_class_poly_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::cm_class_poly::Statement;
+        self.advance()?;
+        let command = if matches!(name, "rvcmclasspoly" | "rvcmclasspolylift") {
+            let target = self.label()?;
+            self.expect(Token::LBracket)?;
+            if name == "rvcmclasspoly" {
+                Statement::Seed(
+                    target,
+                    self.signed_wide(
+                        "a negative discriminant",
+                        "CM class polynomial discriminant",
+                    )?,
+                )
+            } else {
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                Statement::Lift(target, source, self.number()?.0)
+            }
+        } else {
+            self.expect(Token::LBracket)?;
+            let polynomial = self.label()?;
+            if name == "rvCMClassPolyData" {
+                Statement::Data(polynomial)
+            } else {
+                self.expect(Token::Comma)?;
+                Statement::Coefficient(polynomial, self.number()?.0)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::CMClassPolynomial(Box::new(command)))
+    }
+
+    fn cm_class_poly_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::cm_class_poly::Expression;
+        self.expect(Token::LBracket)?;
+        let polynomial = self.label()?;
+        let (expression, depth) = if name == "rvCMClassPolyEval" {
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Evaluate(polynomial, Box::new(input)), depth)
+        } else {
+            self.expect(Token::Comma)?;
+            let ring = self.label()?;
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            (Expression::ModularCoefficient(polynomial, ring, index), 0)
+        };
+        expr(
+            span,
+            ExprForm::CMClassPolynomial(Box::new(expression)),
+            depth,
+        )
     }
 
     fn elliptic_modular_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -6390,6 +6454,10 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvModularPolyDegree" | "rvModularPolyCoeff")) => {
                 self.elliptic_modular_statement(name)?
             }
+            Token::Word(
+                name @ ("rvcmclasspoly" | "rvcmclasspolylift" | "rvCMClassPolyData"
+                | "rvCMClassPolyCoeff"),
+            ) => self.cm_class_poly_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -11912,6 +11980,13 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.elliptic_modular_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvCMClassPolyEval" | "rvCMClassPolyModCoeff"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.cm_class_poly_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

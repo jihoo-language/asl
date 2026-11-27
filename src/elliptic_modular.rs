@@ -29,7 +29,7 @@ pub(crate) fn prime(model: &mut Model, level: usize) -> Result<Prime> {
     if level == 2 {
         return Ok(Prime::validated(2));
     }
-    if level < 2 || level % 2 == 0 {
+    if level < 2 || level.is_multiple_of(2) {
         return Err(Error::plain(
             "classical modular polynomial level must be prime",
         ));
@@ -114,10 +114,10 @@ impl Polynomial {
             row.resize(r + 1, Integer::from_i128(0));
             rows.push(row);
         }
-        for i in 0..=r {
-            for j in 0..i {
-                let a = rows[i][j];
-                let b = rows[j][i];
+        for (i, row) in rows.iter().enumerate() {
+            for (j, other) in rows[..i].iter().enumerate() {
+                let a = row[j];
+                let b = other[i];
                 if a.magnitude != b.magnitude || (!a.is_zero() && a.negative != b.negative) {
                     return Err(Error::plain(
                         "classical modular polynomial failed the symmetry check",
@@ -134,6 +134,15 @@ impl Polynomial {
             .and_then(|row| row.get(i))
             .copied()
             .map_or_else(|| "0".into(), decimal)
+    }
+
+    pub(crate) fn wide_coefficient<const N: usize>(&self, i: usize, j: usize) -> Result<Wide<N>> {
+        self.rows
+            .get(j)
+            .and_then(|row| row.get(i))
+            .copied()
+            .unwrap_or_else(|| Integer::from_i128(0))
+            .resize()
     }
 
     pub(crate) fn specialization(

@@ -17,6 +17,7 @@ mod bp_triple;
 mod bp_vpage;
 mod bracket;
 mod ce;
+mod cm_class_poly;
 mod cobar;
 mod cobar_squares;
 mod cohomology;

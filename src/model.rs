@@ -643,6 +643,8 @@ pub(crate) struct Model {
     cm_ring_orders: HashMap<String, cm_ring::Order>,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
+    cm_class_polynomials: HashMap<String, Rc<crate::cm_class_poly::Polynomial>>,
+    cm_class_discriminants: HashMap<i128, Rc<crate::cm_class_poly::Polynomial>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     og6_nilpotents: HashMap<
@@ -761,6 +763,8 @@ impl Model {
             cm_ring_orders: HashMap::new(),
             hilbert_strata: HashMap::new(),
             specht_strata: HashMap::new(),
+            cm_class_polynomials: HashMap::new(),
+            cm_class_discriminants: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
@@ -4886,6 +4890,57 @@ impl Model {
         self.elliptic_modular_polynomials
             .insert(level.get(), Rc::clone(&polynomial));
         Ok(polynomial)
+    }
+
+    pub(crate) fn cm_class_polynomial(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::cm_class_poly::Polynomial>> {
+        self.cm_class_polynomials
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown CM class polynomial '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn cm_class_polynomial_at(
+        &self,
+        discriminant: i128,
+    ) -> Option<Rc<crate::cm_class_poly::Polynomial>> {
+        self.cm_class_discriminants.get(&discriminant).cloned()
+    }
+
+    pub(crate) fn define_cm_class_polynomial(
+        &mut self,
+        name: Label,
+        polynomial: crate::cm_class_poly::Polynomial,
+    ) -> Result<()> {
+        if self.cm_class_polynomials.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("CM class polynomial '{}' is already defined", name.text),
+            ));
+        }
+        let polynomial = Rc::new(polynomial);
+        if let Some(existing) = self.cm_class_discriminants.get(&polynomial.discriminant) {
+            if !polynomial.same(existing) {
+                return Err(Error::new(
+                    name.span,
+                    "CM class polynomial lifts to the same discriminant disagree",
+                ));
+            }
+            self.cm_class_polynomials
+                .insert(name.text, Rc::clone(existing));
+        } else {
+            self.cm_class_discriminants
+                .insert(polynomial.discriminant, Rc::clone(&polynomial));
+            self.cm_class_polynomials.insert(name.text, polynomial);
+        }
+        Ok(())
     }
 
     pub(crate) fn define_cm_ring_order(&mut self, name: Label, discriminant: i128) -> Result<()> {

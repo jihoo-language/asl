@@ -38,11 +38,11 @@ impl Direction {
     }
 }
 
-#[derive(Default)]
-struct Counts {
-    ascending: usize,
-    horizontal: usize,
-    descending: usize,
+#[derive(Default, Eq, PartialEq)]
+pub(crate) struct Counts {
+    pub(crate) ascending: usize,
+    pub(crate) horizontal: usize,
+    pub(crate) descending: usize,
 }
 
 impl Counts {
@@ -73,7 +73,7 @@ pub(crate) fn prime(model: &mut Model, ell: usize) -> Result<Prime> {
     if ell == 2 {
         return Ok(Prime::validated(2));
     }
-    if ell < 2 || ell % 2 == 0 {
+    if ell < 2 || ell.is_multiple_of(2) {
         return Err(Error::plain("CM isogeny degree must be prime"));
     }
     Prime::new(model, ell)
@@ -86,6 +86,15 @@ pub(crate) fn check_address(ell: Prime, address: usize) -> Result<u32> {
         ));
     }
     Ok(address as u32)
+}
+
+pub(crate) fn counts(model: &mut Model, class: Class, ell: Prime) -> Result<Counts> {
+    let mut counts = Counts::default();
+    for address in 0..=ell.get() {
+        let (_, _, direction) = restricted_form(model, class, ell, address)?;
+        counts.add(direction);
+    }
+    Ok(counts)
 }
 
 pub(crate) fn target(
@@ -146,10 +155,7 @@ pub(crate) fn neighbors_report(
         .map_err(|_| Error::plain("CM neighbor enumeration exceeds the computation limit"))?;
     let mut counts = Counts::default();
     if !with_forms {
-        for address in 0..=degree {
-            let (_, _, direction) = restricted_form(model, class, ell, address)?;
-            counts.add(direction);
-        }
+        let counts = self::counts(model, class, ell)?;
         return Ok(format!(
             "rvCMNeighborCounts[{degree}] = {}",
             counts.report()

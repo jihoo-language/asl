@@ -193,13 +193,18 @@ impl Order {
         if element == self.principal() {
             return Ok(1);
         }
+        let size = self.class_number(model)?;
+        let primes = factor_order(model, size)?;
+        self.order_from_size(model, element, size, &primes)
+    }
+
+    pub(crate) fn class_number(self, model: &mut Model) -> Result<usize> {
         let mut size = 0;
         cm::each_primitive_reduced(model, self.discriminant.unsigned_abs(), |_| {
             size += 1;
             Ok(())
         })?;
-        let primes = factor_order(model, size)?;
-        self.order_from_size(model, element, size, &primes)
+        Ok(size)
     }
 
     fn order_from_size(
@@ -210,7 +215,7 @@ impl Order {
         primes: &[(usize, u32)],
     ) -> Result<usize> {
         for &(p, _) in primes {
-            while size % p == 0
+            while size.is_multiple_of(p)
                 && self.power(model, (size / p) as u128, element)? == self.principal()
             {
                 size /= p;
@@ -296,9 +301,9 @@ fn factor_order(model: &mut Model, mut n: usize) -> Result<Vec<(usize, u32)>> {
     let mut p = 2;
     while p <= n / p {
         model.spend(1)?;
-        if n % p == 0 {
+        if n.is_multiple_of(p) {
             let mut e = 0;
-            while n % p == 0 {
+            while n.is_multiple_of(p) {
                 n /= p;
                 e += 1;
             }

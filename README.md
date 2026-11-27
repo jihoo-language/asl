@@ -1518,6 +1518,14 @@ The construction starts with $j=E_4^3/\Delta$. The power sum of the $\ell+1$ cyc
 
 At level two the fibers at $j=0$ and $1728$ are $(Y-54000)^3$ and $(Y-1728)(Y-287496)^2$, respectively. Their multiplicities come from the three cyclic kernels at the Eisenstein and Gaussian CM vertices. For the product construction and the Kronecker congruence, see Cox, *Primes of the Form $x^2+ny^2$*, and Bröker, Lauter and Sutherland, *Modular Polynomials via Isogeny Volcanoes*. [Classical modular polynomial example](examples/elliptic-modular-polynomials.asl)
 
+#### Ring class polynomials by modular norms
+
+`rvcmclasspoly H[D];` registers the integral ring class polynomial at a class-number-one fundamental discriminant. The available seeds are $-3,-4,-7,-8,-11,-19,-43,-67,-163$. `rvcmclasspolylift T[H,ell];` constructs the polynomial for discriminant $\ell^2D$ from $H$ at prime level $\ell$. If the source has an ascending $\ell$-isogeny, register the polynomial for $D/\ell^2$ before lifting. Both conductor paths can register the same discriminant when their exact coefficients agree.
+
+The norm $\operatorname{Res}_X(H_D(X),\Phi_\ell(X,Y))$ is the determinant of multiplication by $\Phi_\ell$ in $\mathbb Z[Y][X]/(H_D)$. The implementation uses fraction-free elimination and monic polynomial division. Each direction with $c$ cyclic kernels per source class contributes $H_{D'}^{h(D)c/h(D')}$, where $h$ is the proper class number. The lift divides out the horizontal and ascending factors, extracts the integral monic root for the descending multiplicity, and checks the reconstructed norm and degree. This keeps the extra unit multiplicities at discriminants $-3$ and $-4$. All constructed descendants come from the norm calculation.
+
+`rvCMClassPolyData[H];` reports the discriminant and degree. `rvCMClassPolyCoeff[H,i];` gives the exact coefficient of $Y^i$. `rvCMClassPolyModCoeff[H,F,i]` reduces that coefficient in a named precision-one `RVUnram` field, and `rvCMClassPolyEval[H](x)` evaluates there. Reduction retains root multiplicities. For the singular moduli and class polynomials, see Cox, *Primes of the Form $x^2+ny^2$*. For the kernel counts, see Bröker, Lauter and Sutherland, *Modular Polynomials via Isogeny Volcanoes*. [Ring class polynomial example](examples/ring-class-polynomial-norms.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.
