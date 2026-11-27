@@ -182,6 +182,7 @@ pub(crate) struct WzMirror {
 pub(crate) enum TlOp {
     Generator(usize),
     Braid(Vec<i128>),
+    Project(usize, usize),
     Negate,
 }
 
@@ -761,6 +762,7 @@ pub(crate) enum ExprForm {
     TlScale(Box<[ParsedExpr; 2]>),
     TlTrace(usize, usize, usize, Vec<i128>),
     TlJones(usize, usize, Vec<i128>),
+    TlColoredJones(usize, usize, usize, Vec<i128>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -7457,6 +7459,17 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::TlPath(level, path), 0);
                 }
+                if name.text == "rvTLColoredJones" && self.eat(Token::LBracket)? {
+                    let (level, strands, color) = self.tl_grade()?;
+                    self.expect(Token::Comma)?;
+                    let word = self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::TlColoredJones(level, strands, color, word),
+                        0,
+                    );
+                }
                 if matches!(name.text.as_str(), "rvTLTrace" | "rvTLJones")
                     && self.eat(Token::LBracket)?
                 {
@@ -7480,11 +7493,17 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "rvTLE" | "rvTLBraid" | "rvTLCoord" | "rvCycloQGalois"
+                    "rvTLE" | "rvTLBraid" | "rvTLCoord" | "rvTLProject" | "rvCycloQGalois"
                 ) && self.eat(Token::LBracket)?
                 {
                     let operation = match name.text.as_str() {
                         "rvTLE" => TlOp::Generator(self.number()?.0),
+                        "rvTLProject" => {
+                            let first = self.number()?.0;
+                            self.expect(Token::Comma)?;
+                            let length = self.number()?.0;
+                            TlOp::Project(first, length)
+                        }
                         "rvTLBraid" => TlOp::Braid(
                             self.signed_tuple("a signed Artin generator", "Artin generator")?,
                         ),

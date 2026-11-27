@@ -84,8 +84,15 @@ fn cells(path: &[usize], coefficient: &Rational) -> usize {
     5 + path.len() + 2 * coefficient.numerator.len()
 }
 
+fn support_cells(terms: &Support) -> usize {
+    terms
+        .iter()
+        .map(|(path, coefficient)| cells(path, coefficient))
+        .sum()
+}
+
 fn persist(model: &mut Model, terms: Support) -> Result<Value> {
-    let total = terms.iter().map(|(p, c)| cells(p, c)).sum();
+    let total = support_cells(&terms);
     storage(total)?;
     model.allocate(total)?;
     Ok(Value::RvTl(terms))
@@ -233,10 +240,38 @@ fn signed_word(model: &mut Model, strands: usize, word: &[i128]) -> Result<Vec<G
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct Block {
+    start: usize,
+    length: usize,
+}
+
+impl Block {
+    fn checked(grade: Grade, first: usize, length: usize) -> Result<Self> {
+        if length > grade.level + 1 {
+            return Err(Error::plain(
+                "Jones–Wenzl projector length exceeds the level plus one",
+            ));
+        }
+        let Some(start) = first.checked_sub(1) else {
+            return Err(Error::plain(
+                "Jones–Wenzl block starts at a one-based strand index",
+            ));
+        };
+        if length > grade.strands || start > grade.strands - length {
+            return Err(Error::plain(
+                "Jones–Wenzl block lies outside the path strands",
+            ));
+        }
+        Ok(Self { start, length })
+    }
+}
+
 #[derive(Default)]
 struct Context {
     quantum: BTreeMap<(usize, bool), Rational>,
     ratios: BTreeMap<(usize, usize), Rational>,
+    projectors: BTreeMap<Path, Support>,
     cells: usize,
 }
 
@@ -340,6 +375,100 @@ impl Context {
         Ok(sum.terms.into_iter().collect())
     }
 
+    fn project_column(
+        &mut self,
+        model: &mut Model,
+        grade: Grade,
+        segment: Path,
+        reserved: usize,
+    ) -> Result<Support> {
+        model.spend(1 + segment.len() * (1 + self.projectors.len().max(1).ilog2() as usize))?;
+        if let Some(known) = self.projectors.get(&segment) {
+            return Ok(known.clone());
+        }
+        let length = segment.len() - 1;
+        let unit: Support = [(segment.clone(), Rational::integer(1))].into();
+        if segment[0].abs_diff(segment[length]) == length {
+            // Every elementary e_i vanishes on a monotone segment.
+            return Ok(unit);
+        }
+
+        // f_(r+1) v = f_r v - (d_(r-1)/d_r) f_r e_r f_r v.
+        let r = length - 1;
+        let prefix = Block {
+            start: 0,
+            length: r,
+        };
+        let left = self.project(model, grade, &unit, prefix, reserved)?;
+        let result = if left.is_empty() {
+            left
+        } else {
+            let kept = reserved + support_cells(&left);
+            storage(self.cells + kept)?;
+            let bent = self.step(model, grade, &left, Generator::Tl(r))?;
+            let right = self.project(model, grade, &bent, prefix, kept)?;
+            let ratio = self.ratio(model, grade, r, r - 1)?;
+            let factor = rv_lens::negative(model, &ratio)?;
+            let kept = kept + support_cells(&right);
+            storage(self.cells + kept)?;
+            let mut sum = Sum::default();
+            for (path, coefficient) in left.iter() {
+                sum.insert(model, path.clone(), coefficient.clone())?;
+                storage(self.cells + sum.cells + kept)?;
+            }
+            for (path, coefficient) in right.iter() {
+                let value = rv_lens::multiply(model, grade.order, coefficient, &factor)?;
+                sum.insert(model, path.clone(), value)?;
+                storage(self.cells + sum.cells + kept)?;
+            }
+            sum.terms.into_iter().collect()
+        };
+        self.cells += 1 + segment.len() + support_cells(&result);
+        storage(self.cells + reserved)?;
+        self.projectors.insert(segment, result.clone());
+        Ok(result)
+    }
+
+    fn project(
+        &mut self,
+        model: &mut Model,
+        grade: Grade,
+        input: &Support,
+        block: Block,
+        reserved: usize,
+    ) -> Result<Support> {
+        model.spend(1)?;
+        if block.length == grade.level + 1 {
+            // At level k the simple object labeled k+1 is negligible.
+            // The bounded path quotient kills its Jones–Wenzl idempotent.
+            return Ok([].into());
+        }
+        if block.length <= 1 || input.is_empty() {
+            return Ok(input.clone());
+        }
+        let reserved = reserved + support_cells(input);
+        storage(self.cells + reserved)?;
+        let interval = block.start..=block.start + block.length;
+        let mut sum = Sum::default();
+        for (path, coefficient) in input.iter() {
+            let local = self.project_column(
+                model,
+                grade,
+                path[interval.clone()].into(),
+                reserved + sum.cells,
+            )?;
+            let kept = reserved + support_cells(&local);
+            for (segment, factor) in local.iter() {
+                let value = rv_lens::multiply(model, grade.order, coefficient, factor)?;
+                let mut updated = path.to_vec();
+                updated[interval.clone()].copy_from_slice(segment);
+                sum.insert(model, updated.into(), value)?;
+                storage(self.cells + sum.cells + kept)?;
+            }
+        }
+        Ok(sum.terms.into_iter().collect())
+    }
+
     fn act(
         &mut self,
         model: &mut Model,
@@ -360,6 +489,18 @@ impl Context {
 pub(crate) fn tl(model: &mut Model, grade: Grade, input: &Support, index: usize) -> Result<Value> {
     check_index(grade.strands, index)?;
     let result = Context::default().step(model, grade, input, Generator::Tl(index))?;
+    persist(model, result)
+}
+
+pub(crate) fn project(
+    model: &mut Model,
+    grade: Grade,
+    input: &Support,
+    first: usize,
+    length: usize,
+) -> Result<Value> {
+    let block = Block::checked(grade, first, length)?;
+    let result = Context::default().project(model, grade, input, block, 0)?;
     persist(model, result)
 }
 
@@ -510,6 +651,108 @@ pub(crate) fn jones(model: &mut Model, grade: Grade, word: &[i128]) -> Result<Va
     let writhe: i128 = word.iter().map(|&letter| letter.signum()).sum();
     sum = rv_lens::shifted(model, grade.order, &sum, -3 * writhe)?;
     if writhe.rem_euclid(2) != 0 {
+        sum = rv_lens::negative(model, &sum)?;
+    }
+    rv_lens::rational_value(model, sum)
+}
+fn cable(model: &mut Model, color: usize, braid: &[Generator]) -> Result<Vec<Generator>> {
+    let crossings = color
+        .checked_mul(color)
+        .and_then(|block| block.checked_mul(braid.len()))
+        .ok_or_else(arithmetic)?;
+    if crossings > MAX_WORD {
+        return Err(Error::plain(
+            "cabled braid exceeds the limit of 4096 elementary crossings",
+        ));
+    }
+    model.spend(crossings)?;
+    let mut result = Vec::with_capacity(crossings);
+    for &letter in braid {
+        let Generator::Braid(index, positive) = letter else {
+            unreachable!()
+        };
+        let start = result.len();
+        let base = (index - 1) * color;
+        for row in 0..color {
+            for shift in (row + 1..=row + color).rev() {
+                result.push(Generator::Braid(base + shift, positive));
+            }
+        }
+        if !positive {
+            result[start..].reverse();
+        }
+    }
+    Ok(result)
+}
+
+pub(crate) fn colored_jones(
+    model: &mut Model,
+    grade: Grade,
+    color: usize,
+    word: &[i128],
+) -> Result<Value> {
+    if color > grade.level {
+        return Err(Error::plain("Jones color must be at most the level"));
+    }
+    if color == 1 {
+        return jones(model, grade, word);
+    }
+    let braid = signed_word(model, grade.strands, word)?;
+    if color == 0 {
+        return rv_lens::rational_value(model, Rational::integer(1));
+    }
+    let mut context = Context::default();
+    let inverse = context.dimension(model, grade, color, true)?;
+    if braid.is_empty() {
+        // The identity on n copies of the color has quantum trace d_color^n.
+        let value = if grade.strands == 0 {
+            inverse
+        } else {
+            let dimension = context.dimension(model, grade, color, false)?;
+            power(model, grade.order, dimension, grade.strands - 1)?
+        };
+        return rv_lens::rational_value(model, value);
+    }
+    let strands = grade.strands.checked_mul(color).ok_or_else(arithmetic)?;
+    let cabled = cable(model, color, &braid)?;
+    let mut sum = Rational::zero();
+    for height in (strands % 2..=strands.min(grade.level)).step_by(2) {
+        let sector = Grade {
+            strands,
+            height,
+            ..grade
+        };
+        let mut trace = Rational::zero();
+        visit_paths(model, sector, |model, path| {
+            model.spend(path.len())?;
+            let mut state: Support = [(path.into(), Rational::integer(1))].into();
+            for strand in 0..grade.strands {
+                let block = Block {
+                    start: strand * color,
+                    length: color,
+                };
+                state = context.project(model, sector, &state, block, 0)?;
+                if state.is_empty() {
+                    return Ok(());
+                }
+            }
+            let image = context.act(model, sector, state, &cabled)?;
+            if let Ok(index) = image.binary_search_by(|(p, _)| p.as_ref().cmp(path)) {
+                trace = rv_lens::sum(model, &trace, &image[index].1)?;
+            }
+            Ok(())
+        })?;
+        if !trace.is_zero() {
+            let dimension = context.dimension(model, grade, height, false)?;
+            let weighted = rv_lens::multiply(model, grade.order, &trace, &dimension)?;
+            sum = rv_lens::sum(model, &sum, &weighted)?;
+        }
+    }
+    sum = rv_lens::multiply(model, grade.order, &sum, &inverse)?;
+    let writhe: i128 = word.iter().map(|&letter| letter.signum()).sum();
+    let twist = color as i128 * writhe;
+    sum = rv_lens::shifted(model, grade.order, &sum, -twist * (color as i128 + 2))?;
+    if twist.rem_euclid(2) != 0 {
         sum = rv_lens::negative(model, &sum)?;
     }
     rv_lens::rational_value(model, sum)

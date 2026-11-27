@@ -1215,6 +1215,15 @@ Write $q=A^2$, $d_h=(-1)^h[h+1]_q$, and $\delta=d_1$. The operator `rvTLE[i](v)`
 
 Use `rvCycloQMul(a,b)` for products and `rvCycloQGalois[a](c)` to substitute $A\mapsto A^a$ for $a$ coprime to the root order. At level three on three strands ending at height one, $B_1B_2^{-1}$ has determinant $1$ and trace $(3-\sqrt5)/2$. The substitution $A\mapsto A^3$ sends the trace to $(3+\sqrt5)/2>2$, so its conjugate has an eigenvalue off the unit circle. A finite-order matrix stays finite-order under a field automorphism, proving this braid matrix has infinite order. [Braid paths and Jones example](examples/rv-tl-jones.asl)
 
+
+#### Jones–Wenzl projectors and colored closures
+
+`rvTLProject[first,m](v)` applies the Jones–Wenzl projector to $m$ contiguous elementary strands of a path vector. The first index is one-based. The operator keeps the two boundary heights of the block and changes its intermediate heights. It uses $f_0=f_1=I$ and the recursion $f_{r+1}=f_r-(d_{r-1}/d_r)f_re_rf_r$, with $f_r$ embedded in the first $r$ strands of the block. At level $k$, the path quotient kills $f_{k+1}$. The computation caches exact columns on local path segments and counts both work and storage.
+
+`rvTLColoredJones[k,n,m,[word]]` colors each of the $n$ strands by the same integrable label $0\le m\le k$. Each letter becomes a crossing of two cables of $m$ elementary strands, with $m^2$ crossings. The evaluator applies $f_m$ to every cable and takes the quantum trace with sector weights $d_h$. For colored writhe $w$, it multiplies by $\theta_m^{-w}/d_m$, where $\theta_m=(-1)^m A^{m(m+2)}$. This normalizes the unknot to one. Color zero gives the trivial invariant and color one gives `rvTLJones`. The elementary braid expansion has a limit of 4,096 crossings. The empty braid uses the trace $d_m^n$ of the identity directly.
+
+On two colored strands, channel $h$ has crossing eigenvalue $(-1)^{(2m-h)/2}A^{(h(h+2)-2m(m+2))/2}$. The allowed $h$ are $0,2,\ldots,\min(2m,2k-2m)$. The example checks this channel formula for the color-two trefoil at level five and uses a genuine six-strand cable for the color-two figure-eight. It also checks both Markov stabilizations on eight elementary strands. [Colored Jones example](examples/rv-tl-colored.asl)
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is

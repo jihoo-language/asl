@@ -4330,6 +4330,9 @@ impl Engine {
                 match operation {
                     TlOp::Generator(index) => rv_tl::tl(&mut self.model, *grade, &state, *index),
                     TlOp::Braid(word) => rv_tl::braid(&mut self.model, *grade, &state, word),
+                    TlOp::Project(first, length) => {
+                        rv_tl::project(&mut self.model, *grade, &state, *first, *length)
+                    }
                     TlOp::Negate => rv_tl::negate(&mut self.model, &state),
                 }
             }
@@ -5965,6 +5968,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::TlScale(..)
             | ExprForm::TlTrace(..)
             | ExprForm::TlJones(..)
+            | ExprForm::TlColoredJones(..)
             | ExprForm::WzwCoordinate(..)
             | ExprForm::CycloEmbed(..)
             | ExprForm::CycloRoot(..)
@@ -9499,6 +9503,12 @@ impl Checker<'_> {
                 let grade = rv_tl::Grade::checked(level, strands, 0)?;
                 let ty = self.model.cyclotomic_rational_type(grade.order)?;
                 let value = rv_tl::jones(self.model, grade, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlColoredJones(level, strands, color, word) => {
+                let grade = rv_tl::Grade::checked(level, strands, 0)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_tl::colored_jones(self.model, grade, color, &word)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::TlOperation(operation, input) => {
