@@ -123,6 +123,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
 use crate::set_family;
+use crate::set_j;
 use crate::set_logic::{self, Operation as SetLogic};
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
@@ -396,6 +397,13 @@ enum LogicAction {
 
 enum TypedForm {
     SetLogic(LogicAction, Vec<TypedExpr>),
+    SetJExtend {
+        reflection: Rc<set_j::Sheafification>,
+        source: Rc<set_family::Diagram>,
+        target: Rc<set_family::Diagram>,
+        certificate: Rc<set_j::Certificate>,
+        map: Box<TypedExpr>,
+    },
     SetDependent(DependentAction, Option<Box<TypedExpr>>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
@@ -1023,14 +1031,44 @@ impl Engine {
                 )?;
                 return Ok(None);
             }
-            StatementForm::SetSieve(name, point, index) => {
+            StatementForm::SetJ(name, family) => {
+                self.model.check_new_set_family(&name)?;
+                let source = self.model.set_family(&family)?;
+                let (diagram, reflection) =
+                    set_j::Sheafification::build(&mut self.model, family.text.into(), &source)?;
+                self.model
+                    .define_set_sheafification(&name, diagram, reflection)?;
+                return Ok(None);
+            }
+            StatementForm::SetJCheck(family) => {
+                self.model.set_family(&family)?;
+                let is_sheaf = self
+                    .model
+                    .set_sheaf_certificate(Rc::from(family.text.as_str()))?
+                    .is_some();
+                let answer = if is_sheaf { "yes" } else { "no" };
+                format!("setjcheck[{}] = {answer}", family.text)
+            }
+            StatementForm::SetSieve(name, point, index, dense) => {
                 let omega = self.model.set_omega(&name.text)?;
                 let x = self.model.point(omega.base, &point)?;
-                let elements = omega.members(&mut self.model, x, index)?.join(", ");
-                format!(
-                    "setsieve[{}, {}, {index}] = {{{elements}}}",
-                    name.text, point.text
-                )
+                if dense {
+                    let answer = if omega.dense(&mut self.model, x, index)? {
+                        "yes"
+                    } else {
+                        "no"
+                    };
+                    format!(
+                        "setdense[{}, {}, {index}] = {answer}",
+                        name.text, point.text
+                    )
+                } else {
+                    let elements = omega.members(&mut self.model, x, index)?.join(", ");
+                    format!(
+                        "setsieve[{}, {}, {index}] = {{{elements}}}",
+                        name.text, point.text
+                    )
+                }
             }
             StatementForm::SetPullback(name, family, map) => {
                 self.model.check_new_set_family(&name)?;
@@ -2933,6 +2971,18 @@ impl Engine {
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
             TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::SetJExtend {
+                reflection,
+                source,
+                target,
+                certificate,
+                map,
+            } => {
+                let Value::SetNat(rows) = self.eval(map)? else {
+                    unreachable!()
+                };
+                reflection.extend(&mut self.model, source, target, certificate, &rows)
+            }
             TypedForm::SetLogic(action, inputs) => {
                 let rows = inputs
                     .iter()
@@ -6618,6 +6668,49 @@ impl Checker<'_> {
 
     fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
+            ExprForm::SetJUnit(name, inverse) => {
+                let reflection = self.model.set_sheafification(&name.text)?;
+                let name: Rc<str> = name.text.into();
+                let original = reflection.family.clone();
+                let (source, target, value) = if inverse {
+                    let certificate = self.model.set_sheaf_certificate(original.clone())?
+                        .ok_or_else(|| Error::plain("setJInverse requires the original family to be a double-negation sheaf"))?;
+                    (name, original, certificate.inverse())
+                } else {
+                    (original, name, reflection.unit())
+                };
+                let ty = self.model.register_set_nat_type(source, target, true)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SetJExtend(name, map) => {
+                let reflection = self.model.set_sheafification(&name.text)?;
+                let map = self.expr(*map)?;
+                let (source, target) = self.set_nat_ends(map.ty)?;
+                if source != reflection.family {
+                    return Err(Error::plain(
+                        "setJExtend requires a map from the original family",
+                    ));
+                }
+                let certificate = self
+                    .model
+                    .set_sheaf_certificate(target.clone())?
+                    .ok_or_else(|| {
+                        Error::plain("setJExtend target must be a double-negation sheaf")
+                    })?;
+                let a = self.model.set_family_named(&source).expect("map source");
+                let b = self.model.set_family_named(&target).expect("map target");
+                let ty = self.model.set_nat_type(name.text.into(), target)?;
+                Ok((
+                    ty,
+                    TypedForm::SetJExtend {
+                        reflection,
+                        source: a,
+                        target: b,
+                        certificate,
+                        map: Box::new(map),
+                    },
+                ))
+            }
             ExprForm::SetLogic(operation, labels, inputs) => {
                 self.set_logic(operation, labels, inputs)
             }

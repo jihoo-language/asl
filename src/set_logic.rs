@@ -210,6 +210,14 @@ impl Omega {
             .collect())
     }
 
+    pub(crate) fn dense(&self, model: &mut Model, point: usize, index: usize) -> Result<bool> {
+        let sieve = self.sieve(point, index)?;
+        model.spend(self.futures[point].len())?;
+        Ok(self.futures[point]
+            .iter()
+            .all(|&y| self.futures[y].len() != 1 || contains(sieve, y)))
+    }
+
     fn holds(&self, point: usize, ordinal: usize) -> bool {
         contains(&self.sieves[point][ordinal], point)
     }

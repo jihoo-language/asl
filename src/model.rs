@@ -85,6 +85,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
 use crate::set_family;
+use crate::set_j;
 use crate::set_logic;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
@@ -450,6 +451,8 @@ pub(crate) struct Model {
     set_monodromies: HashMap<Rc<str>, Rc<crate::set_monodromy::Monodromy>>,
     set_linearizations: HashMap<Rc<str>, Rc<str>>,
     set_logic: HashMap<Rc<str>, set_logic::Origin>,
+    set_sheafifications: HashMap<Rc<str>, Rc<set_j::Sheafification>>,
+    set_sheaf_certificates: HashMap<Rc<str>, Option<Rc<set_j::Certificate>>>,
     set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
@@ -512,6 +515,8 @@ impl Model {
             set_monodromies: HashMap::new(),
             set_linearizations: HashMap::new(),
             set_logic: HashMap::new(),
+            set_sheafifications: HashMap::new(),
+            set_sheaf_certificates: HashMap::new(),
             set_elements: HashMap::new(),
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
@@ -1572,6 +1577,42 @@ impl Model {
         self.set_origins
             .insert(Rc::from(name.text.as_str()), origin);
         Ok(())
+    }
+
+    pub(crate) fn define_set_sheafification(
+        &mut self,
+        name: &Label,
+        diagram: set_family::Diagram,
+        origin: set_j::Sheafification,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.define_set_family(name, diagram)?;
+        self.set_sheafifications
+            .insert(Rc::from(name.text.as_str()), Rc::new(origin));
+        Ok(())
+    }
+
+    pub(crate) fn set_sheafification(&self, name: &str) -> Result<Rc<set_j::Sheafification>> {
+        self.set_sheafifications.get(name).cloned().ok_or_else(|| {
+            Error::plain(format!(
+                "'{name}' is not a declared double-negation sheafification"
+            ))
+        })
+    }
+
+    pub(crate) fn set_sheaf_certificate(
+        &mut self,
+        name: Rc<str>,
+    ) -> Result<Option<Rc<set_j::Certificate>>> {
+        if let Some(certificate) = self.set_sheaf_certificates.get(&name) {
+            return Ok(certificate.clone());
+        }
+        let family = self.set_family_named(&name).expect("registered family");
+        let certificate = set_j::Certificate::build(self, &family)?.map(Rc::new);
+        self.allocate(1)?;
+        self.set_sheaf_certificates
+            .insert(name, certificate.clone());
+        Ok(certificate)
     }
 
     pub(crate) fn define_set_logic(

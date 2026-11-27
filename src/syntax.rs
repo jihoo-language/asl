@@ -626,6 +626,8 @@ pub(crate) struct MapGenerator {
 
 pub(crate) enum ExprForm {
     SetLogic(SetLogic, Vec<Label>, Vec<ParsedExpr>),
+    SetJUnit(Label, bool),
+    SetJExtend(Label, Box<ParsedExpr>),
     SetProjection(Label),
     SetSection(Label, usize),
     SetIdentity(Label),
@@ -945,7 +947,9 @@ pub(crate) enum StatementForm {
     SetPullback(Label, Label, ParsedExpr),
     SetOmega(Label, Label),
     SetSubobject(Label, ParsedExpr),
-    SetSieve(Label, Label, usize),
+    SetSieve(Label, Label, usize, bool),
+    SetJ(Label, Label),
+    SetJCheck(Label),
     SetDependent(Label, Label, Label, bool),
     SetMonodromy(Label, Label, Label, Label),
     SetMonoQuery(Label, crate::set_monodromy::Query),
@@ -1875,7 +1879,23 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 StatementForm::SetSubobject(name, self.paren_expr(0)?)
             }
-            Token::Word("setsieve") => {
+            Token::Word("setj") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetJ(name, family)
+            }
+            Token::Word("setjcheck") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetJCheck(family)
+            }
+            Token::Word("setsieve" | "setdense") => {
+                let dense = self.token() == Token::Word("setdense");
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let omega = self.label()?;
@@ -1884,7 +1904,7 @@ impl<'src> Parser<'src> {
                 self.expect(Token::Comma)?;
                 let index = self.number()?.0;
                 self.expect(Token::RBracket)?;
-                StatementForm::SetSieve(omega, point, index)
+                StatementForm::SetSieve(omega, point, index, dense)
             }
             Token::Word("setpullback") => {
                 self.advance()?;
@@ -4909,6 +4929,27 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RParen)?;
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
+            }
+            Token::Word("setJUnit" | "setJInverse" | "setJExtend") => {
+                let operation = self.label()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                if operation.text == "setJExtend" {
+                    let argument = self.paren_expr(nest)?;
+                    let depth = argument.depth + 1;
+                    expr(
+                        span,
+                        ExprForm::SetJExtend(family, Box::new(argument)),
+                        depth,
+                    )
+                } else {
+                    expr(
+                        span,
+                        ExprForm::SetJUnit(family, operation.text == "setJInverse"),
+                        0,
+                    )
+                }
             }
             Token::Word(name) if SetLogic::detect(name).is_some() => {
                 let operation = SetLogic::detect(name).unwrap();

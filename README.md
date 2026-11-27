@@ -196,6 +196,32 @@ target at every later stage to satisfy the predicate. See
 [examples/set-logic.asl](examples/set-logic.asl) for strict failure of
 excluded middle and a round trip through comprehension.
 
+### Double-negation sheafification
+
+`setdense[O,x,i];` tests whether a cosieve is double-negation dense.
+On a finite poset, density means that every future point has a later
+point in the cosieve. Every maximal future must therefore belong to it,
+and those points already suffice. The smallest dense cosieve at `x`
+contains exactly the maximal points above `x`.
+
+`setj J[F];` defines the double-negation sheafification. Its fiber at
+`x` consists of tuples of values of `F` at the maximal futures of `x`.
+Transport restricts tuples and `setJUnit[J]` sends each input to its
+images at all those maximal points. Matching families on the smallest
+dense cosieve are exactly these tuples. A family is a double-negation
+sheaf when these unit components are all bijections, which
+`setjcheck[F];` tests.
+
+For a natural map `u : SetNat(F,G)` to a double-negation sheaf `G`,
+`setJExtend[J](u)` is the unique extension from `J` to `G`. It applies
+`u` at the maximal future points and glues those images using the
+bijection for `G`. Precomposing the extension with `setJUnit[J]`
+recovers `u`. If `F` already satisfies the sheaf condition,
+`setJInverse[J]` gives the inverse of the unit. See
+[examples/set-sheafification.asl](examples/set-sheafification.asl) for a
+fork with six sections after reflection, explicit extension, and
+idempotence.
+
 ## Sheaf cohomology on a finite poset
 
 `sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.
