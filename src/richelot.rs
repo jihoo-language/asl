@@ -5,6 +5,7 @@ use crate::model::Model;
 use crate::syntax::Label;
 
 pub(crate) mod correspondence;
+pub(crate) mod descent;
 
 type Literal = Vec<Vec<i128>>;
 type Splitting = [Polynomial; 3];
@@ -13,6 +14,8 @@ pub(crate) enum Command {
     Define(Label, Label, [Literal; 3]),
     Dual(Label, Label),
     Data(Label),
+    Descend(Label, Label, Label),
+    Descent(Label),
 }
 
 pub(crate) struct Isogeny {
@@ -27,6 +30,14 @@ impl Command {
         let (target, source, literal) = match self {
             Self::Define(target, source, literal) => (target, source, Some(literal)),
             Self::Dual(target, source) => (target, source, None),
+            Self::Descend(target, source, extension_target) => {
+                descent::Descent::define(model, target, source, extension_target)?;
+                return Ok(None);
+            }
+            Self::Descent(target) => {
+                let data = model.richelot_descent(&target)?;
+                return Ok(Some(data.report(&target)));
+            }
             Self::Data(target) => {
                 let isogeny = model.richelot(&target)?;
                 let curve = model.hww_curve(&target)?;

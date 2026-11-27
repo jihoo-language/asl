@@ -450,6 +450,10 @@ enum JacobianAction {
         Box<crate::richelot::correspondence::Correspondence>,
         Box<TypedExpr>,
     ),
+    RichelotDescPush(
+        Box<crate::richelot::descent::DescendedCorrespondence>,
+        Box<TypedExpr>,
+    ),
     BiellipticPoint(Rc<crate::bielliptic::Quotient>, Box<[TypedExpr; 2]>),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
@@ -4790,6 +4794,14 @@ impl Engine {
                     .persist(&mut self.model, curve)
             }
             JacobianAction::RichelotPush(correspondence, input) => {
+                let Value::Jacobian(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                correspondence
+                    .push(&mut self.model, &input)?
+                    .persist(&mut self.model, &correspondence.target)
+            }
+            JacobianAction::RichelotDescPush(correspondence, input) => {
                 let Value::Jacobian(input) = self.eval(input)? else {
                     unreachable!()
                 };
@@ -17869,6 +17881,23 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::Jacobian(JacobianAction::RichelotPush(
+                        Box::new(correspondence),
+                        Box::new(input),
+                    )),
+                ))
+            }
+            Expression::RichelotDescPush(name, input) => {
+                let correspondence =
+                    crate::richelot::descent::DescendedCorrespondence::resolve(self.model, &name)?;
+                let source = self
+                    .model
+                    .jacobian_type(correspondence.source_name().into())?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvRichelotDescPush source divisor")?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::RichelotDescPush(
                         Box::new(correspondence),
                         Box::new(input),
                     )),

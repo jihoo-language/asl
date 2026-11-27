@@ -2918,17 +2918,29 @@ impl<'src> Parser<'src> {
     fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::richelot::Command;
         self.advance()?;
-        let command = if name == "rvRichelotData" {
+        let command = if matches!(name, "rvRichelotData" | "rvRichelotDescent") {
             self.expect(Token::LBracket)?;
             let target = self.label()?;
             self.expect(Token::RBracket)?;
-            Command::Data(target)
+            if name == "rvRichelotData" {
+                Command::Data(target)
+            } else {
+                Command::Descent(target)
+            }
         } else {
             let target = self.label()?;
             self.expect(Token::LBracket)?;
             let source = self.label()?;
+            let extension_target = if name == "rvrichelotdescend" {
+                self.expect(Token::Comma)?;
+                Some(self.label()?)
+            } else {
+                None
+            };
             self.expect(Token::RBracket)?;
-            if name == "rvrichelotdual" {
+            if let Some(extension_target) = extension_target {
+                Command::Descend(target, source, extension_target)
+            } else if name == "rvrichelotdual" {
                 Command::Dual(target, source)
             } else {
                 let coefficient = |parser: &mut Self| {
@@ -3084,12 +3096,17 @@ impl<'src> Parser<'src> {
                     depth,
                 )
             }
-            "rvRichelotPush" => {
+            "rvRichelotPush" | "rvRichelotDescPush" => {
                 let target = self.label()?;
                 self.expect(Token::RBracket)?;
                 let input = self.paren_expr(nest)?;
                 let depth = 1 + input.depth;
-                (Expression::RichelotPush(target, Box::new(input)), depth)
+                let expression = if name == "rvRichelotPush" {
+                    Expression::RichelotPush(target, Box::new(input))
+                } else {
+                    Expression::RichelotDescPush(target, Box::new(input))
+                };
+                (expression, depth)
             }
             "rvJacRechart" | "rvJacUnchart" => {
                 use crate::hyperelliptic_chart::Direction;
@@ -3569,9 +3586,10 @@ impl<'src> Parser<'src> {
             Token::Word(command @ ("rvjactorsionbasis" | "rvJacTorsionFrob")) => {
                 self.jacobian_level_statement(command)?
             }
-            Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
-                self.richelot_statement(command)?
-            }
+            Token::Word(
+                command @ ("rvrichelot" | "rvrichelotdual" | "rvrichelotdescend" | "rvRichelotData"
+                | "rvRichelotDescent"),
+            ) => self.richelot_statement(command)?,
             Token::Word("rvbielliptic") => self.bielliptic_statement()?,
             Token::Eof => return Ok(None),
             Token::Word(
@@ -8697,6 +8715,7 @@ impl<'src> Parser<'src> {
                         | "rvJacHalfAt"
                         | "rvRichelotPoint"
                         | "rvRichelotPush"
+                        | "rvRichelotDescPush"
                         | "rvBiellipticPoint"
                         | "rvJacScale"
                         | "rvJacU"

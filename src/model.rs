@@ -591,6 +591,7 @@ pub(crate) struct Model {
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
+    richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -685,6 +686,7 @@ impl Model {
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
             richelot_isogenies: HashMap::new(),
+            richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -3578,6 +3580,33 @@ impl Model {
                 Error::new(
                     target.span,
                     format!("curve '{}' has no stored Richelot splitting", target.text),
+                )
+            })
+    }
+
+    pub(crate) fn define_richelot_descent(
+        &mut self,
+        target: Label,
+        ring: &Label,
+        coefficients: Vec<Vec<u64>>,
+        descent: crate::richelot::descent::Descent,
+    ) -> Result<()> {
+        self.define_hww_curve(target.clone(), ring, coefficients)?;
+        self.richelot_descents.insert(target.text, Rc::new(descent));
+        Ok(())
+    }
+
+    pub(crate) fn richelot_descent(
+        &self,
+        target: &Label,
+    ) -> Result<Rc<crate::richelot::descent::Descent>> {
+        self.richelot_descents
+            .get(&target.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    target.span,
+                    format!("curve '{}' has no stored Richelot descent", target.text),
                 )
             })
     }

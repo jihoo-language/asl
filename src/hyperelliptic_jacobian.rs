@@ -7,8 +7,6 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::hyperelliptic_chart::Direction;
 use crate::model::{Model, Value};
-use crate::odd_cobar::Prime;
-use crate::prime_linear::{Basis, Coordinate};
 use crate::rv_unram::Ring;
 use crate::syntax::{Label, ParsedExpr};
 
@@ -32,6 +30,7 @@ pub(crate) enum Expression {
     HalfAt(Label, String, Box<[ParsedExpr; 2]>),
     RichelotPoint(Label, Box<[ParsedExpr; 2]>),
     RichelotPush(Label, Box<ParsedExpr>),
+    RichelotDescPush(Label, Box<ParsedExpr>),
     BiellipticPoint(Label, Box<[ParsedExpr; 2]>),
     Transport(Label, Direction, Box<ParsedExpr>),
     QuadraticTrace(Label, Box<ParsedExpr>, Box<[Vec<Vec<i128>>; 4]>),
@@ -349,37 +348,11 @@ impl Divisor {
 
     pub(crate) fn descend(&self, model: &mut Model, source: &Curve, base: &Curve) -> Result<Self> {
         require_extension(model, base, source)?;
-        let width = base.ring.degree();
-        let mut powers = vec![base.ring.scalar(0); width];
-        for (index, element) in powers.iter_mut().enumerate() {
-            element[index] = 1;
-        }
-        let images = base
-            .ring
-            .embed_residue_coefficients(model, &source.ring, &powers)?;
-        let prime = Prime::validated(base.ring.prime() as u32);
-        let mut image = Basis::default();
-        for (index, value) in images.iter().enumerate() {
-            image.insert_with_witness(model, prime, coordinates(value), vec![(index, 1)])?;
-        }
+        let preimage = base.ring.residue_preimage(model, &source.ring)?;
         let descend = |model: &mut Model, polynomial: &[Scalar]| -> Result<Polynomial> {
-            polynomial
-                .iter()
-                .map(|coefficient| {
-                    let (remainder, witness) =
-                        image.reduce_with_witness(model, prime, coordinates(coefficient))?;
-                    if !remainder.is_empty() {
-                        return Err(Error::plain(
-                            "Mumford coefficient lies outside the requested subfield",
-                        ));
-                    }
-                    let mut value = base.ring.scalar(0);
-                    for (index, coefficient) in witness {
-                        value[index] = u64::from(coefficient);
-                    }
-                    Ok(value)
-                })
-                .collect()
+            preimage.coefficients(model, polynomial)?.ok_or_else(|| {
+                Error::plain("Mumford coefficient lies outside the requested subfield")
+            })
         };
         Ok(Self {
             u: descend(model, &self.u)?,
@@ -485,14 +458,6 @@ impl Divisor {
         )?;
         Ok(self.cmp(rhs))
     }
-}
-
-fn coordinates(value: &[u64]) -> Vec<Coordinate> {
-    value
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &v)| (v != 0).then_some((i, v as u32)))
-        .collect()
 }
 
 fn field(curve: &Curve) -> Field<'_> {

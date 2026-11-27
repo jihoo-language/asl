@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
-use crate::prime_linear::invert;
+use crate::prime_linear::{invert, Basis, Coordinate};
 
 const MAX_DEGREE: usize = 16;
 
@@ -17,6 +17,45 @@ pub(crate) struct Ring {
     modulus: u64,
     lower: Box<[u64]>,
     frobenius_images: Vec<Element>,
+}
+
+pub(crate) struct ResiduePreimage<'a> {
+    base: &'a Ring,
+    image: Basis,
+}
+
+impl ResiduePreimage<'_> {
+    pub(crate) fn coefficients(
+        &self,
+        model: &mut Model,
+        coefficients: &[Element],
+    ) -> Result<Option<Vec<Element>>> {
+        let mut output = Vec::with_capacity(coefficients.len());
+        for coefficient in coefficients {
+            let (remainder, witness) = self.image.reduce_with_witness(
+                model,
+                self.base.prime,
+                residue_coordinates(coefficient),
+            )?;
+            if !remainder.is_empty() {
+                return Ok(None);
+            }
+            let mut value = self.base.scalar(0);
+            for (index, coefficient) in witness {
+                value[index] = u64::from(coefficient);
+            }
+            output.push(value);
+        }
+        Ok(Some(output))
+    }
+}
+
+fn residue_coordinates(value: &[u64]) -> Vec<Coordinate> {
+    value
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &v)| (v != 0).then_some((i, v as u32)))
+        .collect()
 }
 
 impl Ring {
@@ -458,6 +497,28 @@ impl Ring {
             .iter()
             .map(|value| algebra.evaluate(model, &self.residue(value), &root))
             .collect()
+    }
+
+    pub(crate) fn residue_preimage(
+        &self,
+        model: &mut Model,
+        extension: &Self,
+    ) -> Result<ResiduePreimage<'_>> {
+        let mut powers = vec![self.scalar(0); self.degree()];
+        for (index, element) in powers.iter_mut().enumerate() {
+            element[index] = 1;
+        }
+        let images = self.embed_residue_coefficients(model, extension, &powers)?;
+        let mut image = Basis::default();
+        for (index, value) in images.iter().enumerate() {
+            image.insert_with_witness(
+                model,
+                self.prime,
+                residue_coordinates(value),
+                vec![(index, 1)],
+            )?;
+        }
+        Ok(ResiduePreimage { base: self, image })
     }
 
     fn root_in_residue(&self, model: &mut Model, polynomial: &[u64]) -> Result<Element> {
