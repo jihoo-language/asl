@@ -117,6 +117,7 @@ use crate::rv_wzw;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_ext::{self, Ends as SheafEnds};
+use crate::sheaf_higher::{self, Operation as SheafHigherOp};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
 use crate::sheaf_leray::{Input as LerayInput, InputForm as SheafInputForm, Leray};
@@ -503,6 +504,13 @@ enum TypedForm {
     SheafLocalOperation(Rc<Supports>, SupportGrade, SupportOp, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
     SheafCompose(Box<[TypedExpr; 2]>),
+    SheafHigher(
+        SheafHigherOp,
+        sheaf_higher::Signature,
+        Vec<TypedExpr>,
+        Vec<DefiningEntry>,
+        Option<Box<TypedExpr>>,
+    ),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     SheafPart(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
@@ -4665,6 +4673,39 @@ impl Engine {
                 };
                 leray.include(&mut self.model, *degree, &raw)
             }
+            TypedForm::SheafHigher(operation, signature, args, witnesses, target) => {
+                let values = args
+                    .iter()
+                    .map(|arg| self.eval(arg))
+                    .collect::<Result<Vec<_>>>()?;
+                let expected = if let Some(target) = target {
+                    let Value::OddClass(value) = self.eval(target)? else {
+                        unreachable!()
+                    };
+                    Some(value)
+                } else {
+                    None
+                };
+                let witnesses = witnesses
+                    .iter()
+                    .map(|entry| {
+                        Ok(sheaf_higher::Witness {
+                            from: entry.from,
+                            to: entry.to,
+                            span: entry.span,
+                            value: self.eval(&entry.expr)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                sheaf_higher::evaluate(
+                    &mut self.model,
+                    signature,
+                    *operation,
+                    values,
+                    witnesses,
+                    expected.as_deref(),
+                )
+            }
             TypedForm::SheafCompose(arguments) => {
                 let [after, before] = arguments.as_ref();
                 let after_value = self.eval(after)?;
@@ -6406,6 +6447,9 @@ impl Checker<'_> {
                     .known_sheaf_hom_type(SheafForm::Cochain, ends, 0)?;
                 let value = sheaf_ext::map_cochain(self.model, &map)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafHigher(operation, inputs, witnesses) => {
+                self.sheaf_higher(operation, inputs, witnesses)
             }
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
@@ -9371,6 +9415,56 @@ impl Checker<'_> {
             signature.witness_type(model, from, to, at)
         })?;
         Ok((ty, TypedForm::OddSystem(operation, arity, entries)))
+    }
+
+    fn sheaf_higher(
+        &mut self,
+        operation: SheafHigherOp,
+        mut inputs: Vec<ParsedExpr>,
+        witnesses: Vec<Witness>,
+    ) -> Result<(TypeId, TypedForm)> {
+        let target = if operation.targeted() {
+            Some(inputs.pop().ok_or_else(|| {
+                Error::plain(format!(
+                    "{} requires a final ShExt outcome",
+                    operation.name()
+                ))
+            })?)
+        } else {
+            None
+        };
+        let args = inputs
+            .into_iter()
+            .map(|value| self.expr(value))
+            .collect::<Result<Vec<_>>>()?;
+        let positions: Vec<_> = args.iter().map(|value| (value.ty, value.span)).collect();
+        let signature = sheaf_higher::Signature::new(self.model, &positions)?;
+        let target = if let Some(target) = target {
+            let value = self.expr(target)?;
+            let ty = signature.top_type(self.model, SheafForm::Class)?;
+            self.require_type(ty, &value, operation.name())?;
+            Some(Box::new(value))
+        } else {
+            None
+        };
+        let ty = match operation {
+            SheafHigherOp::Curvature => signature.top_type(self.model, SheafForm::Cochain)?,
+            SheafHigherOp::Contains => self.model.named("S").unwrap(),
+            SheafHigherOp::Witness { from, to, .. } => {
+                signature.witness_type(self.model, from, to)?
+            }
+            _ => signature.top_type(self.model, SheafForm::Class)?,
+        };
+        let mut entries = Vec::new();
+        self.check_witnesses(witnesses, &mut entries, |model, from, to, span| {
+            signature
+                .witness_type(model, from, to)
+                .map_err(|error| error.at(span))
+        })?;
+        Ok((
+            ty,
+            TypedForm::SheafHigher(operation, signature, args, entries, target),
+        ))
     }
 
     fn check_witnesses(

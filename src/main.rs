@@ -131,6 +131,7 @@ mod rv_wzw;
 mod sheaf;
 mod sheaf_cellular;
 mod sheaf_ext;
+mod sheaf_higher;
 mod sheaf_hyper;
 mod sheaf_image;
 mod sheaf_leray;

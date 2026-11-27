@@ -30,6 +30,7 @@ use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
+use crate::sheaf_higher::Operation as SheafHigherOp;
 use crate::sheaf_image::Operation as SheafImageOp;
 use crate::sheaf_leray::InputForm as SheafInputForm;
 use crate::sheaf_page::{Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp};
@@ -645,6 +646,7 @@ pub(crate) enum ExprForm {
     SheafHomMap(Label),
     SheafHomIdentity(Label),
     SheafCompose(Box<[ParsedExpr; 2]>),
+    SheafHigher(SheafHigherOp, Vec<ParsedExpr>, Vec<Witness>),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
@@ -5785,6 +5787,44 @@ impl<'src> Parser<'src> {
                         span,
                         ExprForm::SheafHomTerm(source, target, chain, column, row, coefficient),
                         0,
+                    );
+                }
+                let operation = match (name.text.as_str(), self.token()) {
+                    ("shMassey", Token::LParen) => Some(SheafHigherOp::Class),
+                    ("shCurvature", Token::LParen) => Some(SheafHigherOp::Curvature),
+                    ("shMasseySolve", Token::LParen) => Some(SheafHigherOp::Solve),
+                    ("shInMassey", Token::LParen) => Some(SheafHigherOp::Contains),
+                    ("shMasseyWitness" | "shMasseyFind", Token::LBracket) => {
+                        self.advance()?;
+                        let from = self.number()?.0;
+                        self.expect(Token::Comma)?;
+                        let to = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Some(SheafHigherOp::Witness {
+                            from,
+                            to,
+                            targeted: name.text == "shMasseyFind",
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    self.expect(Token::LParen)?;
+                    let inputs = self.arguments(nest)?;
+                    let mut depth = inputs
+                        .iter()
+                        .map(|value| value.depth + 1)
+                        .max()
+                        .unwrap_or(0);
+                    let witnesses = if operation.explicit() {
+                        self.witnesses(nest, &mut depth)?
+                    } else {
+                        Vec::new()
+                    };
+                    return expr(
+                        span,
+                        ExprForm::SheafHigher(operation, inputs, witnesses),
+                        depth,
                     );
                 }
                 if name.text == "shExtCompose" && self.token() == Token::LParen {

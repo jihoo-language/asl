@@ -191,6 +191,18 @@ The example suspends the finite product of two circles. For the constant sheaf o
 
 On the cone of a finite torus, the relative ranks at the vertex in degrees zero through three are $0,0,2,1$ for constant coefficients. The degree-one connecting map takes a punctured basis to a relative basis in degree two. Applying the cutoff-one Deligne extension makes the degree-two relative group vanish while the degree-three class survives. [Local supports on the cone of a torus](examples/sheaf-support.asl)
 
+### Degree-one higher Yoneda products
+
+Give composable degree-one `ShExt` classes to `shMassey(a,b,c){0<2=>u,1<3=>v}` in the order of the maps $F_0\to\cdots\to F_n$. A closed degree-one `ShHomC` cochain can also be used as an input. The braces specify the proper nonadjacent intervals and omitted witnesses are zero. An entry $A_{ij}$ lies in `ShHomC(Fi,Fj,1)`. The evaluator checks $dA_{ij}+\sum_{i<k<j} A_{kj}\circ A_{ik}=0$ on every proper interval, using the signed composition of `shExtCompose`. `shCurvature` returns the resulting closed degree-two sum on the full interval. `shMassey` takes its class in `ShExt(F0,Fn,2)`.
+
+`shMasseySolve(a,b,c)` finds the first defining system in a fixed search order and returns its class. `shMasseyWitness[i,j](a,b,c)` returns a proper entry of that system. `shInMassey(a,b,c,x)` tests membership of the final class `x` in the full set of outcomes. `shMasseyFind[i,j](a,b,c,x)` returns the indicated entry of the first system realizing `x`. The search solves each interval equation by prime-field elimination. It explores the cycle choices in degree-one cohomology, since a degree-zero change of basis absorbs exact differences in that interval and adjusts only longer intervals. `S.lo` means the finite search exhausted all choices. Reaching a computation or storage bound raises a diagnostic.
+
+Two disjoint arms of lengths $r$ and $s$ between a common bottom and top give a one-dimensional $\operatorname{Ext}^2$ between the two endpoint skyscraper sheaves. The cover classes along each arm give a unique nonzero higher product. The two products differ by $(-1)^{s-r+1}$. In a proper interval $[i,j]$, the explicit witness has the long-edge coefficient $(-1)^{j-i-1}$. The `explicit=1` option checks these witnesses and compares the resulting class with the solver. The 64- and 35-input example runs over $\mathbb F_5$ with this option under the default limits. [Higher Yoneda generator](examples/sheaf-higher-yoneda.awk)
+
+```sh
+awk -v left=3 -v right=5 -v prime=5 -v explicit=1 -f examples/sheaf-higher-yoneda.awk | cargo run --quiet -- -
+```
+
 ### Stalk cohomology and the Serre functor
 
 `shcohomology H[K,q];` takes stalk cohomology of a bounded complex of sheaves. At each point it computes the kernel of the outgoing differential modulo the image of the incoming differential. A restriction transports a representative and projects it into the target stalk cohomology.

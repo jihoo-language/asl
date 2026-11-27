@@ -1212,13 +1212,19 @@ impl Model {
         ends: SheafEnds,
         degree: usize,
     ) -> Result<TypeId> {
-        if !self.sheaf_homs.contains_key(&ends) {
-            let source = self.sheaf_named(&ends.source).expect("registered sheaf");
-            let target = self.sheaf_named(&ends.target).expect("registered sheaf");
-            let data = SheafHom::build(self, source, target)?;
-            self.sheaf_homs.insert(ends.clone(), Rc::new(data));
-        }
+        self.ensure_sheaf_hom(&ends)?;
         self.inhabited_type(Kind::SheafHom(form, ends, degree), 0)
+    }
+
+    pub(crate) fn ensure_sheaf_hom(&mut self, ends: &SheafEnds) -> Result<Rc<SheafHom>> {
+        if let Some(hom) = self.sheaf_homs.get(ends) {
+            return Ok(hom.clone());
+        }
+        let source = self.sheaf_named(&ends.source).expect("registered sheaf");
+        let target = self.sheaf_named(&ends.target).expect("registered sheaf");
+        let data = Rc::new(SheafHom::build(self, source, target)?);
+        self.sheaf_homs.insert(ends.clone(), data.clone());
+        Ok(data)
     }
 
     pub(crate) fn sheaf_hom(&self, ends: &SheafEnds) -> Rc<SheafHom> {
