@@ -985,6 +985,7 @@ pub(crate) enum StatementForm {
     QuantumCoefficient(usize, Vec<usize>, ParsedExpr),
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
+    WzCheck(crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
     QuantumRegularizedRhs(usize, usize),
@@ -2351,6 +2352,33 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 statement
+            }
+            Token::Word("rvWZCheck") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (u, v) = self.bidegree()?;
+                self.expect(Token::Comma)?;
+                let z = self.signed_wide("a nonzero integer", "WZ summand parameter")?;
+                self.expect(Token::Comma)?;
+                let start = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(0)?;
+                self.expect(Token::LBrace)?;
+                let numerator = self.wz_numerator()?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wz_denominator()?;
+                self.expect(Token::RBrace)?;
+                StatementForm::WzCheck(
+                    crate::rv_wz::Certificate {
+                        u,
+                        v,
+                        z,
+                        start,
+                        numerator,
+                        denominator,
+                    },
+                    input,
+                )
             }
             Token::Word("rvOreCoeff" | "rvQGrPeriod") => {
                 let period = self.token() == Token::Word("rvQGrPeriod");
@@ -7920,6 +7948,52 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (rank, ambient) = self.quantum_grade()?;
         Ok((prime, rank, ambient))
+    }
+
+    fn wz_numerator(&mut self) -> Result<Vec<(usize, usize, i128)>> {
+        self.expect(Token::LBrace)?;
+        let mut terms = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let (n, k) = self.bidegree()?;
+            self.expect(Token::Comma)?;
+            let c = self.signed_wide("a signed coefficient", "WZ numerator coefficient")?;
+            self.expect(Token::RParen)?;
+            terms.push((n, k, c));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(terms)
+    }
+
+    fn wz_denominator(&mut self) -> Result<Vec<crate::rv_wz::Factor>> {
+        self.expect(Token::LBrace)?;
+        let mut factors = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let n = self.signed_wide("a signed coefficient", "WZ denominator coefficient")?;
+            self.expect(Token::Comma)?;
+            let k = self.signed_wide("a signed coefficient", "WZ denominator coefficient")?;
+            self.expect(Token::Comma)?;
+            let constant =
+                self.signed_wide("a signed coefficient", "WZ denominator coefficient")?;
+            self.expect(Token::Comma)?;
+            let multiplicity = self.number()?.0;
+            self.expect(Token::RParen)?;
+            factors.push(crate::rv_wz::Factor {
+                n,
+                k,
+                constant,
+                multiplicity,
+            });
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(factors)
     }
 
     fn quantum_grade(&mut self) -> Result<(usize, usize)> {

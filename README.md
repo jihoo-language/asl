@@ -1061,6 +1061,16 @@ In the $z=1$ Grassmannian quantum differential module, `rvQGrNabla(v)` is $\nabl
 
 For $\mathrm{Gr}(2,5)$, $B=\theta^2-q(11\theta^2+11\theta+3)-q^2(\theta+1)^2$ and $R=0$. The coefficients $1,3,19,147,1251,\ldots$ equal $\sum_{j=0}^d\binom{d}{j}^2\binom{d+j}{j}$ in degree $d$, the Apéry numbers for $\zeta(2)$. For $\mathrm{Gr}(2,4)$, $B=\theta-2q(2\theta+1)$ and the coefficients are $\binom{2d}{d}$. For projective space, the reduced equation is $(1-q)G=1$. The example also verifies Euler cancellation from order $14$ to order $4$ for $\mathrm{Gr}(3,6)$. [Quantum regularization example](examples/rv-quantum-regularization.asl)
 
+#### Certified Wilf–Zeilberger period recurrences
+
+`rvWZCheck[u,v,z,n0](L) {{(i,j,c),...},{(a,b,c,m),...}};` verifies an `RVOre` operator on the sum of $F(n,k)=\binom nk^u\binom{n+k}k^v z^k$ over $0\le k\le n$. Take $u\ge1$, $v\ge0$ and a nonzero integer $z$. The first list gives the numerator of $R(n,k)$ as monomials $c n^i k^j$. The second list gives denominator factors $(a n+b k+c)^m$ with positive multiplicity $m$. An empty denominator list gives denominator one.
+
+Write $L=\sum_a q^a P_a(\theta)$, with $\theta=q\,d/dq$. The checker multiplies the known hypergeometric ratios, clears denominators, and verifies every coefficient of the bivariate polynomial identity
+$\sum_a P_a(n-a)F(n-a,k)/F(n,k) = [F(n,k+1)/F(n,k)]R(n,k+1)-R(n,k)$
+over the integers. Each denominator factor must be strictly positive for $n\ge n_0$ and $0\le k\le n+1$. The check uses the two affine endpoint values at $n_0$ and their slopes. The support and $R(n,0)=0$ make both telescoping boundary terms vanish. The start $n_0$ is positive and at least the largest $q$-shift. Every coefficient of $L\sum_n (\sum_k F(n,k))q^n$ below $n_0$ is checked by direct summation. Coefficients and intermediate values use checked signed 128-bit arithmetic with sparse work and storage bounds.
+
+The examples verify the Apéry recurrence for $\zeta(2)$, the Franel cube sum, and an alternating binomial square sum. The Apéry operator is $\theta^2-q(11\theta^2+11\theta+3)-q^2(\theta+1)^2$. Its $q^0$ multiplier in degree $n$ is $n^2$, so this recurrence determines a normalized power series in every degree. [Wilf–Zeilberger period example](examples/rv-wz-period.asl)
+
 ### Laurent periods and prime-power Cartier sections
 
 `rvperiod P[r] {([e1,...,er],c),...};` declares a Laurent polynomial $L$ in $r$ variables. Each term has signed integer exponents and a signed integer coefficient. Equal exponents are combined. `rvCTExact[P,n];` reports the constant term of $L^n$ by exact sparse multiplication. The exact integer and Laurent exponents use checked signed 128-bit arithmetic.

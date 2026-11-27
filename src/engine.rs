@@ -1062,6 +1062,16 @@ impl Engine {
                 let coefficient = rv_fusion::coefficient(&mut self.model, grade, &terms, weight)?;
                 format!("rvFusionCoeff = {coefficient}")
             }
+            StatementForm::WzCheck(certificate, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Err(Error::new(input.span, "rvWZCheck requires an Ore operator"));
+                }
+                let Value::RVOre(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::rv_wz::verify(&mut self.model, &terms, &certificate)?
+            }
             StatementForm::OreCoefficient(q, theta, input) => {
                 let input = self.checker().expr(input)?;
                 if !matches!(self.model.kind(input.ty), Kind::RVOre) {
