@@ -34,7 +34,8 @@ use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_hilbert as cubic, kummer as local_kummer,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic,
+    kummer as local_kummer,
 };
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
@@ -219,6 +220,7 @@ pub(crate) enum TypeForm {
     CubicLocal(cubic::LocalSpec),
     CubicClass(Label),
     CubicAlg(Label),
+    CubicDiv(Label),
     CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
@@ -1177,6 +1179,7 @@ pub(crate) enum ExprForm {
     LocalKummer(local_kummer::Expression),
     Cubic(cubic::Expression),
     CubicAlgebra(cubic_algebra::Expression),
+    CubicDivision(cubic_division::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1473,6 +1476,8 @@ pub(crate) enum StatementForm {
     LocalKummerReport(local_kummer::Report, Box<ParsedExpr>),
     Cubic(cubic::Report),
     CubicAlgebraDeclaration(cubic_algebra::Declaration),
+    CubicDivisionDeclaration(cubic_division::Declaration),
+    CubicDivisionReport(cubic_division::Report),
     CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
     CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
@@ -7711,6 +7716,107 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_division_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_division::{Declaration, Report};
+        self.advance()?;
+        let report = match name {
+            "rvcubicdiv" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let (invariant, precision) = self.cubic_indices()?;
+                self.expect(Token::RBracket)?;
+                return Ok(StatementForm::CubicDivisionDeclaration(Declaration(
+                    label, base, invariant, precision,
+                )));
+            }
+            "rvCubicDivData" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                self.expect(Token::RBracket)?;
+                Report::Data(label)
+            }
+            "rvCubicDivVal" => Report::Valuation(Box::new(self.paren_expr(0)?)),
+            _ => Report::Commutator(Box::new(self.paren_pair(0)?)),
+        };
+        Ok(StatementForm::CubicDivisionReport(report))
+    }
+
+    fn cubic_division_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use cubic_division::{Binary, Conversion, Expression, Generator, Unary};
+        let (operation, depth) = match name {
+            "rvCubicDivElem"
+            | "rvCubicDivPi"
+            | "rvCubicDivTheta"
+            | "rvCubicDivFromSymbol"
+            | "rvCubicDivReduce" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                self.expect(Token::RBracket)?;
+                match name {
+                    "rvCubicDivElem" => (
+                        Expression::Literal(
+                            label,
+                            self.local_coefficient_rows(
+                                "a signed cubic division coefficient",
+                                "cubic division coefficient",
+                            )?,
+                        ),
+                        0,
+                    ),
+                    "rvCubicDivPi" => (Expression::Generator(label, Generator::Pi), 0),
+                    "rvCubicDivTheta" => (Expression::Generator(label, Generator::Theta), 0),
+                    _ => {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        let conversion = if name == "rvCubicDivFromSymbol" {
+                            Conversion::Symbol
+                        } else {
+                            Conversion::Reduce
+                        };
+                        (
+                            Expression::Convert(label, conversion, Box::new(input)),
+                            depth,
+                        )
+                    }
+                }
+            }
+            "rvCubicDivMul" | "rvCubicDivCommutator" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = pair[0].depth.max(pair[1].depth) + 1;
+                let operation = if name == "rvCubicDivMul" {
+                    Binary::Multiply
+                } else {
+                    Binary::Commutator
+                };
+                (Expression::Binary(operation, Box::new(pair)), depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvCubicDivNorm" => {
+                        self.expect(Token::LBracket)?;
+                        let (digits, _) = self.number()?;
+                        self.expect(Token::RBracket)?;
+                        Unary::Norm(digits)
+                    }
+                    "rvCubicDivInverse" => Unary::Inverse,
+                    "rvCubicDivConjugatePi" => Unary::ConjugatePi,
+                    _ => Unary::IsUnit,
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::CubicDivision(operation), depth)
+    }
+
     fn cubic_algebra_statement(&mut self, name: &str) -> Result<StatementForm> {
         use cubic_algebra::{Declaration, Report, SplitDeclaration};
         self.advance()?;
@@ -13046,6 +13152,12 @@ impl<'src> Parser<'src> {
                 name @ ("rvcubicalgebra" | "rvcubicsplit" | "rvCubicAlgData" | "rvCubicSplitData"
                 | "rvCubicReducedChar"),
             ) => self.cubic_algebra_statement(name)?,
+            Token::Word(
+                name @ ("rvcubicdiv"
+                | "rvCubicDivData"
+                | "rvCubicDivVal"
+                | "rvCubicDivCommutatorCheck"),
+            ) => self.cubic_division_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -17230,6 +17342,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
+        if name.text == "RVCubicDiv" && self.eat(Token::LParen)? {
+            let chart = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CubicDiv(chart), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -20359,6 +20476,26 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.cubic_algebra_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCubicDivElem"
+                        | "rvCubicDivPi"
+                        | "rvCubicDivTheta"
+                        | "rvCubicDivFromSymbol"
+                        | "rvCubicDivReduce"
+                        | "rvCubicDivNorm"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicDivMul"
+                            | "rvCubicDivCommutator"
+                            | "rvCubicDivInverse"
+                            | "rvCubicDivIsUnit"
+                            | "rvCubicDivConjugatePi"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cubic_division_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

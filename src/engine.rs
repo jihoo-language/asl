@@ -153,7 +153,8 @@ use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_hilbert as cubic, kummer as local_kummer,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic,
+    kummer as local_kummer,
 };
 use crate::rv_field;
 use crate::rv_fusion;
@@ -1176,6 +1177,9 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicDivUnary(cubic_division::Unary, Box<TypedExpr>),
+    CubicDivBinary(cubic_division::Binary, Box<[TypedExpr; 2]>),
+    CubicDivConvert(cubic_division::Conversion, Box<TypedExpr>),
     CubicAlgTerm(usize, Box<TypedExpr>),
     CubicAlgUnary(cubic_algebra::Unary, Box<TypedExpr>),
     CubicAlgProduct(Box<[TypedExpr; 2]>),
@@ -2980,6 +2984,51 @@ impl Engine {
                         format!(
                             "rvCubicHilbertInvariant = exponent={exponent}, invariant={invariant}"
                         )
+                    }
+                };
+                return Ok(Some(output));
+            }
+            StatementForm::CubicDivisionDeclaration(declaration) => {
+                self.model.register_cubic_division(declaration)?;
+                return Ok(None);
+            }
+            StatementForm::CubicDivisionReport(report) => {
+                use cubic_division::Report;
+                let output = match report {
+                    Report::Data(name) => {
+                        let extension = self.model.cubic_division(&name)?;
+                        extension.report(&mut self.model, &name.text)?
+                    }
+                    Report::Valuation(input) => {
+                        let input = self.checker().expr(*input)?;
+                        let extension =
+                            self.checker().cubic_div_operand(&input, "rvCubicDivVal")?;
+                        let Value::CubicDiv(x) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        extension
+                            .ring(&mut self.model)?
+                            .valuation_report(&mut self.model, &x)?
+                    }
+                    Report::Commutator(inputs) => {
+                        let [a, b] = *inputs;
+                        let a = self.checker().expr(a)?;
+                        let b = self.checker().expr(b)?;
+                        let extension = self
+                            .checker()
+                            .cubic_div_operand(&a, "rvCubicDivCommutatorCheck")?;
+                        self.checker()
+                            .require_type(a.ty, &b, "rvCubicDivCommutatorCheck input")?;
+                        let (Value::CubicDiv(a), Value::CubicDiv(b)) =
+                            (self.eval(&a)?, self.eval(&b)?)
+                        else {
+                            unreachable!()
+                        };
+                        extension.ring(&mut self.model)?.commutator_report(
+                            &mut self.model,
+                            &a,
+                            &b,
+                        )?
                     }
                 };
                 return Ok(Some(output));
@@ -11722,6 +11771,15 @@ impl Engine {
         }
     }
 
+    fn cubic_division_type(&self, ty: TypeId) -> Rc<cubic_division::Extension> {
+        let Kind::CubicDiv(name) = self.model.kind(ty) else {
+            unreachable!()
+        };
+        self.model
+            .cubic_division_named(name)
+            .expect("registered cubic division chart")
+    }
+
     fn cubic_algebra_parameter(
         &mut self,
         grade: &cubic::Grade,
@@ -12336,6 +12394,11 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::CubicDiv(a), Value::CubicDiv(b)) => self
+                        .cubic_division_type(expr.ty)
+                        .ring(&mut self.model)?
+                        .add(&mut self.model, &a, &b)?
+                        .persist(&mut self.model),
                     (BinaryOp::Add, Value::CubicAlg(a), Value::CubicAlg(b)) => {
                         let Kind::CubicAlg(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -15196,6 +15259,61 @@ impl Engine {
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
                     .persist(&mut self.model)
+            }
+            TypedForm::CubicDivUnary(operation, input) => {
+                let Value::CubicDiv(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(input.ty);
+                let ring = extension.ring(&mut self.model)?;
+                use cubic_division::Unary;
+                match operation {
+                    Unary::Negate => ring.negate(&mut self.model, &x)?.persist(&mut self.model),
+                    Unary::Inverse => ring.inverse(&mut self.model, &x)?.persist(&mut self.model),
+                    Unary::Norm(digits) => ring
+                        .norm(&mut self.model, &x, *digits)?
+                        .persist(&mut self.model),
+                    Unary::IsUnit => Ok(Value::Point(usize::from(ring.is_unit(&x)))),
+                    Unary::ConjugatePi => ring
+                        .conjugate_pi(&mut self.model, &x)?
+                        .persist(&mut self.model),
+                }
+            }
+            TypedForm::CubicDivBinary(operation, inputs) => {
+                let (Value::CubicDiv(a), Value::CubicDiv(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                let ring = extension.ring(&mut self.model)?;
+                use cubic_division::Binary;
+                match operation {
+                    Binary::Multiply => ring.multiply(&mut self.model, &a, &b)?,
+                    Binary::Commutator => ring.commutator(&mut self.model, &a, &b)?,
+                }
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicDivConvert(operation, input) => {
+                let value = self.eval(input)?;
+                let extension = self.cubic_division_type(expr.ty);
+                let ring = extension.ring(&mut self.model)?;
+                use cubic_division::Conversion;
+                match (operation, value) {
+                    (Conversion::Reduce, Value::CubicDiv(x)) => ring.reduce((*x).clone())?,
+                    (Conversion::Symbol, Value::CubicAlg(x)) => {
+                        let Kind::CubicAlg(name) = self.model.kind(input.ty) else {
+                            unreachable!()
+                        };
+                        let source = self
+                            .model
+                            .cubic_algebra_named(name)
+                            .expect("registered cubic algebra");
+                        ring.embed_symbol(&mut self.model, &source, &x)?
+                    }
+                    _ => unreachable!(),
+                }
+                .persist(&mut self.model)
             }
             TypedForm::CubicAlgTerm(index, input) => {
                 let Value::Eisenstein(coefficient) = self.eval(input)? else {
@@ -18580,6 +18698,7 @@ impl Checker<'_> {
                 self.model.cubic_local_type(grade)
             }
             TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
+            TypeForm::CubicDiv(name) => self.model.cubic_div_type(&name),
             TypeForm::CubicSplitMatrix(name) => self.model.cubic_split_type(&name),
             TypeForm::CubicClass(name) => {
                 let field = self.model.eisenstein(&name)?;
@@ -19726,6 +19845,10 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::CubicDiv(name) => {
+                        let extension = self.model.cubic_division_named(name).expect("registered cubic division chart");
+                        extension.ring(self.model)?.zero().persist(self.model)?
+                    }
                     Kind::CubicAlg(name) => {
                         let extension = self.model.cubic_algebra_named(name).expect("registered cubic algebra");
                         extension.algebra()?.zero().persist(self.model)?
@@ -22220,6 +22343,7 @@ impl Checker<'_> {
             ExprForm::LocalKummer(operation) => self.local_kummer_expression(operation),
             ExprForm::Cubic(operation) => self.cubic_expression(operation),
             ExprForm::CubicAlgebra(operation) => self.cubic_algebra_expression(operation),
+            ExprForm::CubicDivision(operation) => self.cubic_division_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -23115,6 +23239,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CubicDiv(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CubicDivUnary(cubic_division::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::CubicAlg(..)) {
@@ -27197,6 +27327,7 @@ impl Checker<'_> {
                         | Kind::LocalKummer(..)
                         | Kind::CubicClass(..)
                         | Kind::CubicAlg(..)
+                        | Kind::CubicDiv(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -33232,6 +33363,104 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_division_expression(
+        &mut self,
+        expression: cubic_division::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_division::{Binary, Conversion, Expression, Unary};
+        match expression {
+            Expression::Literal(name, rows) => {
+                let extension = self.model.cubic_division(&name)?;
+                let ty = self.model.cubic_div_type(&name)?;
+                let value = extension
+                    .ring(self.model)?
+                    .literal(self.model, rows)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Generator(name, generator) => {
+                let extension = self.model.cubic_division(&name)?;
+                let ty = self.model.cubic_div_type(&name)?;
+                let value = extension
+                    .ring(self.model)?
+                    .generator(generator)
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Convert(name, operation, input) => {
+                let extension = self.model.cubic_division(&name)?;
+                let ty = self.model.cubic_div_type(&name)?;
+                let input = self.expr(*input)?;
+                match operation {
+                    Conversion::Symbol => {
+                        let source = self.cubic_alg_operand(&input, "rvCubicDivFromSymbol")?;
+                        extension.symbol_compatible(&source)?;
+                    }
+                    Conversion::Reduce => {
+                        let source = self.cubic_div_operand(&input, "rvCubicDivReduce")?;
+                        extension.same_presentation(&source)?;
+                    }
+                }
+                Ok((ty, TypedForm::CubicDivConvert(operation, Box::new(input))))
+            }
+            Expression::Binary(operation, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let name = match operation {
+                    Binary::Multiply => "rvCubicDivMul",
+                    Binary::Commutator => "rvCubicDivCommutator",
+                };
+                self.cubic_div_operand(&a, name)?;
+                self.require_type(a.ty, &b, name)?;
+                Ok((a.ty, TypedForm::CubicDivBinary(operation, Box::new([a, b]))))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let name = match operation {
+                    Unary::Inverse => "rvCubicDivInverse",
+                    Unary::Norm(_) => "rvCubicDivNorm",
+                    Unary::IsUnit => "rvCubicDivIsUnit",
+                    Unary::ConjugatePi => "rvCubicDivConjugatePi",
+                    Unary::Negate => unreachable!(),
+                };
+                let extension = self.cubic_div_operand(&input, name)?;
+                let ty = match operation {
+                    Unary::Norm(digits) => {
+                        if digits == 0 || digits > extension.norm_limit() {
+                            return Err(Error::plain(format!(
+                                "cubic division norm digit count must be in 1..={}",
+                                extension.norm_limit()
+                            )));
+                        }
+                        self.model.eisenstein_type(eisenstein::Grade {
+                            name: extension.base_name.clone(),
+                            precision: digits,
+                        })?
+                    }
+                    Unary::IsUnit => self.model.named("S").expect("built-in truth type"),
+                    _ => input.ty,
+                };
+                Ok((ty, TypedForm::CubicDivUnary(operation, Box::new(input))))
+            }
+        }
+    }
+
+    fn cubic_div_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<cubic_division::Extension>> {
+        if let Kind::CubicDiv(name) = self.model.kind(input.ty) {
+            Ok(self
+                .model
+                .cubic_division_named(name)
+                .expect("registered cubic division chart"))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicDiv(D) element"))
+        }
     }
 
     fn cubic_algebra_expression(

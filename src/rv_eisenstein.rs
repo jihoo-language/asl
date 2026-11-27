@@ -9,6 +9,7 @@ use crate::rv_unram::{mul_mod, reduce, sub_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod cubic_algebra;
+pub(crate) mod cubic_division;
 pub(crate) mod cubic_hilbert;
 pub(crate) mod kummer;
 

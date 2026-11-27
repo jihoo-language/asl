@@ -165,6 +165,14 @@ impl Extension {
         self.exponent == 0
     }
 
+    pub(super) fn exponent(&self) -> u8 {
+        self.exponent
+    }
+
+    pub(super) fn parameters(&self) -> &[BaseElement; 2] {
+        &self.parameters
+    }
+
     pub(crate) fn report(&self, name: &str) -> String {
         let kind = if self.is_split() { "split" } else { "division" };
         let coordinates = self.parameters.each_ref().map(coordinates);
