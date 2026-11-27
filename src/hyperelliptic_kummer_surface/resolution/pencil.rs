@@ -23,6 +23,8 @@ pub(crate) enum Command {
     Weierstrass(Label),
     Discriminant(Label),
     Reduction(Label, Box<ParsedExpr>),
+    Euler(Label, Box<ParsedExpr>),
+    LFunction(Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Operation);

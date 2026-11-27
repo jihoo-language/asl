@@ -4758,6 +4758,8 @@ impl<'src> Parser<'src> {
             match operation {
                 "rvK3PencilFiber" => Command::Fiber(name, Box::new(self.paren_expr(0)?)),
                 "rvK3FiberReduction" => Command::Reduction(name, Box::new(self.paren_expr(0)?)),
+                "rvK3FiberEuler" => Command::Euler(name, Box::new(self.paren_expr(0)?)),
+                "rvK3PencilLFunction" => Command::LFunction(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
                 "rvK3PencilDiscriminant" => Command::Discriminant(name),
                 _ => Command::Census(name),
@@ -6139,7 +6141,9 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilCensus"
                 | "rvK3PencilWeierstrass"
                 | "rvK3PencilDiscriminant"
-                | "rvK3FiberReduction"),
+                | "rvK3FiberReduction"
+                | "rvK3FiberEuler"
+                | "rvK3PencilLFunction"),
             ) => self.k3_pencil_statement(op)?,
             Token::Word(
                 op

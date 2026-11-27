@@ -1790,6 +1790,21 @@ impl Engine {
                             .reduction(&mut self.model, &pencil, &name.text, &parameter)
                             .map(Some)
                     }
+                    Command::Euler(name, input) => {
+                        let (pencil, parameter) =
+                            self.pencil_parameter(&name, *input, "rvK3FiberEuler parameter")?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        relative
+                            .euler(&mut self.model, &pencil, &name.text, &parameter)
+                            .map(Some)
+                    }
+                    Command::LFunction(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        relative
+                            .l_function(&mut self.model, &pencil, &name.text)
+                            .map(Some)
+                    }
                 };
             }
             StatementForm::DeclareEnriques(declaration) => {

@@ -7,6 +7,8 @@ use crate::model::Model;
 use super::super::{Parameter, Pencil};
 use super::{binary_quartic, cube, field, plane_quadratics, quartic, FiberRing, Jacobian};
 
+mod arithmetic;
+
 const DISCRIMINANT_DEGREE: usize = 24;
 
 pub(crate) struct RelativeJacobian(Jacobian<Polynomial>);
@@ -138,13 +140,8 @@ impl RelativeJacobian {
         parameter: &Parameter,
     ) -> Result<String> {
         let field = field(&pencil.curve);
-        let [u, v] = parameter.coordinates();
-        let uniformizer = if field.is_zero(u) {
-            None
-        } else {
-            // Parameters on this chart are normalized to [1:v].
-            Some([field.ring.negate(model, v)?, field.one()])
-        };
+        let uniformizer = local_uniformizer(model, field, parameter)?;
+        let [_, v] = parameter.coordinates();
         let mut valuations = [None; 6];
         for (out, (form, degree)) in valuations.iter_mut().zip(self.forms()) {
             *out = order(model, field, form, degree, uniformizer.as_ref())?;
@@ -163,6 +160,20 @@ impl RelativeJacobian {
         Ok(format!(
             "rvK3FiberReduction[{name}] = uniformizer={chart}, raw orders (a2, a4, a6, c4, c6, discriminant)=[{a2}, {a4}, {a6}, {c4}, {c6}, {discriminant}], {local}"
         ))
+    }
+}
+
+fn local_uniformizer(
+    model: &mut Model,
+    field: Field<'_>,
+    parameter: &Parameter,
+) -> Result<Option<[Scalar; 2]>> {
+    let [u, v] = parameter.coordinates();
+    if field.is_zero(u) {
+        Ok(None)
+    } else {
+        // Parameters on this chart are normalized to [1:v].
+        Ok(Some([field.ring.negate(model, v)?, field.one()]))
     }
 }
 
@@ -206,36 +217,87 @@ fn display_order(order: Option<usize>) -> String {
     order.map_or_else(|| "inf".into(), |n| n.to_string())
 }
 
+#[derive(Clone, Copy)]
+enum Kodaira {
+    Good,
+    Multiplicative(usize),
+    Star(usize),
+    Other(&'static str),
+}
+
+impl Kodaira {
+    fn symbol(self) -> String {
+        match self {
+            Self::Good => "I0".into(),
+            Self::Multiplicative(n) => format!("I{n}"),
+            Self::Star(n) => format!("I{n}*"),
+            Self::Other(symbol) => symbol.into(),
+        }
+    }
+}
+
+struct MinimalReduction {
+    scales: usize,
+    c4: Option<usize>,
+    c6: Option<usize>,
+    delta: usize,
+    j_order: Option<i64>,
+    kodaira: Kodaira,
+}
+
+impl MinimalReduction {
+    fn new(c4: Option<usize>, c6: Option<usize>, discriminant: Option<usize>) -> Result<Self> {
+        let failure = || Error::plain("K3 pencil has inconsistent minimal Weierstrass valuations");
+        let raw = discriminant.ok_or_else(failure)?;
+        // Short model in residue characteristic at least 5. Its A and B
+        // differ from c4 and c6 by units, so these are the maximal scalings.
+        let scales = (c4.unwrap_or(usize::MAX) / 4).min(c6.unwrap_or(usize::MAX) / 6);
+        let delta = raw
+            .checked_sub(12usize.checked_mul(scales).ok_or_else(failure)?)
+            .ok_or_else(failure)?;
+        let c4 = c4.map(|n| n - 4 * scales);
+        let c6 = c6.map(|n| n - 6 * scales);
+        let j_order = c4.map(|n| (3 * n) as i64 - delta as i64);
+        let kodaira = match (delta, c4) {
+            (0, _) => Kodaira::Good,
+            (n, Some(0)) => Kodaira::Multiplicative(n),
+            (2, _) => Kodaira::Other("II"),
+            (3, _) => Kodaira::Other("III"),
+            (4, _) => Kodaira::Other("IV"),
+            (6, _) => Kodaira::Star(0),
+            (n, _) if n >= 7 && j_order.is_some_and(|v| v < 0) => Kodaira::Star(n - 6),
+            (8, _) => Kodaira::Other("IV*"),
+            (9, _) => Kodaira::Other("III*"),
+            (10, _) => Kodaira::Other("II*"),
+            _ => return Err(failure()),
+        };
+        Ok(Self {
+            scales,
+            c4,
+            c6,
+            delta,
+            j_order,
+            kodaira,
+        })
+    }
+}
+
 fn tame_reduction(
     c4: Option<usize>,
     c6: Option<usize>,
     discriminant: Option<usize>,
 ) -> Result<String> {
-    let failure = || Error::plain("K3 pencil has inconsistent minimal Weierstrass valuations");
-    let raw = discriminant.ok_or_else(failure)?;
-    // Short model in residue characteristic at least 5. Its A and B
-    // differ from c4 and c6 by units, so these are the maximal scalings.
-    let scales = (c4.unwrap_or(usize::MAX) / 4).min(c6.unwrap_or(usize::MAX) / 6);
-    let delta = raw
-        .checked_sub(12usize.checked_mul(scales).ok_or_else(failure)?)
-        .ok_or_else(failure)?;
-    let c4 = c4.map(|n| n - 4 * scales);
-    let c6 = c6.map(|n| n - 6 * scales);
-    let j_order = c4.map(|n| (3 * n) as i64 - delta as i64);
-    let kodaira = match (delta, c4) {
-        (0, _) => "I0".into(),
-        (n, Some(0)) => format!("I{n}"),
-        (2, _) => "II".into(),
-        (3, _) => "III".into(),
-        (4, _) => "IV".into(),
-        (6, _) => "I0*".into(),
-        (n, _) if n >= 7 && j_order.is_some_and(|v| v < 0) => format!("I{}*", n - 6),
-        (8, _) => "IV*".into(),
-        (9, _) => "III*".into(),
-        (10, _) => "II*".into(),
-        _ => return Err(failure()),
-    };
+    let reduction = MinimalReduction::new(c4, c6, discriminant)?;
+    let MinimalReduction {
+        scales,
+        c4,
+        c6,
+        delta,
+        j_order,
+        kodaira,
+    } = reduction;
     let j = j_order.map_or_else(|| "inf".into(), |v| v.to_string());
+    let kodaira = kodaira.symbol();
     Ok(format!(
         "scale={scales}, minimal orders (c4, c6, discriminant)=[{}, {}, {delta}], j order={j}, geometric Kodaira={kodaira}",
         display_order(c4), display_order(c6)
