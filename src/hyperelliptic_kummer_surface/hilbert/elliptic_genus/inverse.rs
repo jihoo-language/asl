@@ -6,7 +6,7 @@ use crate::model::Model;
 
 use super::super::Magnitude;
 use super::{
-    decimal, eta_product, multiply, overflow, series, Cutoff, Expansion, Integer, Product,
+    decimal, eta_product, mock, multiply, overflow, series, Cutoff, Expansion, Integer, Product,
 };
 
 #[derive(Default)]
@@ -23,23 +23,41 @@ pub(crate) enum Chamber {
 
 pub(crate) enum Query {
     Coefficient(i128, i128, i128, Chamber),
+    Polar(i128, i128, i128, Chamber),
+    Finite(i128, i128, i128),
+    MockWeightTwo(i128, i128, i128),
     WallJump(i128, i128, i128),
     Residue(i128, i128),
+}
+
+impl Chamber {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Inside => "inside",
+            Self::Outside => "outside",
+        }
+    }
 }
 
 impl Query {
     pub(super) fn report(self, model: &mut Model) -> Result<String> {
         let (label, value) = match self {
-            Self::Coefficient(m, n, r, chamber) => {
-                let name = match chamber {
-                    Chamber::Inside => "inside",
-                    Chamber::Outside => "outside",
-                };
-                (
-                    format!("rvIgusaInverse[{m}, {n}, {r}, {name}]"),
-                    coefficient(model, m, n, Integer::from_i128(r), chamber)?,
-                )
-            }
+            Self::Coefficient(m, n, r, chamber) => (
+                format!("rvIgusaInverse[{m}, {n}, {r}, {}]", chamber.name()),
+                coefficient(model, m, n, Integer::from_i128(r), chamber)?,
+            ),
+            Self::Polar(m, n, r, chamber) => (
+                format!("rvIgusaPolar[{m}, {n}, {r}, {}]", chamber.name()),
+                mock::polar(model, m, n, r, chamber)?,
+            ),
+            Self::Finite(m, n, r) => (
+                format!("rvIgusaFinite[{m}, {n}, {r}]"),
+                mock::finite(model, m, n, r)?,
+            ),
+            Self::MockWeightTwo(m, n, r) => (
+                format!("rvIgusaMockWeight2[{m}, {n}, {r}]"),
+                mock::normalized(model, m, n, r)?,
+            ),
             Self::WallJump(m, n, r) => (
                 format!("rvIgusaWallJump[{m}, {n}, {r}]"),
                 wall_jump(model, m, n, Integer::from_i128(r))?,
@@ -50,7 +68,7 @@ impl Query {
     }
 }
 
-fn shifted_degree(index: i128) -> Option<u128> {
+pub(super) fn shifted_degree(index: i128) -> Option<u128> {
     match index {
         -1 => Some(0),
         n if n >= 0 => Some(n as u128 + 1),

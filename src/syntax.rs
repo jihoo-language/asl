@@ -3907,22 +3907,29 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::Comma)?;
             let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
-            if name == "rvIgusaWallJump" {
-                Query::WallJump(m, n, r)
-            } else {
-                self.expect(Token::Comma)?;
-                let side = self.label()?;
-                let chamber = match side.text.as_str() {
-                    "inside" => Chamber::Inside,
-                    "outside" => Chamber::Outside,
-                    _ => {
-                        return Err(Error::new(
-                            side.span,
-                            "Igusa reciprocal chamber must be inside or outside",
-                        ))
+            match name {
+                "rvIgusaWallJump" => Query::WallJump(m, n, r),
+                "rvIgusaFinite" => Query::Finite(m, n, r),
+                "rvIgusaMockWeight2" => Query::MockWeightTwo(m, n, r),
+                _ => {
+                    self.expect(Token::Comma)?;
+                    let side = self.label()?;
+                    let chamber = match side.text.as_str() {
+                        "inside" => Chamber::Inside,
+                        "outside" => Chamber::Outside,
+                        _ => {
+                            return Err(Error::new(
+                                side.span,
+                                "Igusa reciprocal chamber must be inside or outside",
+                            ))
+                        }
+                    };
+                    if name == "rvIgusaPolar" {
+                        Query::Polar(m, n, r, chamber)
+                    } else {
+                        Query::Coefficient(m, n, r, chamber)
                     }
-                };
-                Query::Coefficient(m, n, r, chamber)
+                }
             }
         };
         self.expect(Token::RBracket)?;
@@ -6205,9 +6212,10 @@ impl<'src> Parser<'src> {
                 | "rvSiegelMaassCoeff"
                 | "rvIgusaChi12"),
             ) => self.siegel_maass_statement(name)?,
-            Token::Word(name @ ("rvIgusaInverse" | "rvIgusaWallJump" | "rvIgusaResidue")) => {
-                self.igusa_inverse_statement(name)?
-            }
+            Token::Word(
+                name @ ("rvIgusaInverse" | "rvIgusaWallJump" | "rvIgusaResidue" | "rvIgusaPolar"
+                | "rvIgusaFinite" | "rvIgusaMockWeight2"),
+            ) => self.igusa_inverse_statement(name)?,
             Token::Word(
                 name @ ("rvsiegelchamber"
                 | "rvSiegelChamberData"

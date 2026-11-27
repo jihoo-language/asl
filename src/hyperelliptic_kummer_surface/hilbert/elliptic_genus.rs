@@ -15,6 +15,7 @@ mod cyclic;
 pub(crate) mod farey;
 pub(crate) mod inverse;
 pub(crate) mod maass;
+mod mock;
 
 mod generalized;
 

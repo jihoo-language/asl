@@ -1318,6 +1318,18 @@ For the free switch, the geometric identification holds at every length. An inva
 
 `rvIgusaResidue[m,n];` gives the double-pole coefficient $d(m)d(n)$, with $d(u)=[q^u]\eta^{-24}$. Specializing the K3 elliptic genus at $y=1$ gives $24$, so only the two axes of the product contribute to this value. The Laurent row is symmetric under $y\mapsto y^{-1}$. Its first moment therefore vanishes, and `rvIgusaWallJump[m,n,r];` gives the inside coefficient minus the outside coefficient as $r\,d(m)d(n)$. The same product appears in the primitive $K3\times E$ reduced Gromov–Witten formula, which uses the negative reciprocal, the `outside` chamber, and the substitution $y=e^{iu}$. [Oberdieck–Pixton, equation (3) and Theorem 1](https://arxiv.org/abs/1706.10100) · [Runnable example](examples/igusa-meromorphic-chambers.asl)
 
+#### Polar and finite parts of the Igusa Fourier–Jacobi coefficients
+
+For $m>0$ write $\psi_m=[P^m]\Phi_{10}^{-1}$. `rvIgusaPolar[m,n,r,inside];` and `rvIgusaPolar[m,n,r,outside];` report the coefficient of $q^ny^r$ in its polar part
+
+$$
+\psi_m^{\mathrm P}=\frac{d(m)}{\Delta(q)}\sum_{s\in\mathbb Z}q^{ms^2}y^{2ms}\frac{q^sy}{(1-q^sy)^2}.
+$$
+
+The $s=0$ term uses the named chamber. The other terms use positive powers of $q^sy$ for $s>0$ and negative powers for $s<0$, as appropriate in the two strips adjacent to $y=1$. This includes every elliptic translate of the pole that can contribute to the requested coefficient. [Dabholkar–Murthy–Zagier, Theorem 8.3 and equation (403)](https://arxiv.org/abs/1208.4074)
+
+`rvIgusaFinite[m,n,r];` gives the chamber-independent coefficient of the holomorphic-in-$z$ part $\psi_m^{\mathrm F}=\psi_m-\psi_m^{\mathrm P}$. It uses the elliptic law $(n,r)\mapsto(n+\lambda r+m\lambda^2,r+2m\lambda)$ and evenness in $r$ to reduce to $0\le r\le m$. The polar coefficient vanishes there in the `outside` expansion. `rvIgusaMockWeight2[m,n,r];` gives the corresponding coefficient of $\Delta\psi_m^{\mathrm F}$, of mock Jacobi weight two. The commands compute these Fourier coefficients with checked 512-bit integer arithmetic. In the example, the full coefficients 315255 and 327 reduce to the same finite coefficient 3 after the polar subtraction. [Dabholkar–Murthy–Zagier, equations (128), (249), and (404)](https://arxiv.org/abs/1208.4074) · [Runnable example](examples/igusa-mock-jacobi.asl)
+
 #### Integral period chambers and Farey wall crossing
 
 `rvsiegelchamber H[A,B,C];` names the open chamber containing the positive definite imaginary-period ray with matrix $Y=\left(\begin{smallmatrix}A&B\\B&C\end{smallmatrix}\right)$. The coordinates are signed integers. An integral change of basis that makes $Y$ diagonal places the ray on a separating wall, so the declaration requires an open chamber. The reference chamber has $0<B<\min(A,C)$. Projectivizing the cone identifies it with the upper half-plane by $(B+i\sqrt{AC-B^2})/A$, where the reference chamber is the ideal Farey triangle with vertices $0,1,\infty$. [Cheng–Verlinde, §2 and Appendix A](https://arxiv.org/abs/0806.2337)
