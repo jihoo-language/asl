@@ -697,6 +697,7 @@ pub(crate) struct Model {
     hecke_eigenpackets: HashMap<String, Rc<eigenpacket::Packet>>,
     hecke_residuals: HashMap<String, Rc<residual_hecke::Specialization>>,
     period_bases: HashMap<period::Grade, Rc<period::Basis>>,
+    integral_period_bases: HashMap<period::Grade, Rc<period::haberland::IntegralBasis>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
@@ -822,6 +823,7 @@ impl Model {
             hecke_eigenpackets: HashMap::new(),
             hecke_residuals: HashMap::new(),
             period_bases: HashMap::new(),
+            integral_period_bases: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
             siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
@@ -4739,6 +4741,18 @@ impl Model {
         }
         let basis = Rc::new(period::Basis::new(self, grade)?);
         self.period_bases.insert(grade, basis.clone());
+        Ok(basis)
+    }
+
+    pub(crate) fn integral_period_basis(
+        &mut self,
+        grade: period::Grade,
+    ) -> Result<Rc<period::haberland::IntegralBasis>> {
+        if let Some(basis) = self.integral_period_bases.get(&grade) {
+            return Ok(basis.clone());
+        }
+        let basis = Rc::new(period::haberland::IntegralBasis::new(self, grade)?);
+        self.integral_period_bases.insert(grade, basis.clone());
         Ok(basis)
     }
 

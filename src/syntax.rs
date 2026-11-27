@@ -4746,8 +4746,20 @@ impl<'src> Parser<'src> {
 
     fn period_statement(&mut self, name: &str) -> Result<StatementForm> {
         self.advance()?;
+        if name == "rvPeriodPair" {
+            return Ok(StatementForm::PeriodPolynomial(period::Report::Pair(
+                Box::new(self.paren_pair(0)?),
+            )));
+        }
         self.expect(Token::LBracket)?;
-        let report = if name == "rvPeriodCoeff" {
+        let report = if name == "rvPeriodPairing" {
+            let span = self.span();
+            let weight = self.wide_unsigned("period-polynomial weight")?;
+            let grade =
+                period::Grade::new(weight, period::Sign::Plus).map_err(|error| error.at(span))?;
+            self.expect(Token::RBracket)?;
+            period::Report::Pairing(grade)
+        } else if name == "rvPeriodCoeff" {
             let index = self.wide_unsigned("period-polynomial coefficient index")?;
             self.expect(Token::RBracket)?;
             period::Report::Coefficient(index, Box::new(self.paren_expr(0)?))
@@ -4785,11 +4797,16 @@ impl<'src> Parser<'src> {
                 (Expression::Scale(scalar, Box::new(input)), depth)
             } else {
                 let grade = self.period_grade()?;
-                if name == "rvPeriodBasis" {
+                if matches!(name, "rvPeriodBasis" | "rvPeriodIntegralBasis") {
                     self.expect(Token::Comma)?;
                     let (index, _) = self.number()?;
                     self.expect(Token::RBracket)?;
-                    (Expression::Basis(grade, index), 0)
+                    let basis = if name == "rvPeriodBasis" {
+                        Expression::Basis(grade, index)
+                    } else {
+                        Expression::IntegralBasis(grade, index)
+                    };
+                    (basis, 0)
                 } else {
                     self.expect(Token::RBracket)?;
                     self.expect(Token::LParen)?;
@@ -7988,9 +8005,13 @@ impl<'src> Parser<'src> {
                 | "rvHeckeQuadraticLocal"
                 | "rvHeckeQuadraticIntegral"),
             ) => self.hecke_quadratic_statement(name)?,
-            Token::Word(name @ ("rvPeriodDim" | "rvPeriodCoeff" | "rvPeriodHeckeMatrix")) => {
-                self.period_statement(name)?
-            }
+            Token::Word(
+                name @ ("rvPeriodDim"
+                | "rvPeriodCoeff"
+                | "rvPeriodHeckeMatrix"
+                | "rvPeriodPair"
+                | "rvPeriodPairing"),
+            ) => self.period_statement(name)?,
             Token::Word(name @ ("rvHeckeActionTrace" | "rvHeckeChar" | "rvHeckeCharCoeff")) => {
                 self.hecke_operator_statement(name)?
             }
@@ -13886,7 +13907,7 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvPeriodBasis" | "rvPeriodPoly" | "rvPeriodScale"
+                    "rvPeriodBasis" | "rvPeriodIntegralBasis" | "rvPeriodPoly" | "rvPeriodScale"
                 ) && self.token() == Token::LBracket)
                     || (name.text == "rvPeriodHecke" && self.token() == Token::LParen)
                 {

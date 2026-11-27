@@ -467,6 +467,13 @@ impl Elimination {
     }
 }
 
+pub(super) fn determinant(model: &mut Model, matrix: Vec<Vec<Integer>>) -> Result<Integer> {
+    if matrix.is_empty() {
+        return Ok(integer(1));
+    }
+    Ok(Elimination::new(model, matrix)?.map_or_else(|| integer(0), |m| m.determinant()))
+}
+
 fn canonical(value: Integer) -> Integer {
     if value.is_zero() {
         integer(0)
@@ -517,7 +524,11 @@ fn double_quotient(model: &mut Model, value: DoubleInteger, divisor: Integer) ->
         .map_err(|_| overflow())
 }
 
-fn fraction(model: &mut Model, numerator: Integer, denominator: Magnitude) -> Result<String> {
+pub(super) fn fraction(
+    model: &mut Model,
+    numerator: Integer,
+    denominator: Magnitude,
+) -> Result<String> {
     let common = positive(numerator.magnitude.gcd(model, denominator)?);
     let numerator = quotient(model, numerator, common)?;
     let denominator = quotient(model, positive(denominator), common)?.magnitude;

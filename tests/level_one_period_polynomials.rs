@@ -248,3 +248,239 @@ fn malformed_manin_polynomials_and_weight_mismatches_are_rejected() {
         assert!(error.contains(expected), "{source}: {error}");
     }
 }
+
+#[test]
+fn haberland_normalization_is_alternating_rational_and_parabolic() {
+    let source = "
+        let p = rvPeriodPoly[12,plus](0,0,1,0,-3,0,3,0,-1,0,0);
+        let q = rvPeriodPoly[12,minus](0,4,0,-25,0,42,0,-25,0,4,0);
+        let e = rvPeriodPoly[12,plus](-1,0,0,0,0,0,0,0,0,0,1);
+        rvPeriodPair(p,q); rvPeriodPair(q,p);
+        rvPeriodPair(rvPeriodScale[1,7](p),rvPeriodScale[1,5](q));
+        rvPeriodPair(p,p); rvPeriodPair(q,q); rvPeriodPair(e,q); rvPeriodPair(q,e);
+        rvPeriodPairing[2]; rvPeriodPairing[12];";
+    let report = stdout(interpret(source));
+    let lines: Vec<_> = report.lines().collect();
+    assert_eq!(
+        lines[..8],
+        [
+            "rvPeriodPair = 6",
+            "rvPeriodPair = -6",
+            "rvPeriodPair = 6/35",
+            "rvPeriodPair = 0",
+            "rvPeriodPair = 0",
+            "rvPeriodPair = 0",
+            "rvPeriodPair = 0",
+            "rvPeriodPairing[2] = denominator=1, matrix=[], smith=[], elementary=[]",
+        ]
+    );
+    assert!(lines[8].starts_with("rvPeriodPairing[12] = denominator=1,"));
+    assert!(lines[8].ends_with("smith=[6], elementary=[6]"));
+    let demo = stdout(example("haberland-period-pairings"));
+    let lines: Vec<_> = demo.lines().collect();
+    assert_eq!(&lines[..2], &["rvPeriodPair = 6", "rvPeriodPair = -6"]);
+    assert_eq!(lines[2], lines[3]);
+    assert!(lines[4].starts_with("rvPeriodPairing[24] = denominator=3553,"));
+}
+
+fn determinant(matrix: &[Vec<i128>]) -> i128 {
+    if matrix.is_empty() {
+        return 1;
+    }
+    matrix[0]
+        .iter()
+        .enumerate()
+        .map(|(j, coefficient)| {
+            let minor: Vec<_> = matrix[1..]
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .enumerate()
+                        .filter(|&(i, _)| i != j)
+                        .map(|(_, &x)| x)
+                        .collect()
+                })
+                .collect();
+            if j.is_multiple_of(2) {
+                coefficient * determinant(&minor)
+            } else {
+                -coefficient * determinant(&minor)
+            }
+        })
+        .sum()
+}
+
+fn saturation_index(basis: &[Vec<i128>]) -> i128 {
+    let width = basis[0].len();
+    let columns: Vec<_> = (1..=(width - 1) / 2)
+        .filter(|&j| basis.iter().any(|row| row[j] != 0))
+        .collect();
+    let mut index = 0;
+    for mask in 0..(1u32 << columns.len()) {
+        if mask.count_ones() as usize == basis.len() {
+            let minor: Vec<_> = basis
+                .iter()
+                .map(|row| {
+                    columns
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, _)| mask & (1u32 << i) != 0)
+                        .map(|(_, &j)| row[j])
+                        .collect()
+                })
+                .collect();
+            index = gcd(index, determinant(&minor).abs());
+        }
+    }
+    index
+}
+
+fn integral_rows(report: &str) -> Vec<Vec<i128>> {
+    report
+        .lines()
+        .map(|line| {
+            read_polynomial(line)
+                .into_iter()
+                .map(|(n, d)| {
+                    assert_eq!(d, 1);
+                    n
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn independently_pair(p: &[i128], q: &[i128]) -> (i128, i128) {
+    let w = p.len() - 1;
+    let left = direct_substitution(p, [1, 1, 0, 1]);
+    let right = direct_substitution(p, [1, -1, 0, 1]);
+    let scale = (0..=w)
+        .map(|i| choose(w, i))
+        .fold(1, |d, e| d / gcd(d, e) * e);
+    let numerator = (0..=w)
+        .map(|i| {
+            let sign = if i.is_multiple_of(2) { 1 } else { -1 };
+            sign * (left[i] - right[i]) * q[w - i] * (scale / choose(w, i))
+        })
+        .sum::<i128>();
+    let common = gcd(numerator.abs(), scale);
+    (numerator / common, scale / common)
+}
+
+#[test]
+fn integral_period_basis_is_saturated_and_reports_the_actual_haberland_matrix() {
+    for (weight, dimension, denominator, smith, elementary) in [
+        (24, 2, 3553, "[6, 639540]", "[6/3553, 180]"),
+        (
+            36,
+            3,
+            7733198,
+            "[3, 53130, 4871914740]",
+            "[3/7733198, 105/15283, 630]",
+        ),
+    ] {
+        let mut program = String::new();
+        for sign in ["plus", "minus"] {
+            for i in 0..dimension {
+                writeln!(program, "show rvPeriodIntegralBasis[{weight},{sign},{i}];").unwrap();
+            }
+        }
+        let basis = stdout(interpret(&program));
+        let vectors = integral_rows(&basis);
+        let (plus, minus) = vectors.split_at(dimension);
+        assert_eq!(saturation_index(plus), 1);
+        assert_eq!(saturation_index(minus), 1);
+        for p in &vectors {
+            assert_eq!([p[0], *p.last().unwrap()], [0, 0]);
+            let s = direct_substitution(p, [0, -1, 1, 0]);
+            let u = direct_substitution(p, [0, -1, 1, 1]);
+            let u2 = direct_substitution(p, [-1, -1, 1, 0]);
+            assert!(p.iter().zip(s).all(|(&x, y)| x + y == 0));
+            assert!(p.iter().zip(u).zip(u2).all(|((&x, y), z)| x + y + z == 0));
+        }
+        let expected: Vec<_> = plus
+            .iter()
+            .flat_map(|p| minus.iter().map(|q| independently_pair(p, q)))
+            .collect();
+        let actual_denominator = expected.iter().fold(1, |d, &(_, e)| d / gcd(d, e) * e);
+        assert_eq!(actual_denominator, denominator);
+        let report = stdout(interpret(&format!("rvPeriodPairing[{weight}];")));
+        let (_, matrix_and_tail) = report.split_once(", matrix=").unwrap();
+        let (matrix, tail) = matrix_and_tail.split_once(", smith=").unwrap();
+        assert_eq!(entries(matrix), expected);
+        assert_eq!(tail.trim(), format!("{smith}, elementary={elementary}"));
+    }
+
+    // Clearing each rational basis vector separately really gives a
+    // proper sublattice in weight 24, even when each vector is primitive.
+    for sign in ["plus", "minus"] {
+        let report = stdout(interpret(&format!(
+            "show rvPeriodBasis[24,{sign},0]; show rvPeriodBasis[24,{sign},1];"
+        )));
+        let separately_cleared: Vec<_> = report
+            .lines()
+            .map(|line| {
+                let terms = read_polynomial(line);
+                let scale = terms.iter().fold(1, |d, &(_, e)| d / gcd(d, e) * e);
+                terms.into_iter().map(|(n, d)| n * (scale / d)).collect()
+            })
+            .collect();
+        assert_eq!(saturation_index(&separately_cleared), 323);
+    }
+}
+
+#[test]
+fn haberland_pairing_makes_mixed_hecke_operators_self_adjoint() {
+    for (weight, dimension) in [(12, 1), (24, 2), (36, 3)] {
+        let mut program = format!(
+            "let a = add(rvHeckeT[{weight},2],add(rvHeckeScale[2](rvHeckeT[{weight},3]),rvHeckeScale[-3](rvHeckeT[{weight},4])));"
+        );
+        for i in 0..dimension {
+            writeln!(
+                program,
+                "let p{i} = rvPeriodIntegralBasis[{weight},plus,{i}];
+                 let q{i} = rvPeriodIntegralBasis[{weight},minus,{i}];"
+            )
+            .unwrap();
+        }
+        for i in 0..dimension {
+            for j in 0..dimension {
+                writeln!(
+                    program,
+                    "rvPeriodPair(rvPeriodHecke(a,p{i}),q{j});
+                     rvPeriodPair(p{i},rvPeriodHecke(a,q{j}));"
+                )
+                .unwrap();
+            }
+        }
+        let report = stdout(interpret(&program));
+        let lines: Vec<_> = report.lines().collect();
+        assert_eq!(lines.len(), 2 * dimension * dimension);
+        for row in lines.chunks_exact(2) {
+            assert_eq!(row[0], row[1], "weight {weight}");
+        }
+        assert!(lines.iter().any(|&line| line != "rvPeriodPair = 0"));
+    }
+}
+
+#[test]
+fn haberland_types_and_integral_basis_indices_are_checked() {
+    for (source, expected) in [
+        (
+            "rvPeriodPair(zero[RVPeriod(12,plus)],zero[RVPeriod(24,minus)]);",
+            "requires the same weight",
+        ),
+        (
+            "rvPeriodPair(One.pt,One.pt);",
+            "an RVPeriod(k,sign) polynomial",
+        ),
+        (
+            "show rvPeriodIntegralBasis[2,minus,0];",
+            "integral period-polynomial basis index",
+        ),
+        ("rvPeriodPairing[13];", "even level-one weight"),
+    ] {
+        let error = diagnostic(interpret(source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}

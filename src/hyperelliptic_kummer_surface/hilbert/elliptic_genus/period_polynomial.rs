@@ -9,6 +9,8 @@ use crate::syntax::ParsedExpr;
 
 use super::hecke::{self, Operator};
 
+pub(crate) mod haberland;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum Sign {
     Plus,
@@ -57,6 +59,7 @@ impl Grade {
 
 pub(crate) enum Expression {
     Basis(Grade, usize),
+    IntegralBasis(Grade, usize),
     Polynomial(Grade, Vec<Rational>),
     Scale(Rational, Box<ParsedExpr>),
     Hecke(Box<[ParsedExpr; 2]>),
@@ -66,6 +69,8 @@ pub(crate) enum Report {
     Dimension(Grade),
     Coefficient(u128, Box<ParsedExpr>),
     Matrix(Grade, Box<ParsedExpr>),
+    Pair(Box<[ParsedExpr; 2]>),
+    Pairing(Grade),
 }
 
 pub(crate) struct Basis {

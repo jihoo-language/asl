@@ -511,3 +511,84 @@ pub(crate) fn reduce(
         columns: reduction.columns,
     })
 }
+
+// Full-rank integral column Hermite basis. Starting from positive
+// diagonal generators ensures every pivot stays positive. The leading entry of
+// column i is at row i, and later entries are reduced by later columns.
+pub(crate) struct ColumnHermite {
+    columns: Vec<Vec<i128>>,
+}
+
+impl ColumnHermite {
+    pub(crate) fn from_diagonal(model: &mut Model, relations: &[i128]) -> Result<Self> {
+        let n = relations.len();
+        let cells = n
+            .checked_mul(3 + 2 * n)
+            .filter(|&size| size <= MAX_PIVOT_CELLS)
+            .ok_or_else(|| {
+                Error::plain("integer column Hermite basis exceeds the storage limit")
+            })?;
+        model.spend(cells)?;
+        let mut columns = vec![vec![0; n]; n];
+        for (i, &relation) in relations.iter().enumerate() {
+            columns[i][i] = relation;
+        }
+        Ok(Self { columns })
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        let n = self.columns.len();
+        n * (3 + 2 * n)
+    }
+
+    pub(crate) fn insert(&mut self, model: &mut Model, mut vector: Vec<i128>) -> Result<()> {
+        model.spend(self.columns.len())?;
+        for (i, column) in self.columns.iter_mut().enumerate() {
+            while vector[i] != 0 {
+                reduce_at(model, &mut vector[i..], &column[i..])?;
+                if vector[i] != 0 {
+                    std::mem::swap(&mut vector, column);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn canonicalize(&mut self, model: &mut Model) -> Result<()> {
+        for i in (0..self.columns.len()).rev() {
+            let (prefix, suffix) = self.columns.split_at_mut(i + 1);
+            let current = &mut prefix[i];
+            for (j, column) in ((i + 1)..).zip(suffix) {
+                reduce_at(model, &mut current[j..], &column[j..])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn columns(&self) -> &[Vec<i128>] {
+        &self.columns
+    }
+
+    pub(crate) fn reduce(&self, model: &mut Model, vector: &mut [i128]) -> Result<()> {
+        for (i, column) in self.columns.iter().enumerate() {
+            reduce_at(model, &mut vector[i..], &column[i..])?;
+        }
+        Ok(())
+    }
+}
+
+fn reduce_at(model: &mut Model, vector: &mut [i128], column: &[i128]) -> Result<()> {
+    model.spend(1)?;
+    let q = vector[0].div_euclid(column[0]);
+    if q == 0 {
+        return Ok(());
+    }
+    vector[0] = vector[0].rem_euclid(column[0]);
+    model.spend(vector.len() - 1)?;
+    for (value, &entry) in vector[1..].iter_mut().zip(&column[1..]) {
+        *value = value
+            .checked_sub(q.checked_mul(entry).ok_or_else(arithmetic)?)
+            .ok_or_else(arithmetic)?;
+    }
+    Ok(())
+}

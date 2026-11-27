@@ -5732,6 +5732,29 @@ impl Engine {
 
     fn period_statement(&mut self, report: period::Report) -> Result<Option<String>> {
         match report {
+            period::Report::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let right = self.checker().expr(right)?;
+                let left_grade = self.checker().period_operand(&left, "rvPeriodPair")?;
+                let right_grade = self.checker().period_operand(&right, "rvPeriodPair")?;
+                if left_grade.weight != right_grade.weight {
+                    return Err(Error::new(
+                        right.span,
+                        "rvPeriodPair requires the same weight",
+                    ));
+                }
+                let (Value::PeriodPolynomial(p), Value::PeriodPolynomial(q)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let value = period::haberland::pair(&mut self.model, &p, &q)?;
+                Ok(Some(format!("rvPeriodPair = {value}")))
+            }
+            period::Report::Pairing(grade) => {
+                period::haberland::report(&mut self.model, grade).map(Some)
+            }
             period::Report::Dimension(grade) => {
                 let dimension = self.model.period_basis(grade)?.dimension();
                 Ok(Some(format!(
@@ -24013,6 +24036,14 @@ impl Checker<'_> {
             Expression::Basis(grade, index) => {
                 let ty = self.model.period_type(grade)?;
                 let basis = self.model.period_basis(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(basis.vector(index)?.persist(self.model)?),
+                ))
+            }
+            Expression::IntegralBasis(grade, index) => {
+                let ty = self.model.period_type(grade)?;
+                let basis = self.model.integral_period_basis(grade)?;
                 Ok((
                     ty,
                     TypedForm::Constant(basis.vector(index)?.persist(self.model)?),

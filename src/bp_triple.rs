@@ -1,13 +1,12 @@
 use std::cmp::Ordering;
-use std::mem;
 use std::rc::Rc;
 
 use crate::bp;
 use crate::bp_classes::{self, Grade, Support};
 use crate::bp_ext;
 use crate::bp_polynomial::Polynomial;
-use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
+use crate::integer_smith::ColumnHermite;
 use crate::model::{Model, TypeId, Value};
 
 type Inputs<'a> = [(TypeId, &'a Support); 3];
@@ -87,7 +86,7 @@ impl Layout {
         let target = model.bp_ext(ty)?;
         debug_assert_eq!(target.invariants.free, 0);
         let relations = &target.invariants.torsion;
-        let mut lattice = Lattice::new(model, relations)?;
+        let mut lattice = ColumnHermite::from_diagonal(model, relations)?;
         if !relations.is_empty() {
             for (grade, fixed, on_left) in [(self.v, &a, true), (self.u, &c, false)] {
                 if fixed.is_zero() {
@@ -118,9 +117,9 @@ impl Layout {
         } else {
             target.project(model, &representative)?
         };
-        let base = lattice.residue(model, &base)?;
+        let base = residue(model, &lattice, &base)?;
         let prime = self.target.shape.prime;
-        let exponent = lattice.subgroup_exponent(model, prime, relations)?;
+        let exponent = subgroup_exponent(model, &lattice, prime, relations)?;
         model.allocate(lattice.cells() + 3 * base.len())?;
         Ok(Coset {
             lattice,
@@ -150,7 +149,7 @@ fn require_boundary(
 }
 
 pub(crate) struct Coset {
-    lattice: Lattice,
+    lattice: ColumnHermite,
     base: Support,
     prime: u32,
     exponent: usize,
@@ -169,7 +168,7 @@ impl Coset {
     }
 
     pub(crate) fn contains(&self, model: &mut Model, candidate: &Support) -> Result<bool> {
-        let reduced = self.lattice.residue(model, candidate)?;
+        let reduced = residue(model, &self.lattice, candidate)?;
         Ok(reduced == self.base)
     }
 
@@ -177,104 +176,47 @@ impl Coset {
         model.spend(
             self.lattice.cells() + other.lattice.cells() + self.base.len() + other.base.len(),
         )?;
-        Ok((&self.lattice.columns, &self.base).cmp(&(&other.lattice.columns, &other.base)))
+        Ok((self.lattice.columns(), &self.base).cmp(&(other.lattice.columns(), &other.base)))
     }
 }
 
-// Full-rank integral column Hermite basis. Starting with the cyclic
-// relations ensures every pivot stays positive. The leading entry of
-// column i is at row i, and later entries are reduced by later columns.
-struct Lattice {
-    columns: Vec<Vec<i128>>,
+fn residue(model: &mut Model, lattice: &ColumnHermite, vector: &Support) -> Result<Support> {
+    let mut reduced = dense(model, lattice.columns().len(), vector)?;
+    lattice.reduce(model, &mut reduced)?;
+    Ok(Rc::from(
+        reduced
+            .into_iter()
+            .enumerate()
+            .filter(|&(_, x)| x != 0)
+            .collect::<Vec<_>>(),
+    ))
 }
 
-impl Lattice {
-    fn new(model: &mut Model, relations: &[i128]) -> Result<Self> {
-        let n = relations.len();
-        let cells = n
-            .checked_mul(3 + 2 * n)
-            .filter(|&size| size <= MAX_PIVOT_CELLS)
-            .ok_or_else(|| {
-                Error::plain("BP triple indeterminacy lattice exceeds the storage limit")
-            })?;
-        model.spend(cells)?;
-        let mut columns = vec![vec![0; n]; n];
-        for (i, &relation) in relations.iter().enumerate() {
-            columns[i][i] = relation;
+fn subgroup_exponent(
+    model: &mut Model,
+    lattice: &ColumnHermite,
+    prime: u32,
+    relations: &[i128],
+) -> Result<usize> {
+    let prime = i128::from(prime);
+    let mut exponent = 0usize;
+    for (i, (column, &relation)) in lattice.columns().iter().zip(relations).enumerate() {
+        let pivot = column[i];
+        if relation % pivot != 0 {
+            return Err(Error::plain("BP triple lattice lost a cyclic relation"));
         }
-        Ok(Self { columns })
-    }
-
-    fn cells(&self) -> usize {
-        let n = self.columns.len();
-        n * (3 + 2 * n)
-    }
-
-    fn insert(&mut self, model: &mut Model, mut vector: Vec<i128>) -> Result<()> {
-        model.spend(self.columns.len())?;
-        for (i, column) in self.columns.iter_mut().enumerate() {
-            while vector[i] != 0 {
-                reduce_at(model, &mut vector[i..], &column[i..])?;
-                if vector[i] != 0 {
-                    mem::swap(&mut vector, column);
-                }
+        let mut orders = relation / pivot;
+        while orders > 1 {
+            model.spend(1)?;
+            if orders % prime != 0 {
+                return Err(Error::plain("BP triple indeterminacy is not p-primary"));
             }
+            orders /= prime;
+            exponent += 1;
         }
-        Ok(())
     }
-
-    fn canonicalize(&mut self, model: &mut Model) -> Result<()> {
-        for i in (0..self.columns.len()).rev() {
-            let (prefix, suffix) = self.columns.split_at_mut(i + 1);
-            let current = &mut prefix[i];
-            for (j, column) in ((i + 1)..).zip(suffix) {
-                reduce_at(model, &mut current[j..], &column[j..])?;
-            }
-        }
-        Ok(())
-    }
-
-    fn residue(&self, model: &mut Model, vector: &Support) -> Result<Support> {
-        let mut reduced = dense(model, self.columns.len(), vector)?;
-        for (i, column) in self.columns.iter().enumerate() {
-            reduce_at(model, &mut reduced[i..], &column[i..])?;
-        }
-        Ok(Rc::from(
-            reduced
-                .into_iter()
-                .enumerate()
-                .filter(|&(_, x)| x != 0)
-                .collect::<Vec<_>>(),
-        ))
-    }
-
-    fn subgroup_exponent(
-        &self,
-        model: &mut Model,
-        prime: u32,
-        relations: &[i128],
-    ) -> Result<usize> {
-        let prime = i128::from(prime);
-        let mut exponent = 0usize;
-        for (i, (column, &relation)) in self.columns.iter().zip(relations).enumerate() {
-            let pivot = column[i];
-            if relation % pivot != 0 {
-                return Err(Error::plain("BP triple lattice lost a cyclic relation"));
-            }
-            let mut orders = relation / pivot;
-            while orders > 1 {
-                model.spend(1)?;
-                if orders % prime != 0 {
-                    return Err(Error::plain("BP triple indeterminacy is not p-primary"));
-                }
-                orders /= prime;
-                exponent += 1;
-            }
-        }
-        Ok(exponent)
-    }
+    Ok(exponent)
 }
-
 fn dense(model: &mut Model, length: usize, support: &Support) -> Result<Vec<i128>> {
     model.spend(length + support.len())?;
     let mut vector = vec![0; length];
@@ -282,23 +224,6 @@ fn dense(model: &mut Model, length: usize, support: &Support) -> Result<Vec<i128
         vector[index] = coefficient;
     }
     Ok(vector)
-}
-
-fn reduce_at(model: &mut Model, vector: &mut [i128], column: &[i128]) -> Result<()> {
-    model.spend(1)?;
-    let q = vector[0].div_euclid(column[0]);
-    if q == 0 {
-        return Ok(());
-    }
-    vector[0] = vector[0].rem_euclid(column[0]);
-    model.spend(vector.len() - 1)?;
-    let overflow = || Error::plain("BP triple lattice arithmetic exceeds the signed i128 range");
-    for (value, &entry) in vector[1..].iter_mut().zip(&column[1..]) {
-        *value = value
-            .checked_sub(q.checked_mul(entry).ok_or_else(overflow)?)
-            .ok_or_else(overflow)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -310,18 +235,18 @@ mod tests {
         let mut model = Model::new();
         let mut verify = || -> Result<()> {
             let relations = [4, 8];
-            let mut one = Lattice::new(&mut model, &relations)?;
+            let mut one = ColumnHermite::from_diagonal(&mut model, &relations)?;
             one.insert(&mut model, vec![2, 2])?;
             one.canonicalize(&mut model)?;
-            let mut two = Lattice::new(&mut model, &relations)?;
+            let mut two = ColumnHermite::from_diagonal(&mut model, &relations)?;
             two.insert(&mut model, vec![0, 4])?;
             two.insert(&mut model, vec![2, 6])?;
             two.canonicalize(&mut model)?;
-            assert_eq!(one.columns, two.columns);
-            assert_eq!(one.subgroup_exponent(&mut model, 2, &relations)?, 2);
-            let origin = one.residue(&mut model, &[(0, 1)].into())?;
-            assert_eq!(one.residue(&mut model, &[(0, 3), (1, 2)].into())?, origin);
-            assert_ne!(one.residue(&mut model, &[(0, 3)].into())?, origin);
+            assert_eq!(one.columns(), two.columns());
+            assert_eq!(subgroup_exponent(&mut model, &one, 2, &relations)?, 2);
+            let origin = residue(&mut model, &one, &[(0, 1)].into())?;
+            assert_eq!(residue(&mut model, &one, &[(0, 3), (1, 2)].into())?, origin);
+            assert_ne!(residue(&mut model, &one, &[(0, 3)].into())?, origin);
             Ok(())
         };
         verify().unwrap_or_else(|error| panic!("{error}"));
