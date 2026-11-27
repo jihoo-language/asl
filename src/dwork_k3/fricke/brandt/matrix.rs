@@ -176,7 +176,9 @@ impl Matrix {
             cuspidal = quotient;
         }
         Ok(format!(
-            "B{level} = {:?}; weights = {weights:?}; components = {components:?}\n             characteristic (descending) = {full:?}; cuspidal = {cuspidal:?}\n             Frobenius +1 (rank {plus_rank}) = {plus:?}; -1 (rank {pairs}) = {minus:?}",
+            "B{level} = {:?}; weights = {weights:?}; components = {components:?}\n\
+             characteristic (descending) = {full:?}; cuspidal = {cuspidal:?}\n\
+             Frobenius +1 (rank {plus_rank}) = {plus:?}; -1 (rank {pairs}) = {minus:?}",
             self.0,
         ))
     }
@@ -219,7 +221,8 @@ pub(super) fn relations(
         "good levels 3 and 9 in characteristic 5"
     };
     Ok(format!(
-        "B3^2 = B9 + 4I; {commutation}; Frobenius commutes with all available operators\n         common positive detailed-balance weights = {weights:?}; components = {components:?}"
+        "B3^2 = B9 + 4I; {commutation}; Frobenius commutes with all available operators\n\
+         common positive detailed-balance weights = {weights:?}; components = {components:?}"
     ))
 }
 

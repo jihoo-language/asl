@@ -6361,7 +6361,7 @@ impl<'src> Parser<'src> {
             let depth = input.depth + 1;
             return expr(
                 span,
-                ExprForm::FrickeSS(Box::new(Expression::Action(operation, input))),
+                ExprForm::FrickeSS(Box::new(Expression::Action(operation, Box::new(input)))),
                 depth,
             );
         }

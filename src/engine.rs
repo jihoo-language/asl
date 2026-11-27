@@ -34256,7 +34256,7 @@ impl Checker<'_> {
                 ))
             }
             Expression::Action(operation, input) => {
-                let input = self.expr(input)?;
+                let input = self.expr(*input)?;
                 let basis = self.fricke_ss_operand(&input)?;
                 basis.check_operation(operation)?;
                 Ok((

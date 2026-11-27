@@ -52,7 +52,7 @@ pub(crate) enum Expression {
     Divisor(Label, Vec<i128>),
     Basis(Label, usize),
     Scalar(Label, ScalarEntry),
-    Action(Operation, ParsedExpr),
+    Action(Operation, Box<ParsedExpr>),
 }
 
 pub(crate) enum ScalarEntry {
@@ -149,9 +149,18 @@ impl Basis {
 
     fn describe(&self) -> String {
         format!(
-            "geometric supersingular j values (p = {}) = {:?}\n             j polynomial (ascending) = {:?}\n             Fricke vertices = {:?}; unordered endpoints = {:?}\n             Fricke polynomial (ascending) = {:?}\n             Frobenius permutation = {:?}",
-            self.p, self.js, self.j_polynomial, self.vertices, self.endpoints,
-            self.h_polynomial, self.frobenius,
+            "geometric supersingular j values (p = {}) = {:?}\n\
+             j polynomial (ascending) = {:?}\n\
+             Fricke vertices = {:?}; unordered endpoints = {:?}\n\
+             Fricke polynomial (ascending) = {:?}\n\
+             Frobenius permutation = {:?}",
+            self.p,
+            self.js,
+            self.j_polynomial,
+            self.vertices,
+            self.endpoints,
+            self.h_polynomial,
+            self.frobenius,
         )
     }
 
