@@ -661,28 +661,34 @@ impl Algebra<'_> {
                 format!("{name} = {order}")
             });
         }
-        let mut result = match report {
-            Report::Trace => self.zero(),
-            Report::Norm => self.basis(0),
-            Report::Valuation => unreachable!(),
-        };
+        let result = self.conjugate_invariant(model, value, matches!(report, Report::Norm))?;
+        Ok(format!(
+            "{name} = base={}, lambda_precision={}, coordinates={:?}",
+            self.field.base_name,
+            self.field.base_digits(self.precision),
+            result.0
+        ))
+    }
+
+    pub(super) fn conjugate_invariant(
+        &self,
+        model: &mut Model,
+        value: &Element,
+        product: bool,
+    ) -> Result<BaseElement> {
+        let mut result = if product { self.basis(0) } else { self.zero() };
         for c in 0..self.field.p {
             let image = self.sigma(model, value, c)?;
-            result = match report {
-                Report::Trace => self.add(model, &result, &image)?,
-                Report::Norm => self.multiply(model, &result, &image)?,
-                Report::Valuation => unreachable!(),
+            result = if product {
+                self.multiply(model, &result, &image)?
+            } else {
+                self.add(model, &result, &image)?
             };
         }
         if result.0[1..].iter().any(|value| !zero(value)) {
             return Err(inconsistent());
         }
-        Ok(format!(
-            "{name} = base={}, lambda_precision={}, coordinates={:?}",
-            self.field.base_name,
-            self.field.base_digits(self.precision),
-            result.0[0].0
-        ))
+        Ok(result.0.remove(0))
     }
 
     fn reduce(&self, mut value: Element) -> Element {
@@ -703,7 +709,7 @@ impl Algebra<'_> {
 
 // The cyclotomic equation gives p/lambda = -lambda^(e-1) - sum a_i lambda^(i-1).
 // A division is integral precisely when the constant row is divisible by p.
-fn divide_by_lambda(
+pub(super) fn divide_by_lambda(
     model: &mut Model,
     field: &BaseExtension,
     precision: usize,
@@ -746,7 +752,7 @@ fn evaluate_base(
     Ok(result)
 }
 
-fn inverse_base_unit(
+pub(super) fn inverse_base_unit(
     model: &mut Model,
     base: &BaseAlgebra<'_>,
     unit: &BaseElement,

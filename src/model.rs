@@ -100,7 +100,7 @@ use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
-use crate::rv_eisenstein::{self as eisenstein, kummer as local_kummer};
+use crate::rv_eisenstein::{self as eisenstein, cubic_hilbert as cubic, kummer as local_kummer};
 use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
@@ -353,6 +353,8 @@ pub(crate) enum Kind {
     Tame(tame::Grade),
     Eisenstein(eisenstein::Grade),
     LocalKummer(local_kummer::Grade),
+    CubicLocal(cubic::Grade),
+    CubicClass(Box<str>),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -586,6 +588,8 @@ pub(crate) enum Value {
     Tame(Rc<tame::Element>),
     Eisenstein(Rc<eisenstein::Element>),
     LocalKummer(Rc<local_kummer::Element>),
+    CubicLocal(Rc<cubic::Local>),
+    CubicClass(cubic::Class),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -833,6 +837,7 @@ pub(crate) struct Model {
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
     local_kummer_fields: HashMap<String, Rc<local_kummer::Extension>>,
+    cubic_certificate: Option<Rc<cubic::Certificate>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
@@ -990,6 +995,7 @@ impl Model {
             siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
             local_kummer_fields: HashMap::new(),
+            cubic_certificate: None,
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             verbitsky_associative: HashMap::new(),
@@ -1558,6 +1564,7 @@ impl Model {
             Kind::PeriodPolynomial(grade) if grade.is_trivial() => 1,
             Kind::MazurOrdinary(_, modulus) => usize::try_from(modulus).unwrap_or(usize::MAX),
             Kind::MazurAmice(ref grade) => grade.cardinality(),
+            Kind::CubicClass(..) => 81,
             Kind::MazurDiscRoot(ref grade) if !grade.root_possible() => 0,
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
@@ -1576,6 +1583,7 @@ impl Model {
             | Kind::Tame(..)
             | Kind::Eisenstein(..)
             | Kind::LocalKummer(..)
+            | Kind::CubicLocal(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1923,6 +1931,8 @@ impl Model {
                 | Kind::Tame(..)
                 | Kind::Eisenstein(..)
                 | Kind::LocalKummer(..)
+                | Kind::CubicLocal(..)
+                | Kind::CubicClass(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -6136,6 +6146,23 @@ impl Model {
         self.inhabited_type(Kind::HWWMatrix(grade), 0)
     }
 
+    pub(crate) fn cubic_local_type(&mut self, grade: cubic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::CubicLocal(grade), 0)
+    }
+
+    pub(crate) fn cubic_class_type(&mut self, field: Box<str>) -> Result<TypeId> {
+        self.inhabited_type(Kind::CubicClass(field), 0)
+    }
+
+    pub(crate) fn cubic_certificate(&mut self) -> Result<Rc<cubic::Certificate>> {
+        if let Some(certificate) = &self.cubic_certificate {
+            return Ok(certificate.clone());
+        }
+        let certificate = Rc::new(cubic::Certificate::derive(self)?);
+        self.cubic_certificate = Some(certificate.clone());
+        Ok(certificate)
+    }
+
     pub(crate) fn register_local_kummer(
         &mut self,
         declaration: local_kummer::Declaration,
@@ -7479,6 +7506,8 @@ impl Model {
             | Kind::Tame(..)
             | Kind::Eisenstein(..)
             | Kind::LocalKummer(..)
+            | Kind::CubicLocal(..)
+            | Kind::CubicClass(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -8124,6 +8153,11 @@ impl Model {
                 "RVKummerLocal({},{})",
                 grade.name, grade.precision
             )),
+            Kind::CubicLocal(grade) => out.push(&format!(
+                "RVCubicLocal({},{})",
+                grade.field, grade.precision
+            )),
+            Kind::CubicClass(field) => out.push(&format!("RVCubicClass({field})")),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
@@ -8525,6 +8559,8 @@ impl Model {
             (Value::Tame(a), Value::Tame(b)) => Ok(a == b),
             (Value::Eisenstein(a), Value::Eisenstein(b)) => Ok(a == b),
             (Value::LocalKummer(a), Value::LocalKummer(b)) => Ok(a == b),
+            (Value::CubicLocal(a), Value::CubicLocal(b)) => Ok(a == b),
+            (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8921,6 +8957,8 @@ impl Model {
             (Value::Tame(a), Value::Tame(b)) => Ok(a.cmp(b)),
             (Value::Eisenstein(a), Value::Eisenstein(b)) => Ok(a.cmp(b)),
             (Value::LocalKummer(a), Value::LocalKummer(b)) => Ok(a.cmp(b)),
+            (Value::CubicLocal(a), Value::CubicLocal(b)) => Ok(a.cmp(b)),
+            (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -9487,6 +9525,25 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
                     ));
+                }
+                Kind::CubicLocal(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the nonzero cubic local elements",
+                    ));
+                }
+                Kind::CubicClass(..) => {
+                    self.spend(81)?;
+                    self.allocate(81)?;
+                    (0..81)
+                        .map(|mut index| {
+                            let coordinates = std::array::from_fn(|_| {
+                                let digit = index % 3;
+                                index /= 3;
+                                digit
+                            });
+                            Value::CubicClass(cubic::Class(coordinates))
+                        })
+                        .collect()
                 }
                 Kind::LocalKummer(..) => {
                     return Err(Error::plain(
@@ -11415,6 +11472,14 @@ impl Model {
             Value::MazurDiscRoot(root) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", root.data()))
+            }
+            Value::CubicLocal(element) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", element.write()))
+            }
+            Value::CubicClass(class) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", class.0))
             }
             Value::LocalKummer(element) => {
                 self.write_type(out, ty, 0)?;

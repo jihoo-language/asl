@@ -148,7 +148,7 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
-use crate::rv_eisenstein::{self as eisenstein, kummer as local_kummer};
+use crate::rv_eisenstein::{self as eisenstein, cubic_hilbert as cubic, kummer as local_kummer};
 use crate::rv_field;
 use crate::rv_fusion;
 use crate::rv_gauss;
@@ -1094,6 +1094,13 @@ enum TypedForm {
     LocalKummerBase(Box<TypedExpr>),
     LocalKummerProduct(Box<[TypedExpr; 2]>),
     LocalKummerEvaluate(Box<[TypedExpr; 2]>),
+    CubicLocalUnit(i128, Box<TypedExpr>),
+    CubicLocalFrom(usize, Box<TypedExpr>),
+    CubicLocalUnary(cubic::LocalUnary, Box<TypedExpr>),
+    CubicLocalProduct(Box<[TypedExpr; 2]>),
+    CubicClassFrom(Option<usize>, Box<TypedExpr>),
+    CubicClassNegate(Box<TypedExpr>),
+    CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2785,6 +2792,44 @@ impl Engine {
                     .expect("registered local Kummer field");
                 let algebra = field.algebra(&mut self.model, grade.precision)?;
                 return algebra.report(&mut self.model, &value, report).map(Some);
+            }
+            StatementForm::Cubic(report) => {
+                let output = match report {
+                    cubic::Report::Certificate(name) => {
+                        let field = self.model.eisenstein(&name)?;
+                        cubic::require_field(&field).map_err(|error| error.at(name.span))?;
+                        self.model.cubic_certificate()?.write(&name.text)
+                    }
+                    cubic::Report::NormSubgroup(input) => {
+                        let input = self.checker().expr(*input)?;
+                        self.checker()
+                            .cubic_class_operand(&input, "rvCubicNormSubgroup")?;
+                        let Value::CubicClass(value) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        self.model.cubic_certificate()?.norm_subgroup(value)
+                    }
+                    cubic::Report::Invariant(inputs) => {
+                        let [left, right] = self
+                            .checker()
+                            .cubic_pair_inputs(*inputs, "rvCubicHilbertInvariant")?;
+                        let (Value::CubicClass(a), Value::CubicClass(b)) =
+                            (self.eval(&left)?, self.eval(&right)?)
+                        else {
+                            unreachable!()
+                        };
+                        let exponent = self.model.cubic_certificate()?.exponent(a, b);
+                        let invariant = if exponent == 0 {
+                            "0".to_owned()
+                        } else {
+                            format!("{exponent}/3")
+                        };
+                        format!(
+                            "rvCubicHilbertInvariant = exponent={exponent}, invariant={invariant}"
+                        )
+                    }
+                };
+                return Ok(Some(output));
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -11354,6 +11399,9 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::CubicClass(a), Value::CubicClass(b)) => {
+                        Ok(Value::CubicClass(a.add(b)))
+                    }
                     (BinaryOp::Add, Value::LocalKummer(a), Value::LocalKummer(b)) => {
                         let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -14129,6 +14177,134 @@ impl Engine {
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
                     .persist(&mut self.model)
+            }
+            TypedForm::CubicLocalUnit(valuation, input) => {
+                let Value::Eisenstein(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicLocal(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.field)
+                    .expect("validated cubic base");
+                let precision = grade.precision;
+                cubic::Local::new(
+                    &mut self.model,
+                    &field,
+                    precision,
+                    *valuation,
+                    (*value).clone(),
+                )?
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicLocalFrom(source, input) => {
+                let Value::Eisenstein(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicLocal(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.field)
+                    .expect("validated cubic base");
+                let precision = grade.precision;
+                cubic::Local::from_integral(
+                    &mut self.model,
+                    &field,
+                    *source,
+                    precision,
+                    (*value).clone(),
+                )?
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicLocalUnary(operation, input) => {
+                let Value::CubicLocal(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicLocal(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.field)
+                    .expect("validated cubic base");
+                let precision = grade.precision;
+                let output = match operation {
+                    cubic::LocalUnary::Inverse => {
+                        value.inverse(&mut self.model, &field, precision)?
+                    }
+                    cubic::LocalUnary::OneMinus { source } => {
+                        value.one_minus(&mut self.model, &field, *source, precision)?
+                    }
+                };
+                output.persist(&mut self.model)
+            }
+            TypedForm::CubicLocalProduct(inputs) => {
+                let (Value::CubicLocal(left), Value::CubicLocal(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::CubicLocal(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.field)
+                    .expect("validated cubic base");
+                let precision = grade.precision;
+                left.multiply(&mut self.model, &field, precision, &right)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicClassFrom(source, input) => {
+                let value = self.eval(input)?;
+                let Kind::CubicClass(name) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(name)
+                    .expect("validated cubic base");
+                let class = match (source, value) {
+                    (None, Value::CubicLocal(local)) => local.class(&mut self.model, &field)?,
+                    (Some(source), Value::Eisenstein(value)) => {
+                        let local = cubic::Local::from_integral(
+                            &mut self.model,
+                            &field,
+                            *source,
+                            cubic::CLASS_PRECISION,
+                            (*value).clone(),
+                        )?;
+                        local.class(&mut self.model, &field)?
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::CubicClass(class))
+            }
+            TypedForm::CubicClassNegate(input) => {
+                let Value::CubicClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CubicClass(value.negate()))
+            }
+            TypedForm::CubicPair(operation, inputs) => {
+                let (Value::CubicClass(a), Value::CubicClass(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let exponent = self.model.cubic_certificate()?.exponent(a, b);
+                match operation {
+                    cubic::Pair::Symbol => {
+                        rv_cyclotomic::root(&mut self.model, 3, i128::from(exponent))
+                    }
+                    cubic::Pair::IsNorm | cubic::Pair::Splits => {
+                        Ok(Value::Point(usize::from(exponent == 0)))
+                    }
+                }
             }
             TypedForm::LocalKummerUnary(operation, input) => {
                 let Value::LocalKummer(value) = self.eval(input)? else {
@@ -17213,6 +17389,15 @@ impl Checker<'_> {
                 let grade = Rc::new(disc::Grade::new(source, chart)?);
                 self.model.mazur_disc_type(grade, root)
             }
+            TypeForm::CubicLocal(spec) => {
+                let (grade, _) = cubic::Grade::resolve(self.model, spec)?;
+                self.model.cubic_local_type(grade)
+            }
+            TypeForm::CubicClass(name) => {
+                let field = self.model.eisenstein(&name)?;
+                cubic::require_field(&field).map_err(|error| error.at(name.span))?;
+                self.model.cubic_class_type(name.text.into())
+            }
             TypeForm::LocalKummer(spec) => {
                 let (grade, _) = local_kummer::Grade::resolve(self.model, spec)?;
                 self.model.local_kummer_type(grade)
@@ -18341,6 +18526,7 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::CubicClass(..) => Value::CubicClass(cubic::Class([0; 4])),
                     Kind::LocalKummer(grade) => {
                         let field = self.model.local_kummer_named(&grade.name).expect("registered local Kummer field");
                         let precision = grade.precision;
@@ -20771,6 +20957,7 @@ impl Checker<'_> {
             ExprForm::Tame(operation) => self.tame_expression(operation),
             ExprForm::Eisenstein(operation) => self.eisenstein_expression(operation),
             ExprForm::LocalKummer(operation) => self.local_kummer_expression(operation),
+            ExprForm::Cubic(operation) => self.cubic_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -21665,6 +21852,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CubicClass(..)) {
+                    return Ok((input.ty, TypedForm::CubicClassNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::LocalKummer(..)) {
                     return Ok((
@@ -25707,6 +25897,7 @@ impl Checker<'_> {
                         | Kind::Tame(..)
                         | Kind::Eisenstein(..)
                         | Kind::LocalKummer(..)
+                        | Kind::CubicClass(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -31301,6 +31492,171 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVKummerLocal(L,M) element"))
         }
+    }
+
+    fn cubic_expression(&mut self, expression: cubic::Expression) -> Result<(TypeId, TypedForm)> {
+        use cubic::Expression;
+        match expression {
+            Expression::Local(spec, valuation, input) => {
+                let (grade, _) = cubic::Grade::resolve(self.model, spec)?;
+                let input = self.expr(*input)?;
+                let source = self.eisenstein_operand(&input, "rvCubicLocal")?;
+                if source.name != grade.field || source.precision < grade.precision {
+                    let expected = format!(
+                        "an RVEisenstein({},{}) unit or higher precision",
+                        grade.field, grade.precision
+                    );
+                    return Err(self.invalid_operand(&input, "rvCubicLocal", &expected));
+                }
+                let ty = self.model.cubic_local_type(grade)?;
+                Ok((ty, TypedForm::CubicLocalUnit(valuation, Box::new(input))))
+            }
+            Expression::FromIntegral(precision, input) => {
+                let input = self.expr(*input)?;
+                let source = self.eisenstein_operand(&input, "rvCubicLocalFrom")?;
+                let field = self
+                    .model
+                    .eisenstein_named(&source.name)
+                    .expect("registered Eisenstein base");
+                cubic::require_field(&field)?;
+                field.algebra(precision)?;
+                if precision > source.precision {
+                    return Err(Error::new(
+                        input.span,
+                        "insufficient source precision for cubic local normalization",
+                    ));
+                }
+                let ty = self.model.cubic_local_type(cubic::Grade {
+                    field: source.name,
+                    precision,
+                })?;
+                Ok((
+                    ty,
+                    TypedForm::CubicLocalFrom(source.precision, Box::new(input)),
+                ))
+            }
+            Expression::LocalMultiply(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                self.cubic_local_operand(&left, "rvCubicLocalMul")?;
+                self.require_type(left.ty, &right, "rvCubicLocalMul input")?;
+                Ok((
+                    left.ty,
+                    TypedForm::CubicLocalProduct(Box::new([left, right])),
+                ))
+            }
+            Expression::LocalInverse(input) => {
+                let input = self.expr(*input)?;
+                self.cubic_local_operand(&input, "rvCubicLocalInv")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CubicLocalUnary(cubic::LocalUnary::Inverse, Box::new(input)),
+                ))
+            }
+            Expression::OneMinus(precision, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.cubic_local_operand(&input, "rvCubicOneMinus")?;
+                if precision == 0 || precision > grade.precision {
+                    return Err(Error::new(
+                        input.span,
+                        "cubic 1-a requires a positive precision within the input digits",
+                    ));
+                }
+                let ty = self.model.cubic_local_type(cubic::Grade {
+                    field: grade.field,
+                    precision,
+                })?;
+                Ok((
+                    ty,
+                    TypedForm::CubicLocalUnary(
+                        cubic::LocalUnary::OneMinus {
+                            source: grade.precision,
+                        },
+                        Box::new(input),
+                    ),
+                ))
+            }
+            Expression::Class(input) => {
+                let input = self.expr(*input)?;
+                let (field, precision, source) = match self.model.kind(input.ty) {
+                    Kind::CubicLocal(grade) => (grade.field.clone(), grade.precision, None),
+                    Kind::Eisenstein(grade) => {
+                        let field = self
+                            .model
+                            .eisenstein_named(&grade.name)
+                            .expect("registered Eisenstein base");
+                        cubic::require_field(&field)?;
+                        (grade.name.clone(), grade.precision, Some(grade.precision))
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "rvCubicClass",
+                            "a cubic local or cyclotomic Eisenstein element",
+                        ))
+                    }
+                };
+                if precision < cubic::CLASS_PRECISION {
+                    return Err(Error::new(
+                        input.span,
+                        "a cubic class requires at least four relative lambda digits",
+                    ));
+                }
+                let ty = self.model.cubic_class_type(field)?;
+                Ok((ty, TypedForm::CubicClassFrom(source, Box::new(input))))
+            }
+            Expression::ClassLiteral(name, values) => {
+                let field = self.model.eisenstein(&name)?;
+                cubic::require_field(&field).map_err(|error| error.at(name.span))?;
+                let ty = self.model.cubic_class_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(Value::CubicClass(cubic::Class::literal(values))),
+                ))
+            }
+            Expression::Pair(operation, inputs) => {
+                let name = match operation {
+                    cubic::Pair::Symbol => "rvCubicHilbert",
+                    cubic::Pair::IsNorm => "rvCubicIsNorm",
+                    cubic::Pair::Splits => "rvCubicAlgebraSplits",
+                };
+                let arguments = self.cubic_pair_inputs(*inputs, name)?;
+                let ty = match operation {
+                    cubic::Pair::Symbol => self.model.cyclotomic_type(3)?,
+                    _ => self.model.named("S").expect("built-in truth type"),
+                };
+                Ok((ty, TypedForm::CubicPair(operation, Box::new(arguments))))
+            }
+        }
+    }
+
+    fn cubic_local_operand(&self, input: &TypedExpr, operation: &str) -> Result<cubic::Grade> {
+        if let Kind::CubicLocal(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicLocal(K,h) element"))
+        }
+    }
+
+    fn cubic_class_operand(&self, input: &TypedExpr, operation: &str) -> Result<()> {
+        if matches!(self.model.kind(input.ty), Kind::CubicClass(..)) {
+            Ok(())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicClass(K) element"))
+        }
+    }
+
+    fn cubic_pair_inputs(
+        &mut self,
+        [left, right]: [ParsedExpr; 2],
+        operation: &str,
+    ) -> Result<[TypedExpr; 2]> {
+        let left = self.expr(left)?;
+        let right = self.expr(right)?;
+        self.cubic_class_operand(&left, operation)?;
+        self.require_type(left.ty, &right, operation)?;
+        Ok([left, right])
     }
 
     fn mazur_tate_expression(
