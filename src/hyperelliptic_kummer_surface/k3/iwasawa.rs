@@ -149,7 +149,7 @@ impl Growth {
             .collect::<Vec<_>>()
             .join(", ");
         let relative = self.breakpoint.relative(level)?;
-        let from_base = self.breakpoint.from_base(level)?;
+        let from_base = self.breakpoint.relative_valuation(level)?;
         let zeros = 22 - self.rank - self.breakpoint.lambda;
         Ok(format!(
             "{operation}[{name}, {degree}, {}, {level}] = NS rank={}, geometric NS rank={}, integral NS lattice fixed throughout tower, transcendental degree={}, zero valuations={zeros}, breakpoint k0={start}, positive Newton valuations=[{slopes}], determinant valuations through breakpoint={:?}, mu=0, lambda={}, relative v_ell({group}) from breakpoint={}, relative v_ell({group}) from base={}",
@@ -198,7 +198,7 @@ impl Pencil {
                 }
                 let absolute = growth
                     .breakpoint
-                    .from_base(level)?
+                    .relative_valuation(level)?
                     .add(Valuation::from_i128(i128::from(offset)))?;
                 if absolute.negative && !absolute.is_zero() {
                     return Err(inconsistent());
@@ -294,7 +294,7 @@ impl Breakpoint {
         Ok(Valuation::from_i128(i128::from(value)))
     }
 
-    fn from_base(&self, target: u128) -> Result<Valuation> {
+    fn relative_valuation(&self, target: u128) -> Result<Valuation> {
         let offset = self.prefix[self.index() as usize] - self.prefix[0];
         self.relative(target)?
             .add(Valuation::from_i128(i128::from(offset)))
@@ -343,14 +343,14 @@ mod tests {
         );
         assert_eq!(
             growth
-                .from_base(0)
+                .relative_valuation(0)
                 .unwrap_or_else(|error| panic!("{error}"))
                 .signed(),
             Some(0)
         );
         assert_eq!(
             growth
-                .from_base(1000)
+                .relative_valuation(1000)
                 .unwrap_or_else(|error| panic!("{error}"))
                 .signed(),
             Some(2001)
