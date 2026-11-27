@@ -1003,6 +1003,9 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionHallBasis(Box<TypedExpr>),
+    PartitionHallProduct(Box<[TypedExpr; 2]>),
+    PartitionHallNegate(Box<TypedExpr>),
     PartitionTauUnary(
         crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Unary,
         Box<TypedExpr>,
@@ -2430,6 +2433,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionHallReport(report) => {
+                return self.partition_hall_report(report).map(Some);
             }
             StatementForm::PartitionTauReport(report) => {
                 return self.partition_tau_report(report).map(Some);
@@ -11275,6 +11281,99 @@ impl Engine {
         }
     }
 
+    fn partition_hall_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::hall::Report,
+    ) -> Result<String> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::{stability, Mode, Report};
+        match report {
+            Report::Coefficient(inputs) => {
+                let [l, m, n] = *inputs;
+                let l = self.checker().expr(l)?;
+                let m = self.checker().expr(m)?;
+                let n = self.checker().expr(n)?;
+                let key = self.checker().partition_hall_operand(&l, Mode::Module)?;
+                self.checker()
+                    .partition_hall_same_key(&m, Mode::Module, &key)?;
+                self.checker()
+                    .partition_hall_same_key(&n, Mode::Module, &key)?;
+                let l = self.eval_partition_hall(&l)?;
+                let m = self.eval_partition_hall(&m)?;
+                let n = self.eval_partition_hall(&n)?;
+                self.model
+                    .partition_hall(&key)?
+                    .coefficient_report(&mut self.model, &l, &m, &n)
+            }
+            Report::Flag(inputs) => {
+                let [l, m, n, k] = *inputs;
+                let l = self.checker().expr(l)?;
+                let key = self.checker().partition_hall_operand(&l, Mode::Module)?;
+                let target = self.eval_partition_hall(&l)?;
+                let factors = [m, n, k]
+                    .into_iter()
+                    .map(|input| {
+                        let input = self.checker().expr(input)?;
+                        self.checker()
+                            .partition_hall_same_key(&input, Mode::Module, &key)?;
+                        self.eval_partition_hall(&input)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                self.model.partition_hall(&key)?.flag_report(
+                    &mut self.model,
+                    &target,
+                    [&factors[0], &factors[1], &factors[2]],
+                )
+            }
+            Report::Term(inputs) => {
+                let [a, m] = *inputs;
+                let a = self.checker().expr(a)?;
+                let m = self.checker().expr(m)?;
+                let key = self.checker().partition_hall_operand(&a, Mode::Algebra)?;
+                self.checker()
+                    .partition_hall_same_key(&m, Mode::Module, &key)?;
+                let a = self.eval_partition_hall(&a)?;
+                let m = self.eval_partition_hall(&m)?;
+                Ok(a.read_term(&m))
+            }
+            Report::Stability(query, theta, input) => {
+                let input = self.checker().expr(*input)?;
+                let key = self
+                    .checker()
+                    .partition_hall_operand(&input, Mode::Module)?;
+                let value = self.eval_partition_hall(&input)?;
+                self.model
+                    .partition_hall(&key)?
+                    .stability(&mut self.model, query, &theta, &value)
+            }
+            Report::Chamber(parameter, index) => {
+                let algebra = self
+                    .model
+                    .partition_fiber(parameter)?
+                    .nakayama(&mut self.model)?;
+                let fan = self.model.partition_tau_fan(parameter)?;
+                stability::chamber_report(&algebra, &fan, index)
+            }
+            Report::Wall(parameter, indices) => {
+                let algebra = self
+                    .model
+                    .partition_fiber(parameter)?
+                    .nakayama(&mut self.model)?;
+                let fan = self.model.partition_tau_fan(parameter)?;
+                stability::wall_report(&algebra, &fan, indices)
+            }
+        }
+    }
+
+    fn eval_partition_hall(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::Record>> {
+        let Value::RVPartitionHall(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_tau_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report,
@@ -12418,6 +12517,9 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -15713,6 +15815,22 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionHallBasis(input) => self
+                .eval_partition_hall(input)?
+                .as_basis()
+                .persist(&mut self.model),
+            TypedForm::PartitionHallNegate(input) => self
+                .eval_partition_hall(input)?
+                .neg(&mut self.model)?
+                .persist(&mut self.model),
+            TypedForm::PartitionHallProduct(inputs) => {
+                let a = self.eval_partition_hall(&inputs[0])?;
+                let b = self.eval_partition_hall(&inputs[1])?;
+                self.model
+                    .partition_hall(&a.grade.key)?
+                    .product(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
             TypedForm::PartitionTauUnary(op, input) => {
                 let value = self.eval_partition_tau(input)?;
                 Ok(Value::RVPartitionTau(
@@ -18355,6 +18473,12 @@ impl Checker<'_> {
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
+            TypeForm::RVPartitionHall(spec, mode) => {
+                let key = spec.resolve(self.model)?;
+                self.model.partition_hall_type(
+                    crate::partition_algebra::fiber::gabriel::derived::hall::Grade { key, mode },
+                )
+            }
             TypeForm::RVKaroubiMap([source, target]) => {
                 self.model.karoubi_map_type(&source, &target)
             }
@@ -19489,6 +19613,7 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionHall(grade) => crate::partition_algebra::fiber::gabriel::derived::hall::Record::zero(grade.clone()).persist(self.model)?,
                     Kind::RVPartitionHom(grade, _) => crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(*grade).persist(self.model)?,
                     Kind::RVPartitionExt(grade, _) => Value::RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class::zero(*grade)),
                     Kind::RVPartitionFiber(grade) => {
@@ -21694,6 +21819,7 @@ impl Checker<'_> {
             ExprForm::PartitionExt(expression) => self.partition_ext_expression(*expression),
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
+            ExprForm::PartitionHall(expression) => self.partition_hall_expression(*expression),
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -22980,6 +23106,9 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVKaroubiMap(..)) {
                     return Ok((input.ty, TypedForm::KaroubiNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })) {
+                    return Ok((input.ty, TypedForm::PartitionHallNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionHom(..)) {
                     return Ok((
@@ -26917,6 +27046,7 @@ impl Checker<'_> {
                         | Kind::RVPartitionFiber(..)
                         | Kind::RVPartitionExt(..)
                         | Kind::RVPartitionHom(..)
+                        | Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })
                         | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
@@ -29409,6 +29539,84 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn partition_hall_expression(
+        &mut self,
+        operation: crate::partition_algebra::fiber::gabriel::derived::hall::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::{Expression, Grade, Mode};
+        match operation {
+            Expression::Module(spec, parts) => {
+                let key = spec.resolve(self.model)?;
+                let value = self
+                    .model
+                    .partition_hall(&key)?
+                    .literal(self.model, parts)?;
+                let ty = self.model.partition_hall_type(value.grade.clone())?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Unit(spec) => {
+                let key = spec.resolve(self.model)?;
+                let value = self.model.partition_hall(&key)?.unit();
+                let ty = self.model.partition_hall_type(value.grade.clone())?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Basis(input) => {
+                let input = self.expr(*input)?;
+                let key = self.partition_hall_operand(&input, Mode::Module)?;
+                let ty = self.model.partition_hall_type(Grade {
+                    key,
+                    mode: Mode::Algebra,
+                })?;
+                Ok((ty, TypedForm::PartitionHallBasis(Box::new(input))))
+            }
+            Expression::Product(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let key = self.partition_hall_operand(&a, Mode::Algebra)?;
+                self.partition_hall_same_key(&b, Mode::Algebra, &key)?;
+                Ok((a.ty, TypedForm::PartitionHallProduct(Box::new([a, b]))))
+            }
+        }
+    }
+
+    fn partition_hall_operand(
+        &self,
+        input: &TypedExpr,
+        mode: crate::partition_algebra::fiber::gabriel::derived::hall::Mode,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::hall::Key> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::Mode;
+        match self.model.kind(input.ty) {
+            Kind::RVPartitionHall(grade) if grade.mode == mode => Ok(grade.key.clone()),
+            _ => Err(Error::new(
+                input.span,
+                match mode {
+                    Mode::Module => {
+                        "partition Hall operation requires an RVPartitionHallModule value"
+                    }
+                    Mode::Algebra => {
+                        "partition Hall operation requires an RVPartitionHall algebra value"
+                    }
+                },
+            )),
+        }
+    }
+
+    fn partition_hall_same_key(
+        &self,
+        input: &TypedExpr,
+        mode: crate::partition_algebra::fiber::gabriel::derived::hall::Mode,
+        key: &crate::partition_algebra::fiber::gabriel::derived::hall::Key,
+    ) -> Result<()> {
+        if self.partition_hall_operand(input, mode)? != *key {
+            return Err(Error::new(
+                input.span,
+                "partition Hall inputs require the same rank, parameter, and coefficient field",
+            ));
+        }
+        Ok(())
     }
 
     fn partition_tau_expression(

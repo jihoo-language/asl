@@ -141,6 +141,10 @@ pub(crate) enum TypeForm {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionHall(
+        crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec,
+        crate::partition_algebra::fiber::gabriel::derived::hall::Mode,
+    ),
     RVPartitionTau(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Grade),
     RVPartitionHom(crate::partition_algebra::fiber::gabriel::derived::auslander::Grade),
@@ -916,6 +920,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionHall(Box<crate::partition_algebra::fiber::gabriel::derived::hall::Expression>),
     PartitionTau(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Expression>),
     PartitionExt(Box<crate::partition_algebra::fiber::gabriel::derived::Expression>),
     PartitionHom(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::Expression>),
@@ -1511,6 +1516,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionHallReport(crate::partition_algebra::fiber::gabriel::derived::hall::Report),
     PartitionTauReport(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report),
     PartitionExtReport(crate::partition_algebra::fiber::gabriel::derived::Report),
     PartitionHomReport(crate::partition_algebra::fiber::gabriel::derived::auslander::Report),
@@ -9388,6 +9394,66 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_hall_key(
+        &mut self,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::{FieldSpec, KeySpec};
+        let parameter = self.partition_parameter()?;
+        self.expect(Token::Comma)?;
+        let field = if matches!(self.token(), Token::Word(_)) {
+            FieldSpec::Residue(self.label()?)
+        } else {
+            FieldSpec::Prime(self.wide_unsigned("partition Hall prime or named residue field")?)
+        };
+        Ok(KeySpec { parameter, field })
+    }
+
+    fn partition_hall_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::Expression;
+        let (operation, depth) = match name {
+            "rvPartitionHallProduct" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Product(Box::new(inputs)), depth)
+            }
+            "rvPartitionHallBasis" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Basis(Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let key = self.partition_hall_key()?;
+                self.expect(Token::RBracket)?;
+                let operation = if name == "rvPartitionHallUnit" {
+                    Expression::Unit(key)
+                } else {
+                    self.expect(Token::LBrace)?;
+                    let mut parts = Vec::new();
+                    while self.token() != Token::RBrace {
+                        self.expect(Token::LParen)?;
+                        let head = self.wide_unsigned("partition Hall top vertex")?;
+                        let [length, multiplicity] = self.partition_indices()?;
+                        self.expect(Token::RParen)?;
+                        parts.push((head, length, multiplicity));
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    Expression::Module(key, parts)
+                };
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::PartitionHall(Box::new(operation)), depth)
+    }
+
     fn partition_tau_expression(
         &mut self,
         name: &str,
@@ -14031,6 +14097,66 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvPartitionHallCoefficient"
+                | "rvPartitionHallFlag"
+                | "rvPartitionHallTerm"
+                | "rvPartitionHallStability"
+                | "rvPartitionHallHN"
+                | "rvPartitionHallHNCheck"
+                | "rvPartitionHallChamber"
+                | "rvPartitionHallWall"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::{
+                    Report, StabilityQuery,
+                };
+                self.advance()?;
+                let report = match name {
+                    "rvPartitionHallCoefficient" => {
+                        Report::Coefficient(Box::new(self.paren_triple(0)?))
+                    }
+                    "rvPartitionHallFlag" => {
+                        self.expect(Token::LParen)?;
+                        let l = self.expr(1)?;
+                        self.expect(Token::Comma)?;
+                        let m = self.expr(1)?;
+                        self.expect(Token::Comma)?;
+                        let n = self.expr(1)?;
+                        self.expect(Token::Comma)?;
+                        let k = self.expr(1)?;
+                        self.expect(Token::RParen)?;
+                        Report::Flag(Box::new([l, m, n, k]))
+                    }
+                    "rvPartitionHallTerm" => Report::Term(Box::new(self.paren_pair(0)?)),
+                    "rvPartitionHallChamber" | "rvPartitionHallWall" => {
+                        self.expect(Token::LBracket)?;
+                        let parameter = self.partition_parameter()?;
+                        let report = if name == "rvPartitionHallChamber" {
+                            let [index] = self.partition_indices()?;
+                            Report::Chamber(parameter, index)
+                        } else {
+                            Report::Wall(parameter, self.partition_indices()?)
+                        };
+                        self.expect(Token::RBracket)?;
+                        report
+                    }
+                    _ => {
+                        let query = match name {
+                            "rvPartitionHallStability" => StabilityQuery::Stability,
+                            "rvPartitionHallHN" => StabilityQuery::Hn,
+                            _ => StabilityQuery::HnCheck,
+                        };
+                        self.expect(Token::LBracket)?;
+                        let weight = self.signed_list(
+                            Token::RBracket,
+                            "an integral King weight",
+                            "partition stability weight",
+                        )?;
+                        Report::Stability(query, weight, Box::new(self.paren_expr(0)?))
+                    }
+                };
+                StatementForm::PartitionHallReport(report)
+            }
+            Token::Word(
                 name @ ("rvPartitionTauTilting"
                 | "rvPartitionTauGreen"
                 | "rvPartitionTauWalls"
@@ -17158,6 +17284,21 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if matches!(
+            name.text.as_str(),
+            "RVPartitionHallModule" | "RVPartitionHall"
+        ) && self.eat(Token::LParen)?
+        {
+            use crate::partition_algebra::fiber::gabriel::derived::hall::Mode;
+            let key = self.partition_hall_key()?;
+            self.expect(Token::RParen)?;
+            let mode = if name.text == "RVPartitionHallModule" {
+                Mode::Module
+            } else {
+                Mode::Algebra
+            };
+            return ty(span, TypeForm::RVPartitionHall(key, mode), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -22210,6 +22351,15 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionHallModule"
+                        | "rvPartitionHallUnit"
+                        | "rvPartitionHallBasis"
+                        | "rvPartitionHallProduct"
+                ) {
+                    return self.partition_hall_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

@@ -13,6 +13,7 @@ use super::Gabriel;
 
 pub(crate) mod auslander;
 mod bar;
+pub(crate) mod hall;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Grade {
@@ -123,6 +124,7 @@ pub(crate) struct Nakayama {
     arrow_paths: Vec<Path>,
     simple_dimensions: Vec<usize>,
     auslander: RefCell<Option<Rc<auslander::Auslander>>>,
+    hall: RefCell<BTreeMap<hall::FieldName, Rc<hall::Hall>>>,
     resolutions: BTreeMap<State, Resolution>,
 }
 
@@ -199,6 +201,7 @@ impl Nakayama {
             simple_dimensions: data.groups.iter().map(Vec::len).collect(),
             auslander: RefCell::default(),
             resolutions: BTreeMap::new(),
+            hall: RefCell::default(),
         };
         algebra.certify_products(model, fiber)?;
         for i in 0..vertices {
@@ -218,6 +221,17 @@ impl Nakayama {
                 .sum(),
         )?;
         Ok(algebra)
+    }
+
+    pub(crate) fn hall(&self, model: &mut Model, key: &hall::Key) -> Result<Rc<hall::Hall>> {
+        if let Some(table) = self.hall.borrow().get(&key.field) {
+            return Ok(table.clone());
+        }
+        let table = Rc::new(hall::Hall::new(model, self, key)?);
+        self.hall
+            .borrow_mut()
+            .insert(key.field.clone(), table.clone());
+        Ok(table)
     }
 
     pub(crate) fn auslander(&self, model: &mut Model) -> Result<Rc<auslander::Auslander>> {

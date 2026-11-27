@@ -1,0 +1,15 @@
+let M = rvPartitionHallModule[2,0,3]{(0,2,1)};
+let S = rvPartitionHallModule[2,0,3]{(2,1,1)};
+let L = rvPartitionHallModule[2,0,3]{(0,2,1),(2,1,1)};
+rvPartitionHallCoefficient(L,M,S);
+rvPartitionHallCoefficient(L,S,M);
+let T = rvPartitionHallModule[2,0,3]{(0,1,1)};
+rvPartitionHallFlag(L,T,S,S);
+let a = rvPartitionHallBasis(M);
+let b = rvPartitionHallBasis(S);
+let commutator = add(rvPartitionHallProduct(a,b),neg(rvPartitionHallProduct(b,a)));
+rvPartitionHallTerm(commutator,L);
+rvPartitionHallHN[-2,0,3](L);
+rvPartitionHallHNCheck[-2,0,3](L);
+rvPartitionHallChamber[2,0,2];
+rvPartitionHallWall[2,0,3,2];

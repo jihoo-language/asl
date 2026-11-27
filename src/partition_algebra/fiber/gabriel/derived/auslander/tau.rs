@@ -609,6 +609,40 @@ impl Fan {
         )
     }
 
+    pub(crate) fn stability_chamber(&self, index: u128) -> Result<(Vec<i128>, Vec<[u128; 2]>)> {
+        let chamber = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.chambers.get(i))
+            .ok_or_else(|| Error::plain("partition tau-tilting chamber index is out of range"))?;
+        Ok((
+            self.interior(chamber.face),
+            bits(chamber.torsion).map(|i| self.modules[i]).collect(),
+        ))
+    }
+
+    pub(crate) fn stability_wall(&self, [a, b]: [u128; 2]) -> Result<(Vec<i128>, [u128; 2])> {
+        let edge = self
+            .walls
+            .iter()
+            .find(|w| {
+                [w.small as u128, w.large as u128] == [a, b]
+                    || [w.large as u128, w.small as u128] == [a, b]
+            })
+            .ok_or_else(|| Error::plain("partition tau-tilting chambers do not share a wall"))?;
+        let common = self.chambers[edge.small].face & self.chambers[edge.large].face;
+        Ok((self.interior(common), self.modules[edge.brick]))
+    }
+
+    fn interior(&self, face: Mask) -> Vec<i128> {
+        let mut sum = vec![0; self.vectors[0].len()];
+        for i in bits(face) {
+            for (x, y) in sum.iter_mut().zip(&self.vectors[i]) {
+                *x += y;
+            }
+        }
+        sum
+    }
+
     pub(crate) fn summary(&self) -> String {
         let Parameter { rank, n } = self.parameter;
         let counts: Vec<_> = self.faces.iter().map(Vec::len).collect();
