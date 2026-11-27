@@ -776,6 +776,7 @@ enum TypedForm {
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
     Jacobian(JacobianAction),
     JacobianLevelCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
+    JacobianPowerCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
     Kummer(KummerAction),
     Enriques(EnriquesAction),
     K3Pencil(Rc<pencil::Pencil>, PencilAction),
@@ -6606,66 +6607,151 @@ impl Engine {
         }
     }
 
+    fn define_jacobian_marking(
+        &mut self,
+        name: Label,
+        curve_name: Label,
+        (level, height): (usize, Option<usize>),
+        root: ParsedExpr,
+        generators: Vec<ParsedExpr>,
+    ) -> Result<()> {
+        self.model.check_new_jacobian_level(&name)?;
+        let curve = self
+            .model
+            .jacobian_curve(&curve_name.text)
+            .map_err(|error| error.at(curve_name.span))?;
+        if level != 2 && (level < 2 || level.is_multiple_of(2)) {
+            return Err(Error::new(
+                name.span,
+                "Jacobian torsion level must be prime",
+            ));
+        }
+        let prime = self
+            .checker()
+            .scalar_prime(level)
+            .map_err(|error| error.at(name.span))?;
+        if height == Some(0) {
+            return Err(Error::new(
+                name.span,
+                "Jacobian torsion height must be positive",
+            ));
+        }
+        let root_type = self.model.rv_unram_type(&Label {
+            text: curve.grade.ring.to_string(),
+            span: root.span,
+        })?;
+        let torsion_type = self.model.jacobian_type(curve_name.text.as_str().into())?;
+        let root = self.checker().expr(root)?;
+        self.checker()
+            .require_type(root_type, &root, "Jacobian torsion root of unity")?;
+        let Value::RVUnram(root) = self.eval(&root)? else {
+            unreachable!()
+        };
+        self.model.spend(generators.len())?;
+        let generators = generators
+            .into_iter()
+            .map(|term| {
+                let generator = self.checker().expr(term)?;
+                self.checker().require_type(
+                    torsion_type,
+                    &generator,
+                    "Jacobian torsion basis generator",
+                )?;
+                let Value::Jacobian(value) = self.eval(&generator)? else {
+                    unreachable!()
+                };
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(height) = height {
+            let ring = Residues::new(prime, height).map_err(|_| {
+                Error::new(
+                    name.span,
+                    "Jacobian torsion modulus exceeds the supported integer range",
+                )
+            })?;
+            let basis = jacobian_level::Basis::new_power(
+                &mut self.model,
+                curve_name.text.into(),
+                curve,
+                ring,
+                &root,
+                generators,
+            )
+            .map_err(|error| error.at(name.span))?;
+            self.model.define_jacobian_power_level(name, basis)
+        } else {
+            let basis = jacobian_level::Basis::new(
+                &mut self.model,
+                curve_name.text.into(),
+                curve,
+                prime,
+                &root,
+                generators,
+            )
+            .map_err(|error| error.at(name.span))?;
+            self.model.define_jacobian_level(name, basis)
+        }
+    }
+
     fn jacobian_level_command(
         &mut self,
         command: jacobian_level::Command,
     ) -> Result<Option<String>> {
         use jacobian_level::Command;
         match command {
-            Command::Define(name, curve_name, level, root, generators) => {
-                self.model.check_new_jacobian_level(&name)?;
+            Command::Define(name, curve, level, root, generators) => {
+                self.define_jacobian_marking(name, curve, (level, None), *root, generators)?;
+                Ok(None)
+            }
+            Command::PowerDefine(name, curve, ell, height, root, generators) => {
+                self.define_jacobian_marking(name, curve, (ell, Some(height)), *root, generators)?;
+                Ok(None)
+            }
+            Command::PowerFrobenius(name, base, power) => {
+                let basis = self.model.jacobian_power_level(&name)?;
                 let curve = self
                     .model
-                    .jacobian_curve(&curve_name.text)
-                    .map_err(|error| error.at(curve_name.span))?;
-                if level != 2 && (level < 2 || level.is_multiple_of(2)) {
-                    return Err(Error::new(
-                        name.span,
-                        "Jacobian torsion level must be prime",
-                    ));
-                }
-                let prime = self
-                    .checker()
-                    .scalar_prime(level)
-                    .map_err(|error| error.at(name.span))?;
-                let root_type = self.model.rv_unram_type(&Label {
-                    text: curve.grade.ring.to_string(),
-                    span: root.span,
-                })?;
-                let torsion_type = self.model.jacobian_type(curve_name.text.as_str().into())?;
-                let root = self.checker().expr(*root)?;
-                self.checker()
-                    .require_type(root_type, &root, "Jacobian torsion root of unity")?;
-                let Value::RVUnram(root) = self.eval(&root)? else {
-                    unreachable!()
-                };
-                self.model.spend(generators.len())?;
-                let generators = generators
-                    .into_iter()
-                    .map(|term| {
-                        let generator = self.checker().expr(term)?;
-                        self.checker().require_type(
-                            torsion_type,
-                            &generator,
-                            "Jacobian torsion basis generator",
-                        )?;
-                        let Value::Jacobian(value) = self.eval(&generator)? else {
-                            unreachable!()
-                        };
-                        Ok(value)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                let basis = jacobian_level::Basis::new(
+                    .jacobian_curve(&base.text)
+                    .map_err(|error| error.at(base.span))?;
+                let (result, inverse) = basis.power_frobenius(&mut self.model, &curve, power)?;
+                Ok(Some(self.model.show_jacobian_power_frob(
+                    &name.text,
+                    &base.text,
+                    basis.order,
+                    power,
+                    &result,
+                    &inverse,
+                )?))
+            }
+            Command::PowerTransition(source, target) => {
+                let from = self.model.jacobian_power_level(&source)?;
+                let to = self.model.jacobian_power_level(&target)?;
+                let (matrix, inverse, exponent) = to.transition(&mut self.model, &from)?;
+                Ok(Some(self.model.show_jacobian_power_transition(
+                    &source.text,
+                    &target.text,
+                    exponent,
+                    &matrix,
+                    &inverse,
+                )?))
+            }
+            Command::Brauer(name, base, degree, with_artin_tate) => {
+                let basis = self.model.jacobian_power_level(&name)?;
+                let curve = self
+                    .model
+                    .kummer_curve(&base.text)
+                    .map_err(|error| error.at(base.span))?;
+                jacobian_level::brauer::report(
                     &mut self.model,
-                    curve_name.text.into(),
-                    curve,
-                    prime,
-                    &root,
-                    generators,
+                    &basis,
+                    &curve,
+                    &name.text,
+                    &base.text,
+                    degree,
+                    with_artin_tate,
                 )
-                .map_err(|error| error.at(name.span))?;
-                self.model.define_jacobian_level(name, basis)?;
-                Ok(None)
+                .map(Some)
             }
             Command::Frobenius(name, base, power) => {
                 let basis = self.model.jacobian_level(&name)?;
@@ -10615,6 +10701,13 @@ impl Engine {
                 hyperelliptic::persist_matrix(&mut self.model, m)
             }
             TypedForm::Jacobian(action) => self.eval_jacobian(action),
+            TypedForm::JacobianPowerCoordinate(basis, index, input) => {
+                let Value::Jacobian(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = basis.power_coordinate(&mut self.model, &divisor, *index)?;
+                rv_unram::persist(&mut self.model, vec![value])
+            }
             TypedForm::JacobianLevelCoordinate(basis, index, input) => {
                 let Value::Jacobian(divisor) = self.eval(input)? else {
                     unreachable!()
@@ -17213,6 +17306,30 @@ impl Checker<'_> {
                     crate::richelot::hecke::kernel(self.model, &basis, &base, plane, generator)?;
                 let ty = self.model.jacobian_type(curve)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::JacobianPowerCoordinate(name, ring_name, index, input) => {
+                let basis = self.model.jacobian_power_level(&name)?;
+                if index >= basis.len() {
+                    return Err(Error::new(
+                        name.span,
+                        "Jacobian torsion basis coordinate index is out of range",
+                    ));
+                }
+                let ring = self.model.rv_unram(&ring_name)?;
+                if ring.prime() != u64::from(basis.prime.get())
+                    || ring.precision() != basis.height
+                    || ring.degree() != 1
+                {
+                    return Err(Error::new(ring_name.span, "Jacobian power coordinate requires a degree-one residue ring of the marked prime and height"));
+                }
+                let expected = self.model.jacobian_type(basis.curve_name.clone())?;
+                let input = self.expr(*input)?;
+                self.require_type(expected, &input, "rvJacPowerCoord input")?;
+                let ty = self.model.rv_unram_type(&ring_name)?;
+                Ok((
+                    ty,
+                    TypedForm::JacobianPowerCoordinate(basis, index, Box::new(input)),
+                ))
             }
             ExprForm::JacobianLevelCoordinate(name, index, input) => {
                 let basis = self.model.jacobian_level(&name)?;

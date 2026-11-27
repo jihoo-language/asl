@@ -14,10 +14,15 @@ use crate::odd_cobar::Prime;
 use crate::rv_unram::{mul_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod brauer;
 pub(crate) mod richelot;
 
 pub(crate) enum Command {
     Define(Label, Label, usize, Box<ParsedExpr>, Vec<ParsedExpr>),
+    PowerDefine(Label, Label, usize, usize, Box<ParsedExpr>, Vec<ParsedExpr>),
+    PowerFrobenius(Label, Label, usize),
+    PowerTransition(Label, Label),
+    Brauer(Label, Label, usize, bool),
     Frobenius(Label, Label, usize),
     RichelotMatrix(Label, Label),
 }
@@ -25,6 +30,8 @@ pub(crate) enum Command {
 pub(crate) struct Basis {
     pub(crate) curve_name: Rc<str>,
     pub(crate) prime: Prime,
+    pub(crate) height: usize,
+    pub(crate) order: u64,
     curve: Rc<Curve>,
     generators: Box<[Rc<Divisor>]>,
     root: Scalar,
@@ -60,7 +67,29 @@ impl Basis {
         root: &[u64],
         generators: Vec<Rc<Divisor>>,
     ) -> Result<Self> {
-        let order = u64::from(prime.get());
+        Self::new_power(
+            model,
+            curve_name,
+            curve,
+            Residues::new(prime, 1)?,
+            root,
+            generators,
+        )
+    }
+
+    pub(crate) fn new_power(
+        model: &mut Model,
+        curve_name: Rc<str>,
+        curve: Rc<Curve>,
+        level: Residues,
+        root: &[u64],
+        generators: Vec<Rc<Divisor>>,
+    ) -> Result<Self> {
+        let Residues {
+            prime,
+            precision: height,
+            modulus: order,
+        } = level;
         let genus = curve.grade.genus;
         if generators.len() != 2 * genus {
             return Err(Error::plain(format!(
@@ -68,13 +97,18 @@ impl Basis {
                 2 * genus
             )));
         }
-        if order == curve.ring.prime() {
+        if u64::from(prime.get()) == curve.ring.prime() {
             return Err(Error::plain(
                 "Jacobian torsion level must differ from the residue characteristic",
             ));
         }
         let one = curve.ring.scalar(1);
-        if root == one || curve.ring.power(model, root, order)? != one {
+        if curve
+            .ring
+            .power(model, root, order / u64::from(prime.get()))?
+            == one
+            || curve.ring.power(model, root, order)? != one
+        {
             return Err(Error::plain(format!(
                 "Jacobian torsion basis requires a primitive root of unity of order {order}"
             )));
@@ -104,6 +138,8 @@ impl Basis {
         Ok(Self {
             curve_name,
             prime,
+            height,
+            order,
             curve,
             generators: generators.into_boxed_slice(),
             root: root.to_vec(),
@@ -144,6 +180,16 @@ impl Basis {
 
     pub(crate) fn coordinate(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u32> {
         self.require_torsion(model, t, "rvJacTorsionCoord")?;
+        Ok(self.coordinate_of_torsion(model, t, index)? as u32)
+    }
+
+    pub(crate) fn power_coordinate(
+        &self,
+        model: &mut Model,
+        t: &Divisor,
+        index: usize,
+    ) -> Result<u64> {
+        self.require_torsion(model, t, "Jacobian torsion coordinate")?;
         self.coordinate_of_torsion(model, t, index)
     }
 
@@ -154,12 +200,15 @@ impl Basis {
     ) -> Result<Vec<u32>> {
         self.require_torsion(model, t, "generalized Kummer translation")?;
         (0..self.len())
-            .map(|index| self.coordinate_of_torsion(model, t, index))
+            .map(|index| {
+                self.coordinate_of_torsion(model, t, index)
+                    .map(|value| value as u32)
+            })
             .collect()
     }
 
     fn require_torsion(&self, model: &mut Model, t: &Divisor, context: &str) -> Result<()> {
-        let order = u64::from(self.prime.get());
+        let order = self.order;
         if !is_torsion(model, &self.curve, order, t)? {
             return Err(Error::plain(format!(
                 "{context} requires a class killed by {order}"
@@ -168,14 +217,14 @@ impl Basis {
         Ok(())
     }
 
-    fn coordinate_of_torsion(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u32> {
+    fn coordinate_of_torsion(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u64> {
         let genus = self.curve.grade.genus;
         let (left, right) = if index < genus {
             (t, self.generators[genus + index].as_ref())
         } else {
             (self.generators[index - genus].as_ref(), t)
         };
-        let order = u64::from(self.prime.get());
+        let order = self.order;
         let value = pairing(model, &self.curve, order, left, right)?;
         self.logarithm
             .evaluate(model, &self.curve.ring, order, value)
@@ -191,12 +240,12 @@ impl Basis {
     ) -> Result<Matrix<u64>> {
         let curve = &self.curve;
         let width = self.len();
-        if width != source.len() || self.prime != source.prime {
+        if width != source.len() || self.order != source.order || self.prime != source.prime {
             return Err(Error::plain(
-                "Jacobian torsion action requires bases of equal rank and prime level",
+                "Jacobian torsion action requires bases of equal rank and level",
             ));
         }
-        let ring = Residues::new(self.prime, 1)?;
+        let ring = Residues::new(self.prime, self.height)?;
         let cells = ring.matrix_size(width)?;
         model.spend(cells)?;
         let mut entries = vec![0; cells];
@@ -205,7 +254,7 @@ impl Basis {
             let mut reconstruction = Divisor::zero(curve);
             for (row, basis_element) in self.generators.iter().enumerate() {
                 let coefficient = self.coordinate_of_torsion(model, &image, row)?;
-                entries[row * width + column] = u64::from(coefficient);
+                entries[row * width + column] = coefficient;
                 if coefficient != 0 {
                     let term = basis_element.scale(model, curve, i128::from(coefficient))?;
                     reconstruction = reconstruction.add(model, curve, &term)?;
@@ -220,6 +269,73 @@ impl Basis {
         Matrix::from_entries(width, entries)
     }
 
+    pub(crate) fn transition(
+        &self,
+        model: &mut Model,
+        source: &Self,
+    ) -> Result<(Matrix<u64>, Matrix<u64>, u64)> {
+        if self.curve_name != source.curve_name || self.order != source.order {
+            return Err(Error::plain(
+                "Jacobian level transition requires the same named curve and level",
+            ));
+        }
+        let matrix = self.action_matrix(model, source, |_, divisor| Ok(divisor.clone()))?;
+        let reverse = source.action_matrix(model, self, |_, divisor| Ok(divisor.clone()))?;
+        let ring = Residues::new(self.prime, self.height)?;
+        let inverse = hw_algebra::inverse(model, &ring, &matrix)?
+            .ok_or_else(|| Error::plain("Jacobian level transition is singular"))?;
+        if inverse.entries() != reverse.entries() {
+            return Err(Error::plain(
+                "Jacobian level inverse disagrees with the reverse divisor coordinates",
+            ));
+        }
+        let multiplier =
+            self.logarithm
+                .evaluate(model, &self.curve.ring, self.order, source.root.clone())?;
+        verify_similitude_mod(
+            model,
+            self.order,
+            self.curve.grade.genus,
+            multiplier,
+            &matrix,
+        )?;
+        Ok((matrix, reverse, multiplier))
+    }
+
+    pub(crate) fn power_frobenius(
+        &self,
+        model: &mut Model,
+        base: &Curve,
+        power: usize,
+    ) -> Result<(Frobenius, Matrix<u64>)> {
+        let direct = self.frobenius(model, base, power)?;
+        let ring = Residues::new(self.prime, self.height)?;
+        if power != 1 {
+            let mut expected = hw_algebra::identity(model, &ring, self.len())?;
+            let mut exponent = power;
+            if exponent > 0 {
+                let mut current = self.frobenius(model, base, 1)?.matrix;
+                while exponent > 0 {
+                    if exponent & 1 != 0 {
+                        expected = hw_algebra::multiply(model, &ring, &expected, &current)?;
+                    }
+                    exponent >>= 1;
+                    if exponent > 0 {
+                        current = hw_algebra::multiply(model, &ring, &current, &current)?;
+                    }
+                }
+            }
+            if direct.matrix.entries() != expected.entries() {
+                return Err(Error::plain(
+                    "Jacobian Frobenius power disagrees with matrix composition",
+                ));
+            }
+        }
+        let inverse = hw_algebra::inverse(model, &ring, &direct.matrix)?
+            .ok_or_else(|| Error::plain("Jacobian torsion Frobenius is singular"))?;
+        Ok((direct, inverse))
+    }
+
     pub(crate) fn frobenius(
         &self,
         model: &mut Model,
@@ -227,24 +343,16 @@ impl Basis {
         power: usize,
     ) -> Result<Frobenius> {
         let curve = &self.curve;
-        if self.len() == 0 {
-            // Even an empty basis requires a valid base extension.
-            Divisor::zero(curve).frobenius(model, base, curve, power)?;
-        }
+        let p_power =
+            crate::hyperelliptic_jacobian::relative_frobenius_power(model, base, curve, power)?;
         let matrix = self.action_matrix(model, self, |model, generator| {
-            generator.frobenius(model, base, curve, power)
+            generator.frobenius_coefficients(model, curve, p_power)
         })?;
-        let order = u64::from(self.prime.get());
+        let order = self.order;
         let q = power_mod(model, base.ring.prime(), base.ring.degree(), order)?;
         let multiplier = power_mod(model, q, power, order)?;
-        verify_similitude(
-            model,
-            self.prime,
-            curve.grade.genus,
-            multiplier as u32,
-            &matrix,
-        )?;
-        let ring = Residues::new(self.prime, 1)?;
+        verify_similitude_mod(model, order, curve.grade.genus, multiplier, &matrix)?;
+        let ring = Residues::new(self.prime, self.height)?;
         let characteristic = hw_algebra::characteristic(model, &ring, &matrix)?;
         Ok(Frobenius {
             matrix,
@@ -277,7 +385,7 @@ fn is_torsion(model: &mut Model, curve: &Curve, order: u64, divisor: &Divisor) -
 }
 
 struct Logarithm {
-    babies: HashMap<Scalar, u32>,
+    babies: HashMap<Scalar, u64>,
     step: u64,
     inverse_step: Scalar,
 }
@@ -286,13 +394,19 @@ impl Logarithm {
     fn new(model: &mut Model, ring: &Ring, order: u64, root: &[u64]) -> Result<Self> {
         let step = (order - 1).isqrt() + 1;
         let width = ring.degree() + 7;
-        model.allocate((step as usize + 1) * width)?;
-        let mut babies = HashMap::with_capacity(step as usize);
+        let capacity = usize::try_from(step)
+            .map_err(|_| Error::plain("Jacobian torsion logarithm exceeds the supported size"))?;
+        let entries = capacity
+            .checked_add(1)
+            .and_then(|entries| entries.checked_mul(width))
+            .ok_or_else(|| Error::plain("Jacobian torsion logarithm exceeds the supported size"))?;
+        model.allocate(entries)?;
+        let mut babies = HashMap::with_capacity(capacity);
         let mut value = ring.scalar(1);
         for j in 0..step {
             let next = ring.multiply(model, &value, root)?;
             model.spend(width)?;
-            babies.insert(value, j as u32);
+            babies.insert(value, j);
             value = next;
         }
         let inverse_step = ring.power(model, root, order - step)?;
@@ -309,11 +423,12 @@ impl Logarithm {
         ring: &Ring,
         order: u64,
         mut value: Scalar,
-    ) -> Result<u32> {
+    ) -> Result<u64> {
         for block in 0..order.div_ceil(self.step) {
             model.spend(ring.degree() + 1)?;
             if let Some(&baby) = self.babies.get(&value) {
-                return Ok(((block * self.step + u64::from(baby)) % order) as u32);
+                let index = u128::from(block) * u128::from(self.step) + u128::from(baby);
+                return Ok((index % u128::from(order)) as u64);
             }
             value = ring.multiply(model, &value, &self.inverse_step)?;
         }
@@ -323,7 +438,12 @@ impl Logarithm {
     }
 }
 
-fn power_mod(model: &mut Model, mut value: u64, mut power: usize, modulus: u64) -> Result<u64> {
+pub(crate) fn power_mod(
+    model: &mut Model,
+    mut value: u64,
+    mut power: usize,
+    modulus: u64,
+) -> Result<u64> {
     let mut result = 1;
     value %= modulus;
     while power != 0 {
@@ -344,21 +464,32 @@ pub(crate) fn verify_similitude(
     multiplier: u32,
     matrix: &Matrix<u64>,
 ) -> Result<()> {
+    verify_similitude_mod(
+        model,
+        u64::from(prime.get()),
+        genus,
+        u64::from(multiplier),
+        matrix,
+    )
+}
+
+fn verify_similitude_mod(
+    model: &mut Model,
+    modulus: u64,
+    genus: usize,
+    multiplier: u64,
+    matrix: &Matrix<u64>,
+) -> Result<()> {
+    use crate::rv_unram::{add_mod, sub_mod};
     let width = matrix.size();
     for i in 0..width {
         for j in i + 1..width {
             model.spend(1 + genus)?;
             let mut pair = 0;
             for k in 0..genus {
-                let forward = prime.mul(
-                    *matrix.entry(k, i) as u32,
-                    *matrix.entry(k + genus, j) as u32,
-                );
-                let reverse = prime.mul(
-                    *matrix.entry(k + genus, i) as u32,
-                    *matrix.entry(k, j) as u32,
-                );
-                pair = prime.add(pair, prime.add(forward, prime.negate(reverse)));
+                let forward = mul_mod(*matrix.entry(k, i), *matrix.entry(k + genus, j), modulus);
+                let reverse = mul_mod(*matrix.entry(k + genus, i), *matrix.entry(k, j), modulus);
+                pair = add_mod(pair, sub_mod(forward, reverse, modulus), modulus);
             }
             let expected = if j == i + genus { multiplier } else { 0 };
             if pair != expected {

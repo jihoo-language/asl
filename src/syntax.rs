@@ -1015,6 +1015,7 @@ pub(crate) enum ExprForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Expression>),
     JacobianRichelotKernel(Label, Label, usize, usize),
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
+    JacobianPowerCoordinate(Label, Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Expression>),
@@ -3051,30 +3052,51 @@ impl<'src> Parser<'src> {
     fn jacobian_level_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::jacobian_level::Command;
         self.advance()?;
-        let command = if name == "rvjactorsionbasis" {
+        let command = if matches!(name, "rvjactorsionbasis" | "rvjacpowerbasis") {
             let basis = self.label()?;
             self.expect(Token::LBracket)?;
             let curve = self.label()?;
             self.expect(Token::Comma)?;
             let level = self.number()?.0;
+            let height = if name == "rvjacpowerbasis" {
+                self.expect(Token::Comma)?;
+                Some(self.number()?.0)
+            } else {
+                None
+            };
             self.expect(Token::RBracket)?;
             let root = self.paren_expr(0)?;
             let generators = self.set_named_rows(|parser| parser.expr(0))?;
-            Command::Define(basis, curve, level, Box::new(root), generators)
+            if let Some(height) = height {
+                Command::PowerDefine(basis, curve, level, height, Box::new(root), generators)
+            } else {
+                Command::Define(basis, curve, level, Box::new(root), generators)
+            }
         } else {
             self.expect(Token::LBracket)?;
             let basis = self.label()?;
             self.expect(Token::Comma)?;
             let endpoint = self.label()?;
-            if name == "rvJacRichelotMatrix" {
-                self.expect(Token::RBracket)?;
-                Command::RichelotMatrix(basis, endpoint)
-            } else {
-                self.expect(Token::Comma)?;
-                let power = self.number()?.0;
-                self.expect(Token::RBracket)?;
-                Command::Frobenius(basis, endpoint, power)
-            }
+            let command = match name {
+                "rvJacRichelotMatrix" => Command::RichelotMatrix(basis, endpoint),
+                "rvJacPowerTransition" => Command::PowerTransition(basis, endpoint),
+                _ => {
+                    self.expect(Token::Comma)?;
+                    let power = self.number()?.0;
+                    match name {
+                        "rvJacPowerFrob" => Command::PowerFrobenius(basis, endpoint, power),
+                        "rvKummerK3Brauer" | "rvKummerK3BrauerArtinTate" => Command::Brauer(
+                            basis,
+                            endpoint,
+                            power,
+                            name == "rvKummerK3BrauerArtinTate",
+                        ),
+                        _ => Command::Frobenius(basis, endpoint, power),
+                    }
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
@@ -9098,7 +9120,14 @@ impl<'src> Parser<'src> {
                 | "rvJacHilbTrace"),
             ) => self.generalized_kummer_statement(command)?,
             Token::Word(
-                command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
+                command @ ("rvjactorsionbasis"
+                | "rvJacTorsionFrob"
+                | "rvJacRichelotMatrix"
+                | "rvjacpowerbasis"
+                | "rvJacPowerFrob"
+                | "rvJacPowerTransition"
+                | "rvKummerK3Brauer"
+                | "rvKummerK3BrauerArtinTate"),
             ) => self.jacobian_level_statement(command)?,
             Token::Word(
                 command @ ("rvrichelot"
@@ -14698,6 +14727,21 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.enriques_expression(&name.text, span, nest);
+                }
+                if name.text == "rvJacPowerCoord" && self.eat(Token::LBracket)? {
+                    let basis = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let ring = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::JacobianPowerCoordinate(basis, ring, index, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvJacTorsionCoord" && self.eat(Token::LBracket)? {
                     let basis = self.label()?;

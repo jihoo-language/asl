@@ -696,6 +696,7 @@ pub(crate) struct Model {
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
+    jacobian_power_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
@@ -833,6 +834,7 @@ impl Model {
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
+            jacobian_power_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
@@ -3938,7 +3940,9 @@ impl Model {
     }
 
     pub(crate) fn check_new_jacobian_level(&self, name: &Label) -> Result<()> {
-        if self.jacobian_levels.contains_key(&name.text) {
+        if self.jacobian_levels.contains_key(&name.text)
+            || self.jacobian_power_levels.contains_key(&name.text)
+        {
             return Err(Error::new(
                 name.span,
                 format!("Jacobian torsion basis '{}' is already defined", name.text),
@@ -3956,6 +3960,27 @@ impl Model {
         self.allocate(1 + name.text.len())?;
         self.jacobian_levels.insert(name.text, Rc::new(basis));
         Ok(())
+    }
+
+    pub(crate) fn define_jacobian_power_level(
+        &mut self,
+        name: Label,
+        basis: crate::jacobian_level::Basis,
+    ) -> Result<()> {
+        self.check_new_jacobian_level(&name)?;
+        self.allocate(1 + name.text.len())?;
+        self.jacobian_power_levels.insert(name.text, Rc::new(basis));
+        Ok(())
+    }
+
+    pub(crate) fn jacobian_power_level(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::jacobian_level::Basis>> {
+        if let Some(basis) = self.jacobian_power_levels.get(&name.text) {
+            return Ok(Rc::clone(basis));
+        }
+        self.jacobian_level(name)
     }
 
     pub(crate) fn jacobian_level(&self, name: &Label) -> Result<Rc<crate::jacobian_level::Basis>> {
@@ -4142,6 +4167,46 @@ impl Model {
         self.write_jacobian_level_matrix(&mut out, &result.matrix)?;
         self.spend(result.characteristic.len())?;
         out.push(&format!(", characteristic={:?}", result.characteristic))?;
+        Ok(out.string)
+    }
+
+    pub(crate) fn show_jacobian_power_frob(
+        &mut self,
+        basis: &str,
+        base: &str,
+        level: u64,
+        power: usize,
+        result: &crate::jacobian_level::Frobenius,
+        inverse: &HWMatrix<u64>,
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!(
+            "rvJacPowerFrob[{basis}, {base}, {power}] = level={level}, multiplier={}, matrix=",
+            result.multiplier
+        ))?;
+        self.write_jacobian_level_matrix(&mut out, &result.matrix)?;
+        out.push(", inverse=")?;
+        self.write_jacobian_level_matrix(&mut out, inverse)?;
+        self.spend(result.characteristic.len())?;
+        out.push(&format!(", characteristic={:?}", result.characteristic))?;
+        Ok(out.string)
+    }
+
+    pub(crate) fn show_jacobian_power_transition(
+        &mut self,
+        source: &str,
+        target: &str,
+        root_exponent: u64,
+        matrix: &HWMatrix<u64>,
+        inverse: &HWMatrix<u64>,
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!(
+            "rvJacPowerTransition[{source}, {target}] = root_exponent={root_exponent}, matrix="
+        ))?;
+        self.write_jacobian_level_matrix(&mut out, matrix)?;
+        out.push(", inverse=")?;
+        self.write_jacobian_level_matrix(&mut out, inverse)?;
         Ok(out.string)
     }
 

@@ -50,6 +50,16 @@ impl Command {
     }
 }
 
+pub(crate) fn artin_tate_magnitude(
+    model: &mut Model,
+    q: u64,
+    weil: &[i128],
+    orbits: &[usize],
+    degree: u128,
+) -> Result<u128> {
+    Ok(artin_tate::data(model, q, weil, orbits, degree)?.magnitude)
+}
+
 pub(crate) fn node_orbits(model: &mut Model, curve: &Curve, q: u64) -> Result<Vec<usize>> {
     let field = Field { ring: &curve.ring };
     let polynomial = curve.polynomial();
@@ -247,16 +257,20 @@ const CYCLOTOMIC: &[(u128, &[i128])] = &[
     (12, &[1, 0, -1, 0, 1]),
 ];
 
-fn picard_ranks(
+pub(crate) fn picard_ranks(
     model: &mut Model,
     q: u64,
     weil: &[i128],
     orbits: &[usize],
     degree: u128,
 ) -> Result<(u128, u8)> {
-    let exceptional: u128 = orbits.iter().map(|&d| gcd(degree, d as u128)).sum();
+    let exceptional = exceptional_picard_rank(orbits, degree);
     let (rational, geometric) = abelian_picard(model, q, cross_quartic(q, weil)?, degree)?;
     Ok((u128::from(rational) + exceptional, geometric + 16))
+}
+
+pub(crate) fn exceptional_picard_rank(orbits: &[usize], degree: u128) -> u128 {
+    orbits.iter().map(|&d| gcd(degree, d as u128)).sum()
 }
 
 fn abelian_picard(model: &mut Model, q: u64, cross: [i128; 5], degree: u128) -> Result<(u8, u8)> {

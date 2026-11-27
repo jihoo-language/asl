@@ -364,7 +364,7 @@ impl Divisor {
         })
     }
 
-    fn frobenius_coefficients(
+    pub(crate) fn frobenius_coefficients(
         &self,
         model: &mut Model,
         target: &Curve,

@@ -30,7 +30,7 @@ impl Basis {
                 "Richelot torsion matrices require genus-two bases",
             ));
         }
-        if self.prime != target.prime {
+        if self.prime != target.prime || self.height != 1 || target.height != 1 {
             return Err(Error::plain(
                 "Richelot torsion bases must have the same prime level",
             ));
@@ -60,7 +60,7 @@ impl Basis {
         let root_exponent =
             target
                 .logarithm
-                .evaluate(model, &target.curve.ring, order, self.root.clone())?;
+                .evaluate(model, &target.curve.ring, order, self.root.clone())? as u32;
         let inverse_exponent = prime_linear::invert(model, prime, root_exponent)?;
         let two = prime.add(1, 1);
         let multiplier = prime.mul(two, root_exponent);
