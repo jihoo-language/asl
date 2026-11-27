@@ -126,6 +126,7 @@ mod rv_phodge;
 mod rv_poly;
 mod rv_qconnection;
 mod rv_qgr;
+mod rv_qp_quad;
 mod rv_qregular;
 mod rv_rees;
 mod rv_satake;

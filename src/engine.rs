@@ -107,6 +107,7 @@ use crate::rv_period::{self, Grade as PeriodGrade, Level as PeriodLevel};
 use crate::rv_poly;
 use crate::rv_qconnection;
 use crate::rv_qgr;
+use crate::rv_qp_quad::{self, Element as QuadElement, Field as QuadField, Unary as QuadUnary};
 use crate::rv_qregular;
 use crate::rv_rees;
 use crate::rv_satake;
@@ -430,6 +431,7 @@ enum TypedForm {
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
     HeckeNegate(Box<TypedExpr>),
+    QpQuadUnary(QuadField, QuadUnary, Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
@@ -2185,6 +2187,74 @@ impl Engine {
                     .rv_as_odd_cover(&name)?
                     .report(&mut self.model, &name.text, query)?
             }
+            StatementForm::RvQpQuad(name, p, d, r) => {
+                self.model.register_qp_quad(name, p, d, r)?;
+                return Ok(None);
+            }
+            StatementForm::RvQpQuadReport(precision, input) => {
+                let input = self.checker().expr(input)?;
+                let operation = if precision.is_some() {
+                    "rvQpQuadResidue"
+                } else {
+                    "rvQpQuadVal"
+                };
+                let field = self.checker().qp_quad_field(&input, operation)?;
+                let Value::RVQpQuad(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match precision {
+                    Some(s) => format!(
+                        "rvQpQuadResidue = {}",
+                        field.residue(&mut self.model, value, s)?
+                    ),
+                    None => match field.valuation(&mut self.model, value)? {
+                        Some(order) => format!("rvQpQuadVal = {order}"),
+                        None => "rvQpQuadVal = infinity".to_owned(),
+                    },
+                }
+            }
+            StatementForm::RvPHodgeQuad(name, field, spec) => {
+                let ty = self.model.qp_quad_type(&field)?;
+                let field = self.model.qp_quad(&field)?;
+                let mut read = |input| -> Result<QuadElement> {
+                    let input = self.checker().expr(input)?;
+                    self.checker().require_type(ty, &input, "rvphodgequad")?;
+                    let Value::RVQpQuad(value) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    Ok(value)
+                };
+                let eigenvalues = spec
+                    .eigenvalues
+                    .into_iter()
+                    .map(&mut read)
+                    .collect::<Result<Vec<_>>>()?;
+                let monodromy = spec
+                    .monodromy
+                    .into_iter()
+                    .map(|(i, j, value)| Ok((i, j, read(value)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                let filtration = spec
+                    .filtration
+                    .into_iter()
+                    .map(|(weight, column)| {
+                        Ok((
+                            weight,
+                            column
+                                .into_iter()
+                                .map(&mut read)
+                                .collect::<Result<Vec<_>>>()?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let spec = crate::rv_phodge::QuadraticSpec {
+                    eigenvalues,
+                    monodromy,
+                    filtration,
+                };
+                self.model.register_rv_phodge_quad(name, field, spec)?;
+                return Ok(None);
+            }
             StatementForm::RvPHodge(name, spec) => {
                 self.model.register_rv_phodge(name, spec)?;
                 return Ok(None);
@@ -3439,6 +3509,24 @@ impl Engine {
                     (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
                         rv_tl::add(&mut self.model, &a, &b)
                     }
+                    (
+                        operation @ (BinaryOp::Add | BinaryOp::QpQuadMultiply),
+                        Value::RVQpQuad(a),
+                        Value::RVQpQuad(b),
+                    ) => {
+                        let Kind::RVQpQuad(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let field = self
+                            .model
+                            .qp_quad_named(name)
+                            .expect("registered quadratic field");
+                        let value = match operation {
+                            BinaryOp::Add => field.add(&mut self.model, a, b)?,
+                            _ => field.multiply(&mut self.model, a, b)?,
+                        };
+                        rv_qp_quad::persist(&mut self.model, value)
+                    }
                     (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
                         rv_lens::add(&mut self.model, &a, &b)
                     }
@@ -4384,6 +4472,13 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::QpQuadUnary(field, operation, input) => {
+                let Value::RVQpQuad(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = operation.apply(&mut self.model, *field, value)?;
+                rv_qp_quad::persist(&mut self.model, value)
+            }
             TypedForm::HeckeNegate(input) => match self.eval(input)? {
                 Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
                 Value::RVSphHecke(value) => rv_sphhecke::neg(&mut self.model, &value),
@@ -6305,6 +6400,7 @@ impl Checker<'_> {
             TypeForm::RvTl(level, strands, height) => self
                 .model
                 .tl_type(rv_tl::Grade::checked(level, strands, height)?),
+            TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
@@ -7018,6 +7114,7 @@ impl Checker<'_> {
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
+                    Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
                     Kind::RVCycloQ(..) => rv_lens::zero(),
                     Kind::RvTl(..) => rv_tl::zero(),
                     Kind::RVWzw(..) => rv_wzw::zero(),
@@ -8872,6 +8969,22 @@ impl Checker<'_> {
                 let value = eo::persist(self.model, sequence).map_err(|error| error.at(span))?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::QpQuadElement(name, a, b, c) => {
+                let ty = self.model.qp_quad_type(&name)?;
+                let value = QuadElement::new(a, b, c).map_err(|error| error.at(span))?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(rv_qp_quad::persist(self.model, value)?),
+                ))
+            }
+            ExprForm::QpQuadUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let field = self.qp_quad_field(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::QpQuadUnary(field, operation, Box::new(input)),
+                ))
+            }
             ExprForm::EOOddCover(name) => {
                 let cover = self.model.rv_as_odd_cover(&name)?;
                 let sequence = cover.derham(self.model)?.final_type(self.model, &cover)?;
@@ -9535,6 +9648,13 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::RVQpQuad(..)) {
+                    let field = self.qp_quad_field(&input, "neg")?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVOre) {
                     return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
                 }
@@ -12649,6 +12769,7 @@ impl Checker<'_> {
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::RVCycloQ(..)
+                        | Kind::RVQpQuad(..)
                         | Kind::RvTl(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
@@ -12866,6 +12987,11 @@ impl Checker<'_> {
                 };
                 self.require_type(left.ty, right, op)?;
                 self.model.prime_scalar_type(prime)
+            }
+            BinaryOp::QpQuadMultiply => {
+                self.qp_quad_field(left, "rvQpQuadMul")?;
+                self.require_type(left.ty, right, "rvQpQuadMul")?;
+                Ok(left.ty)
             }
             BinaryOp::BpCup => {
                 if matches!(self.model.kind(left.ty), Kind::BPExt(..))
@@ -13250,6 +13376,16 @@ impl Checker<'_> {
         } else {
             Prime::new(self.model, value)
         }
+    }
+
+    fn qp_quad_field(&self, input: &TypedExpr, operation: &str) -> Result<QuadField> {
+        let Kind::RVQpQuad(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVQpQuad element"));
+        };
+        Ok(self
+            .model
+            .qp_quad_named(name)
+            .expect("registered quadratic field"))
     }
 
     fn require_type(&self, expected: TypeId, actual: &TypedExpr, context: &str) -> Result<()> {

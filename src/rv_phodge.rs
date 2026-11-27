@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::rv_ore::gcd;
+use crate::rv_qp_quad::{Element, Field};
 
 pub(crate) struct Specification {
     pub(crate) prime: usize,
@@ -16,19 +17,37 @@ pub(crate) struct Specification {
     pub(crate) filtration: Vec<(i64, Vec<i128>)>,
 }
 
+pub(crate) struct QuadraticSpec<T> {
+    pub(crate) eigenvalues: Vec<T>,
+    pub(crate) monodromy: Vec<(usize, usize, T)>,
+    pub(crate) filtration: Vec<(i64, Vec<T>)>,
+}
+
 pub(crate) enum Query {
     Data(Option<Vec<usize>>),
     WeakAdmissibility,
     HarderNarasimhan,
 }
 
-type Column = Vec<(usize, i128)>;
+type Column<T = i128> = Vec<(usize, T)>;
+type WeightedColumns<T> = Vec<(i64, Column<T>)>;
+
+enum Filtration {
+    Rational(WeightedColumns<i128>),
+    Quadratic(Field, WeightedColumns<Element>),
+}
+
+struct Operators {
+    newton: Vec<i64>,
+    required: Vec<Option<usize>>,
+    chains: Vec<Vec<usize>>,
+}
 
 pub(crate) struct Module {
     newton: Vec<i64>,
     required: Vec<Option<usize>>,
     chains: Vec<Vec<usize>>,
-    filtration: Vec<(i64, Column)>,
+    filtration: Filtration,
     polygon: OnceCell<Vec<Step>>,
 }
 
@@ -155,111 +174,79 @@ impl Module {
             Prime::new(model, p)?
         };
         let n = spec.eigenvalues.len();
-        let flag_cells = n.saturating_mul(n.saturating_mul(2).saturating_add(16));
-        check_storage(flag_cells)?;
-        if spec.filtration.len() != n {
-            return Err(Error::plain(format!(
-                "filtered module requires {n} filtration columns"
-            )));
-        }
-
-        let mut eigenvalues = Vec::with_capacity(n);
-        let mut distinct = BTreeSet::new();
-        let mut newton = Vec::with_capacity(n);
-        for (a, b) in spec.eigenvalues {
-            let eigenvalue = Rational::new(a, b)?;
-            model.spend(1 + distinct.len().max(1).ilog2() as usize)?;
-            if a == 0 || !distinct.insert(eigenvalue) {
-                return Err(Error::plain(
-                    "filtered module requires distinct nonzero Frobenius eigenvalues",
-                ));
-            }
-            newton.push(eigenvalue.valuation(model, prime)?);
-            eigenvalues.push(eigenvalue);
-        }
-        let mut required = vec![None; n];
-        let mut higher = vec![None; n];
-        let mut supplied = BTreeSet::new();
-        for (row, column, a, b) in spec.monodromy {
-            if row >= n || column >= n {
-                return Err(Error::plain(format!(
-                    "monodromy entry ({row},{column}) is outside dimension {n}"
-                )));
-            }
-            model.spend(1 + supplied.len().max(1).ilog2() as usize)?;
-            if !supplied.insert((row, column)) {
-                return Err(Error::plain(format!(
-                    "duplicate monodromy entry ({row},{column})"
-                )));
-            }
-            let coefficient = Rational::new(a, b)?;
-            if coefficient.numerator == 0 {
-                continue;
-            }
-            if !eigenvalues[column].is_prime_multiple_of(eigenvalues[row], prime) {
-                return Err(Error::plain(format!(
-                    "monodromy fails N phi = p phi N at entry ({row},{column})"
-                )));
-            }
-            required[column] = Some(row);
-            higher[row] = Some(column);
-        }
-
-        // Each eigenvalue has at most one p-multiple and one p-division
-        // among the others. Following required coordinates strictly lowers
-        // the valuation. The graph is therefore a disjoint union of chains.
-        let mut chains = Vec::new();
-        model.spend(2 * n)?;
-        for (low, required) in required.iter().enumerate() {
-            if required.is_some() {
-                continue;
-            }
-            let mut chain = vec![low];
-            let mut current = low;
-            while let Some(index) = higher[current] {
-                chain.push(index);
-                current = index;
-            }
-            chains.push(chain);
-        }
-
-        debug_assert_eq!(chains.iter().map(Vec::len).sum::<usize>(), n);
-        let mut filtration = Vec::with_capacity(n);
+        validate_width(n, spec.filtration.len(), 2)?;
+        let monodromy = spec
+            .monodromy
+            .into_iter()
+            .map(|(i, j, a, b)| (i, j, (a, b)))
+            .collect();
+        let operators = validate_operators(
+            model,
+            spec.eigenvalues,
+            monodromy,
+            |(a, b)| Rational::new(a, b),
+            |c| c.numerator == 0,
+            |model, c| c.valuation(model, prime),
+            |source, target| source.is_prime_multiple_of(target, prime),
+        )?;
         let mut span = RationalBasis::default();
-        let mut cells = 8 + 8 * n + 3 * chains.len();
-        for (weight, entries) in spec.filtration {
-            if entries.len() != n {
-                return Err(Error::plain(format!(
-                    "each filtration column must have {n} entries"
-                )));
-            }
-            model.spend(n)?;
-            let column = primitive(
-                entries
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_, c)| *c != 0)
-                    .collect(),
-            );
-            cells += 3 + 3 * column.len();
-            if !span.insert(model, column.clone(), cells)? {
-                return Err(Error::plain(
-                    "filtration columns must be a basis over characteristic zero",
-                ));
-            }
-            filtration.push((weight, column));
-        }
-        model.spend(n * (1 + n.max(1).ilog2() as usize))?;
-        filtration.sort_by_key(|(weight, _)| Reverse(*weight));
-        check_storage(cells)?;
-        model.allocate(cells)?;
-        Ok(Self {
-            newton,
-            required,
-            chains,
+        let columns = build_flag(
+            model,
+            &operators,
+            spec.filtration,
+            3,
+            |entries| primitive(sparse_column(entries, |c| c == 0)),
+            |model, vector, cells| span.insert(model, vector, cells),
+        )?;
+        Ok(Self::with_filtration(
+            operators,
+            Filtration::Rational(columns),
+        ))
+    }
+
+    pub(crate) fn build_quadratic(
+        model: &mut Model,
+        field: Field,
+        spec: QuadraticSpec<Element>,
+    ) -> Result<Self> {
+        let n = spec.eigenvalues.len();
+        validate_width(n, spec.filtration.len(), 6)?;
+        let operators = validate_operators(
+            model,
+            spec.eigenvalues,
+            spec.monodromy,
+            Ok,
+            Element::is_zero,
+            |model, c| {
+                field
+                    .valuation(model, c)?
+                    .ok_or_else(|| Error::plain("zero Frobenius eigenvalue"))
+            },
+            |source, target| source.is_prime_multiple_of(target, field.prime()),
+        )?;
+        let mut span = QuadraticBasis::default();
+        let columns = build_flag(
+            model,
+            &operators,
+            spec.filtration,
+            7,
+            |entries| sparse_column(entries, Element::is_zero),
+            |model, vector, cells| span.insert(model, field, vector, cells),
+        )?;
+        Ok(Self::with_filtration(
+            operators,
+            Filtration::Quadratic(field, columns),
+        ))
+    }
+
+    fn with_filtration(operators: Operators, filtration: Filtration) -> Self {
+        Self {
+            newton: operators.newton,
+            required: operators.required,
+            chains: operators.chains,
             filtration,
             polygon: OnceCell::new(),
-        })
+        }
     }
 
     fn dimension(&self) -> usize {
@@ -300,30 +287,39 @@ impl Module {
             });
         }
         if coordinates.len() == n {
-            let hodge = self.filtration.iter().rev().map(|(w, _)| *w).collect();
+            let hodge = match &self.filtration {
+                Filtration::Rational(columns) => all_weights(columns),
+                Filtration::Quadratic(_, columns) => all_weights(columns),
+            };
             return Ok(Data { hodge, newton });
         }
         let mut selected = vec![false; n];
         for &i in coordinates {
             selected[i] = true;
         }
-        let mut hodge = Vec::with_capacity(coordinates.len());
-        let mut span = RationalBasis::default();
-        for (weight, column) in &self.filtration {
-            model.spend(1 + column.len())?;
-            let projection = column
-                .iter()
-                .copied()
-                .filter(|&(i, _)| !selected[i])
-                .collect();
-            // Each new flag column adds one to the flag dimension. A
-            // dependent projected column increases the intersection with
-            // the coordinate subspace by one at precisely this weight.
-            if !span.insert(model, projection, retained + 5 * n)? {
-                hodge.push(*weight);
+        let retained = retained + 5 * n;
+        let hodge = match &self.filtration {
+            Filtration::Rational(columns) => {
+                let mut span = RationalBasis::default();
+                intersection_weights(
+                    model,
+                    columns,
+                    &selected,
+                    retained,
+                    |model, vector, cells| span.insert(model, vector, cells),
+                )?
             }
-        }
-        hodge.reverse();
+            Filtration::Quadratic(field, columns) => {
+                let mut span = QuadraticBasis::default();
+                intersection_weights(
+                    model,
+                    columns,
+                    &selected,
+                    retained,
+                    |model, vector, cells| span.insert(model, *field, vector, cells),
+                )?
+            }
+        };
         Ok(Data { hodge, newton })
     }
 
@@ -472,6 +468,219 @@ impl Module {
                 Ok(format!("rvPHodgeHN[{name}] = [{}]", shown.join(", ")))
             }
         }
+    }
+}
+
+fn validate_width(n: usize, columns: usize, entry_cells: usize) -> Result<()> {
+    check_storage(n.saturating_mul(n.saturating_mul(entry_cells).saturating_add(16)))?;
+    if columns != n {
+        return Err(Error::plain(format!(
+            "filtered module requires {n} filtration columns"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_operators<A, T: Copy + Ord>(
+    model: &mut Model,
+    input: Vec<A>,
+    monodromy: Vec<(usize, usize, A)>,
+    normalize: impl Fn(A) -> Result<T>,
+    zero: impl Fn(T) -> bool,
+    mut valuation: impl FnMut(&mut Model, T) -> Result<i64>,
+    ratio: impl Fn(T, T) -> bool,
+) -> Result<Operators> {
+    let n = input.len();
+    let mut distinct = BTreeSet::new();
+    let mut newton = Vec::with_capacity(n);
+    let mut eigenvalues = Vec::with_capacity(n);
+    for entry in input {
+        let eigenvalue = normalize(entry)?;
+        model.spend(1 + distinct.len().max(1).ilog2() as usize)?;
+        if zero(eigenvalue) || !distinct.insert(eigenvalue) {
+            return Err(Error::plain(
+                "filtered module requires distinct nonzero Frobenius eigenvalues",
+            ));
+        }
+        newton.push(valuation(model, eigenvalue)?);
+        eigenvalues.push(eigenvalue);
+    }
+    let mut required = vec![None; n];
+    let mut higher = vec![None; n];
+    let mut supplied = BTreeSet::new();
+    for (row, column, entry) in monodromy {
+        if row >= n || column >= n {
+            return Err(Error::plain(format!(
+                "monodromy entry ({row},{column}) is outside dimension {n}"
+            )));
+        }
+        model.spend(1 + supplied.len().max(1).ilog2() as usize)?;
+        if !supplied.insert((row, column)) {
+            return Err(Error::plain(format!(
+                "duplicate monodromy entry ({row},{column})"
+            )));
+        }
+        if zero(normalize(entry)?) {
+            continue;
+        }
+        if !ratio(eigenvalues[column], eigenvalues[row]) {
+            return Err(Error::plain(format!(
+                "monodromy fails N phi = p phi N at entry ({row},{column})"
+            )));
+        }
+        required[column] = Some(row);
+        higher[row] = Some(column);
+    }
+
+    // Each eigenvalue has at most one p-multiple and one p-division
+    // among the others. Following required coordinates strictly lowers
+    // the valuation. The graph is therefore a disjoint union of chains.
+    let mut chains = Vec::new();
+    model.spend(2 * n)?;
+    for (low, required) in required.iter().enumerate() {
+        if required.is_some() {
+            continue;
+        }
+        let mut chain = vec![low];
+        let mut current = low;
+        while let Some(index) = higher[current] {
+            chain.push(index);
+            current = index;
+        }
+        chains.push(chain);
+    }
+
+    debug_assert_eq!(chains.iter().map(Vec::len).sum::<usize>(), n);
+    Ok(Operators {
+        newton,
+        required,
+        chains,
+    })
+}
+
+fn build_flag<T: Copy>(
+    model: &mut Model,
+    operators: &Operators,
+    filtration: Vec<(i64, Vec<T>)>,
+    entry_cells: usize,
+    sparse: impl Fn(Vec<T>) -> Column<T>,
+    mut independent: impl FnMut(&mut Model, Column<T>, usize) -> Result<bool>,
+) -> Result<WeightedColumns<T>> {
+    let n = operators.newton.len();
+    let mut columns = Vec::with_capacity(n);
+    let mut cells = 8 + 8 * n + 3 * operators.chains.len();
+    for (weight, entries) in filtration {
+        if entries.len() != n {
+            return Err(Error::plain(format!(
+                "each filtration column must have {n} entries"
+            )));
+        }
+        model.spend(n)?;
+        let column = sparse(entries);
+        cells += 3 + entry_cells * column.len();
+        if !independent(model, column.clone(), cells)? {
+            return Err(Error::plain(
+                "filtration columns must be a basis over characteristic zero",
+            ));
+        }
+        columns.push((weight, column));
+    }
+    model.spend(n * (1 + n.max(1).ilog2() as usize))?;
+    columns.sort_by_key(|(weight, _)| Reverse(*weight));
+    check_storage(cells)?;
+    model.allocate(cells)?;
+    Ok(columns)
+}
+
+fn sparse_column<T: Copy>(entries: Vec<T>, zero: impl Fn(T) -> bool) -> Column<T> {
+    entries
+        .into_iter()
+        .enumerate()
+        .filter(|&(_, c)| !zero(c))
+        .collect()
+}
+
+fn all_weights<T>(columns: &[(i64, Column<T>)]) -> Vec<i64> {
+    columns.iter().rev().map(|(w, _)| *w).collect()
+}
+
+fn intersection_weights<T: Copy>(
+    model: &mut Model,
+    columns: &[(i64, Column<T>)],
+    selected: &[bool],
+    retained: usize,
+    mut independent: impl FnMut(&mut Model, Column<T>, usize) -> Result<bool>,
+) -> Result<Vec<i64>> {
+    let mut hodge = Vec::new();
+    for (weight, column) in columns {
+        model.spend(1 + column.len())?;
+        let projection = column
+            .iter()
+            .copied()
+            .filter(|&(i, _)| !selected[i])
+            .collect();
+        // An added column increases the flag dimension by one. If its
+        // projection is dependent, the intersection gains this weight.
+        if !independent(model, projection, retained)? {
+            hodge.push(*weight);
+        }
+    }
+    hodge.reverse();
+    Ok(hodge)
+}
+
+#[derive(Default)]
+struct QuadraticBasis {
+    pivots: BTreeMap<usize, Column<Element>>,
+    cells: usize,
+}
+
+impl QuadraticBasis {
+    fn insert(
+        &mut self,
+        model: &mut Model,
+        field: Field,
+        mut vector: Column<Element>,
+        retained: usize,
+    ) -> Result<bool> {
+        while let Some(&(coordinate, factor)) = vector.last() {
+            model.spend(1 + self.pivots.len().max(1).ilog2() as usize)?;
+            check_storage(retained + self.cells + 7 * vector.len())?;
+            match self.pivots.entry(coordinate) {
+                Entry::Vacant(entry) => {
+                    self.cells += 4 + 7 * vector.len();
+                    check_storage(retained + self.cells)?;
+                    let last = vector.len() - 1;
+                    if last != 0 && factor != Element::ONE {
+                        let inverse = field.inverse(model, factor)?;
+                        for (_, value) in &mut vector[..last] {
+                            *value = field.multiply(model, *value, inverse)?;
+                        }
+                    }
+                    vector[last].1 = Element::ONE;
+                    entry.insert(vector);
+                    return Ok(true);
+                }
+                Entry::Occupied(entry) => {
+                    let pivot = entry.get();
+                    vector.pop();
+                    if pivot.len() == 1 {
+                        continue;
+                    }
+                    let width = vector.len() + pivot.len();
+                    check_storage(retained + self.cells + 14 * width)?;
+                    model.spend(width * (1 + width.max(1).ilog2() as usize))?;
+                    let mut result: BTreeMap<_, _> = vector.into_iter().collect();
+                    for &(i, c) in &pivot[..pivot.len() - 1] {
+                        let term = field.multiply(model, c, factor)?;
+                        let value = result.entry(i).or_insert(Element::ZERO);
+                        *value = field.subtract(model, *value, term)?;
+                    }
+                    vector = result.into_iter().filter(|&(_, c)| !c.is_zero()).collect();
+                }
+            }
+        }
+        Ok(false)
     }
 }
 

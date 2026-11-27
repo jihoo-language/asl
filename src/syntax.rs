@@ -29,7 +29,8 @@ use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_gauss::Operation as GaussOp;
-use crate::rv_phodge::{Query as PHodgeQuery, Specification as PHodgeSpec};
+use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
+use crate::rv_qp_quad::Unary as QuadUnary;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
@@ -119,6 +120,7 @@ pub(crate) enum TypeForm {
     RVFusion(usize, usize),
     RVCyclo(usize),
     RVCycloQ(usize),
+    RVQpQuad(Label),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -530,6 +532,7 @@ pub(crate) enum BinaryOp {
     RvTorProduct,
     BpMultiply,
     BpCup,
+    QpQuadMultiply,
 }
 
 impl BinaryOp {
@@ -564,6 +567,7 @@ impl BinaryOp {
             "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
             "bpCup" => Some(Self::BpCup),
+            "rvQpQuadMul" => Some(Self::QpQuadMultiply),
             _ => None,
         }
     }
@@ -893,6 +897,8 @@ pub(crate) enum ExprForm {
     CrystalEO(Label),
     CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
+    QpQuadElement(Label, i128, i128, i128),
+    QpQuadUnary(QuadUnary, Box<ParsedExpr>),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
     AsTwoCoefficient(Label, usize, usize),
@@ -1103,6 +1109,9 @@ pub(crate) enum StatementForm {
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
     RvPHodge(Label, PHodgeSpec),
+    RvPHodgeQuad(Label, Label, QuadraticSpec<ParsedExpr>),
+    RvQpQuad(Label, usize, i128, i128),
+    RvQpQuadReport(Option<usize>, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
     RVCTExact(Label, u128),
@@ -1575,6 +1584,62 @@ impl<'src> Parser<'src> {
         };
         self.advance()?;
         Ok(value)
+    }
+
+    fn phodge_quad_spec(&mut self) -> Result<QuadraticSpec<ParsedExpr>> {
+        self.expect(Token::LBrace)?;
+        self.expect(Token::LBrace)?;
+        let mut eigenvalues = Vec::new();
+        while self.token() != Token::RBrace {
+            eigenvalues.push(self.expr(0)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::Comma)?;
+        self.expect(Token::LBrace)?;
+        let mut monodromy = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let (i, j) = self.bidegree()?;
+            self.expect(Token::Comma)?;
+            monodromy.push((i, j, self.expr(0)?));
+            self.expect(Token::RParen)?;
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::Comma)?;
+        self.expect(Token::LBrace)?;
+        let mut filtration = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let weight = self.signed_number("Hodge weight")?;
+            self.expect(Token::Comma)?;
+            self.expect(Token::LBracket)?;
+            let mut column = Vec::new();
+            while self.token() != Token::RBracket {
+                column.push(self.expr(0)?);
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            self.expect(Token::RParen)?;
+            filtration.push((weight, column));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::RBrace)?;
+        Ok(QuadraticSpec {
+            eigenvalues,
+            monodromy,
+            filtration,
+        })
     }
 
     fn phodge_rational(&mut self) -> Result<(i128, i128)> {
@@ -3461,6 +3526,39 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvCrystalQuery(name, query)
             }
+            Token::Word("rvqpadic") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let p = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let d = self.signed_wide("a signed radicand", "quadratic radicand")?;
+                self.expect(Token::Comma)?;
+                let r = self.signed_wide("a signed residue", "quadratic branch residue")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvQpQuad(name, p, d, r)
+            }
+            Token::Word("rvQpQuadVal" | "rvQpQuadResidue") => {
+                let valuation = self.token() == Token::Word("rvQpQuadVal");
+                self.advance()?;
+                let precision = if valuation {
+                    None
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let precision = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    Some(precision)
+                };
+                StatementForm::RvQpQuadReport(precision, self.paren_expr(0)?)
+            }
+            Token::Word("rvphodgequad") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let field = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvPHodgeQuad(name, field, self.phodge_quad_spec()?)
+            }
             Token::Word("rvphodge") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -4753,6 +4851,11 @@ impl<'src> Parser<'src> {
             let (level, strands, height) = self.tl_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RvTl(level, strands, height), 0);
+        }
+        if name.text == "RVQpQuad" && self.eat(Token::LParen)? {
+            let field = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVQpQuad(field), 0);
         }
         if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
@@ -6170,6 +6273,44 @@ impl<'src> Parser<'src> {
                     let level = self.number()?.0;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::CrystalCongruent(left, right, level), 0);
+                }
+                if name.text == "rvQpQuad" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let a = self.signed_wide("a signed coefficient", "quadratic coefficient")?;
+                    self.expect(Token::Comma)?;
+                    let b = self.signed_wide("a signed coefficient", "quadratic coefficient")?;
+                    self.expect(Token::Comma)?;
+                    let c = self.signed_wide("a positive denominator", "quadratic denominator")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::QpQuadElement(field, a, b, c), 0);
+                }
+                if name.text == "rvQpQuadPow" && self.eat(Token::LBracket)? {
+                    let power = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QpQuadUnary(QuadUnary::Power(power), Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvQpQuadConj" | "rvQpQuadInv")
+                    && self.token() == Token::LParen
+                {
+                    let operation = if name.text == "rvQpQuadConj" {
+                        QuadUnary::Conjugate
+                    } else {
+                        QuadUnary::Inverse
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QpQuadUnary(operation, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "eoType" && self.eat(Token::LBrace)? {
                     let sequence = self.unsigned_list(Token::RBrace)?;

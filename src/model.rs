@@ -76,9 +76,10 @@ use crate::rv_negative;
 use crate::rv_ore;
 use crate::rv_pcurv;
 use crate::rv_period::{self, Grade as PeriodGrade, Level as PeriodLevel, Period};
-use crate::rv_phodge::{Module as PHodgeModule, Specification as PHodgeSpec};
+use crate::rv_phodge::{Module as PHodgeModule, QuadraticSpec, Specification as PHodgeSpec};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
+use crate::rv_qp_quad::{Element as QuadElement, Field as QuadField};
 use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_tl;
@@ -221,6 +222,7 @@ pub(crate) enum Kind {
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     RVCycloQ(usize),
+    RVQpQuad(Rc<str>),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -363,6 +365,7 @@ pub(crate) enum Value {
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     RVCycloQ(rv_lens::Rational),
+    RVQpQuad(QuadElement),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -487,6 +490,7 @@ pub(crate) struct Model {
     rv_periods: HashMap<String, Rc<Period>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_phodge_modules: HashMap<String, Rc<PHodgeModule>>,
+    rv_qp_quadratics: HashMap<String, QuadField>,
     rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
@@ -552,6 +556,7 @@ impl Model {
             rv_periods: HashMap::new(),
             rv_as_covers: HashMap::new(),
             rv_phodge_modules: HashMap::new(),
+            rv_qp_quadratics: HashMap::new(),
             rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
@@ -782,6 +787,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
+            | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
@@ -977,6 +983,7 @@ impl Model {
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
                 | Kind::RVCycloQ(..)
+                | Kind::RVQpQuad(..)
                 | Kind::RVWzw(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
@@ -2846,6 +2853,61 @@ impl Model {
         self.inhabited_type(Kind::RVCTResidue(level), 0)
     }
 
+    pub(crate) fn register_qp_quad(
+        &mut self,
+        name: Label,
+        p: usize,
+        d: i128,
+        r: i128,
+    ) -> Result<()> {
+        if self.rv_qp_quadratics.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("quadratic field '{}' is already defined", name.text),
+            ));
+        }
+        let field = QuadField::new(self, p, d, r).map_err(|error| error.at(name.span))?;
+        self.allocate(5)?;
+        self.rv_qp_quadratics.insert(name.text, field);
+        Ok(())
+    }
+
+    pub(crate) fn qp_quad_named(&self, name: &str) -> Option<QuadField> {
+        self.rv_qp_quadratics.get(name).copied()
+    }
+
+    pub(crate) fn qp_quad(&self, name: &Label) -> Result<QuadField> {
+        self.qp_quad_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown quadratic field '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn qp_quad_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.qp_quad(name)?;
+        self.inhabited_type(Kind::RVQpQuad(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn register_rv_phodge_quad(
+        &mut self,
+        name: Label,
+        field: QuadField,
+        spec: QuadraticSpec<QuadElement>,
+    ) -> Result<()> {
+        if self.rv_phodge_modules.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("filtered module '{}' is already defined", name.text),
+            ));
+        }
+        let module = PHodgeModule::build_quadratic(self, field, spec)
+            .map_err(|error| error.at(name.span))?;
+        self.rv_phodge_modules.insert(name.text, Rc::new(module));
+        Ok(())
+    }
+
     pub(crate) fn rv_phodge(&self, name: &Label) -> Result<Rc<PHodgeModule>> {
         self.rv_phodge_modules
             .get(&name.text)
@@ -3482,6 +3544,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
+            | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..)
             | Kind::VKoszul(..)
@@ -3898,6 +3961,7 @@ impl Model {
                 "RVTL({}, {}, {})",
                 grade.level, grade.strands, grade.height
             )),
+            Kind::RVQpQuad(name) => out.push(&format!("RVQpQuad({name})")),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVCTState(grade) => out.push(&format!(
@@ -4107,6 +4171,7 @@ impl Model {
             (Value::RvTl(left), Value::RvTl(right)) => {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
+            (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left == right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => {
                 Ok(rv_lens::compare(self, left, right)?.is_eq())
             }
@@ -4354,6 +4419,7 @@ impl Model {
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
+            (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
@@ -4574,6 +4640,9 @@ impl Model {
                         ));
                     }
                     vec![rv_tl::zero()]
+                }
+                Kind::RVQpQuad(..) => {
+                    return Err(Error::plain("cannot enumerate a quadratic field"));
                 }
                 Kind::RVCycloQ(..) => {
                     return Err(Error::plain("cannot enumerate a rational cyclotomic field"))
@@ -5830,6 +5899,10 @@ impl Model {
                     ))?;
                 }
                 out.push("}")
+            }
+            Value::RVQpQuad(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}, {}, {}}}", value.a, value.b, value.c))
             }
             Value::RVCycloQ(ratio) => {
                 self.spend(ratio.numerator.len())?;
