@@ -8,6 +8,8 @@ use crate::model::Model;
 
 use super::Integer;
 
+mod generalized;
+
 type Seed = BTreeMap<(usize, i128), Integer>;
 type Weight = (usize, usize, i128);
 type Product = BTreeMap<Weight, Integer>;
@@ -18,6 +20,7 @@ const TERM_LIMIT: usize = MAX_PIVOT_CELLS / TERM_WORDS;
 
 pub(crate) enum Query {
     EllipticGenus(u128, u128, i128),
+    Generalized(u128, u128, i128),
     Igusa(u128, u128, i128),
 }
 
@@ -30,6 +33,13 @@ impl Query {
                 degree,
                 r,
                 dmvv(model, length, degree, r)?,
+            ),
+            Self::Generalized(length, degree, r) => (
+                "rvGenKummerElliptic",
+                length,
+                degree,
+                r,
+                generalized::coefficient(model, length, degree, r)?,
             ),
             Self::Igusa(m, n, r) => ("rvIgusaPhi10", m, n, r, igusa(model, m, n, r)?),
         };

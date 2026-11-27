@@ -3746,16 +3746,24 @@ impl<'src> Parser<'src> {
             )));
         }
         self.expect(Token::LBracket)?;
-        let command = if matches!(name, "rvK3EllipticGenus" | "rvIgusaPhi10") {
-            let p = self.wide_unsigned("P exponent")?;
+        let command = if matches!(
+            name,
+            "rvK3EllipticGenus" | "rvGenKummerElliptic" | "rvIgusaPhi10"
+        ) {
+            let first = if name == "rvGenKummerElliptic" {
+                "generalized Kummer length"
+            } else {
+                "P exponent"
+            };
+            let p = self.wide_unsigned(first)?;
             self.expect(Token::Comma)?;
             let q = self.wide_unsigned("q exponent")?;
             self.expect(Token::Comma)?;
             let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
-            let query = if name == "rvK3EllipticGenus" {
-                Query::EllipticGenus(p, q, r)
-            } else {
-                Query::Igusa(p, q, r)
+            let query = match name {
+                "rvK3EllipticGenus" => Query::EllipticGenus(p, q, r),
+                "rvGenKummerElliptic" => Query::Generalized(p, q, r),
+                _ => Query::Igusa(p, q, r),
             };
             Command::EllipticGenus(query)
         } else if name == "rvKummerHilbBetti" {
@@ -4883,8 +4891,13 @@ impl<'src> Parser<'src> {
                 self.kummer_divisor_statement(command)?
             }
             Token::Word(
-                command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"
-                | "rvKummerHilbChar" | "rvK3EllipticGenus" | "rvIgusaPhi10"),
+                command @ ("rvKummerHilbPoints"
+                | "rvKummerHilbTrace"
+                | "rvKummerHilbBetti"
+                | "rvKummerHilbChar"
+                | "rvK3EllipticGenus"
+                | "rvGenKummerElliptic"
+                | "rvIgusaPhi10"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word(
                 command @ ("rvKummerK3Height" | "rvKummerHilbNewton" | "rvJacHilbNewton"
