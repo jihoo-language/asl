@@ -50,7 +50,7 @@ impl Command {
             }
             Query::Iwasawa(base, prime, level) => {
                 let spectrum = iwasawa::Spectrum::new(model, q, weil, &orbits)?;
-                let growth = spectrum.growth(model, base, prime)?;
+                let growth = spectrum.growth(model, &curve, base, prime)?;
                 growth.report("rvKummerK3Iwasawa", "Brauer", &name.text, base, level)?
             }
         })

@@ -107,7 +107,6 @@ fn rank_jumps_bad_primes_and_wrong_sections_are_diagnosed() {
     for (operation, expected) in [
         ("rvKummerK3Iwasawa[C,1,2,100];", "rank jumps from 18 to 20 at level k=1"),
         ("rvK3PencilShaIwasawa[P,0,2,1];", "base degree must be positive"),
-        ("rvKummerK3Iwasawa[C,2,23,100];", "prime must differ from the characteristic"),
         ("rvKummerK3Iwasawa[C,2,4,100];", "Iwasawa prime must be prime"),
         ("rvKummerK3Iwasawa[C,2,9,100];", "9 is not prime"),
         ("rvKummerK3Iwasawa[C,2,4294967296,100];", "prime must fit in u32"),

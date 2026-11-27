@@ -31,13 +31,8 @@ impl Command {
                 let curve = model
                     .kummer_curve(&name.text)
                     .map_err(|error| error.at(name.span))?;
-                let h1 = h1_slopes(model, &curve)?;
-                let height = match h1[0] + h1[1] {
-                    0 => "1",
-                    1 => "2",
-                    2 => "infinite",
-                    _ => return Err(integrity()),
-                };
+                let height = formal_height(model, &curve)?
+                    .map_or_else(|| "infinite".into(), |height| height.to_string());
                 Ok(format!("rvKummerK3Height[{}] = {height}", name.text))
             }
             Self::Polygon(name, kind, n, i) => {
@@ -53,6 +48,16 @@ impl Command {
                 Ok(format!("{operation}[{}, {n}, {i}] = [{bins}]", name.text))
             }
         }
+    }
+}
+
+pub(super) fn formal_height(model: &mut Model, curve: &Curve) -> Result<Option<usize>> {
+    let h1 = h1_slopes(model, curve)?;
+    match h1[0] + h1[1] {
+        0 => Ok(Some(1)),
+        1 => Ok(Some(2)),
+        2 => Ok(None),
+        _ => Err(integrity()),
     }
 }
 

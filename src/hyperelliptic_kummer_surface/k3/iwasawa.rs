@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use crate::elliptic_modular::decimal;
 use crate::error::{Error, Result};
+use crate::hw_closed::Curve;
 use crate::hyperelliptic_kummer_surface::pencil::{sections::Section, Pencil};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
@@ -11,8 +12,10 @@ use crate::wide_integer::Natural;
 
 use super::{abelian_spectrum, cross_quartic, node_orbits, AbelianSpectrum};
 
+mod crystalline;
 mod modular;
 
+use crystalline::Crystalline;
 use modular::Newton;
 
 type Valuation = Wide<5>;
@@ -30,6 +33,7 @@ pub(super) struct Growth {
     geometric_rank: usize,
     residual_degree: usize,
     breakpoint: Breakpoint,
+    crystalline: Option<Crystalline>,
 }
 
 impl<'a> Spectrum<'a> {
@@ -47,18 +51,19 @@ impl<'a> Spectrum<'a> {
         })
     }
 
-    pub(super) fn growth(&self, model: &mut Model, base: u128, prime: usize) -> Result<Growth> {
+    pub(super) fn growth(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        base: u128,
+        prime: usize,
+    ) -> Result<Growth> {
         if base == 0 {
             return Err(Error::plain(
                 "Kummer K3 Iwasawa base degree must be positive",
             ));
         }
         let prime = checked_prime(model, prime)?;
-        if u128::from(self.q).is_multiple_of(prime) {
-            return Err(Error::plain(
-                "Kummer K3 Iwasawa prime must differ from the characteristic",
-            ));
-        }
         let rank = self.rank(base, 1);
         let rank_one = self.rank(1, 1);
         let geometric_rank = 18
@@ -75,7 +80,27 @@ impl<'a> Spectrum<'a> {
         self.require_fixed_rank(base, prime, rank)?;
         // All nonfixed cyclotomic directions have a nontrivial prime-to-ell
         // part after this fixed-rank certificate. Their shifts have valuation 0.
-        let breakpoint = Breakpoint::new(model, self.q, &self.abelian.transcendental, base, prime)?;
+        let crystalline = if u128::from(self.q).is_multiple_of(prime) {
+            Some(Crystalline::new(
+                model,
+                curve,
+                self,
+                base,
+                prime,
+                (rank, geometric_rank),
+            )?)
+        } else {
+            None
+        };
+        let normalization = crystalline.as_ref().map(Crystalline::normalization);
+        let breakpoint = Breakpoint::new(
+            model,
+            self.q,
+            &self.abelian.transcendental,
+            base,
+            prime,
+            normalization,
+        )?;
         Ok(Growth {
             prime,
             rank,
@@ -83,6 +108,7 @@ impl<'a> Spectrum<'a> {
             geometric_rank,
             residual_degree,
             breakpoint,
+            crystalline,
         })
     }
 
@@ -148,12 +174,27 @@ impl Growth {
             .map(|s| s.report(self.breakpoint.offset))
             .collect::<Vec<_>>()
             .join(", ");
+        let negative = self
+            .crystalline
+            .as_ref()
+            .map_or(0, Crystalline::negative_count);
+        let zeros = (22 - self.rank)
+            .checked_sub(self.breakpoint.lambda + negative)
+            .ok_or_else(inconsistent)?;
+        let head = format!(
+            "{operation}[{name}, {degree}, {}, {level}] = NS rank={}, geometric NS rank={}, integral NS lattice fixed throughout tower, transcendental degree={}, zero valuations={zeros}, breakpoint k0={start}, positive Newton valuations=[{slopes}]",
+            self.prime, self.rank, self.geometric_rank, self.residual_degree,
+        );
+        if let Some(crystalline) = &self.crystalline {
+            return Ok(format!(
+                "{head}, {}",
+                crystalline.report(group, degree, level, &self.breakpoint)?
+            ));
+        }
         let relative = self.breakpoint.relative(level)?;
         let from_base = self.breakpoint.relative_valuation(level)?;
-        let zeros = 22 - self.rank - self.breakpoint.lambda;
         Ok(format!(
-            "{operation}[{name}, {degree}, {}, {level}] = NS rank={}, geometric NS rank={}, integral NS lattice fixed throughout tower, transcendental degree={}, zero valuations={zeros}, breakpoint k0={start}, positive Newton valuations=[{slopes}], determinant valuations through breakpoint={:?}, mu=0, lambda={}, relative v_ell({group}) from breakpoint={}, relative v_ell({group}) from base={}",
-            self.prime, self.rank, self.geometric_rank, self.residual_degree,
+            "{head}, determinant valuations through breakpoint={:?}, mu=0, lambda={}, relative v_ell({group}) from breakpoint={}, relative v_ell({group}) from base={}",
             self.breakpoint.prefix, self.breakpoint.lambda, decimal(relative), decimal(from_base),
         ))
     }
@@ -173,12 +214,29 @@ impl Pencil {
         let orbits = node_orbits(model, &self.curve, q)?;
         let weil = self.curve.weil(model)?;
         let spectrum = Spectrum::new(model, q, weil, &orbits)?;
-        let growth = spectrum.growth(model, degree, prime)?;
+        let growth = spectrum.growth(model, &self.curve, degree, prime)?;
         let mut report = growth.report("rvK3PencilShaIwasawa", "Sha", name, degree, level)?;
         if let Some(generators) = generators {
             let base_order = self.regulator_sha_order(model, generators)?;
-            if growth.rank_one != growth.rank {
+            if growth
+                .crystalline
+                .as_ref()
+                .is_some_and(Crystalline::has_absolute)
+            {
+                report.push_str(&format!(", certified Sha order over F_q={base_order}"));
+            } else if growth.rank_one != growth.rank {
                 report.push_str(&format!(", certified Sha order over F_q={base_order}, NS rank over F_q={}, absolute tower valuation unresolved", growth.rank_one));
+            } else if let Some(crystalline) = &growth.crystalline {
+                let absolute = crystalline.absolute_valuation(
+                    model,
+                    &spectrum,
+                    base_order,
+                    level,
+                    &growth.breakpoint,
+                )?;
+                report.push_str(&format!(
+                    ", certified Sha order over F_q={base_order}, v_ell(Sha)={absolute}"
+                ));
             } else {
                 // Nested fixed lattices of equal rank coincide integrally.
                 // The ell-part of the Artin–Tate q factor is trivial.
@@ -227,6 +285,7 @@ impl Breakpoint {
         polynomial: &[i128],
         mut base: u128,
         prime: u128,
+        normalization: Option<(i64, i64)>,
     ) -> Result<Self> {
         let mut removed = 0usize;
         while base.is_multiple_of(prime) {
@@ -234,7 +293,15 @@ impl Breakpoint {
             removed += 1;
         }
         let mut level = 0;
-        let mut order = modular::certify(model, q, polynomial, base, prime, level)?;
+        let certify = |model: &mut Model, level| -> Result<Newton> {
+            let order = modular::certify(model, q, polynomial, base, prime, level)?;
+            let (field, negative) = normalization.unwrap_or((1, 0));
+            if order.negative_sum * field != order.shift * negative {
+                return Err(inconsistent());
+            }
+            Ok(order)
+        };
+        let mut order = certify(model, level)?;
         let lambda = order.positive.iter().map(|s| s.count).sum::<usize>();
         let mut prefix = vec![order.determinant];
         while !order
@@ -249,7 +316,7 @@ impl Breakpoint {
             if level >= polynomial.len() {
                 return Err(inconsistent());
             }
-            let next = modular::certify(model, q, polynomial, base, prime, level)?;
+            let next = certify(model, level)?;
             if next.determinant < order.determinant
                 || next.positive.iter().map(|s| s.count).sum::<usize>() != lambda
             {
@@ -261,6 +328,7 @@ impl Breakpoint {
         let Newton {
             determinant,
             positive: slopes,
+            ..
         } = order;
         let offset = removed.saturating_sub(level);
         let prefix = if offset != 0 {
@@ -328,7 +396,7 @@ mod tests {
         // Normalized roots have product 1 and sum 2/3. Their shifts start
         // at valuation 1 and squaring gives valuation 5/2, not 2.
         let polynomial = [1, -2, 9];
-        let growth = Breakpoint::new(&mut model, 3, &polynomial, 1, 2)
+        let growth = Breakpoint::new(&mut model, 3, &polynomial, 1, 2, None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(growth.index(), 1);
         assert_eq!(growth.prefix, [2, 5]);
@@ -356,7 +424,7 @@ mod tests {
             Some(2001)
         );
 
-        let later = Breakpoint::new(&mut model, 3, &polynomial, 1u128 << 126, 2)
+        let later = Breakpoint::new(&mut model, 3, &polynomial, 1u128 << 126, 2, None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(later.index(), 0);
         assert_eq!(later.prefix, [255]);
@@ -367,7 +435,7 @@ mod tests {
     fn fractional_valuations_below_threshold_power_at_exact_finite_levels() {
         let mut model = Model::new();
         let polynomial = [1, 4, 9];
-        let growth = Breakpoint::new(&mut model, 3, &polynomial, 1, 2)
+        let growth = Breakpoint::new(&mut model, 3, &polynomial, 1, 2, None)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(growth.index(), 2);
         assert_eq!(growth.prefix, [1, 2, 6]);
@@ -411,5 +479,48 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("jumps from 11 to 18 at level k=1"));
+    }
+}
+
+#[cfg(test)]
+mod crystalline_tests {
+    use super::*;
+
+    #[test]
+    fn negative_and_critical_positive_shifts_share_a_denominator_aware_polygon() {
+        // At q=p=3 the underlying eigenvalues are 1, 9, and 3(1±sqrt(-3)).
+        // The normalized shifted root valuations are -1, 0, 1/2, 1/2.
+        // At the threshold the two critical cubic terms cancel, so the
+        // positive valuations become 2 (not 3/2) after cubing.
+        let polynomial = [1, -16, 105, -414, 324];
+        let mut model = Model::new();
+        let certify = |model: &mut Model, k| {
+            modular::certify(model, 3, &polynomial, 1, 3, k)
+                .unwrap_or_else(|error| panic!("{error}"))
+        };
+        let initial = certify(&mut model, 0);
+        assert_eq!(
+            (initial.shift, initial.negative_sum, initial.determinant),
+            (1, -1, 1)
+        );
+        assert_eq!(initial.positive[0].report(0), "1/2: 2");
+        assert!(!initial.positive[0].past_threshold(3));
+        let next = certify(&mut model, 1);
+        assert_eq!(
+            (next.shift, next.negative_sum, next.determinant),
+            (3, -3, 4)
+        );
+        assert_eq!(next.positive[0].report(0), "2: 2");
+        let breakpoint = Breakpoint::new(&mut model, 3, &polynomial, 1, 3, Some((1, -1)))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!((breakpoint.index(), breakpoint.lambda), (1, 2));
+        assert_eq!(breakpoint.prefix, [1, 4]);
+        assert_eq!(
+            breakpoint
+                .relative_valuation(10)
+                .unwrap_or_else(|error| panic!("{error}"))
+                .signed(),
+            Some(21)
+        );
     }
 }

@@ -122,7 +122,7 @@ fn exceptional_factor(model: &mut Model, orbits: &[usize], degree: u128) -> Resu
     Ok(product)
 }
 
-fn artin_invariant(model: &mut Model, curve: &Curve) -> Result<u32> {
+pub(super) fn artin_invariant(model: &mut Model, curve: &Curve) -> Result<u32> {
     let Value::HWWMatrix(cartier) = curve.evaluate(model, CurveOp::Alpha(1))? else {
         unreachable!("the first Hasse–Witt matrix is the Cartier–Manin matrix up to transpose");
     };

@@ -1,12 +1,17 @@
+use crate::elliptic_modular::decimal;
 use crate::error::{Error, Result};
 use crate::hw_algebra::{self as algebra, CoefficientRing, Matrix};
 use crate::model::Model;
 use crate::rv_newton::valuation_slopes;
 use crate::rv_ore::gcd;
-use crate::rv_qp_quad::mul_mod;
+use crate::rv_qp_quad::{mul_mod, Wide};
+use crate::wide_integer::Natural;
 
 pub(super) struct Newton {
     pub(super) determinant: i64,
+    pub(super) negative_sum: i64,
+    pub(super) negative: Vec<Slope>,
+    pub(super) shift: i64,
     pub(super) positive: Vec<Slope>,
 }
 
@@ -30,6 +35,26 @@ impl Slope {
             format!("{numerator}/{}: {}", self.denominator, self.count)
         }
     }
+    pub(super) fn matches_height(self, field_valuation: i64, height: usize) -> bool {
+        self.numerator * height as u128 == self.denominator * field_valuation as u128
+    }
+
+    pub(super) fn scaled(self, exponent: u128, negative: bool) -> Result<String> {
+        let divisor = gcd(exponent, self.denominator);
+        let denominator = self.denominator / divisor;
+        let magnitude = Natural::<5>::from_small(exponent / divisor)
+            .multiply_u128(self.numerator)
+            .ok_or_else(inconsistent)?;
+        let numerator = decimal(Wide {
+            magnitude,
+            negative,
+        });
+        if denominator == 1 {
+            Ok(format!("{numerator}: {}", self.count))
+        } else {
+            Ok(format!("{numerator}/{denominator}: {}", self.count))
+        }
+    }
 }
 
 pub(super) fn certify(
@@ -44,52 +69,108 @@ pub(super) fn certify(
         return Ok(Newton {
             determinant: 0,
             positive: Vec::new(),
+            negative_sum: 0,
+            negative: Vec::new(),
+            shift: 0,
         });
     }
     let max = max_precision(prime);
+    let field_valuation = valuation(prime, u128::from(q)).ok_or_else(inconsistent)?;
+    let shift = if field_valuation == 0 {
+        0
+    } else {
+        let scale = prime
+            .checked_pow(level as u32)
+            .and_then(|power| power.checked_mul(degree))
+            .and_then(|power| power.checked_mul(field_valuation as u128))
+            .filter(|&power| power < u128::from(max))
+            .ok_or_else(precision_error)?;
+        scale as i64
+    };
     let mut precision = 1;
     loop {
         let modulus = prime.pow(precision);
         let ring = Residues { prime, modulus };
         let characteristic = shifted_characteristic(model, &ring, q, polynomial, degree, level)?;
         if let Some(determinant) = valuation(prime, *characteristic.last().unwrap()) {
-            // The companion eigenvalues are q^r times the normalized
-            // eigenvalues. Since q is an ell-unit, their shifted valuations
-            // are unchanged. Unresolved coefficients are >= precision,
-            // strictly above the chord between the now-known endpoints.
+            // For the integral shift F^r - q^r I, unresolved coefficients
+            // are strictly above the chord between its certified endpoints.
+            // Subtract v_p(q^r) from each root valuation after the hull.
             let valuations = characteristic
                 .into_iter()
                 .rev()
                 .map(|c| valuation(prime, c));
-            let mut positive = Vec::new();
-            let mut total = 0;
-            for (numerator, count) in valuation_slopes(model, valuations)? {
-                let v = u128::try_from(numerator).map_err(|_| inconsistent())?;
-                total += v;
-                if v != 0 {
-                    let divisor = gcd(v, count as u128);
-                    positive.push(Slope {
-                        numerator: v / divisor,
-                        denominator: count as u128 / divisor,
-                        count,
-                    });
-                }
-            }
-            if total != determinant as u128 {
-                return Err(inconsistent());
-            }
-            return Ok(Newton {
-                determinant,
-                positive,
-            });
+            return normalized_slopes(model, valuations, determinant, shift);
         }
         if precision == max {
-            return Err(Error::plain(
-                "Kummer K3 Iwasawa Newton polygon exceeds the checked ell-adic precision",
-            ));
+            return Err(precision_error());
         }
         precision = (precision * 2).min(max);
     }
+}
+
+pub(super) fn unshifted(
+    model: &mut Model,
+    polynomial: &[i128],
+    prime: u128,
+    field_valuation: i64,
+) -> Result<Newton> {
+    let determinant = valuation(
+        prime,
+        polynomial.last().ok_or_else(inconsistent)?.unsigned_abs(),
+    )
+    .ok_or_else(inconsistent)?;
+    let valuations = polynomial
+        .iter()
+        .rev()
+        .map(|c| valuation(prime, c.unsigned_abs()));
+    normalized_slopes(model, valuations, determinant, field_valuation)
+}
+
+fn normalized_slopes(
+    model: &mut Model,
+    valuations: impl IntoIterator<Item = Option<i64>>,
+    raw_determinant: i64,
+    shift: i64,
+) -> Result<Newton> {
+    let mut total = 0;
+    let mut positive_sum = 0;
+    let mut negative_sum = 0;
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+    for (numerator, count) in valuation_slopes(model, valuations)? {
+        if numerator < 0 {
+            return Err(inconsistent());
+        }
+        total += numerator;
+        let normalized = numerator - i128::from(shift) * count as i128;
+        if normalized != 0 {
+            let magnitude = normalized.unsigned_abs();
+            let divisor = gcd(magnitude, count as u128);
+            let slope = Slope {
+                numerator: magnitude / divisor,
+                denominator: count as u128 / divisor,
+                count,
+            };
+            if normalized > 0 {
+                positive.push(slope);
+                positive_sum += normalized;
+            } else {
+                negative.push(slope);
+                negative_sum += normalized;
+            }
+        }
+    }
+    if total != i128::from(raw_determinant) {
+        return Err(inconsistent());
+    }
+    Ok(Newton {
+        determinant: i64::try_from(positive_sum).map_err(|_| inconsistent())?,
+        negative_sum: i64::try_from(negative_sum).map_err(|_| inconsistent())?,
+        positive,
+        negative,
+        shift,
+    })
 }
 
 pub(super) fn valuation(prime: u128, mut value: u128) -> Option<i64> {
@@ -228,6 +309,10 @@ impl CoefficientRing for Residues {
         }
         self.power(model, *value, self.modulus - self.modulus / self.prime - 1)
     }
+}
+
+fn precision_error() -> Error {
+    Error::plain("Kummer K3 Iwasawa Newton polygon exceeds the checked ell-adic precision after clearing Frobenius denominators")
 }
 
 fn inconsistent() -> Error {
