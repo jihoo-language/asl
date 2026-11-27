@@ -7961,6 +7961,7 @@ impl Engine {
                         state.annihilate(&mut self.model, &gram, mode)?
                     }
                     nakajima::Operation::Scale(scalar) => state.scale(&mut self.model, scalar)?,
+                    nakajima::Operation::Boundary => state.boundary(&mut self.model)?,
                     nakajima::Operation::Virasoro(index) => {
                         let Kind::Nakajima(grade) = self.model.kind(input.ty) else {
                             unreachable!();

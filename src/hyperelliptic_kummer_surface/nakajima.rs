@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 use super::unimodular;
 
+mod boundary;
 pub(crate) mod primary;
 mod virasoro;
 mod wick;
@@ -93,6 +94,7 @@ pub(crate) enum Operation {
     Annihilate(Mode),
     Scale(i128),
     Virasoro(i128),
+    Boundary,
 }
 
 impl Operation {
@@ -102,6 +104,7 @@ impl Operation {
             Self::Annihilate(_) => "rvNakajimaAnn",
             Self::Scale(_) => "rvNakajimaScale",
             Self::Virasoro(_) => "rvVirasoro",
+            Self::Boundary => "rvNakajimaBoundary",
         }
     }
 
@@ -110,6 +113,10 @@ impl Operation {
             Self::Create(mode) => (mode, 1),
             Self::Annihilate(mode) => (mode, -1),
             Self::Scale(_) => return Ok((source.length, source.degree)),
+            Self::Boundary => {
+                let degree = source.degree.checked_add(2).ok_or_else(grade_range)?;
+                return Ok((source.length, degree));
+            }
             Self::Virasoro(index) => {
                 let length = source.length.checked_sub(index).ok_or_else(grade_range)?;
                 let degree = Integer::from_i128(source.degree)
@@ -349,6 +356,33 @@ fn insert_factor(key: &mut Monomial, mode: Mode) -> Result<()> {
         Err(index) => key.insert(index, Factor { mode, exponent: 1 }),
     }
     Ok(())
+}
+
+fn length_weight(factor: &Factor, count: u128) -> Result<i128> {
+    // The input length grade already bounds the sum of all occupied lengths.
+    let count = i128::try_from(count).map_err(|_| coordinate_range())?;
+    factor
+        .mode
+        .length
+        .checked_mul(count)
+        .ok_or_else(coordinate_range)
+}
+
+fn pair_weight(left: &Factor, right: &Factor, same: bool) -> Result<Integer> {
+    let (mut a, mut b) = (left.exponent, right.exponent);
+    if same {
+        // Choose an unordered pair of copies of the same mode.
+        b -= 1;
+        if a.is_multiple_of(2) {
+            a /= 2;
+        } else {
+            b /= 2;
+        }
+    }
+    Ok(Integer::product(
+        length_weight(left, a)?,
+        length_weight(right, b)?,
+    ))
 }
 
 fn remove_factor(key: &mut Monomial, index: usize) {

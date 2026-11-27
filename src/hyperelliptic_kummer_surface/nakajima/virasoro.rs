@@ -5,8 +5,8 @@ use crate::model::Model;
 use crate::odd_cobar::Prime;
 
 use super::{
-    coordinate_range, grade_range, insert_factor, remove_factor, Accumulator, Factor, Gram,
-    Integer, Mode, State, COLORS, LIMBS,
+    coordinate_range, grade_range, insert_factor, length_weight, pair_weight, remove_factor,
+    Accumulator, Factor, Gram, Integer, Mode, State, COLORS, LIMBS,
 };
 
 impl Gram {
@@ -207,17 +207,7 @@ fn contract_pairs(
                 continue;
             }
             model.spend(1 + monomial.len() + LIMBS)?;
-            let (mut a, mut b) = (left.exponent, right.exponent);
-            if i == j {
-                // For identical keys take the number of unordered copies.
-                b -= 1;
-                if a.is_multiple_of(2) {
-                    a /= 2;
-                } else {
-                    b /= 2;
-                }
-            }
-            let weight = Integer::product(length_weight(left, a)?, length_weight(right, b)?)
+            let weight = pair_weight(left, right, i == j)?
                 .multiply(pairing)
                 .and_then(|term| term.multiply(coefficient))
                 .map_err(|_| coordinate_range())?;
@@ -228,16 +218,6 @@ fn contract_pairs(
         }
     }
     Ok(())
-}
-
-fn length_weight(factor: &Factor, count: u128) -> Result<i128> {
-    // The input length grade already bounds the sum of all occupied lengths.
-    let count = i128::try_from(count).map_err(|_| coordinate_range())?;
-    factor
-        .mode
-        .length
-        .checked_mul(count)
-        .ok_or_else(coordinate_range)
 }
 
 type ColorPair = (u8, u8, i128);
