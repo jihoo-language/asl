@@ -7,8 +7,10 @@ use crate::rv_unram;
 use crate::syntax::{Label, ParsedExpr};
 
 use super::super::super::{field, k3};
-use super::super::{quartic, QuarticTerm};
+use super::super::quartic;
 use super::{Parameter, Pencil};
+
+pub(super) mod relative;
 
 pub(crate) struct Command(
     pub(crate) Label,
@@ -23,106 +25,156 @@ pub(crate) enum Query {
     Register(Label),
 }
 
-type Quadratic = [Scalar; 3];
+type Quadratic<T> = [T; 3];
+
+trait FiberRing: CoefficientRing {
+    fn scale(&self, model: &mut Model, value: &Self::Element, factor: u64)
+        -> Result<Self::Element>;
+}
+
+impl FiberRing for Field<'_> {
+    fn scale(&self, model: &mut Model, value: &Scalar, factor: u64) -> Result<Scalar> {
+        self.ring.scale(model, value, factor)
+    }
+}
 
 pub(crate) struct Fiber {
-    a: Quadratic,
-    b: Quadratic,
-    c: Quadratic,
+    a: Quadratic<Scalar>,
+    b: Quadratic<Scalar>,
+    c: Quadratic<Scalar>,
     binary: [Scalar; 5],
-    a2: Scalar,
-    a4: Scalar,
-    a6: Scalar,
-    c4: Scalar,
-    discriminant: Scalar,
+    jacobian: Jacobian<Scalar>,
+}
+
+struct Jacobian<T> {
+    a2: T,
+    a4: T,
+    a6: T,
+    c4: T,
+    c6: T,
+    discriminant: T,
 }
 
 impl Pencil {
+    fn transverse_axes(&self, field: Field<'_>) -> Result<[usize; 2]> {
+        let [first, second] = self.forms.each_ref().map(|form| {
+            form.iter()
+                .position(|entry| !field.is_zero(entry))
+                .ok_or_else(|| Error::plain("K3 pencil lost a plane coordinate"))
+        });
+        Ok([first?, second?])
+    }
+
     pub(crate) fn equation(&self, model: &mut Model, parameter: &Parameter) -> Result<Fiber> {
         let field = field(&self.curve);
         let mut transverse = std::array::from_fn(|_| field.zero());
-        for (form, value) in self.forms.iter().zip(parameter.coordinates()) {
+        for (pivot, value) in self
+            .transverse_axes(field)?
+            .into_iter()
+            .zip(parameter.coordinates())
+        {
             // The leading columns of the two forms are an identity block.
-            let pivot = form
-                .iter()
-                .position(|entry| !field.is_zero(entry))
-                .ok_or_else(|| Error::plain("K3 pencil lost a plane coordinate"))?;
             transverse[pivot] = value.clone();
         }
         let [i, j] = &self.nodes;
         let plane = [j.coordinates(), &transverse, i.coordinates()];
         let terms = quartic(model, &self.curve)?;
-        let coefficients = restrict(model, field, &terms, plane)?;
-        // Indexed by (Y exponent, Z exponent), with X exponent implicit.
-        // The two double nodes exclude every monomial with X^3 or Z^3.
-        for (y, row) in coefficients.iter().enumerate() {
-            for (z, coefficient) in row.iter().enumerate().take(5 - y) {
-                if (y + z < 2 || z > 2) && !field.is_zero(coefficient) {
-                    return Err(Error::plain(
-                        "K3 fiber plane quartic lacks the two prescribed double nodes",
-                    ));
-                }
-            }
-        }
-        let a = std::array::from_fn(|i| coefficients[i][2].clone());
-        let b = std::array::from_fn(|i| coefficients[i + 1][1].clone());
-        let c = std::array::from_fn(|i| coefficients[i + 2][0].clone());
-        if field.is_zero(&a[0]) {
-            return Err(Error::plain(
-                "K3 fiber plane quartic lost the secant coefficient",
-            ));
-        }
-        Fiber::new(model, field, a, b, c)
-    }
-}
-
-impl Fiber {
-    fn new(
-        model: &mut Model,
-        field: Field<'_>,
-        a: Quadratic,
-        b: Quadratic,
-        c: Quadratic,
-    ) -> Result<Self> {
-        let mut binary = std::array::from_fn(|_| field.zero());
-        for i in 0..3 {
-            for j in 0..3 {
-                let square = field.multiply(model, &b[i], &b[j])?;
-                let cross = field.multiply(model, &a[i], &c[j])?;
-                let cross = field.ring.scale(model, &cross, 4)?;
-                let term = field.subtract(model, &square, &cross)?;
-                binary[i + j] = field.add(model, &binary[i + j], &term)?;
-            }
-        }
-        let [a0, b0, c0, d0, e0] = &binary;
-        let four_ae = field.multiply(model, a0, e0)?;
-        let four_ae = field.ring.scale(model, &four_ae, 4)?;
-        let bd = field.multiply(model, b0, d0)?;
-        let a4 = field.subtract(model, &bd, &four_ae)?;
-        let d2 = field.multiply(model, d0, d0)?;
-        let ad2 = field.multiply(model, a0, &d2)?;
-        let b2 = field.multiply(model, b0, b0)?;
-        let b2e = field.multiply(model, &b2, e0)?;
-        let sum = field.add(model, &ad2, &b2e)?;
-        let four_ace = field.multiply(model, &four_ae, c0)?;
-        let a6 = field.subtract(model, &sum, &four_ace)?;
-        let a2 = c0.clone();
-        let (c4, discriminant) = invariants(model, field, &a2, &a4, &a6)?;
-        Ok(Self {
+        let [a, b, c] = plane_quadratics(model, &field, &terms, plane)?;
+        let binary = binary_quartic(model, &field, &a, &b, &c)?;
+        let jacobian = Jacobian::new(model, &field, &binary)?;
+        Ok(Fiber {
             a,
             b,
             c,
             binary,
+            jacobian,
+        })
+    }
+}
+
+fn plane_quadratics<R: CoefficientRing>(
+    model: &mut Model,
+    ring: &R,
+    terms: &[([usize; 4], R::Element)],
+    plane: [&[R::Element; 4]; 3],
+) -> Result<[Quadratic<R::Element>; 3]> {
+    let coefficients = restrict(model, ring, terms, plane)?;
+    // Indexed by (Y exponent, Z exponent), with X exponent implicit.
+    // The two double nodes exclude every monomial with X^3 or Z^3.
+    for (y, row) in coefficients.iter().enumerate() {
+        for (z, coefficient) in row.iter().enumerate().take(5 - y) {
+            if (y + z < 2 || z > 2) && !ring.is_zero(coefficient) {
+                return Err(Error::plain(
+                    "K3 fiber plane quartic lacks the two prescribed double nodes",
+                ));
+            }
+        }
+    }
+    let a = std::array::from_fn(|i| coefficients[i][2].clone());
+    let b = std::array::from_fn(|i| coefficients[i + 1][1].clone());
+    let c = std::array::from_fn(|i| coefficients[i + 2][0].clone());
+    if ring.is_zero(&a[0]) {
+        return Err(Error::plain(
+            "K3 fiber plane quartic lost the secant coefficient",
+        ));
+    }
+    Ok([a, b, c])
+}
+
+fn binary_quartic<R: FiberRing>(
+    model: &mut Model,
+    ring: &R,
+    a: &Quadratic<R::Element>,
+    b: &Quadratic<R::Element>,
+    c: &Quadratic<R::Element>,
+) -> Result<[R::Element; 5]> {
+    let mut binary = std::array::from_fn(|_| ring.zero());
+    for i in 0..3 {
+        for j in 0..3 {
+            let square = ring.multiply(model, &b[i], &b[j])?;
+            let cross = ring.multiply(model, &a[i], &c[j])?;
+            let cross = ring.scale(model, &cross, 4)?;
+            let term = ring.subtract(model, &square, &cross)?;
+            binary[i + j] = ring.add(model, &binary[i + j], &term)?;
+        }
+    }
+    Ok(binary)
+}
+
+impl<T: Clone> Jacobian<T> {
+    fn new<R: FiberRing<Element = T>>(
+        model: &mut Model,
+        ring: &R,
+        binary: &[T; 5],
+    ) -> Result<Self> {
+        let [a, b, c, d, e] = binary;
+        let four_ae = ring.multiply(model, a, e)?;
+        let four_ae = ring.scale(model, &four_ae, 4)?;
+        let bd = ring.multiply(model, b, d)?;
+        let a4 = ring.subtract(model, &bd, &four_ae)?;
+        let d2 = ring.multiply(model, d, d)?;
+        let ad2 = ring.multiply(model, a, &d2)?;
+        let b2 = ring.multiply(model, b, b)?;
+        let b2e = ring.multiply(model, &b2, e)?;
+        let sum = ring.add(model, &ad2, &b2e)?;
+        let four_ace = ring.multiply(model, &four_ae, c)?;
+        let a6 = ring.subtract(model, &sum, &four_ace)?;
+        let a2 = c.clone();
+        let (c4, c6, discriminant) = invariants(model, ring, &a2, &a4, &a6)?;
+        Ok(Self {
             a2,
             a4,
             a6,
             c4,
+            c6,
             discriminant,
         })
     }
+}
 
+impl Fiber {
     fn status(&self) -> &'static str {
-        if !poly::zero(&self.discriminant) {
+        if !poly::zero(&self.jacobian.discriminant) {
             "smooth"
         } else if self.binary.iter().all(|entry| poly::zero(entry)) {
             "singular (zero binary quartic)"
@@ -132,7 +184,7 @@ impl Fiber {
     }
 
     fn require_smooth(&self) -> Result<()> {
-        if poly::zero(&self.discriminant) {
+        if poly::zero(&self.jacobian.discriminant) {
             return Err(Error::plain("K3 pencil fiber is singular"));
         }
         Ok(())
@@ -152,10 +204,10 @@ impl Fiber {
     pub(crate) fn jacobian_report(&self, name: &str) -> String {
         format!(
             "rvK3FiberJacobian[{name}] = a2={:?}, a4={:?}, a6={:?}, discriminant={:?}, status={}",
-            self.a2,
-            self.a4,
-            self.a6,
-            self.discriminant,
+            self.jacobian.a2,
+            self.jacobian.a4,
+            self.jacobian.a6,
+            self.jacobian.discriminant,
             self.status(),
         )
     }
@@ -163,8 +215,8 @@ impl Fiber {
     pub(crate) fn j(&self, model: &mut Model, pencil: &Pencil) -> Result<Scalar> {
         self.require_smooth()?;
         let field = field(&pencil.curve);
-        let cube = field.ring.power(model, &self.c4, 3)?;
-        let inverse = field.inverse_unit(model, &self.discriminant)?;
+        let cube = field.ring.power(model, &self.jacobian.c4, 3)?;
+        let inverse = field.inverse_unit(model, &self.jacobian.discriminant)?;
         field.multiply(model, &cube, &inverse)
     }
 
@@ -175,11 +227,11 @@ impl Fiber {
             return Err(Error::new(name.span, "rvk3fiberjac requires characteristic at least five for a named short Weierstrass curve"));
         }
         let third = field.inverse_unit(model, &field.signed(3))?;
-        let shift = field.multiply(model, &self.a2, &third)?;
-        let cross = field.multiply(model, &self.a2, &shift)?;
-        let a = field.subtract(model, &self.a4, &cross)?;
-        let linear = field.multiply(model, &self.a4, &shift)?;
-        let b = field.subtract(model, &self.a6, &linear)?;
+        let shift = field.multiply(model, &self.jacobian.a2, &third)?;
+        let cross = field.multiply(model, &self.jacobian.a2, &shift)?;
+        let a = field.subtract(model, &self.jacobian.a4, &cross)?;
+        let linear = field.multiply(model, &self.jacobian.a4, &shift)?;
+        let b = field.subtract(model, &self.jacobian.a6, &linear)?;
         let cubic = field.ring.power(model, &shift, 3)?;
         let cubic = field.ring.scale(model, &cubic, 2)?;
         let b = field.add(model, &b, &cubic)?;
@@ -239,46 +291,57 @@ impl Fiber {
     }
 }
 
-fn invariants(
+fn invariants<R: FiberRing>(
     model: &mut Model,
-    field: Field<'_>,
-    a2: &Scalar,
-    a4: &Scalar,
-    a6: &Scalar,
-) -> Result<(Scalar, Scalar)> {
-    let b2 = field.ring.scale(model, a2, 4)?;
-    let b4 = field.ring.scale(model, a4, 2)?;
-    let b6 = field.ring.scale(model, a6, 4)?;
-    let product = field.multiply(model, a2, &b6)?;
-    let square = field.multiply(model, a4, a4)?;
-    let b8 = field.subtract(model, &product, &square)?;
-    let b2_square = field.multiply(model, &b2, &b2)?;
-    let scaled = field.ring.scale(model, &b4, 24)?;
-    let c4 = field.subtract(model, &b2_square, &scaled)?;
-    let term = field.multiply(model, &b2_square, &b8)?;
-    let mut discriminant = field.ring.negate(model, &term)?;
-    let b4_cube = field.ring.power(model, &b4, 3)?;
-    let term = field.ring.scale(model, &b4_cube, 8)?;
-    discriminant = field.subtract(model, &discriminant, &term)?;
-    let b6_square = field.multiply(model, &b6, &b6)?;
-    let term = field.ring.scale(model, &b6_square, 27)?;
-    discriminant = field.subtract(model, &discriminant, &term)?;
-    let term = field.multiply(model, &b2, &b4)?;
-    let term = field.multiply(model, &term, &b6)?;
-    let term = field.ring.scale(model, &term, 9)?;
-    discriminant = field.add(model, &discriminant, &term)?;
-    Ok((c4, discriminant))
+    ring: &R,
+    a2: &R::Element,
+    a4: &R::Element,
+    a6: &R::Element,
+) -> Result<(R::Element, R::Element, R::Element)> {
+    let b2 = ring.scale(model, a2, 4)?;
+    let b4 = ring.scale(model, a4, 2)?;
+    let b6 = ring.scale(model, a6, 4)?;
+    let product = ring.multiply(model, a2, &b6)?;
+    let square = ring.multiply(model, a4, a4)?;
+    let b8 = ring.subtract(model, &product, &square)?;
+    let b2_square = ring.multiply(model, &b2, &b2)?;
+    let scaled = ring.scale(model, &b4, 24)?;
+    let c4 = ring.subtract(model, &b2_square, &scaled)?;
+    let term = ring.multiply(model, &b2_square, &b8)?;
+    let mut discriminant = ring.subtract(model, &ring.zero(), &term)?;
+    let b4_cube = cube(model, ring, &b4)?;
+    let term = ring.scale(model, &b4_cube, 8)?;
+    discriminant = ring.subtract(model, &discriminant, &term)?;
+    let b6_square = ring.multiply(model, &b6, &b6)?;
+    let term = ring.scale(model, &b6_square, 27)?;
+    discriminant = ring.subtract(model, &discriminant, &term)?;
+    let term = ring.multiply(model, &b2, &b4)?;
+    let term = ring.multiply(model, &term, &b6)?;
+    let term = ring.scale(model, &term, 9)?;
+    discriminant = ring.add(model, &discriminant, &term)?;
+    let b2_cube = ring.multiply(model, &b2_square, &b2)?;
+    let b2b4 = ring.multiply(model, &b2, &b4)?;
+    let middle = ring.scale(model, &b2b4, 36)?;
+    let last = ring.scale(model, &b6, 216)?;
+    let c6 = ring.subtract(model, &middle, &b2_cube)?;
+    let c6 = ring.subtract(model, &c6, &last)?;
+    Ok((c4, c6, discriminant))
 }
 
-type PlaneCoefficients = [[Scalar; 5]; 5];
+fn cube<R: CoefficientRing>(model: &mut Model, ring: &R, value: &R::Element) -> Result<R::Element> {
+    let square = ring.multiply(model, value, value)?;
+    ring.multiply(model, &square, value)
+}
 
-fn restrict(
+type PlaneCoefficients<T> = [[T; 5]; 5];
+
+fn restrict<R: CoefficientRing>(
     model: &mut Model,
-    field: Field<'_>,
-    terms: &[QuarticTerm],
-    plane: [&[Scalar; 4]; 3],
-) -> Result<PlaneCoefficients> {
-    let zero = || std::array::from_fn(|_| std::array::from_fn(|_| field.zero()));
+    ring: &R,
+    terms: &[([usize; 4], R::Element)],
+    plane: [&[R::Element; 4]; 3],
+) -> Result<PlaneCoefficients<R::Element>> {
+    let zero = || std::array::from_fn(|_| std::array::from_fn(|_| ring.zero()));
     let mut total = zero();
     for (slots, coefficient) in terms {
         let mut current = zero();
@@ -287,17 +350,17 @@ fn restrict(
             let mut next = zero();
             for (y, row) in current.iter().enumerate().take(degree + 1) {
                 for (z, term) in row.iter().enumerate().take(degree + 1 - y) {
-                    if field.is_zero(term) {
+                    if ring.is_zero(term) {
                         continue;
                     }
                     for (axis, vector) in plane.iter().enumerate() {
-                        if field.is_zero(&vector[slot]) {
+                        if ring.is_zero(&vector[slot]) {
                             continue;
                         }
                         let coefficient =
                             &mut next[y + usize::from(axis == 1)][z + usize::from(axis == 2)];
-                        let product = field.multiply(model, term, &vector[slot])?;
-                        *coefficient = field.add(model, coefficient, &product)?;
+                        let product = ring.multiply(model, term, &vector[slot])?;
+                        *coefficient = ring.add(model, coefficient, &product)?;
                     }
                 }
             }
@@ -305,7 +368,7 @@ fn restrict(
         }
         for (y, row) in current.iter().enumerate() {
             for (z, term) in row.iter().enumerate().take(5 - y) {
-                total[y][z] = field.add(model, &total[y][z], term)?;
+                total[y][z] = ring.add(model, &total[y][z], term)?;
             }
         }
     }

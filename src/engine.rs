@@ -1760,6 +1760,26 @@ impl Engine {
                         let pencil = self.model.k3_pencil(&name)?;
                         pencil.census(&mut self.model, &name.text).map(Some)
                     }
+                    Command::Weierstrass(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        Ok(Some(relative.weierstrass(&pencil, &name.text)))
+                    }
+                    Command::Discriminant(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        relative
+                            .discriminant(&mut self.model, &pencil, &name.text)
+                            .map(Some)
+                    }
+                    Command::Reduction(name, input) => {
+                        let (pencil, parameter) =
+                            self.pencil_parameter(&name, *input, "rvK3FiberReduction parameter")?;
+                        let relative = pencil.relative(&mut self.model)?;
+                        relative
+                            .reduction(&mut self.model, &pencil, &name.text, &parameter)
+                            .map(Some)
+                    }
                 };
             }
             StatementForm::DeclareEnriques(declaration) => {

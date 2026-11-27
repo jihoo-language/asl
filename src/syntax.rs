@@ -4601,10 +4601,12 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
             self.expect(Token::RBracket)?;
-            if operation == "rvK3PencilFiber" {
-                Command::Fiber(name, Box::new(self.paren_expr(0)?))
-            } else {
-                Command::Census(name)
+            match operation {
+                "rvK3PencilFiber" => Command::Fiber(name, Box::new(self.paren_expr(0)?)),
+                "rvK3FiberReduction" => Command::Reduction(name, Box::new(self.paren_expr(0)?)),
+                "rvK3PencilWeierstrass" => Command::Weierstrass(name),
+                "rvK3PencilDiscriminant" => Command::Discriminant(name),
+                _ => Command::Census(name),
             }
         };
         Ok(StatementForm::K3Pencil(Box::new(command)))
@@ -5977,9 +5979,14 @@ impl<'src> Parser<'src> {
                 self.kummer_enriques_statement(command)?
             }
             Token::Word("rvenriques") => self.declare_enriques_statement()?,
-            Token::Word(op @ ("rvk3pencil" | "rvK3PencilFiber" | "rvK3PencilCensus")) => {
-                self.k3_pencil_statement(op)?
-            }
+            Token::Word(
+                op @ ("rvk3pencil"
+                | "rvK3PencilFiber"
+                | "rvK3PencilCensus"
+                | "rvK3PencilWeierstrass"
+                | "rvK3PencilDiscriminant"
+                | "rvK3FiberReduction"),
+            ) => self.k3_pencil_statement(op)?,
             Token::Word(
                 op
                 @ ("rvk3fiberjac" | "rvK3FiberQuartic" | "rvK3FiberJacobian" | "rvK3FiberPoints"),

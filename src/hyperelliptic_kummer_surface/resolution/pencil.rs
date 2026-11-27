@@ -20,6 +20,9 @@ pub(crate) enum Command {
     Define(Label, Label, u8, u8),
     Fiber(Label, Box<ParsedExpr>),
     Census(Label),
+    Weierstrass(Label),
+    Discriminant(Label),
+    Reduction(Label, Box<ParsedExpr>),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Operation);
@@ -90,6 +93,7 @@ pub(crate) struct Pencil {
     section_masks: u16,
     sections: [OnceCell<Section>; 16],
     counts: OnceCell<Box<[usize]>>,
+    relative: OnceCell<fiber::relative::RelativeJacobian>,
 }
 
 impl Pencil {
@@ -148,6 +152,7 @@ impl Pencil {
             section_masks,
             sections: std::array::from_fn(|_| OnceCell::new()),
             counts: OnceCell::new(),
+            relative: OnceCell::new(),
         })
     }
 
