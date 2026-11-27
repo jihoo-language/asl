@@ -11,6 +11,8 @@ use crate::syntax::Label;
 
 use super::Isogeny;
 
+mod push;
+
 pub(crate) struct Correspondence {
     pub(crate) source: Rc<Curve>,
     pub(crate) target: Rc<Curve>,
@@ -69,56 +71,93 @@ impl Correspondence {
             ));
         }
 
-        // Rotate the splitting so the last pair contains the source infinity.
-        let i = (self.linear + 1) % 3;
-        let j = (self.linear + 2) % 3;
+        let [i, j] = self.quadratic_indices();
         let g1 = poly::evaluate(model, field, &self.isogeny.source_factors[i], x)?;
         let g2 = poly::evaluate(model, field, &self.isogeny.source_factors[j], x)?;
-        let stored = &self.isogeny.target_factors;
         if poly::zero(y) {
-            let support = if field.is_zero(&g1) {
-                &stored[j]
+            return if field.is_zero(&g1) {
+                self.branch_pair(model, field, j)
             } else if field.is_zero(&g2) {
-                &stored[i]
+                self.branch_pair(model, field, i)
             } else {
-                return Ok(Divisor::zero(&self.target));
+                Ok(Divisor::zero(&self.target))
             };
-            return self.represent(model, field, support, &[]);
         }
+        let y_inverse = field.ring.inverse(model, y)?;
+        let ratio = field.multiply(model, &g1, &y_inverse)?;
+        let x_ratio = field.ring.multiply(model, x, &ratio)?;
+        let (u, v) = self.fiber(model, field, [&g1, &g2], [&x_ratio, &ratio])?;
+        self.represent(model, field, u, v)
+    }
 
+    pub(crate) fn source_name(&self) -> &str {
+        &self.isogeny.source
+    }
+
+    fn quadratic_indices(&self) -> [usize; 2] {
+        // Rotate the splitting so the last pair contains the source infinity.
+        [(self.linear + 1) % 3, (self.linear + 2) % 3]
+    }
+
+    fn branch_pair(&self, model: &mut Model, field: Field<'_>, index: usize) -> Result<Divisor> {
+        let support = self.isogeny.target_factors[index].clone();
+        let (u, v) = self.chart_coordinates(model, field, support, Vec::new())?;
+        self.represent(model, field, u, v)
+    }
+
+    // One base-field component of L = G1(x)B1 + G2(x)B2 and
+    // w = B1 · ((x G1(x)/y) − (G1(x)/y) z).
+    fn fiber(
+        &self,
+        model: &mut Model,
+        field: Field<'_>,
+        [g1, g2]: [&Scalar; 2],
+        [x_ratio, ratio]: [&Scalar; 2],
+    ) -> Result<(Polynomial, Polynomial)> {
+        let [i, j] = self.quadratic_indices();
+        let stored = &self.isogeny.target_factors;
         let raw_first = poly::scale(model, field, &stored[0], &self.isogeny.determinant)?;
         let brackets = [raw_first.as_slice(), &stored[1], &stored[2]];
-        let left = poly::scale(model, field, brackets[i], &g1)?;
-        let right = poly::scale(model, field, brackets[j], &g2)?;
+        let left = poly::scale(model, field, brackets[i], g1)?;
+        let right = poly::scale(model, field, brackets[j], g2)?;
         let support = poly::sum(model, field, &left, &right, false)?;
         // On the fiber, the cofactor identity gives w² = f_target(z) for
         // w = G1(x) B1(z) (x-z) / y.
-        let ordinate = poly::multiply(model, field, &left, &[x.to_vec(), field.signed(-1)])?;
-        let y_inverse = field.ring.inverse(model, y)?;
-        let ordinate = poly::scale(model, field, &ordinate, &y_inverse)?;
-        self.represent(model, field, &support, &ordinate)
+        let negated_ratio = field.ring.negate(model, ratio)?;
+        let ordinate =
+            poly::multiply(model, field, brackets[i], &[x_ratio.clone(), negated_ratio])?;
+        self.chart_coordinates(model, field, support, ordinate)
+    }
+
+    fn chart_coordinates(
+        &self,
+        model: &mut Model,
+        field: Field<'_>,
+        support: Polynomial,
+        ordinate: Polynomial,
+    ) -> Result<(Polynomial, Polynomial)> {
+        if let Some(chart) = &self.chart {
+            let numerator = poly::trim(vec![chart.derivative.clone(), chart.branch.clone()]);
+            let denominator = [field.zero(), field.one()];
+            // The fiber over the source infinity is a hyperelliptic fiber.
+            // Transform both projective points before discarding any at the
+            // new infinity, which is the base point in the target chart.
+            let u = homogeneous_substitution(model, field, &support, 2, &numerator, &denominator)?;
+            let v = homogeneous_substitution(model, field, &ordinate, 3, &numerator, &denominator)?;
+            let inverse = field.inverse_unit(model, &chart.derivative)?;
+            Ok((u, poly::scale(model, field, &v, &inverse)?))
+        } else {
+            Ok((support, ordinate))
+        }
     }
 
     fn represent(
         &self,
         model: &mut Model,
         field: Field<'_>,
-        support: &[Scalar],
-        ordinate: &[Scalar],
+        u: Polynomial,
+        v: Polynomial,
     ) -> Result<Divisor> {
-        let (u, v): (Polynomial, Polynomial) = if let Some(chart) = &self.chart {
-            let numerator = poly::trim(vec![chart.derivative.clone(), chart.branch.clone()]);
-            let denominator = [field.zero(), field.one()];
-            // The fiber over the source infinity is a hyperelliptic fiber.
-            // Transform both projective points before discarding any at the
-            // new infinity, which is the base point in the target chart.
-            let u = homogeneous_substitution(model, field, support, 2, &numerator, &denominator)?;
-            let v = homogeneous_substitution(model, field, ordinate, 3, &numerator, &denominator)?;
-            let inverse = field.inverse_unit(model, &chart.derivative)?;
-            (u, poly::scale(model, field, &v, &inverse)?)
-        } else {
-            (support.to_vec(), ordinate.to_vec())
-        };
         let leading = u
             .last()
             .ok_or_else(|| Error::plain("Richelot fiber support vanished"))?;

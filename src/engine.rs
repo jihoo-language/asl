@@ -444,6 +444,10 @@ enum JacobianAction {
         Box<TypedExpr>,
         Box<[crate::ec_poly::Polynomial; 4]>,
     ),
+    RichelotPush(
+        Box<crate::richelot::correspondence::Correspondence>,
+        Box<TypedExpr>,
+    ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -4652,6 +4656,14 @@ impl Engine {
                 let [a, b, p, q] = components.as_ref().clone();
                 quadratic_trace::trace(&mut self.model, curve, &k.to_vec(), [a, b], [p, q])?
                     .persist(&mut self.model, curve)
+            }
+            JacobianAction::RichelotPush(correspondence, input) => {
+                let Value::Jacobian(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                correspondence
+                    .push(&mut self.model, &input)?
+                    .persist(&mut self.model, &correspondence.target)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17638,6 +17650,23 @@ impl Checker<'_> {
                     TypedForm::Jacobian(JacobianAction::RichelotPoint(
                         Box::new(correspondence),
                         Box::new([x, y]),
+                    )),
+                ))
+            }
+            Expression::RichelotPush(name, input) => {
+                let correspondence =
+                    crate::richelot::correspondence::Correspondence::resolve(self.model, &name)?;
+                let source = self
+                    .model
+                    .jacobian_type(correspondence.source_name().into())?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvRichelotPush source divisor")?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::RichelotPush(
+                        Box::new(correspondence),
+                        Box::new(input),
                     )),
                 ))
             }

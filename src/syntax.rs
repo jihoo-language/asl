@@ -2983,6 +2983,13 @@ impl<'src> Parser<'src> {
                     depth,
                 )
             }
+            "rvRichelotPush" => {
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::RichelotPush(target, Box::new(input)), depth)
+            }
             "rvJacRechart" | "rvJacUnchart" => {
                 use crate::hyperelliptic_chart::Direction;
                 let chart = self.label()?;
@@ -8579,6 +8586,7 @@ impl<'src> Parser<'src> {
                         | "rvJacHalfPoint"
                         | "rvJacHalfAt"
                         | "rvRichelotPoint"
+                        | "rvRichelotPush"
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"
