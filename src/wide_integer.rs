@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::rv_ore::gcd;
 
@@ -237,6 +237,25 @@ impl<const N: usize> Natural<N> {
             shifted = shifted.shift_right(1);
         }
         Ok((quotient, remainder))
+    }
+
+    pub(crate) fn integer_sqrt(self, model: &mut Model) -> Result<Self> {
+        if let Some(value) = self.small() {
+            return Ok(Self::from_small(value.isqrt()));
+        }
+        // Start above the root and iterate Newton's integer recurrence.
+        let mut root = Self::from_small(1).shift_left(self.bits().div_ceil(2));
+        loop {
+            let (quotient, _) = self.div_rem(model, root)?;
+            let mut next = root;
+            next.add_multiple(quotient, 1)
+                .ok_or_else(|| Error::plain("exact integer square root exceeds its width"))?;
+            next = next.shift_right(1);
+            if !next.cmp(root).is_lt() {
+                return Ok(root);
+            }
+            root = next;
+        }
     }
 
     fn trailing_zeros(self) -> usize {

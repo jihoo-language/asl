@@ -10,12 +10,31 @@ use crate::hyperelliptic_kummer_surface::polarized;
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod walls;
+
 const N: usize = 5;
+
+#[derive(Clone, Copy)]
+pub(crate) enum WallOperation {
+    Reflect,
+    At(usize),
+}
+
+impl WallOperation {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Reflect => "rvOG10Reflect",
+            Self::At(_) => "rvOG10WallAt",
+        }
+    }
+}
 
 pub(crate) enum Expression {
     Build(Label, i128, Box<ParsedExpr>),
     Exceptional(Label),
     Basis(Label, usize),
+    Reflect(Box<[ParsedExpr; 2]>),
+    WallAt(usize, Box<[ParsedExpr; 2]>),
 }
 
 pub(crate) enum Command {
@@ -24,6 +43,8 @@ pub(crate) enum Command {
     Divisibility(Box<ParsedExpr>),
     Fujiki(usize, Box<[ParsedExpr; 2]>),
     RiemannRoch(Box<ParsedExpr>),
+    Wall(Box<ParsedExpr>),
+    Walls(Box<[ParsedExpr; 2]>),
 }
 
 pub(super) struct Form {

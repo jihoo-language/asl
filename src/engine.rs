@@ -677,6 +677,11 @@ enum TypedForm {
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     Mukai(MukaiAction),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
+    OG10Wall(
+        og10::WallOperation,
+        Rc<mukai::moduli::Lattice>,
+        Box<[TypedExpr; 2]>,
+    ),
     OG10Negate(Box<TypedExpr>),
     MukaiQuotient(Rc<mukai::moduli::Lattice>, Box<TypedExpr>),
     MukaiQuotientLift(Box<TypedExpr>),
@@ -5683,58 +5688,68 @@ impl Engine {
 
     fn og10_command(&mut self, command: og10::Command) -> Result<String> {
         use og10::Command;
-        let divisibility = matches!(&command, Command::Divisibility(_));
+        let operation = match &command {
+            Command::Pair(_) => "rvOG10Pair",
+            Command::Divisibility(_) => "rvOG10Div",
+            Command::Fujiki(..) => "rvOG10Fujiki",
+            Command::RiemannRoch(_) => "rvOG10RR",
+            Command::Wall(_) => "rvOG10Wall",
+            Command::Walls(_) => "rvOG10Walls",
+            Command::Lattice(_) => "rvOG10Lattice",
+        };
         match command {
             Command::Lattice(name) => {
                 self.model.mukai_moduli(&name)?.require_og10()?;
                 Ok(og10::report(&name.text))
             }
-            Command::Pair(_) | Command::Fujiki(..) => {
-                let (inputs, exponent, operation) = match command {
-                    Command::Pair(inputs) => (inputs, None, "rvOG10Pair"),
-                    Command::Fujiki(j, inputs) => (inputs, Some(j), "rvOG10Fujiki"),
-                    _ => unreachable!(),
-                };
-                let [left, right] = *inputs;
-                let checker = &mut self.checker();
-                let left = checker.expr(left)?;
-                let right = checker.expr(right)?;
-                let label = checker.og10_operand(&left, operation)?;
-                checker.require_type(left.ty, &right, operation)?;
-                let lattice = self.model.mukai_moduli(&label)?;
-                let (Value::OG10(left), Value::OG10(right)) =
-                    (self.eval(&left)?, self.eval(&right)?)
-                else {
-                    unreachable!()
-                };
-                if let Some(j) = exponent {
-                    let value = left.fujiki(&mut self.model, &lattice, &right, j)?;
-                    Ok(format!("{operation}[{j}] = {value}"))
-                } else {
-                    let value = left.pair(&mut self.model, &lattice, &right)?;
-                    Ok(format!("{operation} = {value}"))
-                }
+            Command::Pair(inputs) => {
+                let (lattice, [left, right]) = self.og10_binary(*inputs, operation)?;
+                let value = left.pair(&mut self.model, &lattice, &right)?;
+                Ok(format!("{operation} = {value}"))
             }
-            Command::Divisibility(input) | Command::RiemannRoch(input) => {
-                let operation = if divisibility {
-                    "rvOG10Div"
-                } else {
-                    "rvOG10RR"
-                };
+            Command::Fujiki(j, inputs) => {
+                let (lattice, [left, right]) = self.og10_binary(*inputs, operation)?;
+                let value = left.fujiki(&mut self.model, &lattice, &right, j)?;
+                Ok(format!("{operation}[{j}] = {value}"))
+            }
+            Command::Walls(inputs) => {
+                let (lattice, [left, right]) = self.og10_binary(*inputs, operation)?;
+                let segment = og10::walls::Segment::new(&mut self.model, &lattice, &left, &right)?;
+                segment.report(&mut self.model)
+            }
+            Command::Divisibility(input) | Command::RiemannRoch(input) | Command::Wall(input) => {
                 let input = self.checker().expr(*input)?;
                 let label = self.checker().og10_operand(&input, operation)?;
                 let lattice = self.model.mukai_moduli(&label)?;
                 let Value::OG10(input) = self.eval(&input)? else {
                     unreachable!()
                 };
-                let value = if divisibility {
-                    input.divisibility(&mut self.model, &lattice)?
-                } else {
-                    input.riemann_roch(&mut self.model, &lattice)?
+                let value = match operation {
+                    "rvOG10Div" => input.divisibility(&mut self.model, &lattice)?,
+                    "rvOG10RR" => input.riemann_roch(&mut self.model, &lattice)?,
+                    _ => return og10::walls::report(&mut self.model, &lattice, &input),
                 };
                 Ok(format!("{operation} = {value}"))
             }
         }
+    }
+
+    fn og10_binary(
+        &mut self,
+        [left, right]: [ParsedExpr; 2],
+        operation: &str,
+    ) -> Result<(Rc<mukai::moduli::Lattice>, [Rc<og10::Class>; 2])> {
+        let checker = &mut self.checker();
+        let left = checker.expr(left)?;
+        let right = checker.expr(right)?;
+        let label = checker.og10_operand(&left, operation)?;
+        checker.require_type(left.ty, &right, operation)?;
+        let lattice = self.model.mukai_moduli(&label)?;
+        let (Value::OG10(left), Value::OG10(right)) = (self.eval(&left)?, self.eval(&right)?)
+        else {
+            unreachable!()
+        };
+        Ok((lattice, [left, right]))
     }
 
     fn mukai_moduli_command(&mut self, command: mukai::moduli::Command) -> Result<Option<String>> {
@@ -8273,6 +8288,23 @@ impl Engine {
                 };
                 og10::Class::new(&mut self.model, lattice, vector, *generator)?
                     .persist(&mut self.model)
+            }
+            TypedForm::OG10Wall(operation, lattice, inputs) => {
+                let (Value::OG10(left), Value::OG10(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let class = match operation {
+                    og10::WallOperation::Reflect => {
+                        og10::walls::reflect(&mut self.model, lattice, &left, &right)?
+                    }
+                    og10::WallOperation::At(index) => {
+                        og10::walls::Segment::new(&mut self.model, lattice, &left, &right)?
+                            .wall_at(*index)?
+                    }
+                };
+                class.persist(&mut self.model)
             }
             TypedForm::OG10Negate(input) => {
                 let Value::OG10(class) = self.eval(input)? else {
@@ -20481,6 +20513,12 @@ impl Checker<'_> {
         let (name, index) = match expression {
             Expression::Basis(name, index) => (name, Some(index)),
             Expression::Exceptional(name) => (name, None),
+            Expression::Reflect(inputs) => {
+                return self.og10_wall_expression(og10::WallOperation::Reflect, *inputs);
+            }
+            Expression::WallAt(index, inputs) => {
+                return self.og10_wall_expression(og10::WallOperation::At(index), *inputs);
+            }
             Expression::Build(name, generator, input) => {
                 let lattice = self.model.mukai_moduli(&name)?;
                 let ty = self.model.og10_type(&name)?;
@@ -20502,6 +20540,22 @@ impl Checker<'_> {
             og10::Class::exceptional(self.model, &lattice)?
         };
         Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+    }
+
+    fn og10_wall_expression(
+        &mut self,
+        operation: og10::WallOperation,
+        [left, right]: [ParsedExpr; 2],
+    ) -> Result<(TypeId, TypedForm)> {
+        let left = self.expr(left)?;
+        let right = self.expr(right)?;
+        let name = self.og10_operand(&left, operation.name())?;
+        self.require_type(left.ty, &right, operation.name())?;
+        let lattice = self.model.mukai_moduli(&name)?;
+        Ok((
+            left.ty,
+            TypedForm::OG10Wall(operation, lattice, Box::new([left, right])),
+        ))
     }
 
     fn mukai_quotient_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {

@@ -2958,6 +2958,8 @@ impl<'src> Parser<'src> {
                 Command::Lattice(name)
             }
             "rvOG10Pair" => Command::Pair(Box::new(self.paren_pair(0)?)),
+            "rvOG10Wall" => Command::Wall(Box::new(self.paren_expr(0)?)),
+            "rvOG10Walls" => Command::Walls(Box::new(self.paren_pair(0)?)),
             "rvOG10Fujiki" => {
                 self.expect(Token::LBracket)?;
                 let exponent = self.number()?.0;
@@ -2972,6 +2974,24 @@ impl<'src> Parser<'src> {
 
     fn og10_expression(&mut self, operation: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression;
+        if matches!(operation, "rvOG10Reflect" | "rvOG10WallAt") {
+            let index = if operation == "rvOG10WallAt" {
+                self.expect(Token::LBracket)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Some(index)
+            } else {
+                None
+            };
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            let inputs = Box::new(inputs);
+            let expression = match index {
+                Some(index) => Expression::WallAt(index, inputs),
+                None => Expression::Reflect(inputs),
+            };
+            return expr(span, ExprForm::OG10(Box::new(expression)), depth);
+        }
         self.expect(Token::LBracket)?;
         let name = self.label()?;
         let (expression, depth) = match operation {
@@ -5511,7 +5531,7 @@ impl<'src> Parser<'src> {
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(
                 operation @ ("rvOG10Lattice" | "rvOG10Pair" | "rvOG10Div" | "rvOG10Fujiki"
-                | "rvOG10RR"),
+                | "rvOG10RR" | "rvOG10Wall" | "rvOG10Walls"),
             ) => self.og10_statement(operation)?,
             Token::Word(
                 operation @ ("rvmukaimoduli"
@@ -10991,8 +11011,11 @@ impl<'src> Parser<'src> {
                 {
                     return self.nakajima_expression(&name.text, span, nest);
                 }
-                if matches!(name.text.as_str(), "rvOG10" | "rvOG10Basis" | "rvOG10Exc")
-                    && self.token() == Token::LBracket
+                if (matches!(
+                    name.text.as_str(),
+                    "rvOG10" | "rvOG10Basis" | "rvOG10Exc" | "rvOG10WallAt"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvOG10Reflect" && self.token() == Token::LParen)
                 {
                     return self.og10_expression(&name.text, span, nest);
                 }
