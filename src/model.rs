@@ -984,6 +984,7 @@ pub(crate) struct Model {
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     lg_defects: HashMap<String, Rc<defect::Defect>>,
+    lg_convolutions: HashMap<String, Rc<defect::Convolution>>,
     lg_pushes: HashMap<String, Rc<defect::Push>>,
     knorrer_objects: HashMap<String, Rc<knorrer::Doubled>>,
     matrix_factorizations: HashMap<String, Rc<mf::Object>>,
@@ -1166,6 +1167,7 @@ impl Model {
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             lg_defects: HashMap::new(),
+            lg_convolutions: HashMap::new(),
             lg_pushes: HashMap::new(),
             knorrer_objects: HashMap::new(),
             matrix_factorizations: HashMap::new(),
@@ -6395,13 +6397,23 @@ impl Model {
         mark: Label,
         indices: Vec<usize>,
     ) -> Result<()> {
+        self.define_lg_defect(name, |model| {
+            defect::Defect::marked(model, mark.text.into(), indices)
+        })
+    }
+
+    fn define_lg_defect(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<defect::Defect>,
+    ) -> Result<()> {
         if self.lg_defects.contains_key(&name.text) {
             return Err(Error::new(
                 name.span,
                 format!("LG defect '{}' is already defined", name.text),
             ));
         }
-        let defect = defect::Defect::marked(self, mark.text.into(), indices)?;
+        let defect = build(self)?;
         self.allocate(defect.size())?;
         self.lg_defects.insert(name.text, Rc::new(defect));
         Ok(())
@@ -6412,6 +6424,42 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown LG defect '{name}'")))
+    }
+
+    pub(crate) fn register_lg_convolution(
+        &mut self,
+        name: Label,
+        left: Label,
+        right: Label,
+    ) -> Result<()> {
+        if self.lg_convolutions.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("LG convolution '{}' is already defined", name.text),
+            ));
+        }
+        let left = self.lg_defect(&left.text)?;
+        let right = self.lg_defect(&right.text)?;
+        let convolution = defect::Convolution::new(self, &left, &right)?;
+        self.lg_convolutions.insert(name.text, Rc::new(convolution));
+        Ok(())
+    }
+
+    pub(crate) fn lg_convolution(&self, name: &str) -> Result<Rc<defect::Convolution>> {
+        self.lg_convolutions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown LG convolution '{name}'")))
+    }
+
+    pub(crate) fn register_lg_convolution_part(
+        &mut self,
+        name: Label,
+        fusion: Label,
+        part: usize,
+    ) -> Result<()> {
+        let fusion = self.lg_convolution(&fusion.text)?;
+        self.define_lg_defect(name, |model| fusion.part(model, part))
     }
 
     pub(crate) fn register_lg_push(

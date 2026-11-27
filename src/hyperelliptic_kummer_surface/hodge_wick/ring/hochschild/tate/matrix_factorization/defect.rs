@@ -2,10 +2,13 @@ use crate::rv_cyclotomic as cyclo;
 
 use super::{check_report, Error, Label, Model, Object, ParsedExpr, Rc, Result, Value};
 
+mod convolution;
 mod field;
 mod fusion;
 mod jordan;
+mod linear;
 
+pub(crate) use convolution::Convolution;
 pub(crate) use fusion::verify_fusion;
 pub(crate) use jordan::Push;
 
@@ -16,6 +19,10 @@ pub(crate) enum Command {
     PushReport(Label),
     PushResult(Label, Label),
     Fusion(Label, Label),
+    Convolve(Label, Label, Label),
+    ConvolutionReport(Label),
+    SplitReport(Label),
+    SplitPart(Label, Label, usize),
 }
 
 pub(crate) enum Expression {
@@ -23,6 +30,7 @@ pub(crate) enum Expression {
     Bulk(Label, usize, bool),
     Matrix(Label, usize, usize, usize, usize),
     Map(Label, Label, usize, usize, usize, Box<ParsedExpr>),
+    ConvolutionTerm(Label, [usize; 5]),
 }
 
 type Polynomial = Vec<Vec<i128>>;

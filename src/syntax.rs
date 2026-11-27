@@ -10752,14 +10752,27 @@ impl<'src> Parser<'src> {
                 let indices = self.set_named_rows(|p| Ok(p.number()?.0))?;
                 Command::Declare(label, mark, indices)
             }
-            "rvlgdefectpush" => {
+            "rvlgdefectpush" | "rvlgdefectconvolution" => {
                 let label = self.label()?;
                 self.expect(Token::LBracket)?;
                 let defect = self.label()?;
                 self.expect(Token::Comma)?;
                 let source = self.label()?;
                 self.expect(Token::RBracket)?;
-                Command::Push(label, defect, source)
+                if name == "rvlgdefectpush" {
+                    Command::Push(label, defect, source)
+                } else {
+                    Command::Convolve(label, defect, source)
+                }
+            }
+            "rvlgconvolutionpart" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let fusion = self.label()?;
+                self.expect(Token::Comma)?;
+                let part = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::SplitPart(label, fusion, part)
             }
             "rvlgdefectresult" => {
                 let label = self.label()?;
@@ -10776,6 +10789,8 @@ impl<'src> Parser<'src> {
                         self.expect(Token::Comma)?;
                         Command::Fusion(name_1, self.label()?)
                     }
+                    "rvLGConvolution" => Command::ConvolutionReport(name_1),
+                    "rvLGConvolutionSplit" => Command::SplitReport(name_1),
                     "rvLGDefectPush" => Command::PushReport(name_1),
                     _ => Command::Object(name_1),
                 };
@@ -10806,6 +10821,10 @@ impl<'src> Parser<'src> {
         }
         let first = self.number()?.0;
         let operation = match name {
+            "rvLGConvolutionTerm" => Expression::ConvolutionTerm(
+                label,
+                [first, next(self)?, next(self)?, next(self)?, next(self)?],
+            ),
             "rvLGDefectCoeff" => Expression::Coefficient(label, first, next(self)?),
             "rvLGDefectMatrix" => {
                 Expression::Matrix(label, first, next(self)?, next(self)?, next(self)?)
@@ -15357,8 +15376,16 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
             Token::Word(
-                command @ ("rvlgdefect" | "rvLGDefect" | "rvlgdefectpush" | "rvLGDefectPush"
-                | "rvlgdefectresult" | "rvLGDefectFusion"),
+                command @ ("rvlgdefect"
+                | "rvLGDefect"
+                | "rvlgdefectpush"
+                | "rvLGDefectPush"
+                | "rvlgdefectresult"
+                | "rvLGDefectFusion"
+                | "rvlgdefectconvolution"
+                | "rvLGConvolution"
+                | "rvLGConvolutionSplit"
+                | "rvlgconvolutionpart"),
             ) => self.lg_defect_statement(command)?,
             Token::Word(
                 command @ ("rvknorrer" | "rvKnorrerObject" | "rvKnorrerTrace" | "rvKnorrerCone"
@@ -22501,6 +22528,7 @@ impl<'src> Parser<'src> {
                 if matches!(
                     name.text.as_str(),
                     "rvLGDefectCoeff"
+                        | "rvLGConvolutionTerm"
                         | "rvLGDefectBulk"
                         | "rvLGDefectReverse"
                         | "rvLGDefectMatrix"

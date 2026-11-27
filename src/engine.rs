@@ -7094,6 +7094,28 @@ impl Engine {
                     push.report()?
                 )));
             }
+            Command::Convolve(name, left, right) => {
+                self.model.register_lg_convolution(name, left, right)?
+            }
+            Command::SplitPart(name, fusion, part) => self
+                .model
+                .register_lg_convolution_part(name, fusion, part)?,
+            Command::ConvolutionReport(name) => {
+                let fusion = self.model.lg_convolution(&name.text)?;
+                return Ok(Some(format!(
+                    "rvLGConvolution[{}] = {}",
+                    name.text,
+                    fusion.report()?
+                )));
+            }
+            Command::SplitReport(name) => {
+                let fusion = self.model.lg_convolution(&name.text)?;
+                return Ok(Some(format!(
+                    "rvLGConvolutionSplit[{}] = {}",
+                    name.text,
+                    fusion.split_report(&mut self.model)?
+                )));
+            }
             Command::Fusion(a, b) => {
                 let left = self.model.lg_defect(&a.text)?;
                 let right = self.model.lg_defect(&b.text)?;
@@ -31969,6 +31991,13 @@ impl Checker<'_> {
                 (
                     self.model.cyclotomic_type(defect.d)?,
                     defect.bulk(self.model, degree, reverse)?,
+                )
+            }
+            Expression::ConvolutionTerm(name, indices) => {
+                let fusion = self.model.lg_convolution(&name.text)?;
+                (
+                    self.model.cyclotomic_rational_type(fusion.d)?,
+                    fusion.term(self.model, indices)?,
                 )
             }
             Expression::Matrix(name, summand, kind, row, column) => {

@@ -4,22 +4,28 @@ use super::field::Field;
 use super::jordan::Summand;
 use super::{check_report, Defect, Error, Model, Result};
 
-fn interval(defect: &Defect) -> Result<(usize, usize)> {
+pub(super) fn interval(defect: &Defect) -> Option<(usize, usize)> {
     let d = defect.d;
     let start = defect
         .indices
         .iter()
         .copied()
-        .find(|&r| defect.indices.binary_search(&((r + d - 1) % d)).is_err())
-        .unwrap();
-    for i in 0..defect.indices.len() {
-        if defect.indices.binary_search(&((start + i) % d)).is_err() {
-            return Err(Error::plain(
-                "LG defect fusion rule requires consecutive circular intervals",
-            ));
-        }
-    }
-    Ok((start, defect.indices.len() - 1))
+        .find(|&r| defect.indices.binary_search(&((r + d - 1) % d)).is_err())?;
+    (0..defect.indices.len())
+        .all(|i| defect.indices.binary_search(&((start + i) % d)).is_ok())
+        .then_some((start, defect.indices.len() - 1))
+}
+
+pub(super) fn channels(
+    d: usize,
+    (a, l): (usize, usize),
+    (b, m): (usize, usize),
+) -> impl Iterator<Item = (usize, usize)> {
+    let low = l.abs_diff(m);
+    let high = (l + m).min(2 * (d - 2) - l - m);
+    (low..=high)
+        .step_by(2)
+        .map(move |n| ((a + b + (l + m - n) / 2) % d, n))
 }
 
 fn action(model: &mut Model, field: &Field, defect: &Defect) -> Result<Vec<Vec<usize>>> {
@@ -37,20 +43,20 @@ pub(crate) fn verify_fusion(model: &mut Model, left: &Defect, right: &Defect) ->
             "LG defect fusion requires the same Tate marking",
         ));
     }
-    let (a, l) = interval(left)?;
-    let (b, m) = interval(right)?;
+    let (Some(a), Some(b)) = (interval(left), interval(right)) else {
+        return Err(Error::plain(
+            "LG defect fusion rule requires consecutive circular intervals",
+        ));
+    };
     let d = left.d;
-    let low = l.abs_diff(m);
-    let high = (l + m).min(2 * (d - 2) - l - m);
     let field = Field::new(model, d)?;
     let left_action = action(model, &field, left)?;
     let right_action = action(model, &field, right)?;
-    let mut channels = Vec::new();
+    let mut result = Vec::new();
     let mut combined = vec![Vec::new(); d];
     let mut bulk = vec![Vec::new(); d - 1];
     let mut reverse = vec![Vec::new(); d - 1];
-    for n in (low..=high).step_by(2) {
-        let start = (a + b + (l + m - n) / 2) % d;
+    for (start, n) in channels(d, a, b) {
         let support = (0..=n).map(|i| (start + i) % d).collect();
         let channel = Defect::new(model, left.mark.clone(), d, support)?;
         for (all, parts) in combined.iter_mut().zip(action(model, &field, &channel)?) {
@@ -62,7 +68,7 @@ pub(crate) fn verify_fusion(model: &mut Model, left: &Defect, right: &Defect) ->
             cyclo::accumulate(model, forward, &first, false)?;
             cyclo::accumulate(model, backward, &second, false)?;
         }
-        channels.push((start, n));
+        result.push((start, n));
     }
     for (right, predicted) in right_action.iter().zip(&mut combined).skip(1) {
         let mut composed: Vec<_> = right
@@ -90,7 +96,7 @@ pub(crate) fn verify_fusion(model: &mut Model, left: &Defect, right: &Defect) ->
         }
     }
     let report = format!(
-        "channels={channels:?} verified_brane_actions={} verified_bulk_degrees={} orientations=2",
+        "channels={result:?} verified_brane_actions={} verified_bulk_degrees={} orientations=2",
         d - 1,
         d - 1
     );
