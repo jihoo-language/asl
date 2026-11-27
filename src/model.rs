@@ -1,3 +1,4 @@
+use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use std::cmp::Ordering;
@@ -308,6 +309,7 @@ pub(crate) enum Kind {
     Verbitsky(nakajima::Grade),
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
+    VerbitskyHochschild(hochschild::Grade, bool),
     VerbitskyDeformation(deformation::Grade, bool),
     VerbitskyFree(verbitsky_resolution::Grade),
     K3Clifford(Rc<str>, u8),
@@ -533,6 +535,7 @@ pub(crate) enum Value {
     HodgeTensor(Rc<hyperelliptic_kummer_surface::hodge_wick::Tensor>),
     VerbitskyKoszul(Rc<koszul::Chain>),
     VerbitskyFree(Rc<verbitsky_resolution::Vector>),
+    VerbitskyHochschild(Rc<hochschild::Cochain>),
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
     KSExterior(Rc<ks_exterior::Form>),
@@ -1500,6 +1503,13 @@ impl Model {
                     1
                 }
             }
+            Kind::VerbitskyHochschild(ref grade, _) => {
+                if grade.possible() {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::VerbitskyDeformation(..) => usize::MAX,
             Kind::VerbitskyFree(ref grade) => {
                 if self.hodge_wick_forms[grade.basis.as_ref()].supports_free(grade) {
@@ -1778,6 +1788,7 @@ impl Model {
                 | Kind::Verbitsky(..)
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
+                | Kind::VerbitskyHochschild(..)
                 | Kind::VerbitskyDeformation(..)
                 | Kind::VerbitskyFree(..)
                 | Kind::K3Clifford(..)
@@ -5436,6 +5447,15 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn verbitsky_hh_type(
+        &mut self,
+        grade: hochschild::Grade,
+        class: bool,
+    ) -> Result<TypeId> {
+        self.hodge_wick(&grade.basis)?.hochschild_validate(&grade)?;
+        self.inhabited_type(Kind::VerbitskyHochschild(grade, class), 0)
+    }
+
     pub(crate) fn verbitsky_deformation_type(
         &mut self,
         grade: deformation::Grade,
@@ -7026,6 +7046,7 @@ impl Model {
             | Kind::Verbitsky(..)
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
+            | Kind::VerbitskyHochschild(..)
             | Kind::VerbitskyDeformation(..)
             | Kind::VerbitskyFree(..)
             | Kind::K3Clifford(..)
@@ -7587,6 +7608,17 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::VerbitskyHochschild(grade, class) => {
+                let name = if *class {
+                    "RVVerbitskyHH"
+                } else {
+                    "RVVerbitskyHochschildCochain"
+                };
+                out.push(&format!(
+                    "{name}({},{},{},{})",
+                    grade.basis, grade.length, grade.arity, grade.shift
+                ))
+            }
             Kind::VerbitskyDeformation(grade, abstract_class) => {
                 let name = if *abstract_class {
                     "RVVerbitskyTOne"
@@ -8019,6 +8051,9 @@ impl Model {
             }
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
@@ -8412,6 +8447,7 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
+            (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => a.compare(self, b),
             (Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => a.compare(self, b),
             (Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
@@ -8879,6 +8915,14 @@ impl Model {
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
+                Kind::VerbitskyHochschild(ref grade, _) => {
+                    if grade.possible() {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Hochschild component",
+                        ));
+                    }
+                    vec![hochschild::Cochain::default().persist(self)?]
                 }
                 Kind::VerbitskyDeformation(..) => {
                     return Err(Error::plain(
@@ -10753,6 +10797,10 @@ impl Model {
             Value::Nakajima(state) => {
                 self.write_type(out, ty, 0)?;
                 self.write_nakajima_terms(out, state, 1)
+            }
+            Value::VerbitskyHochschild(cochain) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&cochain.text(self)?)
             }
             Value::VerbitskyFree(vector) => {
                 let basis = match self.kind(ty) {

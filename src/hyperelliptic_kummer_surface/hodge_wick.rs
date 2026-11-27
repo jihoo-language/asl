@@ -50,6 +50,7 @@ pub(crate) struct Form {
     slices: RefCell<BTreeMap<(i128, i128), Rc<ring::Slice>>>,
     koszul: ring::koszul::Cache,
     resolutions: ring::resolution::Cache,
+    hochschild: ring::hochschild::Cache,
 }
 
 impl Form {
@@ -106,6 +107,7 @@ impl Form {
             slices: RefCell::default(),
             koszul: RefCell::default(),
             resolutions: RefCell::default(),
+            hochschild: RefCell::default(),
         })
     }
 

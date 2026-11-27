@@ -682,3 +682,29 @@ impl Form {
         Ok(text)
     }
 }
+
+impl Form {
+    pub(in crate::hyperelliptic_kummer_surface::hodge_wick::ring) fn deformation_product_corrections(
+        &self,
+        model: &mut Model,
+        grade: &Grade,
+        tangent: &Vector,
+        requests: &[(usize, Tensor)],
+    ) -> Result<Vec<Tensor>> {
+        let resolution = self.resolution(model, &grade.resolution())?;
+        let hom = Hom::new(self, grade, &resolution);
+        let mut catalog = Catalog::default();
+        let mut products = Vec::with_capacity(requests.len());
+        let mut cells = 0;
+        for (weight, residual) in requests {
+            let coefficients = lift_relation(model, &hom, &mut catalog, *weight as i128, residual)?;
+            let correction = polynomial_dot(model, tangent, &coefficients)?;
+            let slot = grade.slot(*weight).ok_or_else(koszul::grading_range)?;
+            let reduced = self.project(model, &slot, &correction)?;
+            cells += reduced.cells + 8;
+            storage(cells)?;
+            products.push(reduced);
+        }
+        Ok(products)
+    }
+}

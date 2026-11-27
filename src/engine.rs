@@ -1,3 +1,4 @@
+use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use std::collections::{HashMap, HashSet};
@@ -944,6 +945,9 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
+    VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    VerbitskyHHScale(hodge_wick::Entry, Box<TypedExpr>),
     VerbitskyTangentLiteral(Vec<(usize, TypedExpr)>),
     VerbitskyDeformationCast(bool, Box<TypedExpr>),
     VerbitskyFreeTimes(Vec<u128>, Box<TypedExpr>),
@@ -2514,6 +2518,9 @@ impl Engine {
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
+            StatementForm::VerbitskyHochschild(command) => {
+                return self.verbitsky_hh_command(*command).map(Some)
+            }
             StatementForm::VerbitskyDeformation(command) => {
                 return self.verbitsky_deformation_command(*command).map(Some)
             }
@@ -6233,6 +6240,38 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn verbitsky_hh_command(&mut self, command: hochschild::Command) -> Result<String> {
+        use hochschild::Command;
+        match command {
+            Command::Dims(name, length, arity, shift) => {
+                let grade = hochschild::Grade {
+                    basis: name.text.into(),
+                    length,
+                    arity,
+                    shift,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let [c, z, b, hh] = form.hochschild_dimensions(&mut self.model, &grade)?;
+                Ok(format!("rvVerbitskyHHDims[{}, {length}, {arity}, {shift}] = (C={c}, Z={z}, B={b}, HH={hh})", grade.basis))
+            }
+            Command::Coefficient(output, word, input) => {
+                let value = self.checker().expr(*input)?;
+                let grade = self
+                    .checker()
+                    .verbitsky_hh_operand(&value, "rvVerbitskyHHCoeff")?
+                    .0
+                    .clone();
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let Value::VerbitskyHochschild(value) = self.eval(&value)? else {
+                    unreachable!()
+                };
+                let coefficient =
+                    form.hochschild_coefficient(&mut self.model, &grade, &value, word, output)?;
+                Ok(format!("rvVerbitskyHHCoeff = {coefficient}"))
             }
         }
     }
@@ -10461,6 +10500,11 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (
+                        BinaryOp::Add,
+                        Value::VerbitskyHochschild(a),
+                        Value::VerbitskyHochschild(b),
+                    ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
                     (BinaryOp::Add, Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -12588,6 +12632,78 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyHHUnary(operation, input) => {
+                use hochschild::Unary;
+                let Kind::VerbitskyHochschild(target, class) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let target = target.clone();
+                let class = *class;
+                let form = self.model.hodge_wick(&target.basis)?;
+                let value = self.eval(input)?;
+                if matches!(operation, Unary::FromTangent) {
+                    let Value::VerbitskyFree(value) = value else {
+                        unreachable!()
+                    };
+                    return form
+                        .hochschild_from_tangent(&mut self.model, &target, &value)?
+                        .persist(&mut self.model);
+                }
+                let Value::VerbitskyHochschild(value) = value else {
+                    unreachable!()
+                };
+                let Kind::VerbitskyHochschild(source, _) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let source = source.clone();
+                let result = match operation {
+                    Unary::Diff => {
+                        form.hochschild_differential(&mut self.model, &source, &value)?
+                    }
+                    Unary::Class => form.hochschild_class(&mut self.model, &source, &value)?,
+                    Unary::Representative => return Ok(Value::VerbitskyHochschild(value)),
+                    Unary::Bv => {
+                        let result = form.hochschild_bv(&mut self.model, &source, &value)?;
+                        if class {
+                            form.hochschild_class(&mut self.model, &target, &result)?
+                        } else {
+                            result
+                        }
+                    }
+                    Unary::FromTangent => unreachable!(),
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::VerbitskyHHBilinear(operation, inputs) => {
+                let Kind::VerbitskyHochschild(target, class) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let target = target.clone();
+                let class = *class;
+                let form = self.model.hodge_wick(&target.basis)?;
+                let Value::VerbitskyHochschild(left) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::VerbitskyHochschild(right) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                let value =
+                    form.hochschild_bilinear(&mut self.model, &target, *operation, &left, &right)?;
+                let result = if class {
+                    form.hochschild_class(&mut self.model, &target, &value)?
+                } else {
+                    value
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::VerbitskyHHScale(scalar, input) => {
+                let Value::VerbitskyHochschild(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .scale(&mut self.model, *scalar)?
                     .persist(&mut self.model)
             }
             TypedForm::VerbitskyTangentLiteral(entries) => {
@@ -15785,6 +15901,17 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::VerbitskyHochschild(name, length, arity, shift, class) => {
+                self.model.verbitsky_hh_type(
+                    hochschild::Grade {
+                        basis: name.text.into(),
+                        length,
+                        arity,
+                        shift,
+                    },
+                    class,
+                )
+            }
             TypeForm::VerbitskyDeformation(name, length, shift, abstract_class) => {
                 self.model.verbitsky_deformation_type(
                     deformation::Grade {
@@ -16953,6 +17080,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
+                    Kind::VerbitskyHochschild(..) => hochschild::Cochain::default().persist(self.model)?,
                     Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
@@ -19211,6 +19339,7 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::VerbitskyKoszul(operation) => self.koszul_expression(*operation),
+            ExprForm::VerbitskyHochschild(expression) => self.verbitsky_hh_expression(*expression),
             ExprForm::VerbitskyDeformation(operation) => {
                 self.verbitsky_deformation_expression(*operation)
             }
@@ -20111,6 +20240,12 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::VerbitskyHochschild(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::VerbitskyHHScale((-1, 1), Box::new(input)),
+                    ));
+                }
                 if matches!(
                     self.model.kind(input.ty),
                     Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..)
@@ -24142,6 +24277,7 @@ impl Checker<'_> {
                         | Kind::Verbitsky(..)
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
+                        | Kind::VerbitskyHochschild(..)
                         | Kind::VerbitskyDeformation(..)
                         | Kind::VerbitskyFree(..)
                         | Kind::K3Clifford(..)
@@ -25842,6 +25978,136 @@ impl Checker<'_> {
                 Ok((
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn verbitsky_hh_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(&hochschild::Grade, bool)> {
+        if let Kind::VerbitskyHochschild(grade, class) = self.model.kind(input.ty) {
+            Ok((grade, *class))
+        } else {
+            Err(self.invalid_operand(input, operation, "a Verbitsky Hochschild cochain or class"))
+        }
+    }
+
+    fn verbitsky_hh_expression(
+        &mut self,
+        expression: hochschild::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use hochschild::{Bilinear, Expression, Grade, Unary};
+        match expression {
+            Expression::Term(name, length, arity, shift, output, word, coefficient) => {
+                let grade = Grade {
+                    basis: name.text.into(),
+                    length,
+                    arity,
+                    shift,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let term = form.hochschild_term(self.model, &grade, word, output, coefficient)?;
+                let ty = self.model.verbitsky_hh_type(grade, false)?;
+                Ok((ty, TypedForm::Constant(term.persist(self.model)?)))
+            }
+            Expression::Basis(name, length, arity, shift, index) => {
+                let grade = Grade {
+                    basis: name.text.into(),
+                    length,
+                    arity,
+                    shift,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.hochschild_basis(self.model, &grade, index)?;
+                let ty = self.model.verbitsky_hh_type(grade, true)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Scale(coefficient, input) => {
+                if coefficient.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                self.verbitsky_hh_operand(&input, "rvVerbitskyHHScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::VerbitskyHHScale(coefficient, Box::new(input)),
+                ))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) = if matches!(operation, Unary::FromTangent) {
+                    let (grade, _) = self.verbitsky_deformation_grade(
+                        &input,
+                        "rvVerbitskyHHFromTangent",
+                        Some(false),
+                    )?;
+                    (
+                        Grade {
+                            basis: grade.basis.clone(),
+                            length: grade.length,
+                            arity: 2,
+                            shift: grade.shift,
+                        },
+                        true,
+                    )
+                } else {
+                    let operation_name = match operation {
+                        Unary::Diff => "rvVerbitskyHHDiff",
+                        Unary::Class => "rvVerbitskyHHClass",
+                        Unary::Representative => "rvVerbitskyHHRepresentative",
+                        Unary::Bv => "rvVerbitskyHHBV",
+                        Unary::FromTangent => unreachable!(),
+                    };
+                    let (grade, class) = self.verbitsky_hh_operand(&input, operation_name)?;
+                    if (class && matches!(operation, Unary::Diff | Unary::Class))
+                        || (!class && matches!(operation, Unary::Representative))
+                    {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation_name,
+                            if class {
+                                "an RVVerbitskyHochschildCochain"
+                            } else {
+                                "an RVVerbitskyHH class"
+                            },
+                        ));
+                    }
+                    let grade = match operation {
+                        Unary::Diff => grade.with_arity_offset(1)?,
+                        Unary::Bv => grade.with_arity_offset(-1)?,
+                        _ => grade.clone(),
+                    };
+                    let class = matches!(operation, Unary::Class)
+                        || (class && matches!(operation, Unary::Bv));
+                    (grade, class)
+                };
+                let ty = self.model.verbitsky_hh_type(grade, class)?;
+                Ok((ty, TypedForm::VerbitskyHHUnary(operation, Box::new(input))))
+            }
+            Expression::Bilinear(operation, inputs) => {
+                let name = match operation {
+                    Bilinear::Cup => "rvVerbitskyHHCup",
+                    Bilinear::Insert => "rvVerbitskyHHBrace",
+                    Bilinear::Bracket => "rvVerbitskyHHBracket",
+                };
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let (left_grade, class) = self.verbitsky_hh_operand(&left, name)?;
+                let (right_grade, right_class) = self.verbitsky_hh_operand(&right, name)?;
+                if class != right_class || (class && matches!(operation, Bilinear::Insert)) {
+                    return Err(Error::plain(format!("{name} requires matching cochain or class operands, with cochains for braces")));
+                }
+                let grade = left_grade.product_grade(right_grade, operation)?;
+                let ty = self.model.verbitsky_hh_type(grade, class)?;
+                Ok((
+                    ty,
+                    TypedForm::VerbitskyHHBilinear(operation, Box::new([left, right])),
                 ))
             }
         }

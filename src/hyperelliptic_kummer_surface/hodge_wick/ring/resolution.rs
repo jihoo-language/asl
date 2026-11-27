@@ -87,6 +87,10 @@ pub(crate) struct Vector {
 }
 
 impl Vector {
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     fn insert(
         &mut self,
         model: &mut Model,

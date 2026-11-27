@@ -161,6 +161,7 @@ pub(crate) enum TypeForm {
     HodgeTensor(Label, i128, i128),
     Verbitsky(Label, i128, i128),
     VerbitskyKoszul(Label, i128, i128, i128, bool),
+    VerbitskyHochschild(Label, i128, i128, i128, bool),
     VerbitskyDeformation(Label, i128, i128, bool),
     VerbitskyFree(Label, i128, i128, i128),
     K3Clifford(Label, u8),
@@ -1059,6 +1060,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
+    VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Expression>),
     VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Expression>),
@@ -1323,6 +1325,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
+    VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Command>),
     VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Command>),
@@ -7183,6 +7186,108 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_hh_grade(&mut self) -> Result<(Label, i128, i128, i128)> {
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+        self.expect(Token::Comma)?;
+        let arity = self.signed_wide("a cochain arity", "cochain arity")?;
+        self.expect(Token::Comma)?;
+        let shift = self.signed_wide("an internal shift", "Hochschild shift")?;
+        Ok((basis, length, arity, shift))
+    }
+
+    fn verbitsky_hh_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let command = if name == "rvVerbitskyHHDims" {
+            let (basis, length, arity, shift) = self.verbitsky_hh_grade()?;
+            self.expect(Token::RBracket)?;
+            Command::Dims(basis, length, arity, shift)
+        } else {
+            let output = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let word = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            Command::Coefficient(output, word, Box::new(self.paren_expr(0)?))
+        };
+        Ok(StatementForm::VerbitskyHochschild(Box::new(command)))
+    }
+
+    fn verbitsky_hh_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::{
+            Bilinear, Expression, Unary,
+        };
+        let (expression, depth) = match name {
+            "rvVerbitskyHHTerm" | "rvVerbitskyHHBasis" => {
+                self.expect(Token::LBracket)?;
+                let (basis, length, arity, shift) = self.verbitsky_hh_grade()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                if name == "rvVerbitskyHHTerm" {
+                    let value = if self.eat(Token::Comma)? {
+                        self.rational_entry("cochain numerator", "cochain denominator")?
+                    } else {
+                        (1, 1)
+                    };
+                    self.expect(Token::RBracket)?;
+                    let word = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+                    (
+                        Expression::Term(basis, length, arity, shift, index, word, value),
+                        0,
+                    )
+                } else {
+                    self.expect(Token::RBracket)?;
+                    (Expression::Basis(basis, length, arity, shift, index), 0)
+                }
+            }
+            "rvVerbitskyHHScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator = self.signed_wide("an integer numerator", "cochain numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator =
+                    self.signed_wide("a positive denominator", "cochain denominator")?;
+                let value = (numerator, denominator);
+                self.expect(Token::RBracket)?;
+                let arg = self.paren_expr(nest)?;
+                let depth = arg.depth + 1;
+                (Expression::Scale(value, Box::new(arg)), depth)
+            }
+            "rvVerbitskyHHCup" | "rvVerbitskyHHBrace" | "rvVerbitskyHHBracket" => {
+                let args = self.paren_pair(nest)?;
+                let depth = args[0].depth.max(args[1].depth) + 1;
+                let operation = match name {
+                    "rvVerbitskyHHCup" => Bilinear::Cup,
+                    "rvVerbitskyHHBrace" => Bilinear::Insert,
+                    _ => Bilinear::Bracket,
+                };
+                (Expression::Bilinear(operation, Box::new(args)), depth)
+            }
+            _ => {
+                let arg = self.paren_expr(nest)?;
+                let depth = arg.depth + 1;
+                let operation = match name {
+                    "rvVerbitskyHHDiff" => Unary::Diff,
+                    "rvVerbitskyHHClass" => Unary::Class,
+                    "rvVerbitskyHHRepresentative" => Unary::Representative,
+                    "rvVerbitskyHHFromTangent" => Unary::FromTangent,
+                    _ => Unary::Bv,
+                };
+                (Expression::Unary(operation, Box::new(arg)), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::VerbitskyHochschild(Box::new(expression)),
+            depth,
+        )
+    }
+
     fn verbitsky_deformation_grade(&mut self) -> Result<(Label, i128, i128)> {
         let basis = self.label()?;
         self.expect(Token::Comma)?;
@@ -10448,6 +10553,9 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyTorTable"
                 | "rvVerbitskyMinimalRelation"),
             ) => self.koszul_statement(command)?,
+            Token::Word(command @ ("rvVerbitskyHHDims" | "rvVerbitskyHHCoeff")) => {
+                self.verbitsky_hh_statement(command)?
+            }
             Token::Word(
                 command @ ("rvVerbitskyDeformationDims"
                 | "rvVerbitskyDeformationTable"
@@ -14678,6 +14786,25 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
+        if matches!(
+            name.text.as_str(),
+            "RVVerbitskyHochschildCochain" | "RVVerbitskyHH"
+        ) && self.eat(Token::LParen)?
+        {
+            let (basis, length, arity, shift) = self.verbitsky_hh_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::VerbitskyHochschild(
+                    basis,
+                    length,
+                    arity,
+                    shift,
+                    name.text == "RVVerbitskyHH",
+                ),
+                0,
+            );
+        }
         if matches!(name.text.as_str(), "RVVerbitskyTangent" | "RVVerbitskyTOne")
             && self.eat(Token::LParen)?
         {
@@ -16562,6 +16689,24 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyHHTerm" | "rvVerbitskyHHBasis" | "rvVerbitskyHHScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyHHDiff"
+                            | "rvVerbitskyHHClass"
+                            | "rvVerbitskyHHRepresentative"
+                            | "rvVerbitskyHHBV"
+                            | "rvVerbitskyHHCup"
+                            | "rvVerbitskyHHBrace"
+                            | "rvVerbitskyHHBracket"
+                            | "rvVerbitskyHHFromTangent"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.verbitsky_hh_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
