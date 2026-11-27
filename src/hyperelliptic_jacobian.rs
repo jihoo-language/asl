@@ -20,6 +20,7 @@ pub(crate) enum Command {
     Count(Label, bool),
     Order(Box<ParsedExpr>),
     Compose(Box<[ParsedExpr; 2]>),
+    Kummer(Box<ParsedExpr>),
 }
 
 pub(crate) enum Expression {
@@ -91,6 +92,8 @@ pub(crate) enum Operation {
     Descend(Label),
     Frobenius(Label, usize),
     Weil(Label),
+    Divisible2,
+    KummerSupport(usize),
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]

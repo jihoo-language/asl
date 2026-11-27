@@ -2824,6 +2824,7 @@ impl<'src> Parser<'src> {
             }
             "rvJacCompose" => Command::Compose(Box::new(self.paren_pair(0)?)),
             "rvJacOrder" => Command::Order(Box::new(self.paren_expr(0)?)),
+            "rvJacKummer" => Command::Kummer(Box::new(self.paren_expr(0)?)),
             _ => {
                 self.expect(Token::LBracket)?;
                 let curve = self.label()?;
@@ -2880,6 +2881,18 @@ impl<'src> Parser<'src> {
             let expression = Expression::Pair(pairing, Box::new(inputs));
             return expr(span, ExprForm::Jacobian(Box::new(expression)), depth);
         }
+        if name == "rvJacDivisible2" {
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            return expr(
+                span,
+                ExprForm::Jacobian(Box::new(Expression::Apply(
+                    Operation::Divisible2,
+                    Box::new(input),
+                ))),
+                depth,
+            );
+        }
         let coefficient = |parser: &mut Self| {
             let context = if name == "rvJacHalfPoint" {
                 "halving witness coefficient coordinate"
@@ -2933,6 +2946,7 @@ impl<'src> Parser<'src> {
                     "rvJacU" | "rvJacV" => {
                         Operation::Coefficient(name == "rvJacV", self.number()?.0)
                     }
+                    "rvJacKummerSupport" => Operation::KummerSupport(self.number()?.0),
                     "rvJacExtend" => Operation::Extend(self.label()?),
                     "rvJacDescend" => Operation::Descend(self.label()?),
                     "rvJacWeilApply" => Operation::Weil(self.label()?),
@@ -3381,7 +3395,7 @@ impl<'src> Parser<'src> {
             Token::Word("rvECCMCertify") => self.ec_cm_statement()?,
             Token::Word(
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
-                | "rvJacCompose" | "rvjacchart"),
+                | "rvJacCompose" | "rvjacchart" | "rvJacKummer"),
             ) => self.jacobian_statement(command)?,
             Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
                 self.richelot_statement(command)?
@@ -8505,6 +8519,7 @@ impl<'src> Parser<'src> {
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"
+                        | "rvJacKummerSupport"
                         | "rvJacExtend"
                         | "rvJacDescend"
                         | "rvJacRechart"
@@ -8512,8 +8527,10 @@ impl<'src> Parser<'src> {
                         | "rvJacFrob"
                         | "rvJacWeilApply"
                 ) && self.token() == Token::LBracket)
-                    || (matches!(name.text.as_str(), "rvJacWeil2" | "rvJacTate2")
-                        && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvJacWeil2" | "rvJacTate2" | "rvJacDivisible2"
+                    ) && self.token() == Token::LParen)
                 {
                     return self.jacobian_expression(&name.text, name.span, nest);
                 }

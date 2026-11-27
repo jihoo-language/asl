@@ -29,6 +29,7 @@ use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::{self, point_halving, Divisor};
+use crate::hyperelliptic_kummer;
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -418,6 +419,8 @@ enum LogicAction {
 enum JacobianOperation {
     Scale(i128),
     Coefficient(bool, usize),
+    Divisible2,
+    KummerSupport(usize),
     Extend(Rc<hw_closed::Curve>),
     Descend(Rc<hw_closed::Curve>),
     Frobenius(Rc<hw_closed::Curve>, usize),
@@ -4562,6 +4565,21 @@ impl Engine {
                 };
                 format!("rvJacOrder = {}", divisor.order(&mut self.model, &curve)?)
             }
+            Command::Kummer(input) => {
+                let input = self.checker().expr(*input)?;
+                let Kind::Jacobian(name) = self.model.kind(input.ty) else {
+                    return Err(Error::new(
+                        input.span,
+                        "rvJacKummer requires an RVJac divisor class",
+                    ));
+                };
+                let curve = self.model.jacobian_curve(name)?;
+                let Value::Jacobian(divisor) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let support = hyperelliptic_kummer::support(&mut self.model, &curve, &divisor)?;
+                self.model.show_jacobian_kummer(&support)?
+            }
         };
         Ok(Some(report))
     }
@@ -4595,6 +4613,19 @@ impl Engine {
                 let (output, target) = match operation {
                     JacobianOperation::Coefficient(v, k) => {
                         return rv_unram::persist(&mut self.model, value.coefficient(curve, *v, *k))
+                    }
+                    JacobianOperation::Divisible2 => {
+                        let support =
+                            hyperelliptic_kummer::support(&mut self.model, curve, &value)?;
+                        return Ok(Value::Point(usize::from(support.is_trivial())));
+                    }
+                    JacobianOperation::KummerSupport(k) => {
+                        let support =
+                            hyperelliptic_kummer::support(&mut self.model, curve, &value)?;
+                        return rv_unram::persist(
+                            &mut self.model,
+                            support.into_coefficient(curve, *k),
+                        );
                     }
                     JacobianOperation::Scale(-1) => (value.negate(&mut self.model, curve)?, curve),
                     JacobianOperation::Scale(n) => {
@@ -17505,6 +17536,10 @@ impl Checker<'_> {
                 let extends = matches!(&operation, Operation::Extend(_));
                 let (ty, operation) = match operation {
                     Operation::Scale(n) => (input.ty, JacobianOperation::Scale(n)),
+                    Operation::Divisible2 => (
+                        self.model.named("S").unwrap(),
+                        JacobianOperation::Divisible2,
+                    ),
                     Operation::Coefficient(v, k) => {
                         let field = Label {
                             text: curve.grade.ring.to_string(),
@@ -17513,6 +17548,16 @@ impl Checker<'_> {
                         (
                             self.model.rv_unram_type(&field)?,
                             JacobianOperation::Coefficient(v, k),
+                        )
+                    }
+                    Operation::KummerSupport(k) => {
+                        let field = Label {
+                            text: curve.grade.ring.to_string(),
+                            span: input.span,
+                        };
+                        (
+                            self.model.rv_unram_type(&field)?,
+                            JacobianOperation::KummerSupport(k),
                         )
                     }
                     Operation::Extend(target) | Operation::Descend(target) => {

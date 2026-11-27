@@ -28,6 +28,7 @@ use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
+use crate::hyperelliptic_kummer;
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -3500,7 +3501,8 @@ impl Model {
         isogeny: crate::richelot::Isogeny,
     ) -> Result<()> {
         self.define_hww_curve(target.clone(), ring, coefficients)?;
-        self.richelot_isogenies.insert(target.text, Rc::new(isogeny));
+        self.richelot_isogenies
+            .insert(target.text, Rc::new(isogeny));
         Ok(())
     }
 
@@ -3543,6 +3545,25 @@ impl Model {
     pub(crate) fn jacobian_type(&mut self, name: Rc<str>) -> Result<TypeId> {
         self.jacobian_curve(&name)?;
         self.inhabited_type(Kind::Jacobian(name), 0)
+    }
+
+    pub(crate) fn show_jacobian_kummer(
+        &mut self,
+        support: &hyperelliptic_kummer::Support,
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push("rvJacKummer = B=")?;
+        self.write_ec_polynomial(&mut out, &support.polynomial)?;
+        out.push(", nonsquare orbits by degree=[")?;
+        for (i, (degree, count)) in support.counts.iter().enumerate() {
+            self.spend(1)?;
+            if i > 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!("({degree}, {count})"))?;
+        }
+        out.push("]")?;
+        Ok(out.string)
     }
 
     pub(crate) fn hww_matrix_type(&mut self, grade: hw_closed::Grade) -> Result<TypeId> {
