@@ -1219,6 +1219,7 @@ pub(crate) enum StatementForm {
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
+    HilbertLlv(Box<crate::hyperelliptic_kummer_surface::llv_character::Command>),
     HilbertStratum(Box<crate::hyperelliptic_kummer_surface::stratum::Command>),
     DeclareSpecht(Box<crate::hyperelliptic_kummer_surface::specht::Declaration>),
     CrystallineNewton(crate::hyperelliptic_kummer_surface::newton::Command),
@@ -5700,6 +5701,28 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Hodge(Command(operation, n, p, q)))
     }
 
+    fn hilbert_llv_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::llv_character::Command;
+        self.advance()?;
+        let command = if name == "rvHilbLLVDimension" {
+            Command::Dimension(
+                self.set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))?,
+            )
+        } else {
+            self.expect(Token::LBracket)?;
+            let n = self.wide_unsigned("Hilbert length")?;
+            self.expect(Token::RBracket)?;
+            if name == "rvHilbLLVMultiplicity" {
+                let shape = self
+                    .set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))?;
+                Command::Multiplicity(n, shape)
+            } else {
+                Command::Decompose(n)
+            }
+        };
+        Ok(StatementForm::HilbertLlv(Box::new(command)))
+    }
+
     fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hilbert::{elliptic_genus::Query, Command};
         self.advance()?;
@@ -6941,6 +6964,11 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerInversionHodge"
                 | "rvGenKummerHodgeSpectrum"),
             ) => self.hodge_statement(command)?,
+            Token::Word(
+                command @ ("rvHilbLLVMultiplicity"
+                | "rvHilbLLVDimension"
+                | "rvHilbLLVDecomposition"),
+            ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {
                 self.advance()?;

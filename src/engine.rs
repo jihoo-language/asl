@@ -1892,6 +1892,9 @@ impl Engine {
             StatementForm::KummerEnriques(command) => {
                 return command.execute(&mut self.model).map(Some)
             }
+            StatementForm::HilbertLlv(command) => {
+                return command.execute(&mut self.model).map(Some)
+            }
             StatementForm::KummerHilbert(command) => {
                 return command.execute(&mut self.model).map(Some)
             }

@@ -20,6 +20,7 @@ pub(crate) mod enriques;
 pub(crate) mod hilbert;
 pub(crate) mod hilbert_square;
 pub(crate) mod k3;
+pub(crate) mod llv_character;
 pub(crate) mod mukai;
 pub(crate) mod nakajima;
 pub(crate) mod newton;
