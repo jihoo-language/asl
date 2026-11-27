@@ -72,6 +72,7 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
+use crate::rv_conformal;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -935,6 +936,21 @@ impl Engine {
                     unreachable!()
                 };
                 format!("rvCycloCoeff = {}", terms.get(power).copied().unwrap_or(0))
+            }
+            StatementForm::ConformalSeries(report, rank, level, punctures) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                rv_conformal::report(&mut self.model, grade, punctures, report)?
+            }
+            StatementForm::ConformalModulo(rank, level, genus, modulus, punctures) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let value =
+                    rv_conformal::modular(&mut self.model, grade, genus, modulus, punctures)?;
+                format!("rvConformalMod = {value}")
+            }
+            StatementForm::ConformalExact(rank, level, genus, punctures) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let value = rv_conformal::exact(&mut self.model, grade, genus, punctures)?;
+                format!("rvConformalExact = {value}")
             }
             StatementForm::ConformalDimension(rank, level, genus, punctures) => {
                 let grade = rv_fusion::Grade::checked(rank, level)?;

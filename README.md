@@ -1023,6 +1023,14 @@ The interpreter decomposes a gluing matrix with first column $(q,p)$ by signed E
 
 Both operations return `RVCycloQ(D)` with the same $D$ as `RVWzw(n,k)`. Its display gives the cyclotomic numerator coefficients and a common positive denominator, reduced by their scalar gcd. Use `rvCycloRat[d](c)` for a cyclotomic integer divided by positive $d$. Values support `zero`, `add`, `neg`, and equality. At rank two and level two, $L(8,1)$ has invariant $0$, $L(8,3)$ has invariant $1$, and $L(2,1)$ has invariant $(2-z_{16}^2+z_{16}^6)/4=(2-\sqrt2)/4$. [Lens-space invariant example](examples/rv-lens-tv.asl)
 
+### Genus generating functions for conformal blocks
+
+For a product of puncture labels $x$, let $D_g$ be the coefficient of the unit in $xH^g$. `rvConformalSeries[n,k,labels];` gives the reduced rational function $\sum_{g\geq 0}D_gt^g=P(t)/Q(t)$, with $Q(0)=1$. Use `rvConformalNum[n,k,labels];` or `rvConformalDen[n,k,labels];` to read one polynomial. Coefficients are listed in ascending powers of $t$. An empty numerator and denominator `[1]` give the zero series. A nonzero total central charge among the normalized labels gives this zero case.
+
+The interpreter builds the matrix for multiplication by $H$ on the weights reachable from the unit. Cayley–Hamilton gives the initial denominator $\det(I-tH)$ on that space. Exact polynomial gcd cancellation with the numerator gives the minimal denominator for the chosen insertions. Its coefficients give the integer recurrence for the dimensions. For $\mathrm{SU}(3)_3$, inserting a fundamental and its dual reduces the denominator degree from three to two.
+
+`rvConformalMod[n,k,g,m,labels];` calculates $D_g$ modulo any positive modulus fitting an unsigned 128-bit integer. It reduces puncture products and exponentiates the handle matrix in the residue ring. `rvConformalExact[n,k,g,labels];` uses nonnegative decimal arithmetic for the handle iterates to give dimensions beyond signed 128 bits within the work and output limits. The example includes residues at genus $10^{18}$ and the exact $\mathrm{SU}(3)_2$ vacuum dimension at genus $100$. [Conformal series example](examples/rv-conformal-series.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

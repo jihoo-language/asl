@@ -583,9 +583,21 @@ fn change_coefficient<Key: Ord>(
 const RADIX: u128 = 1_000_000_000;
 
 #[derive(Default)]
-struct Natural(Vec<u32>);
+pub(crate) struct Natural(Vec<u32>);
 
 impl Natural {
+    pub(crate) fn unit() -> Self {
+        Self(vec![1])
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn decimal_bound(&self) -> usize {
+        9 * self.0.len()
+    }
+
     fn compositions(model: &mut Model, degree: usize, width: usize) -> Result<Self> {
         let mut value = Self(vec![1]);
         // C(degree + width - 1, width - 1), with exact division at each step.
@@ -613,7 +625,12 @@ impl Natural {
         Ok(value)
     }
 
-    fn add_multiple(&mut self, model: &mut Model, value: &Self, mut factor: u128) -> Result<()> {
+    pub(crate) fn add_multiple(
+        &mut self,
+        model: &mut Model,
+        value: &Self,
+        mut factor: u128,
+    ) -> Result<()> {
         let mut offset = 0;
         while factor != 0 {
             model.spend(1 + value.0.len())?;
@@ -672,7 +689,7 @@ impl Natural {
         }
     }
 
-    fn decimal(self) -> String {
+    pub(crate) fn decimal(self) -> String {
         use std::fmt::Write;
         let Some((first, digits)) = self.0.split_last() else {
             return "0".into();

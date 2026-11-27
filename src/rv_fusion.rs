@@ -8,7 +8,7 @@ use crate::rv_hive::{self, Boundary};
 
 const MAX_CELLS: usize = 300_000;
 
-type Weight = Rc<[i128]>;
+pub(crate) type Weight = Rc<[i128]>;
 pub(crate) type Support = Rc<[(Weight, i128)]>;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -317,7 +317,12 @@ fn basis_product(
     Ok(result)
 }
 
-fn multiply_support(model: &mut Model, grade: Grade, a: &Support, b: &Support) -> Result<Support> {
+pub(crate) fn multiply_support(
+    model: &mut Model,
+    grade: Grade,
+    a: &Support,
+    b: &Support,
+) -> Result<Support> {
     let mut output = Sum::default();
     for (left, c) in a.iter() {
         for (right, d) in b.iter() {
@@ -372,7 +377,7 @@ pub(crate) fn visit_weights(
     Ok(())
 }
 
-fn handle_support(model: &mut Model, grade: Grade) -> Result<Support> {
+pub(crate) fn handle_support(model: &mut Model, grade: Grade) -> Result<Support> {
     let mut result = Sum::default();
     visit_weights(
         model,
@@ -404,6 +409,31 @@ pub(crate) fn handle(model: &mut Model, grade: Grade) -> Result<Value> {
     Ok(Value::RVFusion(handle))
 }
 
+pub(crate) fn puncture_product(
+    model: &mut Model,
+    grade: Grade,
+    punctures: Vec<Weight>,
+) -> Result<Support> {
+    let mut product = unit(grade);
+    for weight in punctures {
+        let puncture: Support = [(weight, 1)].into();
+        product = multiply_support(model, grade, &product, &puncture)?;
+    }
+    Ok(product)
+}
+
+pub(crate) fn basis_product_support(
+    model: &mut Model,
+    grade: Grade,
+    a: &Weight,
+    b: &Weight,
+) -> Result<Support> {
+    Ok(basis_product(model, grade, a, b, 0)?
+        .0
+        .into_iter()
+        .collect())
+}
+
 pub(crate) fn conformal_dimension(
     model: &mut Model,
     grade: Grade,
@@ -413,12 +443,8 @@ pub(crate) fn conformal_dimension(
     let punctures = punctures
         .into_iter()
         .map(|weight| grade.normalize(model, weight))
-        .collect::<Result<Vec<_>>>()?;
-    let mut product = unit(grade);
-    for weight in punctures {
-        let puncture: Support = [(weight, 1)].into();
-        product = multiply_support(model, grade, &product, &puncture)?;
-    }
+        .collect::<Result<_>>()?;
+    let mut product = puncture_product(model, grade, punctures)?;
     if genus > 0 {
         let mut handle = handle_support(model, grade)?;
         loop {

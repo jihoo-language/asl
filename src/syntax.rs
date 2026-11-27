@@ -912,6 +912,9 @@ pub(crate) enum StatementForm {
     FusionCoefficient(Vec<i128>, ParsedExpr),
     CycloCoefficient(usize, ParsedExpr),
     ConformalDimension(usize, usize, usize, Vec<Vec<i128>>),
+    ConformalSeries(crate::rv_conformal::Report, usize, usize, Vec<Vec<i128>>),
+    ConformalModulo(usize, usize, u128, u128, Vec<Vec<i128>>),
+    ConformalExact(usize, usize, u128, Vec<Vec<i128>>),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1362,6 +1365,33 @@ impl<'src> Parser<'src> {
 
     fn bp_coefficient(&mut self) -> Result<i128> {
         self.signed_wide("a signed BP integer", "BP coefficient")
+    }
+
+    fn conformal_size(&mut self, label: &str) -> Result<u128> {
+        let Token::Number(text) = self.token() else {
+            return Err(self.expected("a nonnegative decimal integer"));
+        };
+        let value = text.parse().map_err(|_| {
+            Error::new(
+                self.span(),
+                format!("conformal {label} exceeds the u128 range"),
+            )
+        })?;
+        self.advance()?;
+        Ok(value)
+    }
+
+    fn conformal_punctures(&mut self) -> Result<Vec<Vec<i128>>> {
+        self.expect(Token::LBracket)?;
+        let mut punctures = Vec::new();
+        while self.token() != Token::RBracket {
+            punctures.push(self.signed_tuple("a signed fusion weight", "fusion weight")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(punctures)
     }
 
     fn signed_wide(&mut self, expected: &str, label: &str) -> Result<i128> {
@@ -2048,26 +2078,68 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::CycloCoefficient(power, self.paren_expr(0)?)
             }
-            Token::Word("rvConformalDim") => {
+            Token::Word(
+                "rvConformalDim" | "rvConformalSeries" | "rvConformalNum" | "rvConformalDen"
+                | "rvConformalMod" | "rvConformalExact",
+            ) => {
+                use crate::rv_conformal::Report;
+                let command = self.token();
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let (rank, _) = self.number()?;
                 self.expect(Token::Comma)?;
                 let (level, _) = self.number()?;
                 self.expect(Token::Comma)?;
-                let (genus, _) = self.number()?;
-                self.expect(Token::Comma)?;
-                self.expect(Token::LBracket)?;
-                let mut punctures = Vec::new();
-                while self.token() != Token::RBracket {
-                    punctures.push(self.signed_tuple("a signed fusion weight", "fusion weight")?);
-                    if !self.eat(Token::Comma)? {
-                        break;
+                let form = match command {
+                    Token::Word("rvConformalDim") => {
+                        let (genus, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        StatementForm::ConformalDimension(
+                            rank,
+                            level,
+                            genus,
+                            self.conformal_punctures()?,
+                        )
                     }
-                }
+                    Token::Word("rvConformalMod") => {
+                        let genus = self.conformal_size("genus")?;
+                        self.expect(Token::Comma)?;
+                        let modulus = self.conformal_size("modulus")?;
+                        self.expect(Token::Comma)?;
+                        StatementForm::ConformalModulo(
+                            rank,
+                            level,
+                            genus,
+                            modulus,
+                            self.conformal_punctures()?,
+                        )
+                    }
+                    Token::Word("rvConformalExact") => {
+                        let genus = self.conformal_size("genus")?;
+                        self.expect(Token::Comma)?;
+                        StatementForm::ConformalExact(
+                            rank,
+                            level,
+                            genus,
+                            self.conformal_punctures()?,
+                        )
+                    }
+                    _ => {
+                        let report = match command {
+                            Token::Word("rvConformalNum") => Report::Numerator,
+                            Token::Word("rvConformalDen") => Report::Denominator,
+                            _ => Report::Series,
+                        };
+                        StatementForm::ConformalSeries(
+                            report,
+                            rank,
+                            level,
+                            self.conformal_punctures()?,
+                        )
+                    }
+                };
                 self.expect(Token::RBracket)?;
-                self.expect(Token::RBracket)?;
-                StatementForm::ConformalDimension(rank, level, genus, punctures)
+                form
             }
             Token::Word("rvFusionCoeff") => {
                 self.advance()?;
