@@ -570,6 +570,42 @@ impl<'a> DivisionPolynomials<'a> {
         Ok((numerator, denominator))
     }
 
+    pub(crate) fn y_multiplier(
+        &mut self,
+        model: &mut Model,
+        n: u64,
+    ) -> Result<(Polynomial, Polynomial)> {
+        if n == 0 {
+            return Err(Error::plain(
+                "the zero multiple has no affine y-rational function",
+            ));
+        }
+        if n == 1 {
+            return Ok((vec![self.field.one()], vec![self.field.one()]));
+        }
+        let upper_index = n
+            .checked_add(2)
+            .ok_or_else(|| Error::plain("elliptic multiplication index is out of range"))?;
+        let psi = self.get(model, n)?;
+        let lower = self.get(model, n - 2)?;
+        let upper = self.get(model, upper_index)?;
+        let previous = self.get(model, n - 1)?;
+        let next = self.get(model, n + 1)?;
+        // Recover omega_n from normalized division polynomials in the
+        // chosen polynomial quotient. This avoids dividing by n.
+        let first = self.mul(model, &previous, &previous)?;
+        let first = self.mul(model, &upper, &first)?;
+        let second = self.mul(model, &next, &next)?;
+        let second = self.mul(model, &lower, &second)?;
+        let numerator = poly::sum(model, self.field, &first, &second, true)?;
+        let psi_square = self.mul(model, &psi, &psi)?;
+        let mut denominator = self.mul(model, &psi_square, &psi)?;
+        if n.is_multiple_of(2) {
+            denominator = self.mul(model, &denominator, &self.z_squared)?;
+        }
+        Ok((numerator, denominator))
+    }
+
     fn stable(&mut self, model: &mut Model, g: u64, kernel: &[Scalar]) -> Result<bool> {
         if g == 1 {
             return Ok(true);

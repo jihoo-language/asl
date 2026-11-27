@@ -3519,6 +3519,17 @@ impl Model {
         target: Label,
         kernel: Rc<ECKernel>,
     ) -> Result<()> {
+        self.define_ec_isogeny_checked(name, source, target, kernel, |_, _, _| Ok(()))
+    }
+
+    pub(crate) fn define_ec_isogeny_checked(
+        &mut self,
+        name: Label,
+        source: Label,
+        target: Label,
+        kernel: Rc<ECKernel>,
+        check: impl FnOnce(&mut Model, &EllipticCurve, &EllipticCurve) -> Result<()>,
+    ) -> Result<()> {
         if self.elliptic_isogenies.contains_key(name.text.as_str()) {
             return Err(Error::new(name.span, "cyclic isogeny is already defined"));
         }
@@ -3532,6 +3543,7 @@ impl Model {
         let target: Rc<str> = target.text.into();
         let (isogeny, quotient) =
             Isogeny::new(self, &curve, source.text.into(), target.clone(), kernel)?;
+        check(self, &curve, &quotient)?;
         self.elliptic_curves.insert(target, Rc::new(quotient));
         self.elliptic_isogenies
             .insert(name.text.into(), Rc::new(isogeny));

@@ -1026,6 +1026,7 @@ pub(crate) enum ExprForm {
     CMArtin(Box<crate::cm_artin::Expression>),
     ECEndOrder(Box<crate::elliptic_end_order::Expression>),
     ECEndCanonical(Box<crate::elliptic_end_order::canonical::Expression>),
+    ECHorizontal(Box<crate::elliptic_end_order::horizontal::Address>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1260,6 +1261,7 @@ pub(crate) enum StatementForm {
     CMClassPolynomial(Box<crate::cm_class_poly::Statement>),
     CMArtin(Box<crate::cm_artin::Statement>),
     ECEndOrder(Box<crate::elliptic_end_order::Statement>),
+    ECHorizontal(Box<crate::elliptic_end_order::horizontal::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3875,6 +3877,43 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::ECEndOrder(Box::new(command)))
+    }
+
+    fn ec_horizontal_address(
+        &mut self,
+        certificate: Label,
+    ) -> Result<crate::elliptic_end_order::horizontal::Address> {
+        self.expect(Token::Comma)?;
+        let ell = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let (orientation, span) = self.number()?;
+        if orientation > 1 {
+            return Err(Error::new(span, "CM horizontal orientation must be 0 or 1"));
+        }
+        self.expect(Token::RBracket)?;
+        Ok(crate::elliptic_end_order::horizontal::Address(
+            certificate,
+            ell,
+            orientation == 1,
+        ))
+    }
+
+    fn ec_horizontal_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::horizontal::Statement;
+        self.advance()?;
+        let command = if name == "rveccmhorizontal" {
+            let map = self.label()?;
+            self.expect(Token::LBracket)?;
+            let certificate = self.label()?;
+            self.expect(Token::Comma)?;
+            let target = self.label()?;
+            Statement::Define(map, target, self.ec_horizontal_address(certificate)?)
+        } else {
+            self.expect(Token::LBracket)?;
+            let certificate = self.label()?;
+            Statement::Data(self.ec_horizontal_address(certificate)?)
+        };
+        Ok(StatementForm::ECHorizontal(Box::new(command)))
     }
 
     fn ec_end_canonical_expression(
@@ -7375,6 +7414,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(name @ ("rveccmhorizontal" | "rvECCMHorizontalData")) => {
+                self.ec_horizontal_statement(name)?
+            }
             Token::Word(
                 name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
             ) => self.cm_artin_statement(name)?,
@@ -13059,6 +13101,11 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.ec_end_canonical_expression(&name.text, span, nest);
+                }
+                if name.text == "rvECCMKernel" && self.eat(Token::LBracket)? {
+                    let certificate = self.label()?;
+                    let address = self.ec_horizontal_address(certificate)?;
+                    return expr(span, ExprForm::ECHorizontal(Box::new(address)), 0);
                 }
                 if (matches!(
                     name.text.as_str(),

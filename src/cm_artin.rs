@@ -53,6 +53,10 @@ pub(crate) fn prime(model: &mut Model, p: usize) -> Result<Prime> {
 }
 
 impl PrimeIdeal {
+    pub(crate) fn generator_residue(&self, order: Order) -> i128 {
+        (self.form[1] + order.discriminant().rem_euclid(2)) / 2
+    }
+
     pub(crate) fn new(
         model: &mut Model,
         order: Order,

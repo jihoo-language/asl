@@ -8,6 +8,7 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod canonical;
+pub(crate) mod horizontal;
 
 type Integer = Wide<13>;
 
@@ -164,6 +165,10 @@ pub(crate) struct Certificate {
 }
 
 impl Certificate {
+    pub(crate) fn curve_name(&self) -> &str {
+        &self.curve
+    }
+
     pub(crate) fn discriminant(&self) -> i128 {
         self.discriminant
     }

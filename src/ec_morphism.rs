@@ -395,26 +395,7 @@ impl Morphism {
 
         let mut division = DivisionPolynomials::new(model, curve, None)?;
         let (x_num, x_den) = division.x_image(model, n)?;
-        let psi = division.get(model, n)?;
-        let lower = division.get(model, n - 2)?;
-        let upper = division.get(model, n + 2)?;
-        let previous = division.get(model, n - 1)?;
-        let next = division.get(model, n + 1)?;
-        // Recover omega_n from normalized division polynomials. This
-        // uses no division by n and also works in the inseparable case.
-        let first = poly::multiply(model, field, &previous, &previous)?;
-        let first = poly::multiply(model, field, &upper, &first)?;
-        let second = poly::multiply(model, field, &next, &next)?;
-        let second = poly::multiply(model, field, &lower, &second)?;
-        let mut y_num = poly::sum(model, field, &first, &second, true)?;
-        let psi_square = poly::multiply(model, field, &psi, &psi)?;
-        let mut y_den = poly::multiply(model, field, &psi_square, &psi)?;
-        if n.is_multiple_of(2) {
-            let f = curve.polynomial();
-            let f_squared = poly::multiply(model, field, f, f)?;
-            let f_squared = poly::scale(model, field, &f_squared, &field.signed(16))?;
-            y_den = poly::multiply(model, field, &y_den, &f_squared)?;
-        }
+        let (mut y_num, y_den) = division.y_multiplier(model, n)?;
         if signed < 0 {
             y_num = poly::scale(model, field, &y_num, &field.signed(-1))?;
         }

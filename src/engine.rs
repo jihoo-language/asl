@@ -25,6 +25,7 @@ use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_end_order;
 use crate::elliptic_end_order::canonical as ec_canonical;
+use crate::elliptic_end_order::horizontal as ec_horizontal;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
 use crate::elliptic_modular;
@@ -2013,6 +2014,7 @@ impl Engine {
             }
             StatementForm::CMArtin(command) => return self.cm_artin_statement(*command).map(Some),
             StatementForm::ECEndOrder(command) => return self.ec_end_order_statement(*command),
+            StatementForm::ECHorizontal(command) => return self.ec_horizontal_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5143,6 +5145,35 @@ impl Engine {
                 };
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
+            }
+        }
+    }
+
+    fn ec_horizontal_statement(
+        &mut self,
+        statement: ec_horizontal::Statement,
+    ) -> Result<Option<String>> {
+        use ec_horizontal::Statement;
+        match statement {
+            Statement::Data(address) => {
+                let action = ec_horizontal::Action::new(&mut self.model, &address)?;
+                action.report(&mut self.model, &address).map(Some)
+            }
+            Statement::Define(map, target, address) => {
+                let action = ec_horizontal::Action::new(&mut self.model, &address)?;
+                let source = Label {
+                    text: action.certificate.curve_name().into(),
+                    span: address.0.span,
+                };
+                let kernel = Rc::new(action.kernel(&mut self.model)?);
+                self.model.define_ec_isogeny_checked(
+                    map,
+                    source,
+                    target,
+                    kernel,
+                    |model, source, quotient| action.check_quotient(model, source, quotient),
+                )?;
+                Ok(None)
             }
         }
     }
@@ -15719,6 +15750,16 @@ impl Checker<'_> {
             ExprForm::CMArtin(expression) => self.cm_artin_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
             ExprForm::ECEndCanonical(expression) => self.ec_end_canonical_expression(*expression),
+            ExprForm::ECHorizontal(address) => {
+                let action = ec_horizontal::Action::new(self.model, &address)?;
+                let kernel = action.kernel(self.model)?;
+                let ty = self.model.ec_kernel_type(
+                    action.certificate.curve_name().into(),
+                    action.ell,
+                    true,
+                )?;
+                Ok((ty, TypedForm::Constant(Value::ECKernel(Rc::new(kernel)))))
+            }
             ExprForm::CMNeighbor(expression) => {
                 let cm_neighbors::Expression(target, ell, address, input) = expression;
                 let input = self.expr(*input)?;
