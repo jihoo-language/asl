@@ -235,6 +235,7 @@ pub(crate) enum Kind {
     RVValMat(ValGrade),
     RVStableTree(usize),
     RVStableMarks(u32, usize),
+    Lee(Rc<str>, crate::lee::Grade),
     Khovanov(Rc<str>, khovanov::Grade, KhForm),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
@@ -384,6 +385,7 @@ pub(crate) enum Value {
     RVValMat(Rc<ValMatroid>),
     RVStableTree(Rc<StableTree>),
     RVStableMarks(Rc<StableCurve>),
+    LeeChain(crate::lee::Chain),
     KhChain(khovanov::Chain),
     KhClass(khovanov::Class),
     RvTl(rv_tl::Support),
@@ -810,6 +812,13 @@ impl Model {
             {
                 1
             }
+            Kind::Lee(ref braid, grade) => {
+                if self.kh_braids[braid].lee_possible(grade.i, grade.f) {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::Khovanov(ref braid, grade, _) => {
                 if self.kh_braids[braid].possible(grade) {
                     usize::MAX
@@ -1039,6 +1048,7 @@ impl Model {
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
                 | Kind::RVWzw(..)
+                | Kind::Lee(..)
                 | Kind::Khovanov(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
@@ -2664,6 +2674,11 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Khovanov braid '{name}'")))
     }
 
+    pub(crate) fn lee_type(&mut self, braid: Rc<str>, grade: crate::lee::Grade) -> Result<TypeId> {
+        self.kh_braid(&braid)?;
+        self.inhabited_type(Kind::Lee(braid, grade), 0)
+    }
+
     pub(crate) fn kh_type(
         &mut self,
         braid: Rc<str>,
@@ -3884,6 +3899,7 @@ impl Model {
             | Kind::RVStableMarks(..)
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
+            | Kind::Lee(..)
             | Kind::Khovanov(..)
             | Kind::RvTl(..)
             | Kind::VKoszul(..)
@@ -4296,6 +4312,7 @@ impl Model {
                 "RVWzw({}, {})",
                 grade.fusion.rank, grade.fusion.level
             )),
+            Kind::Lee(name, grade) => out.push(&format!("LeeC({name}, {}, {})", grade.i, grade.f)),
             Kind::Khovanov(name, grade, form) => out.push(&format!(
                 "{}({name}, {}, {})",
                 form.name(),
@@ -4526,6 +4543,10 @@ impl Model {
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => {
                 Ok(rv_wzw::compare(self, left, right)?.is_eq())
+            }
+            (Value::LeeChain(left), Value::LeeChain(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left == right)
             }
             (Value::KhChain(left), Value::KhChain(right)) => {
                 Ok(khovanov::compare_chains(self, left, right)?.is_eq())
@@ -4798,6 +4819,10 @@ impl Model {
                 rv_fusion::compare(self, left, right)
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
+            (Value::LeeChain(left), Value::LeeChain(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.cmp(right))
+            }
             (Value::KhChain(left), Value::KhChain(right)) => {
                 khovanov::compare_chains(self, left, right)
             }
@@ -5047,6 +5072,21 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a cyclotomic torus state module",
                     ))
+                }
+                Kind::Lee(ref name, grade) => {
+                    let braid = self.kh_braid(name)?;
+                    if braid.lee_possible(grade.i, grade.f)
+                        && khovanov::Context::new(&braid)
+                            .lee_basis(self, grade.i)?
+                            .first()
+                            .is_some_and(|(_, j)| *j >= grade.f)
+                    {
+                        return Err(Error::plain(
+                            "cannot enumerate a nonzero rational Lee cochain group",
+                        ));
+                    }
+                    self.allocate(1)?;
+                    vec![Value::LeeChain(Rc::default())]
                 }
                 Kind::Khovanov(ref name, grade, form) => {
                     let braid = self.kh_braid(name)?;
@@ -5836,6 +5876,33 @@ impl Model {
         out.push("}")
     }
 
+    fn write_cube_terms<T: std::fmt::Display>(
+        &mut self,
+        out: &mut Text,
+        ty: TypeId,
+        terms: &[(khovanov::Cell, T)],
+    ) -> Result<()> {
+        self.write_type(out, ty, 0)?;
+        out.push("{")?;
+        if terms.is_empty() {
+            out.push("0")?;
+        }
+        for (i, (cell, coefficient)) in terms.iter().enumerate() {
+            self.spend(1 + cell.xs.len() + cell.state.count_ones() as usize)?;
+            if i != 0 {
+                out.push(", ")?;
+            }
+            let mut state = cell.state;
+            let mut ones = Vec::new();
+            while state != 0 {
+                ones.push(state.trailing_zeros());
+                state &= state - 1;
+            }
+            out.push(&format!("({ones:?}, {:?}): {coefficient}", cell.xs))?;
+        }
+        out.push("}")
+    }
+
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
             Value::Bar(support) => {
@@ -6339,27 +6406,8 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::KhChain(terms) => {
-                self.write_type(out, ty, 0)?;
-                out.push("{")?;
-                if terms.is_empty() {
-                    out.push("0")?;
-                }
-                for (i, (cell, coefficient)) in terms.iter().enumerate() {
-                    self.spend(1 + cell.xs.len() + cell.state.count_ones() as usize)?;
-                    if i != 0 {
-                        out.push(", ")?;
-                    }
-                    let mut state = cell.state;
-                    let mut ones = Vec::new();
-                    while state != 0 {
-                        ones.push(state.trailing_zeros());
-                        state &= state - 1;
-                    }
-                    out.push(&format!("({ones:?}, {:?}): {coefficient}", cell.xs))?;
-                }
-                out.push("}")
-            }
+            Value::KhChain(terms) => self.write_cube_terms(out, ty, terms),
+            Value::LeeChain(terms) => self.write_cube_terms(out, ty, terms),
             Value::KhClass(terms) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;

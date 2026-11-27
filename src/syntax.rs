@@ -126,6 +126,7 @@ pub(crate) enum TypeForm {
     RVValMat(usize, usize, usize),
     StableTree(usize),
     StableMarks(usize, usize),
+    Lee(Label, crate::lee::Grade),
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
@@ -731,6 +732,7 @@ pub(crate) enum ExprForm {
     SheafHomMap(Label),
     SheafHomIdentity(Label),
     SheafKuranishi(Box<crate::sheaf_kuranishi::Query>),
+    Lee(crate::lee::Query),
     Khovanov(Box<crate::khovanov::Query>),
     SheafDefStart(Label),
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
@@ -1068,6 +1070,7 @@ pub(crate) enum StatementForm {
     SheafTruncate(Label, Label, usize),
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
+    Lee(crate::lee::Command),
     Khovanov(Box<crate::khovanov::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
@@ -2281,6 +2284,91 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Khovanov(Box::new(command)))
     }
 
+    fn lee_grade(&mut self) -> Result<crate::lee::Grade> {
+        let i = self.signed_number("Lee homological degree")?;
+        self.expect(Token::Comma)?;
+        let f = self.signed_number("Lee filtration")?;
+        Ok(crate::lee::Grade { i, f })
+    }
+
+    fn lee_command(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::lee::Command;
+        let command = match command {
+            "leeFiltration" => Command::Filtration(Box::new(self.paren_expr(0)?)),
+            "leeIndependent" => {
+                self.expect(Token::LParen)?;
+                let mut inputs = Vec::new();
+                while self.token() != Token::RParen {
+                    inputs.push(self.expr(1)?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RParen)?;
+                Command::Independent(inputs)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let operation = match command {
+                    "leeS" => Command::Rasmussen(name),
+                    "leeLevels" => {
+                        self.expect(Token::Comma)?;
+                        Command::Levels(name, self.signed_number("Lee homological degree")?)
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        Command::Rank(name, self.lee_grade()?)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                operation
+            }
+        };
+        Ok(StatementForm::Lee(command))
+    }
+
+    fn lee_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::lee::{Operation, Query};
+        let (query, depth) = if command == "leeRep" {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let grade = self.lee_grade()?;
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            (Query::Representative(name, grade, index), 0)
+        } else {
+            let operation = match command {
+                "leeLift" => Operation::Lift,
+                "leePhi" => Operation::Perturbation,
+                "leeD" => Operation::Differential,
+                "leeNull" => Operation::Null,
+                "leeFilter" => {
+                    self.expect(Token::LBracket)?;
+                    let f = self.signed_number("Lee filtration")?;
+                    self.expect(Token::RBracket)?;
+                    Operation::Filter(f)
+                }
+                _ => {
+                    self.expect(Token::LBracket)?;
+                    let numerator =
+                        self.signed_wide("a signed integer numerator", "Lee scalar numerator")?;
+                    self.expect(Token::Comma)?;
+                    let denominator = self
+                        .signed_wide("a positive integer denominator", "Lee scalar denominator")?;
+                    self.expect(Token::RBracket)?;
+                    Operation::Scale(crate::lee_linear::Rational::new(numerator, denominator)?)
+                }
+            };
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Query::Operation(operation, Box::new(input)), depth)
+        };
+        expr(span, ExprForm::Lee(query), depth)
+    }
+
     fn kh_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::khovanov::{Generator, Operation, Query};
         let mut depth = 0;
@@ -2344,6 +2432,12 @@ impl<'src> Parser<'src> {
         let kind = match self.token() {
             Token::Word(command @ ("shkuranishi" | "shkuranishiEq" | "shkuranishiDims")) => {
                 self.sheaf_kuranishi_statement(command)?
+            }
+            Token::Word(
+                command @ ("leeRank" | "leeLevels" | "leeS" | "leeFiltration" | "leeIndependent"),
+            ) => {
+                self.advance()?;
+                self.lee_command(command)?
             }
             Token::Word(command @ ("khbraid" | "khGroup" | "khEuler")) => {
                 self.kh_statement(command)?
@@ -5364,6 +5458,13 @@ impl<'src> Parser<'src> {
             let ring = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVUnram(ring), 0);
+        }
+        if name.text == "LeeC" && self.eat(Token::LParen)? {
+            let braid = self.label()?;
+            self.expect(Token::Comma)?;
+            let grade = self.lee_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Lee(braid, grade), 0);
         }
         if matches!(name.text.as_str(), "KhC" | "KhH") && self.eat(Token::LParen)? {
             let braid = self.label()?;
@@ -8626,6 +8727,15 @@ impl<'src> Parser<'src> {
                         ExprForm::TlColoredJones(level, strands, color, word),
                         0,
                     );
+                }
+                if matches!(name.text.as_str(), "leeRep" | "leeScale" | "leeFilter")
+                    && self.token() == Token::LBracket
+                    || matches!(
+                        name.text.as_str(),
+                        "leeLift" | "leePhi" | "leeD" | "leeNull"
+                    ) && self.token() == Token::LParen
+                {
+                    return self.lee_expression(&name.text, span, nest + 1);
                 }
                 if matches!(
                     name.text.as_str(),

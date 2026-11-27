@@ -30,6 +30,8 @@ mod integer_smith;
 mod jet_hom;
 mod jet_page;
 mod khovanov;
+mod lee;
+mod lee_linear;
 mod legendre;
 mod legendre_closed;
 mod linear;

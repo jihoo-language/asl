@@ -1363,6 +1363,18 @@ A basis term `khTerm[K,[ones],[xs]]` lists the positions of the one resolutions 
 
 `khEuler[K];` lists the coefficients of the graded Euler Laurent polynomial in increasing quantum degree, including the unknot $q+q^{-1}$. The calculation sums the circle-label dimensions in each resolution. `khEulerAt[K,k]` evaluates at $q=-A^{-2}$ for the same cyclotomic parameter $A$ as the level-$k$ Temperley–Lieb calculation. The output equals $\delta$ times the repo's normalized `rvTLJones`, with $\delta=-A^2-A^{-2}$. In the trefoil example $KhH(\mathrm{Trefoil},3,7)\cong\mathbb Z/2$ and the program checks the actual integral relation $dw=2z$. It also computes the mirror torsion and compares the figure-eight and both Markov stabilizations. [Integral Khovanov example](examples/integral-khovanov.asl)
 
+#### Filtered Lee cohomology and Rasmussen's invariant
+
+`LeeC(K,i,f)` contains rational cochains in homological degree $i$ whose terms have quantum degree at least $f$. Use `leeLift(x)` to regard a homogeneous integral `KhC(K,i,j)` chain as an element of `LeeC(K,i,j)`. Lee cochains support `zero`, `add`, `neg`, equality, and `leeScale[num,den]` for a rational scalar with positive denominator. `leeFilter[f](x)` changes the declared filtration after checking the actual support.
+
+`leePhi(x)` gives the integral perturbation on homogeneous Khovanov chains, in bidegree $(1,4)$. It adds $m(X,X)=1$ and the $1\otimes 1$ term in $\Delta(X)$ to the same signed cube. On Lee cochains `leeD(x)` applies $d_{\mathrm{Kh}}+\Phi$ and preserves the decreasing quantum filtration. The same circle resolutions, labels, and edge signs are used for both differentials.
+
+`leeRank[K,i,f];` gives the dimension of the image $H^i(F^fC)\to H^i(C)$. It counts the kernel on chains of quantum degree at least $f$, subtracts the full incoming rank, and adds back the rank of the incoming image projected to degrees below $f$. `leeLevels[K,i];` lists the filtration jumps with multiplicity. Exact fraction-free elimination works over $\mathbb Q$ with checked signed 128-bit arithmetic and sparse work and storage bounds. It needs only the requested homological degree and its incident cube edges.
+
+`leeRep[K,i,f,k]` returns the $k$th chosen cycle in the associated graded piece at the exact jump $f$, with zero-based index. The cycles form a basis of the filtered cohomology when taken across the jumps. `leeFiltration(x);` checks closure and gives the highest filtration attained by the class, or reports `boundary`. `leeIndependent(x,...);` checks independence modulo the actual boundary span for cycles of the same braid and homological degree, which may have different declared filtrations. `leeNull(x)` constructs an exact rational preimage of a boundary in degree $i-1$. Its result type shows a conservative filtration bound from the braid.
+
+`leeS[K];` takes the mean of the two surviving jumps in homological degree zero for a knot. Links also have the full filtration queries. For the positive braid $(\sigma_1\sigma_2)^8$ closing to $T(3,8)$, the jumps are $13,15$ and $s=14$. The bound $g_4\ge |s|/2$ and the genus-seven surface from the braid give $g_4=7$. The example also verifies a nontrivial filtration lift and an exact half-integral boundary preimage on a stabilized unknot. [Lee and Rasmussen example](examples/lee-rasmussen.asl)
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is

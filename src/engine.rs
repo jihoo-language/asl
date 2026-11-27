@@ -498,6 +498,7 @@ enum TypedForm {
     CycloRatioNegate(Box<TypedExpr>),
     CycloRatioProduct(usize, Box<[TypedExpr; 2]>),
     CycloRatioGalois(usize, i128, Box<TypedExpr>),
+    Lee(crate::lee::Operation, Box<TypedExpr>),
     Khovanov(khovanov::Operation, Box<TypedExpr>),
     TlOperation(rv_tl::Grade, TlOp, Box<TypedExpr>),
     TlCoordinate(rv_tl::Grade, Vec<usize>, Box<TypedExpr>),
@@ -831,8 +832,70 @@ impl Engine {
         self.model.define_sheaf_kuranishi(&name, chart)
     }
 
+    fn lee_command(&mut self, command: crate::lee::Command) -> Result<String> {
+        use crate::lee::{self, Command};
+        Ok(match command {
+            Command::Rank(name, grade) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let rank = lee::rank(&mut self.model, &braid, grade.i, grade.f)?;
+                format!("leeRank[{}, {}, {}] = {rank}", name.text, grade.i, grade.f)
+            }
+            Command::Levels(name, i) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let levels = lee::levels(&mut self.model, &braid, i)?;
+                format!("leeLevels[{}, {i}] = {levels:?}", name.text)
+            }
+            Command::Rasmussen(name) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let value = lee::rasmussen(&mut self.model, &braid)?;
+                format!("leeS[{}] = {value}", name.text)
+            }
+            Command::Filtration(input) => {
+                let input = self.checker().expr(*input)?;
+                let (name, grade) = self.checker().lee_operand(&input, "leeFiltration")?;
+                let braid = self.model.kh_braid(&name)?;
+                let Value::LeeChain(chain) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let level = lee::class_filtration(&mut self.model, &braid, grade.i, &chain)?;
+                level.map_or_else(
+                    || "leeFiltration = boundary".to_owned(),
+                    |f| format!("leeFiltration = {f}"),
+                )
+            }
+            Command::Independent(inputs) => {
+                let mut group = None;
+                let mut chains = Vec::new();
+                for input in inputs {
+                    let input = self.checker().expr(input)?;
+                    let (name, grade) = self.checker().lee_operand(&input, "leeIndependent")?;
+                    let key = (name, grade.i);
+                    if group.as_ref().is_some_and(|known| *known != key) {
+                        return Err(Error::new(
+                            input.span,
+                            "leeIndependent requires one braid and homological degree",
+                        ));
+                    }
+                    group = Some(key);
+                    let Value::LeeChain(chain) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    chains.push(chain);
+                }
+                let basis = if let Some((name, i)) = group {
+                    let braid = self.model.kh_braid(&name)?;
+                    lee::independent(&mut self.model, &braid, i, &chains)?
+                } else {
+                    true
+                };
+                format!("leeIndependent = {basis}")
+            }
+        })
+    }
+
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
+            StatementForm::Lee(command) => self.lee_command(command)?,
             StatementForm::Khovanov(command) => match *command {
                 khovanov::Command::Braid(name, strands, word) => {
                     self.model.define_kh_braid(&name, strands, &word)?;
@@ -3916,6 +3979,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVWzw(a), Value::RVWzw(b)) => {
                         rv_wzw::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::LeeChain(a), Value::LeeChain(b)) => {
+                        Ok(Value::LeeChain(crate::lee::add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Add, Value::KhChain(a), Value::KhChain(b)) => Ok(Value::KhChain(
                         khovanov::add_chains(&mut self.model, &a, &b)?,
                     )),
@@ -5082,6 +5148,44 @@ impl Engine {
                     unreachable!()
                 };
                 rv_wzw::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::Lee(operation, input) => {
+                use crate::lee::Operation;
+                let value = self.eval(input)?;
+                let kind = self.model.kind(input.ty).clone();
+                match (operation, kind, value) {
+                    (Operation::Lift, _, Value::KhChain(chain)) => {
+                        Ok(Value::LeeChain(crate::lee::lift(&mut self.model, &chain)?))
+                    }
+                    (
+                        Operation::Perturbation,
+                        Kind::Khovanov(name, _, _),
+                        Value::KhChain(chain),
+                    ) => {
+                        let braid = self.model.kh_braid(&name)?;
+                        Ok(Value::KhChain(
+                            braid.lee_perturbation(&mut self.model, &chain)?,
+                        ))
+                    }
+                    (operation, Kind::Lee(name, grade), Value::LeeChain(chain)) => {
+                        let braid = self.model.kh_braid(&name)?;
+                        let result = match operation {
+                            Operation::Differential => {
+                                crate::lee::differential(&mut self.model, &braid, &chain)?
+                            }
+                            Operation::Filter(f) => {
+                                crate::lee::filter(&mut self.model, &braid, &chain, *f)?
+                            }
+                            Operation::Scale(c) => crate::lee::scale(&mut self.model, &chain, *c)?,
+                            Operation::Null => {
+                                crate::lee::null(&mut self.model, &braid, grade.i, &chain)?
+                            }
+                            _ => unreachable!(),
+                        };
+                        Ok(Value::LeeChain(result))
+                    }
+                    _ => unreachable!(),
+                }
             }
             TypedForm::Khovanov(operation, input) => {
                 use khovanov::Operation;
@@ -6986,6 +7090,7 @@ impl Checker<'_> {
             TypeForm::RVWzw(rank, level) => {
                 self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
             }
+            TypeForm::Lee(braid, grade) => self.model.lee_type(braid.text.into(), grade),
             TypeForm::Khovanov(braid, grade, form) => {
                 self.model.kh_type(braid.text.into(), grade, form)
             }
@@ -7824,6 +7929,7 @@ impl Checker<'_> {
                         rv_unram::persist(self.model,ring.scalar(0))?
                     }
                     Kind::RVCycloQ(..) => rv_lens::zero(),
+                    Kind::Lee(..) => Value::LeeChain(Rc::default()),
                     Kind::Khovanov(_,_,KhForm::Chain) => Value::KhChain(Rc::default()),
                     Kind::Khovanov(_,_,KhForm::Class) => Value::KhClass(Rc::default()),
                     Kind::RvTl(..) => rv_tl::zero(),
@@ -8698,6 +8804,7 @@ impl Checker<'_> {
             | ExprForm::SheafDefAppend(..)
             | ExprForm::SheafDefGauge(..)) => self.check_sheaf_deformation(form),
             ExprForm::SheafKuranishi(query) => self.sheaf_kuranishi_expression(*query),
+            ExprForm::Lee(query) => self.lee_expression(query),
             ExprForm::Khovanov(query) => self.khovanov_expression(*query),
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
@@ -10405,6 +10512,13 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Lee(..)) {
+                    let minus = crate::lee_linear::Rational::integer(-1);
+                    return Ok((
+                        input.ty,
+                        TypedForm::Lee(crate::lee::Operation::Scale(minus), Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Khovanov(..)) {
@@ -13433,6 +13547,71 @@ impl Checker<'_> {
         }
     }
 
+    fn lee_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(Rc<str>, crate::lee::Grade)> {
+        match self.model.kind(input.ty) {
+            Kind::Lee(name, grade) => Ok((name.clone(), *grade)),
+            _ => Err(self.invalid_operand(input, operation, "a Lee cochain")),
+        }
+    }
+
+    fn lee_expression(&mut self, query: crate::lee::Query) -> Result<(TypeId, TypedForm)> {
+        use crate::lee::{Grade, Operation, Query};
+        match query {
+            Query::Representative(name, grade, k) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let value = crate::lee::representative(self.model, &braid, grade.i, grade.f, k)?;
+                let ty = self.model.lee_type(name.text.into(), grade)?;
+                Ok((ty, TypedForm::Constant(Value::LeeChain(value))))
+            }
+            Query::Operation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = if matches!(operation, Operation::Lift | Operation::Perturbation) {
+                    let Kind::Khovanov(name, grade, KhForm::Chain) =
+                        self.model.kind(input.ty).clone()
+                    else {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "a homogeneous integral Khovanov chain",
+                        ));
+                    };
+                    if matches!(operation, Operation::Lift) {
+                        self.model.lee_type(
+                            name,
+                            Grade {
+                                i: grade.i,
+                                f: grade.j,
+                            },
+                        )?
+                    } else {
+                        let mut output = grade.shift(1)?;
+                        output.j = output.j.checked_add(4).ok_or_else(|| {
+                            Error::plain("Lee perturbation quantum degree is out of range")
+                        })?;
+                        self.model.kh_type(name, output, KhForm::Chain)?
+                    }
+                } else {
+                    let (name, mut grade) = self.lee_operand(&input, operation.name())?;
+                    match operation {
+                        Operation::Differential => grade = grade.shift(1)?,
+                        Operation::Filter(f) => grade.f = f,
+                        Operation::Null => {
+                            grade = grade.shift(-1)?;
+                            grade.f = self.model.kh_braid(&name)?.lee_lower_bound();
+                        }
+                        _ => {}
+                    }
+                    self.model.lee_type(name, grade)?
+                };
+                Ok((ty, TypedForm::Lee(operation, Box::new(input))))
+            }
+        }
+    }
+
     fn khovanov_expression(&mut self, query: khovanov::Query) -> Result<(TypeId, TypedForm)> {
         use khovanov::{Generator, Operation, Query};
         let (ty, value) = match query {
@@ -13787,6 +13966,7 @@ impl Checker<'_> {
                         | Kind::RVUnram(..)
                         | Kind::RVCycloQ(..)
                         | Kind::RVQpQuad(..)
+                        | Kind::Lee(..)
                         | Kind::Khovanov(..)
                         | Kind::RvTl(..)
                         | Kind::RVWzw(..)

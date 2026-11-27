@@ -75,7 +75,7 @@ pub(crate) struct Cell {
 }
 
 impl Cell {
-    fn cells(&self) -> usize {
+    pub(crate) fn cells(&self) -> usize {
         7 + self.xs.len()
     }
 }
@@ -218,6 +218,32 @@ impl Braid {
         self.grading(grade).is_some()
     }
 
+    pub(crate) fn components(&self, model: &mut Model) -> Result<usize> {
+        model.spend(4 * self.vertices())?;
+        integral::storage(2 * self.vertices())?;
+        let mut components = Disjoint::new(self.vertices());
+        for crossing in &self.crossings {
+            components.join(crossing.before[0], crossing.after[1]);
+            components.join(crossing.before[1], crossing.after[0]);
+        }
+        for (i, &end) in self.ends.iter().enumerate() {
+            components.join(i, end);
+        }
+        Ok((0..self.vertices())
+            .filter(|&v| components.root(v) == v)
+            .count())
+    }
+
+    pub(crate) fn lee_possible(&self, i: i64, f: i64) -> bool {
+        let ones = i128::from(i) + self.negative as i128;
+        (0..=self.crossings.len() as i128).contains(&ones)
+            && f <= self.shift(ones as usize) + self.vertices() as i64
+    }
+
+    pub(crate) fn lee_lower_bound(&self) -> i64 {
+        self.shift(0) - self.vertices() as i64
+    }
+
     fn vertices(&self) -> usize {
         self.ends.len() + 2 * self.crossings.len()
     }
@@ -325,10 +351,23 @@ impl Braid {
     }
 
     pub(crate) fn differential(&self, model: &mut Model, input: &Chain) -> Result<Chain> {
+        self.integral_differential(model, input, Saddle::Khovanov)
+    }
+
+    pub(crate) fn lee_perturbation(&self, model: &mut Model, input: &Chain) -> Result<Chain> {
+        self.integral_differential(model, input, Saddle::Perturbation)
+    }
+
+    fn integral_differential(
+        &self,
+        model: &mut Model,
+        input: &Chain,
+        saddle: Saddle,
+    ) -> Result<Chain> {
         let mut context = Context::new(self);
         let mut output = ChainSum::default();
         for (cell, coefficient) in input.iter() {
-            context.edges(model, cell, false, |model, target, sign| {
+            context.edges_for(model, cell, false, saddle, |model, target, sign| {
                 output.add(
                     model,
                     target,
@@ -457,14 +496,21 @@ impl Resolution {
     }
 }
 
-struct Context<'a> {
+#[derive(Clone, Copy, PartialEq)]
+enum Saddle {
+    Khovanov,
+    Perturbation,
+    Lee,
+}
+
+pub(crate) struct Context<'a> {
     braid: &'a Braid,
     cache: HashMap<State, Rc<Resolution>>,
     cache_cells: usize,
 }
 
 impl<'a> Context<'a> {
-    fn new(braid: &'a Braid) -> Self {
+    pub(crate) fn new(braid: &'a Braid) -> Self {
         Self {
             braid,
             cache: HashMap::new(),
@@ -492,6 +538,27 @@ impl<'a> Context<'a> {
         model: &mut Model,
         cell: &Cell,
         reverse: bool,
+        visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
+    ) -> Result<()> {
+        self.edges_for(model, cell, reverse, Saddle::Khovanov, visit)
+    }
+
+    pub(crate) fn lee_edges(
+        &mut self,
+        model: &mut Model,
+        cell: &Cell,
+        reverse: bool,
+        visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
+    ) -> Result<()> {
+        self.edges_for(model, cell, reverse, Saddle::Lee, visit)
+    }
+
+    fn edges_for(
+        &mut self,
+        model: &mut Model,
+        cell: &Cell,
+        reverse: bool,
+        saddle: Saddle,
         mut visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
     ) -> Result<()> {
         let old = self.resolution(model, cell.state)?;
@@ -535,22 +602,34 @@ impl<'a> Context<'a> {
                     sign,
                 )
             };
-            // Reverse traversal uses the coordinate transpose of the
-            // Frobenius maps. The cube sign is unchanged by toggling bit i.
-            match (a.as_slice(), b.as_slice(), involved_x, reverse) {
-                ([_, _], [_], 0, false) | ([_, _], [_], 1, true) => output(&[])?,
-                ([_, _], [x], 1, false) | ([_, _], [x], 2, true) => output(&[*x])?,
-                ([_, _], [_], 2, false) | ([_, _], [_], 0, true) => {}
-                ([_], [x, y], 0, false) | ([_], [x, y], 1, true) => {
-                    output(&[*x])?;
-                    output(&[*y])?;
+            if saddle != Saddle::Perturbation {
+                // Reverse traversal uses the coordinate transpose of the
+                // Frobenius maps. The cube sign is unchanged by toggling bit i.
+                match (a.as_slice(), b.as_slice(), involved_x, reverse) {
+                    ([_, _], [_], 0, false) | ([_, _], [_], 1, true) => output(&[])?,
+                    ([_, _], [x], 1, false) | ([_, _], [x], 2, true) => output(&[*x])?,
+                    ([_, _], [_], 2, false) | ([_, _], [_], 0, true) => {}
+                    ([_], [x, y], 0, false) | ([_], [x, y], 1, true) => {
+                        output(&[*x])?;
+                        output(&[*y])?;
+                    }
+                    ([_], [x, y], 1, false) => output(&[*x, *y])?,
+                    ([_], [_, _], 0, true) => output(&[])?,
+                    _ => {
+                        return Err(Error::plain(
+                            "Khovanov saddle did not merge or split circles",
+                        ))
+                    }
                 }
-                ([_], [x, y], 1, false) => output(&[*x, *y])?,
-                ([_], [_, _], 0, true) => output(&[])?,
-                _ => {
-                    return Err(Error::plain(
-                        "Khovanov saddle did not merge or split circles",
-                    ))
+            }
+            if saddle != Saddle::Khovanov {
+                // Lee contributes m(X,X)=1 and the 1 tensor 1 term in
+                // Delta(X). Traversing backward takes their transposes.
+                match (a.as_slice(), b.as_slice(), involved_x, reverse) {
+                    ([_, _], [_], 2, false) | ([_], [_, _], 1, false) => output(&[])?,
+                    ([_, _], [x], 0, true) => output(&[*x])?,
+                    ([_], [x, y], 0, true) => output(&[*x, *y])?,
+                    _ => {}
                 }
             }
         }
@@ -563,10 +642,7 @@ impl<'a> Context<'a> {
         };
         let mut cells = 0;
         let mut basis = Vec::new();
-        choose(model, self.braid.crossings.len(), ones, |model, ones| {
-            let state = ones.iter().fold(0u128, |acc, i| acc | (1u128 << i));
-            let resolution = self.resolution(model, state)?;
-            let circles = resolution.anchors.len();
+        self.visit_resolutions(model, ones, |model, state, circles| {
             let difference = circles as i64 - label_degree;
             if difference < 0 || difference as usize > 2 * circles || difference % 2 != 0 {
                 return Ok(());
@@ -585,6 +661,54 @@ impl<'a> Context<'a> {
         model.spend(cells * (1 + basis.len().max(1).ilog2() as usize))?;
         basis.sort_unstable();
         Ok(basis)
+    }
+
+    pub(crate) fn lee_grade(&mut self, model: &mut Model, cell: &Cell) -> Result<Grade> {
+        let circles = self.resolution(model, cell.state)?.anchors.len();
+        Ok(self.braid.grade(cell, circles))
+    }
+
+    pub(crate) fn lee_basis(&mut self, model: &mut Model, i: i64) -> Result<Vec<(Cell, i64)>> {
+        let ones = i128::from(i) + self.braid.negative as i128;
+        if ones < 0 || ones > self.braid.crossings.len() as i128 {
+            return Ok(Vec::new());
+        }
+        let ones = ones as usize;
+        let shift = self.braid.shift(ones);
+        let mut cells = 0;
+        let mut basis = Vec::new();
+        self.visit_resolutions(model, ones, |model, state, circles| {
+            for count in 0..=circles {
+                let j = shift + circles as i64 - 2 * count as i64;
+                choose(model, circles, count, |_, xs| {
+                    let cell = Cell {
+                        state,
+                        xs: xs.into(),
+                    };
+                    cells += 1 + cell.cells();
+                    integral::storage(cells)?;
+                    basis.push((cell, j));
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
+        model.spend(cells * (1 + basis.len().max(1).ilog2() as usize))?;
+        basis.sort_unstable_by(|(a, j), (b, k)| k.cmp(j).then_with(|| a.cmp(b)));
+        Ok(basis)
+    }
+
+    fn visit_resolutions(
+        &mut self,
+        model: &mut Model,
+        ones: usize,
+        mut visit: impl FnMut(&mut Model, State, usize) -> Result<()>,
+    ) -> Result<()> {
+        choose(model, self.braid.crossings.len(), ones, |model, ones| {
+            let state = ones.iter().fold(0u128, |acc, i| acc | (1u128 << i));
+            let resolution = self.resolution(model, state)?;
+            visit(model, state, resolution.anchors.len())
+        })
     }
 }
 
