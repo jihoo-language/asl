@@ -1,21 +1,23 @@
+use std::rc::Rc;
+
 use super::{field, square_root, Point, Recovery};
-use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
+use crate::ec_poly::{self as poly, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::hyperelliptic_jacobian::Divisor;
 use crate::model::Model;
+use crate::richelot::correspondence::Correspondence;
 
 pub(crate) fn scale(model: &mut Model, curve: &Curve, n: i128, point: &Point) -> Result<Point> {
     if n == 0 {
         return Ok(Point::identity(curve));
     }
     let lift = GeometricLift::recover(model, curve, point)?;
-    let k = lift.radicand.clone().unwrap_or_else(|| field(curve).one());
-    let twist = Twist::new(model, curve, k)?;
+    let twist = Twist::new(model, curve, lift.preferred_radicand(curve))?;
     let divisor = twist.divisor(model, lift)?;
     let multiple = divisor.scale(model, &twist.curve, n)?;
-    twist.project(model, curve, &multiple)
+    project_scaled(model, &twist.curve, curve, &multiple, &twist.k)
 }
 
 pub(crate) fn differential_add(
@@ -37,10 +39,10 @@ pub(crate) fn differential_add(
     let left = twist.divisor(model, left)?;
     let right = twist.divisor(model, right)?;
     let sum = left.add(model, &twist.curve, &right)?;
-    let sum = twist.project(model, curve, &sum)?;
+    let sum = project_scaled(model, &twist.curve, curve, &sum, &twist.k)?;
     let opposite = right.negate(model, &twist.curve)?;
     let candidate = left.add(model, &twist.curve, &opposite)?;
-    let candidate = twist.project(model, curve, &candidate)?;
+    let candidate = project_scaled(model, &twist.curve, curve, &candidate, &twist.k)?;
     if sum.compare(model, difference)?.is_eq() {
         Ok(candidate)
     } else if candidate.compare(model, difference)?.is_eq() {
@@ -52,6 +54,35 @@ pub(crate) fn differential_add(
     }
 }
 
+pub(crate) fn richelot(
+    model: &mut Model,
+    correspondence: &Correspondence,
+    point: &Point,
+) -> Result<Point> {
+    let source = &correspondence.source;
+    let lift = GeometricLift::recover(model, source, point)?;
+    let k = lift.preferred_radicand(source);
+    if k == field(source).one() {
+        // Both the original curve and its selected target already have the
+        // required coordinates when the geometric ordinate is over K.
+        let divisor = Divisor::new(model, source, lift.u, lift.w)?;
+        let image = correspondence.push(model, &divisor)?;
+        return Point::project(model, &correspondence.target, &image);
+    }
+    let twist = Twist::new(model, source, k)?;
+    let divisor = twist.divisor(model, lift)?;
+    let (normalized, target_scale) =
+        correspondence.twisted(model, twist.curve.clone(), &twist.k, &twist.inverse_powers)?;
+    let image = normalized.push(model, &divisor)?;
+    project_scaled(
+        model,
+        &normalized.target,
+        &correspondence.target,
+        &image,
+        &target_scale,
+    )
+}
+
 struct GeometricLift {
     u: Polynomial,
     // A nonnodal ordinate is sqrt(radicand) times this polynomial.
@@ -60,6 +91,10 @@ struct GeometricLift {
 }
 
 impl GeometricLift {
+    fn preferred_radicand(&self, curve: &Curve) -> Scalar {
+        self.radicand.clone().unwrap_or_else(|| field(curve).one())
+    }
+
     fn recover(model: &mut Model, curve: &Curve, point: &Point) -> Result<Self> {
         let field = field(curve);
         let (u, w, radicand) = match point.recover(model, curve)? {
@@ -89,7 +124,7 @@ impl GeometricLift {
 }
 
 struct Twist {
-    curve: Curve,
+    curve: Rc<Curve>,
     k: Scalar,
     inverse_powers: [Scalar; 6],
 }
@@ -103,10 +138,10 @@ impl Twist {
             inverse_powers[index] = field.multiply(model, &inverse_powers[index - 1], &inverse)?;
         }
         // The twist has coordinates X=x/k and Y=y/(sqrt(k) k²).
-        let f = reweight(model, field, curve.polynomial(), &inverse_powers, 5)?;
+        let f = poly::scale_homogeneous(model, field, curve.polynomial(), &inverse_powers, 5)?;
         let normalized = Curve::new(model, curve.grade.ring.clone(), curve.ring.clone(), f)?;
         Ok(Self {
-            curve: normalized,
+            curve: Rc::new(normalized),
             k,
             inverse_powers,
         })
@@ -114,14 +149,14 @@ impl Twist {
 
     fn divisor(&self, model: &mut Model, lift: GeometricLift) -> Result<Divisor> {
         let field = field(&self.curve);
-        let u = reweight(
+        let u = poly::scale_homogeneous(
             model,
             field,
             &lift.u,
             &self.inverse_powers,
             lift.u.len() - 1,
         )?;
-        let mut v = reweight(model, field, &lift.w, &self.inverse_powers, 2)?;
+        let mut v = poly::scale_homogeneous(model, field, &lift.w, &self.inverse_powers, 2)?;
         if let Some(radicand) = lift.radicand.filter(|radicand| radicand != &self.k) {
             let ratio = field.multiply(model, &radicand, &self.inverse_powers[1])?;
             // Opposite Frobenius signs make the sum and difference nonrational
@@ -135,33 +170,23 @@ impl Twist {
         }
         Divisor::new(model, &self.curve, u, v)
     }
-
-    fn project(&self, model: &mut Model, curve: &Curve, divisor: &Divisor) -> Result<Point> {
-        let point = Point::project(model, &self.curve, divisor)?;
-        let field = field(curve);
-        let mut coordinates = point.coordinates().clone();
-        // The two terms of −q₀−p q₂ have weight three under x = kX.
-        let square = field.multiply(model, &self.k, &self.k)?;
-        let cube = field.multiply(model, &square, &self.k)?;
-        for (coordinate, weight) in coordinates[1..].iter_mut().zip([&self.k, &square, &cube]) {
-            *coordinate = field.multiply(model, coordinate, weight)?;
-        }
-        Point::new(model, curve, coordinates)
-    }
 }
 
-fn reweight(
+fn project_scaled(
     model: &mut Model,
-    field: Field<'_>,
-    polynomial: &[Scalar],
-    inverse_powers: &[Scalar; 6],
-    degree: usize,
-) -> Result<Polynomial> {
-    polynomial
-        .iter()
-        .enumerate()
-        .map(|(index, coefficient)| {
-            field.multiply(model, coefficient, &inverse_powers[degree - index])
-        })
-        .collect()
+    source: &Curve,
+    target: &Curve,
+    divisor: &Divisor,
+    scale: &Scalar,
+) -> Result<Point> {
+    let point = Point::project(model, source, divisor)?;
+    let field = field(target);
+    let mut coordinates = point.coordinates().clone();
+    // The two terms of −q₀−p q₂ have weight three under x = kX.
+    let square = field.multiply(model, scale, scale)?;
+    let cube = field.multiply(model, &square, scale)?;
+    for (coordinate, weight) in coordinates[1..].iter_mut().zip([scale, &square, &cube]) {
+        *coordinate = field.multiply(model, coordinate, weight)?;
+    }
+    Point::new(model, target, coordinates)
 }

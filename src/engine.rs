@@ -483,6 +483,10 @@ enum JacobianAction {
 enum KummerAction {
     Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
     DifferentialAdd(Rc<hw_closed::Curve>, Box<[TypedExpr; 3]>),
+    Richelot(
+        Box<crate::richelot::correspondence::Correspondence>,
+        Box<TypedExpr>,
+    ),
     Apply(
         Rc<hw_closed::Curve>,
         kummer_surface::Operation,
@@ -4990,6 +4994,13 @@ impl Engine {
                     &difference,
                 )?
                 .persist(&mut self.model)
+            }
+            KummerAction::Richelot(correspondence, input) => {
+                let Value::Kummer(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                kummer_surface::arithmetic::richelot(&mut self.model, correspondence, &point)?
+                    .persist(&mut self.model)
             }
             KummerAction::Apply(curve, operation, input) => {
                 let input = self.eval(input)?;
@@ -18204,6 +18215,20 @@ impl Checker<'_> {
                 }
                 let ty = self.model.kummer_type(name.text.into())?;
                 (ty, KummerAction::Coordinates(curve, Box::new(inputs)))
+            }
+            Expression::Richelot(name, input) => {
+                let correspondence =
+                    crate::richelot::correspondence::Correspondence::resolve(self.model, &name)?;
+                let source = self
+                    .model
+                    .kummer_type(correspondence.source_name().into())?;
+                let ty = self.model.kummer_type(name.text.into())?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvKummerRichelot source point")?;
+                (
+                    ty,
+                    KummerAction::Richelot(Box::new(correspondence), Box::new(input)),
+                )
             }
             Expression::DifferentialAdd(inputs) => {
                 let [left, right, difference] = *inputs;

@@ -2897,6 +2897,13 @@ impl<'src> Parser<'src> {
             let inputs = [k0, k1, k2, k3];
             let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
             (Expression::Coordinates(curve, Box::new(inputs)), depth)
+        } else if name == "rvKummerRichelot" {
+            self.expect(Token::LBracket)?;
+            let target = self.label()?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Richelot(target, Box::new(input)), depth)
         } else if name == "rvKummerDiffAdd" {
             self.expect(Token::LParen)?;
             let left = self.expr(nest + 1)?;
@@ -8854,7 +8861,7 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvKummer" | "rvKummerCoord" | "rvKummerScale"
+                    "rvKummer" | "rvKummerCoord" | "rvKummerScale" | "rvKummerRichelot"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),

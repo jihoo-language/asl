@@ -15,6 +15,7 @@ pub(crate) mod arithmetic;
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
     DifferentialAdd(Box<[ParsedExpr; 3]>),
+    Richelot(Label, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
 }
 

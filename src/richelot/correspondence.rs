@@ -60,6 +60,64 @@ impl Correspondence {
         })
     }
 
+    pub(crate) fn twisted(
+        &self,
+        model: &mut Model,
+        source: Rc<Curve>,
+        k: &Scalar,
+        inverse_powers: &[Scalar; 6],
+    ) -> Result<(Self, Scalar)> {
+        let field = Field { ring: &source.ring };
+        let scale = |model: &mut Model, factor: &Polynomial| {
+            poly::scale_homogeneous(model, field, factor, inverse_powers, factor.len() - 1)
+        };
+        let [a, b, c] = &self.isogeny.source_factors;
+        let source_factors = [scale(model, a)?, scale(model, b)?, scale(model, c)?];
+        let (determinant, target_factors) = super::transform(model, field, &source_factors)?
+            .ok_or_else(|| {
+                Error::plain("Richelot twist has zero determinant despite the nonzero determinant of the original splitting")
+            })?;
+        let polynomial = super::product(model, field, &target_factors)?;
+        let uncharted = Curve::new(
+            model,
+            source.grade.ring.clone(),
+            source.ring.clone(),
+            polynomial,
+        )?;
+        let (chart, target, target_scale) = if let Some(chart) = &self.chart {
+            // The branch is at r/k and its derivative is d/k^4. Thus the chart
+            // coordinate becomes t/k^3 and its monic twist is by k^3.
+            let branch = field.multiply(model, &chart.branch, &inverse_powers[1])?;
+            let (chart, polynomial) =
+                Chart::build(model, chart.source.clone(), &uncharted, branch)?;
+            let target = Curve::new(
+                model,
+                source.grade.ring.clone(),
+                source.ring.clone(),
+                polynomial,
+            )?;
+            (Some(Rc::new(chart)), target, field.ring.power(model, k, 3)?)
+        } else {
+            (None, uncharted, k.clone())
+        };
+        let isogeny = Isogeny {
+            source: self.isogeny.source.clone(),
+            source_factors,
+            target_factors,
+            determinant,
+        };
+        Ok((
+            Self {
+                source,
+                target: Rc::new(target),
+                chart,
+                isogeny: Rc::new(isogeny),
+                linear: self.linear,
+            },
+            target_scale,
+        ))
+    }
+
     pub(crate) fn point(&self, model: &mut Model, x: &[u64], y: &[u64]) -> Result<Divisor> {
         let field = Field {
             ring: &self.source.ring,

@@ -108,6 +108,23 @@ pub(crate) fn scale(
     a.iter().map(|c| field.multiply(model, c, value)).collect()
 }
 
+// Apply X -> kX and divide by k^degree, using the powers of k^(-1).
+pub(crate) fn scale_homogeneous(
+    model: &mut Model,
+    field: Field<'_>,
+    polynomial: &[Scalar],
+    inverse_powers: &[Scalar],
+    degree: usize,
+) -> Result<Polynomial> {
+    let weights = &inverse_powers[..=degree];
+    debug_assert!(polynomial.len() <= weights.len());
+    polynomial
+        .iter()
+        .zip(weights.iter().rev())
+        .map(|(coefficient, weight)| field.multiply(model, coefficient, weight))
+        .collect()
+}
+
 pub(crate) fn sum(
     model: &mut Model,
     field: Field<'_>,
