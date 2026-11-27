@@ -14,7 +14,7 @@ use super::{
 mod major;
 pub(crate) use major::Branch;
 
-#[derive(Clone)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Shape {
     rows: Box<[u128]>,
     weight: u128,
@@ -39,6 +39,10 @@ impl Shape {
 
     pub(crate) fn rows(&self) -> &[u128] {
         &self.rows
+    }
+
+    pub(crate) fn weight(&self) -> u128 {
+        self.weight
     }
 
     fn elementary_major(&self) -> Option<u128> {

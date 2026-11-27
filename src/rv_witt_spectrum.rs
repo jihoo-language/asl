@@ -12,6 +12,7 @@ type Integer = Wide<LIMBS>;
 type Magnitude = Natural<LIMBS>;
 type Polynomial = Vec<Integer>;
 
+pub(crate) mod character;
 mod cyclic;
 mod necklace;
 mod norm;

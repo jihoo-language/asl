@@ -761,6 +761,9 @@ enum TypedForm {
     WittNorm(u128, Box<TypedExpr>),
     WittCyclicPower(crate::rv_witt_spectrum::CyclicPower, Box<TypedExpr>),
     WittSchur(crate::rv_witt_spectrum::SchurShape, Box<TypedExpr>),
+    SchurCharacterScale(i128, Box<TypedExpr>),
+    SchurCharacterPlethysm(Box<[TypedExpr; 2]>),
+    SchurCharacterEvaluate(Box<[TypedExpr; 2]>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -1991,6 +1994,16 @@ impl Engine {
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
             StatementForm::WittSchurBranch(branch) => {
                 return branch.report(&mut self.model).map(Some)
+            }
+            StatementForm::SchurCharacterCoeff(shape, input) => {
+                let value = self.checker().expr(*input)?;
+                let ty = self.model.schur_character_type(shape.weight())?;
+                self.checker()
+                    .require_type(ty, &value, "rvSchurCharacterCoeff")?;
+                let Value::RVSchurCharacter(character) = self.eval(&value)? else {
+                    unreachable!()
+                };
+                return Ok(Some(character.coefficient(&shape)));
             }
             StatementForm::WittSpectrumQuery(query, input) => {
                 let value = self.checker().expr(*input)?;
@@ -8528,6 +8541,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
                         rv_ore::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -10464,6 +10480,34 @@ impl Engine {
                 };
                 value
                     .schur(&mut self.model, shape)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::SchurCharacterScale(scale, input) => {
+                let Value::RVSchurCharacter(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .scale(&mut self.model, *scale)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::SchurCharacterPlethysm(inputs) => {
+                let (Value::RVSchurCharacter(outer), Value::RVSchurCharacter(inner)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                outer
+                    .plethysm(&mut self.model, &inner)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::SchurCharacterEvaluate(inputs) => {
+                let (Value::RVSchurCharacter(outer), Value::RVWittSpectrum(input)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                outer
+                    .evaluation(&mut self.model, &input)?
                     .persist(&mut self.model)
             }
             TypedForm::WittExterior(r, input) => {
@@ -12829,6 +12873,7 @@ impl Checker<'_> {
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
             TypeForm::RVOre => self.model.ore_type(),
             TypeForm::RVWittSpectrum => self.model.witt_spectrum_type(),
+            TypeForm::RVSchurCharacter(weight) => self.model.schur_character_type(weight),
             TypeForm::RVCTState(name, p, s) => {
                 let grade = self.model.rv_ct_state_grade(name, p, s)?;
                 self.model.rv_ct_state_type(grade)
@@ -13889,6 +13934,7 @@ impl Checker<'_> {
                     Kind::RVQGrP(..) => rv_pcurv::zero(),
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
+                    Kind::RVSchurCharacter(weight) => crate::rv_witt_spectrum::character::Character::zero(*weight).persist(self.model)?,
                     Kind::RVCTState(..) => Value::PeriodState([].into()),
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
                     Kind::RVFusion(..) => rv_fusion::zero(),
@@ -16038,6 +16084,7 @@ impl Checker<'_> {
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::WittSpectrum(expression) => self.witt_spectrum_expression(*expression),
+            ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
@@ -17032,6 +17079,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVSchurCharacter(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::SchurCharacterScale(-1, Box::new(input)),
                     ));
                 }
                 if matches!(
@@ -20789,6 +20842,7 @@ impl Checker<'_> {
                         | Kind::RVQGrP(..)
                         | Kind::RVOre
                         | Kind::RVWittSpectrum
+                        | Kind::RVSchurCharacter(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
@@ -22652,6 +22706,63 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn schur_character_expression(
+        &mut self,
+        expression: crate::rv_witt_spectrum::character::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::rv_witt_spectrum::character::{output_weight, Character, Expression};
+        match expression {
+            Expression::Seed(shape) => {
+                let ty = self.model.schur_character_type(shape.weight())?;
+                let value = Character::seed(shape).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Scale(scale, input) => {
+                let input = self.expr(*input)?;
+                self.schur_weight(&input, "rvSchurCharacterScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::SchurCharacterScale(scale, Box::new(input)),
+                ))
+            }
+            Expression::Plethysm(inputs) => {
+                let [outer, inner] = *inputs;
+                let outer = self.expr(outer)?;
+                let inner = self.expr(inner)?;
+                let a = self.schur_weight(&outer, "rvSchurPlethysm")?;
+                let b = self.schur_weight(&inner, "rvSchurPlethysm")?;
+                let ty = self.model.schur_character_type(output_weight(a, b)?)?;
+                Ok((
+                    ty,
+                    TypedForm::SchurCharacterPlethysm(Box::new([outer, inner])),
+                ))
+            }
+            Expression::Evaluate(inputs) => {
+                let [outer, input] = *inputs;
+                let outer = self.expr(outer)?;
+                let input = self.expr(input)?;
+                self.schur_weight(&outer, "rvSchurCharacterEvaluate")?;
+                let ty = self.model.witt_spectrum_type()?;
+                self.require_type(ty, &input, "rvSchurCharacterEvaluate")?;
+                Ok((
+                    ty,
+                    TypedForm::SchurCharacterEvaluate(Box::new([outer, input])),
+                ))
+            }
+        }
+    }
+
+    fn schur_weight(&self, input: &TypedExpr, operation: &str) -> Result<u128> {
+        if let Kind::RVSchurCharacter(weight) = *self.model.kind(input.ty) {
+            Ok(weight)
+        } else {
+            Err(Error::new(
+                input.span,
+                format!("{operation} requires an RVSchurCharacter value"),
+            ))
         }
     }
 

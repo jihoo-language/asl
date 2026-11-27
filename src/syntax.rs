@@ -124,6 +124,7 @@ pub(crate) enum TypeForm {
     RVQGrP(usize, usize, usize),
     RVOre,
     RVWittSpectrum,
+    RVSchurCharacter(u128),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
@@ -836,6 +837,7 @@ pub(crate) enum ExprForm {
     OreProduct(Box<[ParsedExpr; 2]>),
     OreUnary(OreOp, Box<ParsedExpr>),
     WittSpectrum(Box<crate::rv_witt_spectrum::Expression>),
+    SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
@@ -1325,6 +1327,7 @@ pub(crate) enum StatementForm {
     OreCoefficient(usize, usize, ParsedExpr),
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
+    SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
@@ -5525,6 +5528,43 @@ impl<'src> Parser<'src> {
         crate::rv_witt_spectrum::SchurShape::new(rows).map_err(|error| error.at(span))
     }
 
+    fn schur_character_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_witt_spectrum::character::Expression;
+        let (form, depth) = match name {
+            "rvSchurCharacter" => {
+                self.expect(Token::LBracket)?;
+                let shape = self.witt_schur_shape()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Seed(shape), 0)
+            }
+            "rvSchurCharacterScale" => {
+                self.expect(Token::LBracket)?;
+                let scale = self.signed_wide("a signed Schur coefficient", "Schur coefficient")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Scale(scale, Box::new(input)), depth)
+            }
+            "rvSchurPlethysm" | "rvSchurCharacterEvaluate" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                let form = if name == "rvSchurPlethysm" {
+                    Expression::Plethysm(Box::new(inputs))
+                } else {
+                    Expression::Evaluate(Box::new(inputs))
+                };
+                (form, depth)
+            }
+            _ => unreachable!(),
+        };
+        expr(span, ExprForm::SchurCharacter(Box::new(form)), depth)
+    }
+
     fn witt_spectrum_expression(
         &mut self,
         name: &str,
@@ -8930,6 +8970,13 @@ impl<'src> Parser<'src> {
                     input,
                 )
             }
+            Token::Word("rvSchurCharacterCoeff") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let shape = self.witt_schur_shape()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SchurCharacterCoeff(shape, Box::new(self.paren_expr(0)?))
+            }
             Token::Word(
                 name @ ("rvWittSchurMajorIndex"
                 | "rvWittCyclicSchurMultiplicity"
@@ -11528,6 +11575,11 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVSchurCharacter" && self.eat(Token::LParen)? {
+            let weight = self.wide_unsigned("Schur character weight")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVSchurCharacter(weight), 0);
         }
         if name.text == "RVWittSpectrum" {
             return ty(span, TypeForm::RVWittSpectrum, 0);
@@ -15939,6 +15991,15 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvSchurCharacter"
+                        | "rvSchurCharacterScale"
+                        | "rvSchurPlethysm"
+                        | "rvSchurCharacterEvaluate"
+                ) {
+                    return self.schur_character_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
