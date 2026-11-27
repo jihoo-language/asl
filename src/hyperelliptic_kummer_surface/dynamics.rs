@@ -34,6 +34,7 @@ pub(crate) enum Command {
     Cycles(Label),
     FrobFixed(Label, Label, u128),
     FrobZeta(Label, Label),
+    FrobHilbert(Label, Label, u128, u128, Option<u128>),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Box<ParsedExpr>);
@@ -80,6 +81,9 @@ impl Command {
                 semilinear::fixed(model, &name, &base, power).map(Some)
             }
             Self::FrobZeta(name, base) => semilinear::zeta(model, &name, &base).map(Some),
+            Self::FrobHilbert(name, base, length, power, grade) => {
+                semilinear::hilbert(model, &name, &base, length, power, grade).map(Some)
+            }
             Self::Nikulin(name) => {
                 let word = model.k3_automorphism(&name)?;
                 word.nikulin(model, &name.text).map(Some)

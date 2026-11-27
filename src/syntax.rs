@@ -3109,11 +3109,20 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
             let command = match operation {
-                "rvK3FrobFixed" | "rvK3FrobZeta" => {
+                "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed" | "rvK3FrobHilbTrace" => {
                     self.expect(Token::Comma)?;
                     let base = self.label()?;
-                    if operation == "rvK3FrobFixed" {
+                    if operation == "rvK3FrobZeta" {
+                        Command::FrobZeta(name, base)
+                    } else {
                         self.expect(Token::Comma)?;
+                        let length = if operation == "rvK3FrobFixed" {
+                            None
+                        } else {
+                            let n = self.wide_unsigned("K3 Hilbert-scheme length")?;
+                            self.expect(Token::Comma)?;
+                            Some(n)
+                        };
                         let span = self.span();
                         let power = self.wide_unsigned("K3 Frobenius iteration count")?;
                         if power == 0 {
@@ -3122,9 +3131,17 @@ impl<'src> Parser<'src> {
                                 "K3 Frobenius iteration count must be positive",
                             ));
                         }
-                        Command::FrobFixed(name, base, power)
-                    } else {
-                        Command::FrobZeta(name, base)
+                        if let Some(n) = length {
+                            let grade = if operation == "rvK3FrobHilbTrace" {
+                                self.expect(Token::Comma)?;
+                                Some(self.wide_unsigned("cohomological degree")?)
+                            } else {
+                                None
+                            };
+                            Command::FrobHilbert(name, base, n, power, grade)
+                        } else {
+                            Command::FrobFixed(name, base, power)
+                        }
                     }
                 }
                 "rvK3AutoPeriod" => {
@@ -5239,7 +5256,8 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"
-                | "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3AutoNikulin"),
+                | "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed"
+                | "rvK3FrobHilbTrace" | "rvK3AutoNikulin"),
             ) => self.k3_automorphism_statement(name)?,
             Token::Word(
                 command @ ("rvJacHilbPoints"

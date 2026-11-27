@@ -97,13 +97,30 @@ pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
 }
 
 fn trace(model: &mut Model, curve: &Curve, n: u128, r: u128, i: u128) -> Result<i128> {
+    graded_trace(model, curve, n, r, i, |model, length, degree| {
+        coefficient(model, length, Some(degree), Some((curve, r)))
+    })?
+    .signed()
+    .ok_or_else(|| {
+        Error::plain("Kummer Hilbert-scheme Frobenius trace exceeds signed 128-bit range")
+    })
+}
+
+pub(super) fn graded_trace(
+    model: &mut Model,
+    curve: &Curve,
+    n: u128,
+    r: u128,
+    i: u128,
+    coefficient: impl FnOnce(&mut Model, u128, u128) -> Result<Integer>,
+) -> Result<Integer> {
     let Some((length, degree, twist)) = graded_index(n, i) else {
-        return Ok(0);
+        return Ok(Integer::from_i128(0));
     };
     let mut value = if degree == 0 {
         Integer::from_i128(1)
     } else {
-        coefficient(model, length, Some(degree), Some((curve, r)))?
+        coefficient(model, length, degree)?
     };
     if twist != 0 && !value.is_zero() {
         let exponent = r.checked_mul(twist).ok_or_else(intermediate_overflow)?;
@@ -111,9 +128,7 @@ fn trace(model: &mut Model, curve: &Curve, n: u128, r: u128, i: u128) -> Result<
         let factor = power(model, q, exponent)?;
         value.magnitude = multiply(value.magnitude, factor)?;
     }
-    value.signed().ok_or_else(|| {
-        Error::plain("Kummer Hilbert-scheme Frobenius trace exceeds signed 128-bit range")
-    })
+    Ok(value)
 }
 
 // Return the truncated length, half-degree, and Poincaré-duality Tate twist.
@@ -146,6 +161,47 @@ pub(crate) fn coefficients(
     arithmetic: Option<(&Curve, u128)>,
     kind: SurfaceKind,
 ) -> Result<Vec<Vec<Integer>>> {
+    coefficients_from_surface(
+        model,
+        length,
+        degree,
+        kind,
+        |model, limit| match arithmetic {
+            None => Ok(Surface::Betti(kind)),
+            Some((curve, r)) => Surface::arithmetic(model, curve, r, limit, kind),
+        },
+    )
+}
+
+pub(super) fn semilinear_coefficient(
+    model: &mut Model,
+    curve: &Curve,
+    length: u128,
+    degree: Option<u128>,
+    r: u128,
+    traces: impl FnOnce(&mut Model, &[Magnitude]) -> Result<Vec<Integer>>,
+) -> Result<Integer> {
+    let rows =
+        coefficients_from_surface(model, length, degree, SurfaceKind::K3, |model, limit| {
+            let q = curve.ring.size_of_residue_field()?;
+            let powers = field_powers(model, q, r, limit)?;
+            let middle = traces(model, &powers)?;
+            Ok(Surface::Frobenius {
+                powers,
+                middle,
+                first: Vec::new(),
+            })
+        })?;
+    Ok(*rows.last().unwrap().last().unwrap())
+}
+
+fn coefficients_from_surface(
+    model: &mut Model,
+    length: u128,
+    degree: Option<u128>,
+    kind: SurfaceKind,
+    prepare: impl FnOnce(&mut Model, usize) -> Result<Surface>,
+) -> Result<Vec<Vec<Integer>>> {
     let length = usize::try_from(length).map_err(|_| storage_limit())?;
     let degree = degree
         .map(usize::try_from)
@@ -154,10 +210,7 @@ pub(crate) fn coefficients(
     let top = degree.unwrap_or(0);
     check_storage(model, length, top, 1 + 4 / kind.grading_unit())?;
     let limit = length.min(degree.unwrap_or(length));
-    let surface = match arithmetic {
-        None => Surface::Betti(kind),
-        Some((curve, r)) => Surface::arithmetic(model, curve, r, limit, kind)?,
-    };
+    let surface = prepare(model, limit)?;
     let weights = log_coefficients(model, length, degree, &surface, kind)?;
     let zero = Integer::from_i128(0);
     let mut first = vec![zero; top + 1];
@@ -257,13 +310,7 @@ impl Surface {
         kind: SurfaceKind,
     ) -> Result<Self> {
         let q = curve.ring.size_of_residue_field()?;
-        let q_power = power(model, q, r)?;
-        let mut powers = Vec::with_capacity(limit + 1);
-        powers.push(Magnitude::from_small(1));
-        for l in 1..=limit {
-            model.spend(LIMBS)?;
-            powers.push(multiply(powers[l - 1], q_power)?);
-        }
+        let powers = field_powers(model, q, r, limit)?;
         // The bounds on the field powers also bound the required H¹ exponents.
         let step = usize::try_from(r).map_err(|_| intermediate_overflow())?;
         let orbits = match kind {
@@ -335,6 +382,17 @@ impl Surface {
             value.negate()
         })
     }
+}
+
+fn field_powers(model: &mut Model, q: u64, r: u128, limit: usize) -> Result<Vec<Magnitude>> {
+    let q_power = power(model, q, r)?;
+    let mut powers = Vec::with_capacity(limit + 1);
+    powers.push(Magnitude::from_small(1));
+    for l in 1..=limit {
+        model.spend(LIMBS)?;
+        powers.push(multiply(powers[l - 1], q_power)?);
+    }
+    Ok(powers)
 }
 
 pub(crate) fn unsigned(value: Integer) -> Option<u128> {

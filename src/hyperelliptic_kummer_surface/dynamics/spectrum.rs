@@ -7,7 +7,7 @@ use super::RANK;
 
 // A Berkowitz term of degree ≤17 contains at most 17 matrix entries. The
 // extra limbs allow exact sums of such terms even with full i128 entries.
-const LIMBS: usize = 72;
+pub(super) const LIMBS: usize = 72;
 
 #[derive(Clone, Copy)]
 struct Integer(Wide<LIMBS>);
@@ -103,41 +103,43 @@ pub(super) fn characteristic_coefficients(
     coefficients(&characteristic(model, matrix)?)
 }
 
-pub(super) fn power_trace(
+pub(super) fn power_sums(
     model: &mut Model,
     matrix: [[i128; RANK]; RANK],
-    exponent: u32,
-) -> Result<Wide<LIMBS>> {
+    through: usize,
+) -> Result<Vec<Wide<LIMBS>>> {
+    let entries = through.checked_add(1).ok_or_else(arithmetic_range)?;
+    hw_algebra::storage(entries, Integers.cells())?;
+    model.spend(entries * Integers.cells())?;
+    let mut traces = Vec::with_capacity(entries);
+    traces.push(Integers.zero().0);
     // The coefficients are exact before computing power sums. Newton's
     // identities here use only integer multiplication and addition.
-    let trace = if exponent == 1 {
-        matrix
+    if through == 1 {
+        let trace = matrix
             .iter()
             .enumerate()
             .try_fold(Integers.zero(), |trace, (i, row)| {
                 Integers.add(model, &trace, &Integer::from_i128(row[i]))
-            })?
-    } else {
+            })?;
+        traces.push(trace.0);
+    } else if through > 1 {
         let polynomial = characteristic(model, matrix)?;
-        let exponent = exponent as usize;
-        let mut traces = Vec::with_capacity(exponent + 1);
-        traces.push(Integers.zero());
-        for power in 1..=exponent {
+        for power in 1..=through {
             let mut trace = Integers.zero();
             for (i, coefficient) in polynomial.iter().enumerate().skip(1).take(power) {
                 let factor = if i == power {
                     Integer::from_i128(power as i128)
                 } else {
-                    traces[power - i]
+                    Integer(traces[power - i])
                 };
                 let term = Integers.multiply(model, coefficient, &factor)?;
                 trace = Integers.subtract(model, &trace, &term)?;
             }
-            traces.push(trace);
+            traces.push(trace.0);
         }
-        traces[exponent]
-    };
-    Ok(trace.0)
+    }
+    Ok(traces)
 }
 
 pub(super) fn entropy(
