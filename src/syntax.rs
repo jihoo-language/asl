@@ -70,6 +70,7 @@ pub(crate) enum TypeForm {
     MixedMinimal(Label, i64, bool),
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
+    SheafDeformation(Label, usize),
     SheafHom(SheafForm, Label, Label, usize),
     SheafComplex(SheafForm, Label, usize),
     SheafPage(Label, SheafPageGrade),
@@ -701,6 +702,10 @@ pub(crate) enum ExprForm {
     SheafExtGenerator(Label, Label, usize, usize),
     SheafHomMap(Label),
     SheafHomIdentity(Label),
+    SheafDefStart(Label),
+    SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
+    SheafDefAppend(Box<[ParsedExpr; 2]>),
+    SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
     SheafCompose(Box<[ParsedExpr; 2]>),
     SheafHigher(SheafHigherOp, Vec<ParsedExpr>, Vec<Witness>),
     PScale(usize, Box<ParsedExpr>),
@@ -4461,6 +4466,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::SheafComplex(form, name, degree), 0);
         }
+        if name.text == "ShDef" && self.eat(Token::LParen)? {
+            let sheaf = self.label()?;
+            self.expect(Token::Comma)?;
+            let order = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SheafDeformation(sheaf, order), 0);
+        }
         if matches!(name.text.as_str(), "ShHomC" | "ShExt") && self.eat(Token::LParen)? {
             let form = if name.text == "ShHomC" {
                 SheafForm::Cochain
@@ -6682,6 +6694,18 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
+                if matches!(
+                    (name.text.as_str(), self.token()),
+                    (
+                        "shDefStart" | "shDefTerm" | "shDefGauge" | "shDefGaugeWitness",
+                        Token::LBracket
+                    ) | (
+                        "shDefAppend" | "shDefCurvature" | "shDefObstruction" | "shDefLift",
+                        Token::LParen
+                    )
+                ) {
+                    return self.sheaf_deformation_expr(&name, span, nest);
+                }
                 if name.text == "shExtCompose" && self.token() == Token::LParen {
                     let arguments = self.paren_pair(nest)?;
                     let depth = 1 + arguments[0].depth.max(arguments[1].depth);
@@ -8392,6 +8416,61 @@ impl<'src> Parser<'src> {
         let (index, at) = self.number()?;
         self.expect(Token::RBracket)?;
         expr(span, ExprForm::MixedHGenerator(name, b, index, at), 0)
+    }
+
+    fn sheaf_deformation_expr(
+        &mut self,
+        name: &Label,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::sheaf_deform::Operation;
+        let (form, depth) = match name.text.as_str() {
+            "shDefStart" => {
+                self.expect(Token::LBracket)?;
+                let sheaf = self.label()?;
+                self.expect(Token::RBracket)?;
+                (ExprForm::SheafDefStart(sheaf), 0)
+            }
+            "shDefAppend" => {
+                let args = self.paren_pair(nest)?;
+                let depth = 1 + args[0].depth.max(args[1].depth);
+                (ExprForm::SheafDefAppend(Box::new(args)), depth)
+            }
+            "shDefGauge" | "shDefGaugeWitness" => {
+                self.expect(Token::LBracket)?;
+                let exponent = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let args = self.paren_pair(nest)?;
+                let depth = 1 + args[0].depth.max(args[1].depth);
+                (
+                    ExprForm::SheafDefGauge(
+                        exponent,
+                        name.text == "shDefGaugeWitness",
+                        Box::new(args),
+                    ),
+                    depth,
+                )
+            }
+            _ => {
+                let operation = match name.text.as_str() {
+                    "shDefTerm" => {
+                        self.expect(Token::LBracket)?;
+                        let order = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Operation::Term(order)
+                    }
+                    "shDefCurvature" => Operation::Curvature,
+                    "shDefObstruction" => Operation::Obstruction,
+                    "shDefLift" => Operation::Lift,
+                    _ => unreachable!(),
+                };
+                let arg = self.paren_expr(nest)?;
+                let depth = 1 + arg.depth;
+                (ExprForm::SheafDefOperation(operation, Box::new(arg)), depth)
+            }
+        };
+        expr(span, form, depth)
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {

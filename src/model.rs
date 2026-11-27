@@ -89,6 +89,7 @@ use crate::set_j;
 use crate::set_logic;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
+use crate::sheaf_deform;
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
 use crate::sheaf_leray::Leray;
@@ -160,6 +161,7 @@ pub(crate) enum Kind {
     MixedPage(mixed_page::Grade),
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
+    SheafDeformation(Rc<str>, usize),
     SheafHom(SheafForm, SheafEnds, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
     SheafLocal(Rc<str>, sheaf_support::Grade),
@@ -338,6 +340,7 @@ pub(crate) enum Value {
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
     PrimeScalar(u32),
+    SheafDeformation(Rc<sheaf_deform::Jet>),
     SheafC(sheaf::Support),
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
@@ -640,6 +643,8 @@ impl Model {
             {
                 1
             }
+            Kind::SheafDeformation(_, 0) => 1,
+            Kind::SheafDeformation(..) => usize::MAX,
             Kind::SheafHom(_, ref ends, k) if k >= self.sheaf_homs[ends].height => 1,
             Kind::Sheaf(..)
             | Kind::SheafComplex(..)
@@ -909,6 +914,7 @@ impl Model {
                 | Kind::MixedPage(..)
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
+                | Kind::SheafDeformation(..)
                 | Kind::SheafHom(..)
                 | Kind::SheafPage(..)
                 | Kind::SheafLocal(..)
@@ -1275,6 +1281,16 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::Sheaf(form, name, degree), 0)
+    }
+
+    pub(crate) fn known_sheaf_deformation_type(
+        &mut self,
+        name: Rc<str>,
+        order: usize,
+    ) -> Result<TypeId> {
+        let ends = SheafEnds::endomorphisms(name.clone());
+        self.known_sheaf_hom_type(SheafForm::Cochain, ends, 1)?;
+        self.inhabited_type(Kind::SheafDeformation(name, order), 0)
     }
 
     pub(crate) fn sheaf_hom_type(
@@ -3379,6 +3395,7 @@ impl Model {
             | Kind::MixedPage(..)
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
+            | Kind::SheafDeformation(..)
             | Kind::SheafHom(..)
             | Kind::SheafPage(..)
             | Kind::SheafLocal(..)
@@ -3599,6 +3616,7 @@ impl Model {
             Kind::Sheaf(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.name()))
             }
+            Kind::SheafDeformation(name, order) => out.push(&format!("ShDef({name}, {order})")),
             Kind::SheafHom(form, ends, degree) => {
                 let name = match form {
                     SheafForm::Cochain => "ShHomC",
@@ -4001,6 +4019,9 @@ impl Model {
                 || rho_localized::compare(self, left, right)? == Ordering::Equal),
             (Value::RMCobar(left), Value::RMCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || real_motivic::compare(self, left, right)? == Ordering::Equal),
+            (Value::SheafDeformation(left), Value::SheafDeformation(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::SheafC(left), Value::SheafC(right)) => {
                 Ok(Rc::ptr_eq(left, right) || sheaf::compare(self, left, right)?.is_eq())
             }
@@ -4196,6 +4217,13 @@ impl Model {
                     Ok(Ordering::Equal)
                 } else {
                     real_motivic::compare(self, left, right)
+                }
+            }
+            (Value::SheafDeformation(left), Value::SheafDeformation(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
                 }
             }
             (Value::SheafC(left), Value::SheafC(right)) => {
@@ -4845,6 +4873,10 @@ impl Model {
                         }
                     }
                 }
+                Kind::SheafDeformation(ref name, order) => {
+                    let hom = self.sheaf_hom(&SheafEnds::endomorphisms(name.clone()));
+                    sheaf_deform::elements(self, &hom, order, MAX_ELEMENTS)?
+                }
                 Kind::SheafHom(form, ref ends, degree) => {
                     let data = self.sheaf_hom(ends);
                     match form {
@@ -5272,6 +5304,26 @@ impl Model {
             Value::CyclicClass(nonzero) => {
                 self.write_type(out, ty, 0)?;
                 out.push(if *nonzero { "{carry}" } else { "{0}" })
+            }
+            Value::SheafDeformation(jet) => {
+                let Kind::SheafDeformation(name, _) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let hom = self.type_ids[&Kind::SheafHom(
+                    SheafForm::Cochain,
+                    SheafEnds::endomorphisms(name.clone()),
+                    1,
+                )];
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, terms) in jet.coefficients().iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("t^{}=", i + 1))?;
+                    self.write_value(out, hom, &Value::SheafC(terms.clone()))?;
+                }
+                out.push("}")
             }
             Value::SheafC(terms) => {
                 let (poset, total, hom) = match self.kind(ty) {

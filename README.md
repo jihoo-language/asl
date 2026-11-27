@@ -342,6 +342,22 @@ For two sheaves `F` and `G` on the same named poset over the same prime field, `
 
 `shExtCompose(psi,phi)` composes two raw cochains or two classes with matching middle sheaf. For $\phi$ of degree $n$ and $\psi$ of degree $m$, it applies $\phi$ on the initial chain, then $\psi$ on the remaining chain, and multiplies by $(-1)^{mn}$. The sign gives $d(\psi\circ\phi)=d\psi\circ\phi+(-1)^m\psi\circ d\phi$. On classes this is Yoneda composition. In the diamond over $\mathbb F_3$, the two products along the branches are nonzero and opposite in $\operatorname{Ext}^2$. [Sheaf Yoneda example](examples/sheaf-yoneda.asl)
 
+### Formal deformations of sheaf restrictions
+
+`ShDef(F,n)` is the type of restrictions on the stalks of $F$ over $\mathbb F_p[t]/(t^{n+1})$ that reduce to those of $F$. The coefficients $A_e$ for $e>0$ are in `ShHomC(F,F,1)` and include every strictly comparable pair, including transitive arrows. Identity arrows stay fixed. Use `shDefStart[F]` for order zero, `shDefAppend(J,A)` to check and append the next coefficient, and `shDefTerm[k](J)` to read a known coefficient. Coefficient zero is the original restriction cochain. Equality compares every known coefficient. Small jet types can be tabulated.
+
+For a valid prefix through order $n$, `shDefCurvature(J)` gives the coefficient of the next functoriality defect with the unknown coefficient set to zero. In the convention for `shExtCompose` it is $C=-\sum_{i+j=n+1} A_i\circ A_j$ for $i,j>0$. The interpreter checks $dA+C=0$ when appending. Associativity makes $C$ a closed $2$-cochain. `shDefObstruction(J)` is its class in `ShExt(F,F,2)`. When it vanishes, `shDefLift(J)` chooses a coefficient with $dA=-C$ by tracked elimination of the incoming differential. The obstruction concerns the specified prefix, and the lift makes one deterministic choice among the possible next coefficients.
+
+An elementary change of stalk bases $G=I+t^e Q$ with $Q$ in `ShHomC(F,F,0)` and $1\le e\le n$ acts by $R'_{xy}=G_y R_{xy}G_x^{-1}$. Use `shDefGauge[e](J,Q)` for the transformed jet. Products of these changes give all truncated changes of basis that reduce to the identity. The operation `shDefGaugeWitness[e](J,Q)` gives a $1$-cochain whose differential is $C(J)-C(J')$, certifying the invariance of the obstruction class.
+
+In the parallel-arm example every original nonidentity restriction is zero. The long arm has five covers with first-order coefficient $1$ and the other arm passes through a zero stalk. The program lifts through order four, then computes a nonzero obstruction in order five. The first possible product of the long-arm cover series is $t^5$ with coefficient $1$, independent of their higher coefficients. The other product is zero. A change in the next direct restriction affects both paths by the same coefficient, so it cannot eliminate the difference. [Parallel-arm deformation example](examples/sheaf-deformation.asl)
+
+The generator checks all chosen lower lifts and the final class for any arm length that fits the interpreter's computation limits. Over $\mathbb F_5$, this command computes an obstruction in order thirty. [Parallel-arm generator](examples/sheaf-deformation-arms.awk)
+
+```sh
+awk -v r=30 -v p=5 -f examples/sheaf-deformation-arms.awk | nix run path:. -- -
+```
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

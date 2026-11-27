@@ -16,6 +16,15 @@ pub(crate) struct Ends {
     pub(crate) target: Rc<str>,
 }
 
+impl Ends {
+    pub(crate) fn endomorphisms(name: Rc<str>) -> Self {
+        Self {
+            source: name.clone(),
+            target: name,
+        }
+    }
+}
+
 pub(crate) struct Hom {
     pub(crate) source: Rc<Sheaf>,
     pub(crate) target: Rc<Sheaf>,
@@ -151,7 +160,12 @@ fn matrix_size() -> Error {
     Error::plain("derived sheaf Hom matrix size is out of range")
 }
 
-fn coordinate(chain: Rc<[usize]>, rows: usize, column: usize, row: usize) -> Result<Generator> {
+pub(crate) fn coordinate(
+    chain: Rc<[usize]>,
+    rows: usize,
+    column: usize,
+    row: usize,
+) -> Result<Generator> {
     let index = column
         .checked_mul(rows)
         .and_then(|value| value.checked_add(row))

@@ -127,6 +127,7 @@ use crate::set_j;
 use crate::set_logic::{self, Operation as SetLogic};
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
+use crate::sheaf_deform;
 use crate::sheaf_ext::{self, Ends as SheafEnds};
 use crate::sheaf_higher::{self, Operation as SheafHigherOp};
 use crate::sheaf_hyper::{self, NamedSheaf};
@@ -595,6 +596,9 @@ enum TypedForm {
     SheafLocalClass(Rc<Supports>, SupportGrade, Box<TypedExpr>),
     SheafLocalOperation(Rc<Supports>, SupportGrade, SupportOp, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
+    SheafDefOperation(Rc<sheaf_ext::Hom>, sheaf_deform::Operation, Box<TypedExpr>),
+    SheafDefAppend(Rc<sheaf_ext::Hom>, Box<[TypedExpr; 2]>),
+    SheafDefGauge(Rc<sheaf_ext::Hom>, usize, bool, Box<[TypedExpr; 2]>),
     SheafCompose(Box<[TypedExpr; 2]>),
     SheafHigher(
         SheafHigherOp,
@@ -2958,6 +2962,58 @@ impl Engine {
         let target = self.model.mixed_homology(target)?;
         let support = source.shift(&mut self.model, &target, &class)?;
         odd_ext::persist(&mut self.model, support)
+    }
+
+    fn eval_sheaf_deformation(&mut self, form: &TypedForm) -> Result<Value> {
+        match form {
+            TypedForm::SheafDefOperation(hom, operation, input) => {
+                let Value::SheafDeformation(jet) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match operation {
+                    sheaf_deform::Operation::Term(0) => {
+                        sheaf_deform::constant(&mut self.model, hom)
+                    }
+                    sheaf_deform::Operation::Term(k) => {
+                        Ok(Value::SheafC(jet.coefficients()[k - 1].clone()))
+                    }
+                    sheaf_deform::Operation::Curvature => {
+                        Ok(Value::SheafC(jet.curvature(&mut self.model, hom)?))
+                    }
+                    sheaf_deform::Operation::Obstruction => {
+                        let curvature = jet.curvature(&mut self.model, hom)?;
+                        hom.cohomology
+                            .class(&mut self.model, hom.as_ref(), 2, &curvature)
+                    }
+                    sheaf_deform::Operation::Lift => {
+                        Ok(Value::SheafDeformation(jet.lift(&mut self.model, hom)?))
+                    }
+                }
+            }
+            TypedForm::SheafDefAppend(hom, args) => {
+                let Value::SheafDeformation(jet) = self.eval(&args[0])? else {
+                    unreachable!()
+                };
+                let Value::SheafC(terms) = self.eval(&args[1])? else {
+                    unreachable!()
+                };
+                Ok(Value::SheafDeformation(jet.append(
+                    &mut self.model,
+                    hom,
+                    terms,
+                )?))
+            }
+            TypedForm::SheafDefGauge(hom, exponent, witness, args) => {
+                let Value::SheafDeformation(jet) = self.eval(&args[0])? else {
+                    unreachable!()
+                };
+                let Value::SheafC(terms) = self.eval(&args[1])? else {
+                    unreachable!()
+                };
+                jet.gauge(&mut self.model, hom, *exponent, &terms, *witness)
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
@@ -5547,6 +5603,9 @@ impl Engine {
                     expected.as_deref(),
                 )
             }
+            form @ (TypedForm::SheafDefOperation(..)
+            | TypedForm::SheafDefAppend(..)
+            | TypedForm::SheafDefGauge(..)) => self.eval_sheaf_deformation(form),
             TypedForm::SheafCompose(arguments) => {
                 let [after, before] = arguments.as_ref();
                 let after_value = self.eval(after)?;
@@ -6117,6 +6176,11 @@ impl Checker<'_> {
                 self.model.mixed_page_type(grade)
             }
             TypeForm::Sheaf(form, name, degree) => self.model.sheaf_type(form, &name, degree),
+            TypeForm::SheafDeformation(name, order) => {
+                self.model.sheaf(&name)?;
+                self.model
+                    .known_sheaf_deformation_type(name.text.into(), order)
+            }
             TypeForm::SheafHom(form, source, target, degree) => {
                 self.model.sheaf_hom_type(form, &source, &target, degree)
             }
@@ -7741,6 +7805,10 @@ impl Checker<'_> {
             ExprForm::SheafHigher(operation, inputs, witnesses) => {
                 self.sheaf_higher(operation, inputs, witnesses)
             }
+            form @ (ExprForm::SheafDefStart(..)
+            | ExprForm::SheafDefOperation(..)
+            | ExprForm::SheafDefAppend(..)
+            | ExprForm::SheafDefGauge(..)) => self.check_sheaf_deformation(form),
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
                 let after = self.expr(after)?;
@@ -12271,6 +12339,118 @@ impl Checker<'_> {
         }
     }
 
+    fn check_sheaf_deformation(&mut self, form: ExprForm) -> Result<(TypeId, TypedForm)> {
+        match form {
+            ExprForm::SheafDefStart(name) => {
+                self.model.sheaf(&name)?;
+                let ty = self
+                    .model
+                    .known_sheaf_deformation_type(name.text.into(), 0)?;
+                let jet = sheaf_deform::Jet::new(self.model, Vec::new())?;
+                Ok((ty, TypedForm::Constant(Value::SheafDeformation(jet))))
+            }
+            ExprForm::SheafDefOperation(operation, input) => {
+                use sheaf_deform::Operation;
+                let input = self.expr(*input)?;
+                let (name, order) = self.sheaf_deformation(&input, operation.name())?;
+                let ends = SheafEnds::endomorphisms(name.clone());
+                let hom = self.model.sheaf_hom(&ends);
+                let ty = match operation {
+                    Operation::Term(k) => {
+                        if k > order {
+                            return Err(Error::plain(
+                                "shDefTerm coefficient is beyond the known truncation",
+                            ));
+                        }
+                        self.model
+                            .known_sheaf_hom_type(SheafForm::Cochain, ends, 1)?
+                    }
+                    Operation::Curvature => {
+                        self.model
+                            .known_sheaf_hom_type(SheafForm::Cochain, ends, 2)?
+                    }
+                    Operation::Obstruction => {
+                        self.model.known_sheaf_hom_type(SheafForm::Class, ends, 2)?
+                    }
+                    Operation::Lift => self
+                        .model
+                        .known_sheaf_deformation_type(name, next_def_order(order)?)?,
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafDefOperation(hom, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::SheafDefAppend(args) => {
+                let [jet, term] = *args;
+                let jet = self.expr(jet)?;
+                let term = self.expr(term)?;
+                let (name, order) = self.sheaf_deformation(&jet, "shDefAppend")?;
+                let ends = SheafEnds::endomorphisms(name.clone());
+                self.require_sheaf_def_cochain(&term, &ends, 1, "shDefAppend")?;
+                let hom = self.model.sheaf_hom(&ends);
+                let ty = self
+                    .model
+                    .known_sheaf_deformation_type(name, next_def_order(order)?)?;
+                Ok((ty, TypedForm::SheafDefAppend(hom, Box::new([jet, term]))))
+            }
+            ExprForm::SheafDefGauge(exponent, witness, args) => {
+                let [jet, term] = *args;
+                let jet = self.expr(jet)?;
+                let term = self.expr(term)?;
+                let name = if witness {
+                    "shDefGaugeWitness"
+                } else {
+                    "shDefGauge"
+                };
+                let (sheaf, order) = self.sheaf_deformation(&jet, name)?;
+                if exponent == 0 || exponent > order {
+                    return Err(Error::plain("sheaf deformation gauge exponent must lie between 1 and the truncation order"));
+                }
+                let ends = SheafEnds::endomorphisms(sheaf);
+                self.require_sheaf_def_cochain(&term, &ends, 0, name)?;
+                let hom = self.model.sheaf_hom(&ends);
+                let ty = if witness {
+                    self.model
+                        .known_sheaf_hom_type(SheafForm::Cochain, ends, 1)?
+                } else {
+                    jet.ty
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafDefGauge(hom, exponent, witness, Box::new([jet, term])),
+                ))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn sheaf_deformation(&self, jet: &TypedExpr, op: &str) -> Result<(Rc<str>, usize)> {
+        match self.model.kind(jet.ty) {
+            Kind::SheafDeformation(name, order) => Ok((name.clone(), *order)),
+            _ => Err(self.invalid_operand(jet, op, "a ShDef jet")),
+        }
+    }
+
+    fn require_sheaf_def_cochain(
+        &self,
+        term: &TypedExpr,
+        ends: &SheafEnds,
+        degree: usize,
+        op: &str,
+    ) -> Result<()> {
+        if matches!(self.model.kind(term.ty), Kind::SheafHom(SheafForm::Cochain, found, d) if found == ends && *d == degree)
+        {
+            Ok(())
+        } else {
+            let expected = format!(
+                "a ShHomC({}, {}, {degree}) cochain",
+                ends.source, ends.target
+            );
+            Err(self.invalid_operand(term, op, &expected))
+        }
+    }
+
     fn sheaf_hom_grade(&self, value: &TypedExpr) -> Result<(SheafForm, &SheafEnds, usize)> {
         match self.model.kind(value.ty) {
             Kind::SheafHom(form, ends, degree) => Ok((*form, ends, *degree)),
@@ -13113,4 +13293,10 @@ fn require_profile(left: Profile, right: Profile, op: &str, span: Span) -> Resul
         span,
         format!("{op} requires the same Steenrod algebra profile"),
     ))
+}
+
+fn next_def_order(order: usize) -> Result<usize> {
+    order
+        .checked_add(1)
+        .ok_or_else(|| Error::plain("sheaf deformation order is out of range"))
 }

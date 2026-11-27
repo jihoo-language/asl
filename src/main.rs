@@ -147,6 +147,7 @@ mod set_logic;
 mod set_monodromy;
 mod sheaf;
 mod sheaf_cellular;
+mod sheaf_deform;
 mod sheaf_ext;
 mod sheaf_higher;
 mod sheaf_hyper;
