@@ -6147,6 +6147,30 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let n = self.wide_unsigned("Hilbert length")?;
             match name {
+                "rvHilbReducedLLVMultiplicity"
+                | "rvHilbReducedLLVDecomposition"
+                | "rvHilbPrimitiveLLVMultiplicity"
+                | "rvHilbPrimitiveLLVDecomposition" => {
+                    self.expect(Token::Comma)?;
+                    let d = self.signed_wide("a signed degree", "cohomological degree")?;
+                    self.expect(Token::RBracket)?;
+                    match name {
+                        "rvHilbReducedLLVMultiplicity" => {
+                            Command::ReducedMultiplicity(n, d, shape(self)?)
+                        }
+                        "rvHilbReducedLLVDecomposition" => Command::ReducedDecompose(n, d),
+                        "rvHilbPrimitiveLLVMultiplicity" => {
+                            let weight = self.set_named_rows(|parser| {
+                                parser.signed_wide(
+                                    "a signed highest weight coordinate",
+                                    "highest weight coordinate",
+                                )
+                            })?;
+                            Command::PrimitiveMultiplicity(n, d, weight)
+                        }
+                        _ => Command::PrimitiveDecompose(n, d),
+                    }
+                }
                 "rvHilbLLVHodge" | "rvHilbLLVHodgeDecomposition" => {
                     self.expect(Token::Comma)?;
                     let p = self.signed_wide("a signed Hodge index", "first Hodge degree")?;
@@ -7436,7 +7460,11 @@ impl<'src> Parser<'src> {
                 | "rvHilbLLVDecomposition"
                 | "rvHilbLLVHodge"
                 | "rvHilbLLVHodgeDecomposition"
-                | "rvHilbLLVHodgeTable"),
+                | "rvHilbLLVHodgeTable"
+                | "rvHilbReducedLLVMultiplicity"
+                | "rvHilbReducedLLVDecomposition"
+                | "rvHilbPrimitiveLLVMultiplicity"
+                | "rvHilbPrimitiveLLVDecomposition"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {

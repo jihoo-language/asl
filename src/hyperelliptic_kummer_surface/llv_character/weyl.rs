@@ -4,25 +4,48 @@ use crate::model::Model;
 use super::{arithmetic, Magnitude, Signed, LARGEST_RHO, RANK, WEYL_LIMBS};
 
 pub(super) fn dimension(model: &mut Model, shape: &[u128]) -> Result<Magnitude> {
-    let mut weight = [0; RANK];
+    dimension_for(model, shape, RANK, RootSystem::B)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RootSystem {
+    B,
+    D,
+}
+
+pub(super) fn dimension_for(
+    model: &mut Model,
+    shape: &[u128],
+    rank: usize,
+    roots: RootSystem,
+) -> Result<Magnitude> {
+    let mut padded = [0; RANK];
+    let weight = &mut padded[..rank];
     weight[..shape.len()].copy_from_slice(shape);
     let mut ratio = WeylProduct {
         numerator: Magnitude::from_small(1),
         denominator: Magnitude::from_small(1),
     };
     for (i, &part) in weight.iter().enumerate() {
-        let rho = (2 * (RANK - 1 - i) + 1) as u128;
-        ratio.multiply(model, natural_sum([part, part, rho])?, rho)?;
+        let rho = match roots {
+            RootSystem::B => {
+                let rho = 2 * rank - 1;
+                let single = (rho - 2 * i) as u128;
+                ratio.multiply(model, natural_sum([part, part, single])?, single)?;
+                rho
+            }
+            RootSystem::D => 2 * rank - 2,
+        };
         for (j, &other) in weight.iter().enumerate().skip(i + 1) {
             let difference = (j - i) as u128;
-            let sum = (2 * RANK - 1 - i - j) as u128;
+            let sum = (rho - i - j) as u128;
             ratio.multiply(model, natural_sum([part - other, difference])?, difference)?;
             ratio.multiply(model, natural_sum([part, other, sum])?, sum)?;
         }
     }
     if ratio.denominator.small() != Some(1) {
         return Err(Error::plain(
-            "type B12 Weyl dimension did not reduce to an integer",
+            "orthogonal Weyl dimension did not reduce to an integer",
         ));
     }
     Ok(ratio.numerator)

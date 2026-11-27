@@ -5,6 +5,7 @@ use crate::rv_qp_quad::Wide;
 use crate::wide_integer::Natural;
 
 mod hodge;
+mod reduced;
 mod weyl;
 
 const RANK: usize = 12;
@@ -23,6 +24,10 @@ pub(crate) enum Command {
     Hodge(u128, i128, i128, Vec<u128>),
     HodgeDecompose(u128, i128, i128),
     HodgeTable(u128, Option<Vec<u128>>),
+    ReducedMultiplicity(u128, i128, Vec<u128>),
+    ReducedDecompose(u128, i128),
+    PrimitiveMultiplicity(u128, i128, Vec<i128>),
+    PrimitiveDecompose(u128, i128),
 }
 
 impl Command {
@@ -64,6 +69,12 @@ impl Command {
                 validate_length(n)?;
                 hodge::table(model, n, shape.as_deref())
             }
+            Self::ReducedMultiplicity(n, d, shape) => reduced::multiplicity(model, n, d, shape),
+            Self::ReducedDecompose(n, d) => reduced::decomposition(model, n, d, false),
+            Self::PrimitiveMultiplicity(n, d, shape) => {
+                reduced::primitive_multiplicity(model, n, d, shape)
+            }
+            Self::PrimitiveDecompose(n, d) => reduced::decomposition(model, n, d, true),
         }
     }
 }
@@ -143,14 +154,41 @@ impl Oscillators {
     }
 
     fn multiplicity(&self, model: &mut Model, shape: &[u128]) -> Result<i128> {
-        let mut parts = [0i128; RANK];
-        for (out, &part) in parts.iter_mut().zip(shape) {
+        self.extracted(model, shape, RANK, None)
+    }
+
+    fn extracted(
+        &self,
+        model: &mut Model,
+        shape: &[u128],
+        rank: usize,
+        charge: Option<usize>,
+    ) -> Result<i128> {
+        let offset = charge.unwrap_or(0);
+        if offset > self.n || weight_exceeds(shape, (self.n - offset) as u128) {
+            return Ok(0);
+        }
+        let mut padded = [0i128; RANK];
+        for (out, &part) in padded.iter_mut().zip(shape) {
             *out = part as i128;
         }
-        let excess = self.n - parts.iter().sum::<i128>() as usize;
-        let entries = self.matrix(model, &parts, excess)?;
-        let tail = min_tail(model, &entries, excess)?;
-        let answer = determinant(model, &entries, &tail, excess)?;
+        let parts = &padded[..rank];
+        let excess = self.n - offset - parts.iter().sum::<i128>() as usize;
+        let entries = self.matrix(model, parts, excess)?;
+        let tail = min_tail(model, &entries, rank, excess)?;
+        if tail[0] > excess {
+            return Ok(0);
+        }
+        // The grading variable was not part of the reduced Weyl denominator.
+        // Its coefficient contributes a single scalar oscillator series.
+        let initial = if let Some(charge) = charge {
+            (0..=excess - tail[0])
+                .map(|i| Integer::from_i128(self.get(charge, charge + i)))
+                .collect()
+        } else {
+            vec![Integer::from_i128(1)]
+        };
+        let answer = determinant(model, &entries, &tail, rank, excess, initial)?;
         if answer < 0 {
             return Err(Error::plain(
                 "LLV Weyl extraction produced a negative multiplicity",
@@ -179,14 +217,15 @@ impl Oscillators {
         Ok(())
     }
 
-    fn matrix(&self, model: &mut Model, parts: &[i128; RANK], excess: usize) -> Result<Vec<Entry>> {
-        model.spend(RANK * RANK * (excess + 1))?;
-        let mut entries = Vec::with_capacity(RANK * RANK);
+    fn matrix(&self, model: &mut Model, parts: &[i128], excess: usize) -> Result<Vec<Entry>> {
+        let rank = parts.len();
+        model.spend(rank * rank * (excess + 1))?;
+        let mut entries = Vec::with_capacity(rank * rank);
         for (row, &lambda) in parts.iter().enumerate() {
-            for column in 0..RANK {
+            for column in 0..rank {
                 let shift = lambda + column as i128 - row as i128;
                 let charge = shift.unsigned_abs() as usize;
-                let other = (lambda + (2 * RANK - 1 - row - column) as i128) as usize;
+                let other = (lambda + (2 * rank - 1 - row - column) as i128) as usize;
                 // Dividing each entry by Q^shift divides the determinant by
                 // Q^|lambda|, since the sum of the column shifts is fixed.
                 let first = (charge as i128 - shift) as usize;
@@ -213,16 +252,22 @@ struct Entry {
     coefficients: Vec<i128>,
 }
 
-fn min_tail(model: &mut Model, entries: &[Entry], excess: usize) -> Result<Vec<usize>> {
-    model.spend(RANK * SUBSETS / 2)?;
-    let mut tail = vec![excess + 1; SUBSETS];
-    let end = SUBSETS - 1;
+fn min_tail(
+    model: &mut Model,
+    entries: &[Entry],
+    rank: usize,
+    excess: usize,
+) -> Result<Vec<usize>> {
+    let subsets = 1 << rank;
+    model.spend(rank * subsets / 2)?;
+    let mut tail = vec![excess + 1; subsets];
+    let end = subsets - 1;
     tail[end] = 0;
     for mask in (0..end).rev() {
         let row = mask.count_ones() as usize;
-        for column in 0..RANK {
+        for column in 0..rank {
             let bit = 1 << column;
-            let entry = &entries[row * RANK + column];
+            let entry = &entries[row * rank + column];
             if mask & bit == 0 && !entry.coefficients.is_empty() {
                 tail[mask] = tail[mask].min(entry.first + tail[mask | bit]);
             }
@@ -235,26 +280,30 @@ fn determinant(
     model: &mut Model,
     entries: &[Entry],
     tail: &[usize],
+    rank: usize,
     excess: usize,
+    initial: Vec<Integer>,
 ) -> Result<i128> {
+    let subsets = tail.len();
     let zero = Integer::from_i128(0);
-    let mut partials: Vec<Option<Vec<Integer>>> = (0..SUBSETS).map(|_| None).collect();
-    partials[0] = Some(vec![Integer::from_i128(1)]);
-    let mut cells = 4 * SUBSETS + LIMBS;
-    let end = SUBSETS - 1;
+    let mut partials: Vec<Option<Vec<Integer>>> = (0..subsets).map(|_| None).collect();
+    let mut cells = 4 * subsets + LIMBS * initial.len();
+    guard(cells)?;
+    partials[0] = Some(initial);
+    let end = subsets - 1;
     for mask in 0..end {
         let Some(prefix) = partials[mask].take() else {
             continue;
         };
         let row = mask.count_ones() as usize;
-        model.spend(RANK + prefix.len())?;
+        model.spend(rank + prefix.len())?;
         if prefix.iter().all(|value| value.is_zero()) {
             cells -= LIMBS * prefix.len();
             continue;
         }
-        for column in 0..RANK {
+        for column in 0..rank {
             let bit = 1 << column;
-            let entry = &entries[row * RANK + column];
+            let entry = &entries[row * rank + column];
             let next = mask | bit;
             if mask & bit != 0 || entry.coefficients.is_empty() || entry.first + tail[next] > excess
             {
