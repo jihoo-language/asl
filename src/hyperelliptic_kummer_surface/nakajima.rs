@@ -13,6 +13,7 @@ use super::unimodular;
 mod boundary;
 mod cup;
 pub(crate) mod primary;
+pub(crate) mod tautological;
 mod virasoro;
 mod wick;
 
@@ -87,6 +88,7 @@ pub(crate) enum Expression {
     Monomial(Label, Vec<Factor>),
     Cup(Box<[ParsedExpr; 2]>),
     PrimaryGenerator(Label, i128, i128, usize),
+    TautologicalChern(u128, u128, i128, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
 }
 

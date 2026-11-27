@@ -1194,6 +1194,7 @@ pub(crate) enum StatementForm {
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
+    HilbertTautological(Box<crate::hyperelliptic_kummer_surface::nakajima::tautological::Command>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3685,8 +3686,43 @@ impl<'src> Parser<'src> {
             .map_err(|error| error.at(span))
     }
 
+    fn hilbert_tautological_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::nakajima::tautological::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let length = self.wide_unsigned("Hilbert length")?;
+        let codimension = if name == "rvHilbTautChernDen" {
+            self.expect(Token::Comma)?;
+            Some(self.wide_unsigned("Chern index")?)
+        } else {
+            None
+        };
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(0)?;
+        Ok(StatementForm::HilbertTautological(Box::new(
+            match codimension {
+                Some(j) => Command::ChernDenominator(length, j, input),
+                None => Command::TopSegre(length, input),
+            },
+        )))
+    }
+
     fn nakajima_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::nakajima::{Expression, Factor, Operation};
+        if name == "rvHilbTautChern" {
+            self.expect(Token::LBracket)?;
+            let length = self.wide_unsigned("Hilbert length")?;
+            self.expect(Token::Comma)?;
+            let codimension = self.wide_unsigned("Chern index")?;
+            self.expect(Token::Comma)?;
+            let scale = self.signed_wide("a signed integer", "Chern scale")?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            let expression =
+                Expression::TautologicalChern(length, codimension, scale, Box::new(input));
+            return expr(span, ExprForm::Nakajima(Box::new(expression)), depth);
+        }
         if name == "rvNakajimaCup" {
             let inputs = self.paren_pair(nest)?;
             let depth = 1 + inputs[0].depth.max(inputs[1].depth);
@@ -5516,6 +5552,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvk3period" | "rvK3PeriodReport" | "rvK3PeriodIs11" | "rvK3CMForm"
                 | "rvK3CMPeriods" | "rvK3CMEquivalent" | "rvK3CMClassNumber"),
             ) => self.k3_period_statement(command)?,
+            Token::Word(name @ ("rvHilbTautChernDen" | "rvHilbTautSegre")) => {
+                self.hilbert_tautological_statement(name)?
+            }
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
@@ -10945,6 +10984,7 @@ impl<'src> Parser<'src> {
                         | "rvNakajimaAnn"
                         | "rvNakajimaScale"
                         | "rvVirasoro"
+                        | "rvHilbTautChern"
                 ) && self.token() == Token::LBracket)
                     || (matches!(name.text.as_str(), "rvNakajimaBoundary" | "rvNakajimaCup")
                         && self.token() == Token::LParen)

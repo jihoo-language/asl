@@ -674,6 +674,7 @@ enum TypedForm {
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
+    HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     Mukai(MukaiAction),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
     OG10Negate(Box<TypedExpr>),
@@ -1785,6 +1786,9 @@ impl Engine {
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::NakajimaPrimary(command) => {
                 return self.nakajima_primary(*command).map(Some)
+            }
+            StatementForm::HilbertTautological(command) => {
+                return self.hilbert_tautological(*command).map(Some)
             }
             StatementForm::K3AutoPeriod(expression) => {
                 return self.k3_auto_period(*expression).map(Some)
@@ -4953,6 +4957,26 @@ impl Engine {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
             }
+        }
+    }
+
+    fn hilbert_tautological(&mut self, command: nakajima::tautological::Command) -> Result<String> {
+        use nakajima::tautological::{self, Command};
+        let (name, length, codimension, input) = match command {
+            Command::ChernDenominator(n, j, input) => ("rvHilbTautChernDen", n, Some(j), input),
+            Command::TopSegre(n, input) => ("rvHilbTautSegre", n, None, input),
+        };
+        let input = self.checker().expr(input)?;
+        self.checker().k3_lattice_operand(&input, name)?;
+        let Value::K3Lattice(line) = self.eval(&input)? else {
+            unreachable!();
+        };
+        if let Some(j) = codimension {
+            let denominator = tautological::denominator(&mut self.model, &line, length, j)?;
+            Ok(format!("{name}[{length}, {j}] = {denominator}"))
+        } else {
+            let segre = tautological::top_segre(&mut self.model, &line, length)?;
+            Ok(format!("{name}[{length}] = {segre}"))
         }
     }
 
@@ -8385,6 +8409,13 @@ impl Engine {
                     unreachable!()
                 };
                 word.apply_lattice(&mut self.model, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertTautologicalChern(length, j, scale, input) => {
+                let Value::K3Lattice(line) = self.eval(input)? else {
+                    unreachable!();
+                };
+                nakajima::tautological::chern(&mut self.model, &line, *length, *j, *scale)?
                     .persist(&mut self.model)
             }
             TypedForm::NakajimaCup(inputs) => {
@@ -20192,6 +20223,24 @@ impl Checker<'_> {
                 };
                 let state = nakajima::primary::generator(self.model, &grade, index)?;
                 Ok((ty, TypedForm::Constant(state.persist(self.model)?)))
+            }
+            Expression::TautologicalChern(length, j, scale, input) => {
+                let input = self.expr(*input)?;
+                let marking = self.k3_lattice_operand(&input, "rvHilbTautChern")?;
+                let basis = Label {
+                    text: marking.to_string(),
+                    span: input.span,
+                };
+                let n = i128::try_from(length).map_err(|_| nakajima::grade_range())?;
+                let degree = j
+                    .checked_mul(2)
+                    .and_then(|i| i128::try_from(i).ok())
+                    .ok_or_else(nakajima::grade_range)?;
+                let ty = self.model.nakajima_type(&basis, n, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertTautologicalChern(length, j, scale, Box::new(input)),
+                ))
             }
             Expression::Cup(inputs) => {
                 let [left, right] = *inputs;

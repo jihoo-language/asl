@@ -1,0 +1,30 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let trivial=zero[RVK3Lattice(B)];
+let x=rvHilbTautChern[3,1,2](trivial);
+let y=rvHilbTautChern[3,2,3](trivial);
+assert x==neg(rvNakajimaMonomial[B]{(1,0,1),(2,0,1)});
+assert y==rvNakajimaMonomial[B]{(3,0,1)};
+rvHilbTautChernDen[3,2](trivial);
+
+let x2=rvNakajimaCup(x,x);
+let x4=rvNakajimaCup(x2,x2);
+let x6=rvNakajimaCup(x4,x2);
+let y2=rvNakajimaCup(y,y);
+let y3=rvNakajimaCup(y2,y);
+let a=rvNakajimaScale[27](x6);
+let b=rvNakajimaScale[-180](rvNakajimaCup(x4,y));
+let c=rvNakajimaScale[288](rvNakajimaCup(x2,y2));
+let d=rvNakajimaScale[-64](y3);
+let scaledSegre=add(add(a,b),add(c,d));
+assert scaledSegre==rvNakajimaScale[-276480](rvNakajimaMonomial[B]{(1,23,3)});
+rvHilbTautSegre[3](trivial);
