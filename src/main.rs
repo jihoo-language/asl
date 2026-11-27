@@ -154,6 +154,7 @@ mod rv_witt_tower;
 mod rv_wz;
 mod rv_wzw;
 mod set_family;
+mod set_gluing;
 mod set_j;
 mod set_kan;
 mod set_logic;

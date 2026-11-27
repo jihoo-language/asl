@@ -338,6 +338,18 @@ impl Diagram {
             .collect();
         let domains: Vec<_> = sources.iter().map(|&(x, _)| target.size(x)).collect();
         let order: Vec<_> = self.order.iter().flat_map(|&x| self.fiber(x)).collect();
+        if domains.contains(&0) {
+            return Ok(false);
+        }
+        if let Some(mut constraints) = ReversibleConstraints::build(model, self, target)? {
+            return solve(
+                model,
+                &domains,
+                &order,
+                |model, point, value, push| constraints.force(model, point, value, push),
+                emit,
+            );
+        }
         solve(
             model,
             &domains,
@@ -561,6 +573,99 @@ pub(crate) fn check_cells(cells: usize) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+struct ReversibleConstraints {
+    links: Vec<Vec<(usize, Arrow)>>,
+    assigned: Vec<usize>,
+}
+
+impl ReversibleConstraints {
+    fn build(model: &mut Model, source: &Diagram, target: &Diagram) -> Result<Option<Self>> {
+        let n = source.site.names.len();
+        if n < 2 || source.count() == 0 {
+            return Ok(None);
+        }
+        let mut equations = Vec::new();
+        let mut cells = source.count() * 4;
+        for (x, row) in source.arrows.iter().enumerate() {
+            model.spend(n)?;
+            for (y, map) in row.iter().enumerate() {
+                let Some(map) = map.as_ref().filter(|map| !map.is_empty()) else {
+                    continue;
+                };
+                if target.size(x) != target.size(y) {
+                    return Ok(None);
+                }
+                cells += 6 * map.len() + target.size(y) + 5;
+                if check_cells(cells).is_err() {
+                    return Ok(None);
+                }
+                equations.push((x, y, map));
+            }
+        }
+        if equations.is_empty() {
+            return Ok(None);
+        }
+        let mut links = vec![Vec::new(); source.count()];
+        for (x, y, map) in equations {
+            let forward = target.arrows[x][y].as_ref().expect("same site");
+            let mut inverse = vec![usize::MAX; forward.len()];
+            model.spend(1 + forward.len())?;
+            for (i, &j) in forward.iter().enumerate() {
+                if inverse[j] != usize::MAX {
+                    return Ok(None);
+                }
+                inverse[j] = i;
+            }
+            let back: Arrow = inverse.into();
+            model.spend(map.len())?;
+            for (i, &j) in map.iter().enumerate() {
+                let from = source.occurrence(x, i);
+                let to = source.occurrence(y, j);
+                links[from].push((to, forward.clone()));
+                links[to].push((from, back.clone()));
+            }
+        }
+        Ok(Some(Self {
+            links,
+            assigned: vec![usize::MAX; source.count()],
+        }))
+    }
+
+    fn force(
+        &mut self,
+        model: &mut Model,
+        seed: usize,
+        value: usize,
+        pending: &mut Vec<(usize, usize)>,
+    ) -> Result<()> {
+        // Each reversible equality determines the value at its other endpoint.
+        // Solve propagates the resulting component in one step, including any
+        // conflicting assignment we found by going around a cycle.
+        self.assigned[seed] = value;
+        let mut cursor = 0;
+        'propagate: while cursor < pending.len() {
+            let (point, value) = pending[cursor];
+            model.spend(1 + self.links[point].len())?;
+            for (next, transport) in &self.links[point] {
+                let image = transport[value];
+                let known = &mut self.assigned[*next];
+                if *known == usize::MAX {
+                    *known = image;
+                    pending.push((*next, image));
+                } else if *known != image {
+                    pending.push((*next, image));
+                    break 'propagate;
+                }
+            }
+            cursor += 1;
+        }
+        for &(point, _) in pending.iter() {
+            self.assigned[point] = usize::MAX;
+        }
+        Ok(())
+    }
 }
 
 struct Branch {

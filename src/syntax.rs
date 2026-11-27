@@ -663,6 +663,7 @@ pub(crate) enum ExprForm {
     SetJExtend(Label, Box<ParsedExpr>),
     SetProjection(Label),
     SetSection(Label, usize),
+    SetGluing(crate::set_gluing::Operation, [Label; 2], Vec<ParsedExpr>),
     SetIdentity(Label),
     SetCompose(Box<[ParsedExpr; 2]>),
     SetTotal(Label, Label, Box<ParsedExpr>),
@@ -1011,6 +1012,10 @@ pub(crate) enum StatementForm {
     SetElements(Label, Label),
     SetNatural(Label, Label, Label, Vec<crate::set_family::Component>),
     SetSections(Label),
+    SetRecollement(Label, Box<[ParsedExpr; 2]>),
+    SetRestrict(Label, Label, Label, crate::set_gluing::Side),
+    SetGlueLimit(Label, Label, Label),
+    SetGlue(Label, Label, ParsedExpr),
     SetPullback(Label, Label, ParsedExpr),
     SetKan(Label, Label, ParsedExpr, bool),
     SetTopology(crate::set_topology::Command),
@@ -2537,6 +2542,43 @@ impl<'src> Parser<'src> {
                 let index = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::SetSieve(omega, point, index, dense)
+            }
+            Token::Word("setrecollement") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LParen)?;
+                let closed = self.expr(1)?;
+                self.expect(Token::Comma)?;
+                let open = self.expr(1)?;
+                self.expect(Token::RParen)?;
+                StatementForm::SetRecollement(name, Box::new([closed, open]))
+            }
+            Token::Word(command @ ("setrestrict" | "setgluelimit" | "setglue")) => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let recollement = self.label()?;
+                if command == "setglue" {
+                    self.expect(Token::RBracket)?;
+                    StatementForm::SetGlue(name, recollement, self.paren_expr(0)?)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let family = self.label()?;
+                    if command == "setgluelimit" {
+                        self.expect(Token::RBracket)?;
+                        StatementForm::SetGlueLimit(name, recollement, family)
+                    } else {
+                        self.expect(Token::Comma)?;
+                        let side = self.label()?;
+                        let side = match side.text.as_str() {
+                            "closed" => crate::set_gluing::Side::Closed,
+                            "open" => crate::set_gluing::Side::Open,
+                            _ => return Err(Error::new(side.span, "expected 'closed' or 'open'")),
+                        };
+                        self.expect(Token::RBracket)?;
+                        StatementForm::SetRestrict(name, recollement, family, side)
+                    }
+                }
             }
             Token::Word(op @ ("setpullback" | "setlan" | "setran")) => {
                 self.advance()?;
@@ -5990,6 +6032,34 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RParen)?;
                 }
                 expr(span, ExprForm::SetLogic(operation, labels, inputs), depth)
+            }
+            Token::Word(name) if crate::set_gluing::Operation::detect(name).is_some() => {
+                let operation = crate::set_gluing::Operation::detect(name).unwrap();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let first = self.label()?;
+                self.expect(Token::Comma)?;
+                let second = self.label()?;
+                self.expect(Token::RBracket)?;
+                let mut inputs = Vec::new();
+                let mut depth = 0;
+                if operation.arity() != 0 {
+                    self.expect(Token::LParen)?;
+                    for i in 0..operation.arity() {
+                        if i != 0 {
+                            self.expect(Token::Comma)?;
+                        }
+                        let input = self.expr(nest + 1)?;
+                        depth = depth.max(input.depth + 1);
+                        inputs.push(input);
+                    }
+                    self.expect(Token::RParen)?;
+                }
+                expr(
+                    span,
+                    ExprForm::SetGluing(operation, [first, second], inputs),
+                    depth,
+                )
             }
             Token::Word(name) if KanOp::detect(name).is_some() => {
                 let operation = KanOp::detect(name).unwrap();

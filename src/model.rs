@@ -480,6 +480,7 @@ pub(crate) struct Model {
     types: Vec<TypeInfo>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
+    set_recollements: HashMap<Rc<str>, Rc<crate::set_gluing::Recollement>>,
     set_monodromies: HashMap<Rc<str>, Rc<crate::set_monodromy::Monodromy>>,
     set_linearizations: HashMap<Rc<str>, Rc<str>>,
     set_logic: HashMap<Rc<str>, set_logic::Origin>,
@@ -555,6 +556,7 @@ impl Model {
             types: Vec::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
+            set_recollements: HashMap::new(),
             set_monodromies: HashMap::new(),
             set_linearizations: HashMap::new(),
             set_logic: HashMap::new(),
@@ -1800,6 +1802,38 @@ impl Model {
         self.set_origins
             .insert(Rc::from(name.text.as_str()), origin);
         Ok(())
+    }
+
+    pub(crate) fn define_set_recollement(
+        &mut self,
+        name: &Label,
+        data: crate::set_gluing::Recollement,
+    ) -> Result<()> {
+        if self.set_recollements.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("set recollement '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(1)?;
+        self.set_recollements
+            .insert(Rc::from(name.text.as_str()), Rc::new(data));
+        Ok(())
+    }
+
+    pub(crate) fn set_recollement(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::set_gluing::Recollement>> {
+        self.set_recollements
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown set recollement '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn define_set_topology(

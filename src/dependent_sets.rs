@@ -11,6 +11,8 @@ pub(crate) enum Origin {
     Product(Rc<Product>),
     Lan(Rc<crate::set_kan::Lan>),
     Ran(Rc<crate::set_kan::Ran>),
+    GlueLimit(Rc<crate::set_gluing::Matching>),
+    Glued(Rc<crate::set_gluing::Glued>),
 }
 
 #[derive(Clone, Copy)]

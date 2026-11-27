@@ -429,6 +429,7 @@ enum TypedForm {
         Box<TypedExpr>,
     ),
     SetKan(crate::set_kan::Action, Option<Box<TypedExpr>>),
+    SetGluing(Box<crate::set_gluing::Action>, Vec<TypedExpr>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
     SetCompose(
@@ -697,6 +698,7 @@ impl Engine {
         Checker {
             model: &mut self.model,
             bindings: &self.bindings,
+            values: &self.values,
             locals: Vec::new(),
         }
     }
@@ -1501,6 +1503,73 @@ impl Engine {
                         name.text, point.text
                     )
                 }
+            }
+            StatementForm::SetRecollement(name, pair) => {
+                let [closed, open] = *pair;
+                let (base, closed) = self.set_gluing_embedding(closed)?;
+                let (other, open) = self.set_gluing_embedding(open)?;
+                if base != other {
+                    return Err(Error::new(
+                        name.span,
+                        "recollement inclusions must share a named codomain",
+                    ));
+                }
+                let data =
+                    crate::set_gluing::Recollement::build(&mut self.model, base, closed, open)?;
+                self.model.define_set_recollement(&name, data)?;
+                return Ok(None);
+            }
+            StatementForm::SetRestrict(name, recollement, family, side) => {
+                self.model.check_new_set_family(&name)?;
+                let recollement = self.model.set_recollement(&recollement)?;
+                let body = self.model.set_family(&family)?;
+                let (diagram, origin) =
+                    recollement.restrict(&mut self.model, family.text.into(), &body, side)?;
+                self.model.define_dependent_set(
+                    &name,
+                    diagram,
+                    dependent_sets::Origin::Pullback(Rc::new(origin)),
+                )?;
+                return Ok(None);
+            }
+            StatementForm::SetGlueLimit(name, recollement, family) => {
+                self.model.check_new_set_family(&name)?;
+                let recollement = self.model.set_recollement(&recollement)?;
+                let body = self.model.set_family(&family)?;
+                let (diagram, origin) = crate::set_gluing::Matching::build(
+                    &mut self.model,
+                    recollement,
+                    family.text.into(),
+                    &body,
+                )?;
+                self.model.define_dependent_set(
+                    &name,
+                    diagram,
+                    dependent_sets::Origin::GlueLimit(Rc::new(origin)),
+                )?;
+                return Ok(None);
+            }
+            StatementForm::SetGlue(name, recollement, attachment) => {
+                self.model.check_new_set_family(&name)?;
+                let recollement = self.model.set_recollement(&recollement)?;
+                let attachment = self.checker().expr(attachment)?;
+                let (source, target) = self.checker().set_nat_ends(attachment.ty)?;
+                let Value::SetNat(alpha) = self.eval(&attachment)? else {
+                    unreachable!()
+                };
+                let (diagram, origin) = crate::set_gluing::Glued::build(
+                    &mut self.model,
+                    recollement,
+                    source,
+                    &target,
+                    alpha,
+                )?;
+                self.model.define_dependent_set(
+                    &name,
+                    diagram,
+                    dependent_sets::Origin::Glued(Rc::new(origin)),
+                )?;
+                return Ok(None);
             }
             StatementForm::SetPullback(name, family, map) => {
                 self.model.check_new_set_family(&name)?;
@@ -3662,6 +3731,35 @@ impl Engine {
         (family, grade.exponent)
     }
 
+    fn set_gluing_embedding(
+        &mut self,
+        expression: ParsedExpr,
+    ) -> Result<(TypeId, crate::set_gluing::Embedding)> {
+        let map = self.checker().expr(expression)?;
+        let Kind::Arrow(domain, range) = *self.model.kind(map.ty) else {
+            return Err(Error::new(
+                map.span,
+                "recollement requires maps of named sites",
+            ));
+        };
+        if !matches!(self.model.kind(domain), Kind::Space(_))
+            || !matches!(self.model.kind(range), Kind::Space(_))
+        {
+            return Err(Error::new(
+                map.span,
+                "recollement requires maps of named sites",
+            ));
+        }
+        let Value::Map(values) = self.eval(&map)? else {
+            unreachable!()
+        };
+        self.model.spend(values.len())?;
+        Ok((
+            range,
+            crate::set_gluing::Embedding::from_map(domain, &values),
+        ))
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -3771,6 +3869,16 @@ impl Engine {
                         sum.restrict(&mut self.model, source, body, &rows)
                     }
                 }
+            }
+            TypedForm::SetGluing(action, inputs) => {
+                let mut values = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let Value::SetNat(rows) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    values.push(rows);
+                }
+                action.evaluate(&mut self.model, &values)
             }
             TypedForm::SetIdentity(diagram) => diagram.identity(&mut self.model),
             TypedForm::SetSection(elements, diagram, index) => {
@@ -7008,6 +7116,7 @@ fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
 struct Checker<'a> {
     model: &'a mut Model,
     bindings: &'a HashMap<String, Binding>,
+    values: &'a [Value],
     locals: Vec<(String, TypeId)>,
 }
 
@@ -7911,6 +8020,36 @@ impl Checker<'_> {
                     ty,
                     TypedForm::SheafBCApply(comparison, degree, Box::new(input)),
                 ))
+            }
+            ExprForm::SetGluing(operation, labels, inputs) => {
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let ends = inputs
+                    .iter()
+                    .map(|input| self.set_nat_ends(input.ty))
+                    .collect::<Result<Vec<_>>>()?;
+                let known = inputs
+                    .iter()
+                    .map(|input| {
+                        let value = match &input.kind {
+                            TypedForm::Constant(value) => value,
+                            TypedForm::Global(index) => &self.values[*index],
+                            _ => return None,
+                        };
+                        let Value::SetNat(rows) = value else {
+                            unreachable!()
+                        };
+                        Some(rows.clone())
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let (ty, action) = operation.plan(self.model, labels, &ends, known.as_deref())?;
+                let kind = match action {
+                    crate::set_gluing::Action::Constant(value) => TypedForm::Constant(value),
+                    action => TypedForm::SetGluing(Box::new(action), inputs),
+                };
+                Ok((ty, kind))
             }
             ExprForm::SetKan(operation, first, second, input) => {
                 let input = input
