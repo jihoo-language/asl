@@ -87,8 +87,17 @@ impl Input {
     }
 
     fn local_families<'a>(&'a self, model: &mut Model, site: &Site) -> Result<Opens<Local<'a>>> {
+        self.local_families_at(model, site, 0..site.target_poset().names.len())
+    }
+
+    pub(crate) fn local_families_at<'a>(
+        &'a self,
+        model: &mut Model,
+        site: &Site,
+        anchors: impl IntoIterator<Item = usize>,
+    ) -> Result<Opens<Local<'a>>> {
         let mut cells = 0;
-        site.open_families(model, |model, mask| {
+        site.open_families_at(model, anchors, |model, mask| {
             cells += mask.len() * self.components().len();
             sheaf::check_cells(cells)?;
             Local::new(model, self, mask)
@@ -336,7 +345,7 @@ fn component_label(name: &Label, degree: usize) -> Result<Label> {
     })
 }
 
-fn local_layers(
+pub(crate) fn local_layers(
     model: &mut Model,
     opens: &Opens<Local<'_>>,
     degree: usize,

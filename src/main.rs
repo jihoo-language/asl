@@ -154,6 +154,8 @@ mod set_logic;
 mod set_monodromy;
 mod set_topology;
 mod sheaf;
+mod sheaf_base_change;
+mod sheaf_bc_comma;
 mod sheaf_cellular;
 mod sheaf_deform;
 mod sheaf_ext;

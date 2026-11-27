@@ -494,6 +494,8 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    bc_squares: HashMap<String, Rc<crate::sheaf_base_change::Square>>,
+    bc_comparisons: HashMap<String, Rc<crate::sheaf_base_change::Comparison>>,
     sheaf_kuranishi: HashMap<Rc<str>, Rc<sheaf_kuranishi::Chart>>,
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Total>,
@@ -565,6 +567,8 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            bc_squares: HashMap::new(),
+            bc_comparisons: HashMap::new(),
             sheaf_kuranishi: HashMap::new(),
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
@@ -1455,8 +1459,69 @@ impl Model {
         Ok(())
     }
 
+    pub(crate) fn check_new_bc_square(&self, name: &Label) -> Result<()> {
+        if self.bc_squares.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("base-change square '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_bc_square(
+        &mut self,
+        name: String,
+        value: crate::sheaf_base_change::Square,
+    ) {
+        self.bc_squares.insert(name, Rc::new(value));
+    }
+
+    pub(crate) fn bc_square(&self, name: &Label) -> Result<Rc<crate::sheaf_base_change::Square>> {
+        self.bc_squares.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown base-change square '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn check_new_bc_comparison(&self, name: &Label) -> Result<()> {
+        if self.bc_comparisons.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("base-change comparison '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_bc_comparison(
+        &mut self,
+        name: String,
+        value: crate::sheaf_base_change::Comparison,
+    ) {
+        self.bc_comparisons.insert(name, Rc::new(value));
+    }
+
+    pub(crate) fn bc_comparison(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::sheaf_base_change::Comparison>> {
+        self.bc_comparisons.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown base-change comparison '{}'", name.text),
+            )
+        })
+    }
+
     pub(crate) fn define_sheaf_map(&mut self, name: String, map: sheaf_hyper::Map) {
-        self.sheaf_maps.insert(name, Rc::new(map));
+        self.define_sheaf_map_shared(name, Rc::new(map));
+    }
+
+    pub(crate) fn define_sheaf_map_shared(&mut self, name: String, map: Rc<sheaf_hyper::Map>) {
+        self.sheaf_maps.insert(name, map);
     }
 
     pub(crate) fn sheaf_map(&self, name: &Label) -> Result<Rc<sheaf_hyper::Map>> {

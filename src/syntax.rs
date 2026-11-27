@@ -734,6 +734,7 @@ pub(crate) enum ExprForm {
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
     SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
+    SheafBCApply(Label, Box<ParsedExpr>),
     SheafCompose(Box<[ParsedExpr; 2]>),
     SheafHigher(SheafHigherOp, Vec<ParsedExpr>, Vec<Witness>),
     PScale(usize, Box<ParsedExpr>),
@@ -1039,6 +1040,12 @@ pub(crate) enum StatementForm {
     MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    SheafBCSquare(Label, [Label; 4]),
+    SheafBCBuild(SheafInputForm, Label, Label, Label),
+    SheafBCMap(Label, Label, usize, bool),
+    SheafBCLinear(Label, Label, usize, crate::sheaf_base_change::LinearQuery),
+    SheafBCUniversal(Label, usize),
+    SheafBCComma(Label, usize, Label, Label, Option<(i64, usize)>),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
     SheafKuranishi(Label, Label, usize, Option<Vec<ParsedExpr>>),
     SheafKuranishiEquation(Label, usize),
@@ -2730,6 +2737,88 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafImage(operation, name, function, sheaf)
+            }
+            Token::Word("shbcsquare") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let f = self.label()?;
+                self.expect(Token::Comma)?;
+                let u = self.label()?;
+                self.expect(Token::Comma)?;
+                let v = self.label()?;
+                self.expect(Token::Comma)?;
+                let fp = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafBCSquare(name, [f, u, v, fp])
+            }
+            Token::Word(op @ ("shbc" | "shbccomplex")) => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let square = self.label()?;
+                self.expect(Token::Comma)?;
+                let input = self.label()?;
+                self.expect(Token::RBracket)?;
+                let form = if op == "shbc" {
+                    SheafInputForm::Sheaf
+                } else {
+                    SheafInputForm::Complex
+                };
+                StatementForm::SheafBCBuild(form, name, square, input)
+            }
+            Token::Word(op @ ("shbcmap" | "shbchom")) => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let comparison = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafBCMap(name, comparison, degree, op == "shbchom")
+            }
+            Token::Word(op @ ("shbcrank" | "shbckernel" | "shbccokernel")) => {
+                use crate::sheaf_base_change::LinearQuery;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let comparison = self.label()?;
+                self.expect(Token::Comma)?;
+                let y = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let query = match op {
+                    "shbckernel" => LinearQuery::Kernel,
+                    "shbccokernel" => LinearQuery::Cokernel,
+                    _ => LinearQuery::Rank,
+                };
+                StatementForm::SheafBCLinear(comparison, y, degree, query)
+            }
+            Token::Word(op @ ("shbcuniversal" | "shbccomma" | "shbcwitness")) => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let square = self.label()?;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                let statement = if op == "shbcuniversal" {
+                    StatementForm::SheafBCUniversal(square, prime)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let y = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let x = self.label()?;
+                    let witness = if op == "shbcwitness" {
+                        self.expect(Token::Comma)?;
+                        let degree = self.signed_number("augmented comma degree")?;
+                        self.expect(Token::Comma)?;
+                        Some((degree, self.number()?.0))
+                    } else {
+                        None
+                    };
+                    StatementForm::SheafBCComma(square, prime, y, x, witness)
+                };
+                self.expect(Token::RBracket)?;
+                statement
             }
             Token::Word("shmap") => {
                 self.advance()?;
@@ -7591,6 +7680,17 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.sheaf_kuranishi_expression(&name.text, span);
+                }
+                if name.text == "shBCApply" && self.eat(Token::LBracket)? {
+                    let comparison = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafBCApply(comparison, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "shExtCompose" && self.token() == Token::LParen {
                     let arguments = self.paren_pair(nest)?;

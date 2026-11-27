@@ -127,6 +127,10 @@ impl Map {
         &self.matrices[point]
     }
 
+    pub(crate) fn matrix_rc(&self, point: usize) -> Rc<Matrix> {
+        self.matrices[point].clone()
+    }
+
     pub(crate) fn apply_cochain(&self, model: &mut Model, raw: &[Term]) -> Result<Value> {
         let output = self.apply_support(model, raw)?;
         sheaf::persist(model, output)

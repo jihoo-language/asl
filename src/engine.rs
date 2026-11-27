@@ -420,6 +420,11 @@ enum TypedForm {
         map: Box<TypedExpr>,
     },
     SetDependent(DependentAction, Option<Box<TypedExpr>>),
+    SheafBCApply(
+        Rc<crate::sheaf_base_change::Comparison>,
+        usize,
+        Box<TypedExpr>,
+    ),
     SetKan(crate::set_kan::Action, Option<Box<TypedExpr>>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
@@ -1130,6 +1135,99 @@ impl Engine {
                 };
                 self.model.define_sheaf(name.text, image);
                 return Ok(None);
+            }
+            StatementForm::SheafBCSquare(name, [f, u, v, fp]) => {
+                self.model.check_new_bc_square(&name)?;
+                let f = self.sheaf_site(&f, "shbcsquare")?;
+                let u = self.sheaf_site(&u, "shbcsquare")?;
+                let v = self.sheaf_site(&v, "shbcsquare")?;
+                let fp = self.sheaf_site(&fp, "shbcsquare")?;
+                let square = crate::sheaf_base_change::Square::build(&mut self.model, f, u, v, fp)?;
+                self.model.define_bc_square(name.text, square);
+                return Ok(None);
+            }
+            StatementForm::SheafBCBuild(form, name, square, input) => {
+                self.model.check_new_bc_comparison(&name)?;
+                let square = self.model.bc_square(&square)?;
+                let input = LerayInput::resolve(&self.model, &input, form)?;
+                let value = crate::sheaf_base_change::Comparison::build(
+                    &mut self.model,
+                    &name,
+                    &square,
+                    input,
+                )?;
+                for (name, complex) in
+                    [(&value.from_name, &value.from), (&value.to_name, &value.to)]
+                {
+                    for component in complex.components() {
+                        self.model.define_sheaf_shared(
+                            component.name.to_string(),
+                            component.sheaf.clone(),
+                        );
+                    }
+                    self.model
+                        .define_sheaf_complex_shared(name.to_string(), complex.clone());
+                }
+                self.model.define_bc_comparison(name.text, value);
+                return Ok(None);
+            }
+            StatementForm::SheafBCMap(name, comparison, degree, induced) => {
+                self.model.check_new_sheaf_map(&name)?;
+                let comparison = self.model.bc_comparison(&comparison)?;
+                if induced {
+                    let left = crate::sheaf_base_change::derived_name(&name, "source")?;
+                    let right = crate::sheaf_base_change::derived_name(&name, "target")?;
+                    self.model.check_new_sheaf(&left)?;
+                    self.model.check_new_sheaf(&right)?;
+                    let data = comparison.induced(&mut self.model, degree)?;
+                    let map = data.named(
+                        &mut self.model,
+                        left.text.as_str().into(),
+                        right.text.as_str().into(),
+                    )?;
+                    self.model
+                        .define_sheaf_shared(left.text, data.source.clone());
+                    self.model
+                        .define_sheaf_shared(right.text, data.target.clone());
+                    self.model.define_sheaf_map(name.text, map);
+                } else {
+                    let map = comparison.raw_map(degree)?;
+                    self.model.define_sheaf_map_shared(name.text, map);
+                }
+                return Ok(None);
+            }
+            StatementForm::SheafBCLinear(comparison, y, degree, query) => {
+                let comparison = self.model.bc_comparison(&comparison)?;
+                let point = comparison.y(&self.model, &y)?;
+                comparison.induced(&mut self.model, degree)?.report(
+                    &mut self.model,
+                    point,
+                    query,
+                )?
+            }
+            StatementForm::SheafBCUniversal(square, prime) => {
+                let square = self.model.bc_square(&square)?;
+                let prime = crate::sheaf::field(&mut self.model, prime)?;
+                crate::sheaf_bc_comma::universal(&mut self.model, &square, prime)?
+            }
+            StatementForm::SheafBCComma(square, prime, y, x, witness) => {
+                let square = self.model.bc_square(&square)?;
+                let prime = crate::sheaf::field(&mut self.model, prime)?;
+                let y = square.y_index(&self.model, &y)?;
+                let x = square.x_index(&self.model, &x)?;
+                if let Some((degree, index)) = witness {
+                    crate::sheaf_bc_comma::witness(
+                        &mut self.model,
+                        &square,
+                        y,
+                        x,
+                        prime,
+                        degree,
+                        index,
+                    )?
+                } else {
+                    crate::sheaf_bc_comma::ranks(&mut self.model, &square, y, x, prime)?
+                }
             }
             StatementForm::SheafMap(name, source, target, matrices) => {
                 self.model.check_new_sheaf_map(&name)?;
@@ -3477,6 +3575,11 @@ impl Engine {
                     ),
                 }
             }
+            TypedForm::SheafBCApply(comparison, degree, input) => match self.eval(input)? {
+                Value::SheafC(raw) => comparison.apply_cochains(&mut self.model, &raw),
+                Value::OddClass(raw) => comparison.apply_class(&mut self.model, *degree, &raw),
+                _ => unreachable!(),
+            },
             TypedForm::SetKan(action, input) => {
                 let rows = input.as_ref().map(|input| self.eval(input)).transpose()?;
                 let rows = rows.as_ref().map(|value| {
@@ -7428,6 +7531,33 @@ impl Checker<'_> {
             }
             ExprForm::SetLogic(operation, labels, inputs) => {
                 self.set_logic(operation, labels, inputs)
+            }
+            ExprForm::SheafBCApply(comparison, input) => {
+                let comparison = self.model.bc_comparison(&comparison)?;
+                let input = self.expr(*input)?;
+                let (form, degree) = match self.model.kind(input.ty) {
+                    Kind::SheafComplex(form, name, degree) if name == &comparison.from_name => {
+                        (*form, *degree)
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            input.span,
+                            format!(
+                                "shBCApply requires ShTot or ShHyper from '{}'",
+                                comparison.from_name
+                            ),
+                        ))
+                    }
+                };
+                let ty = self.model.known_sheaf_complex_type(
+                    form,
+                    comparison.to_name.clone(),
+                    degree,
+                )?;
+                Ok((
+                    ty,
+                    TypedForm::SheafBCApply(comparison, degree, Box::new(input)),
+                ))
             }
             ExprForm::SetKan(operation, first, second, input) => {
                 let input = input

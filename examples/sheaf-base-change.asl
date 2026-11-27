@@ -1,0 +1,23 @@
+// A duplicate image in the first edge gives zero on that normalized flag.
+space X {a<b};
+space XP {x<y<z};
+let f=tab X -> S {a=>S.lo,b=>S.hi};
+let u=tab XP -> X {x=>X.a,y=>X.a,z=>X.b};
+let v=\s : S => s;
+let fp=tab XP -> S {x=>S.lo,y=>S.lo,z=>S.hi};
+shbcsquare Q[f,u,v,fp];
+sheaf F[X,5] {a:1,b:1} {a<b:[2]};
+shbc B[Q,F];
+shbcmap Raw[B,1];
+let g=shTerm[B__from__1,[lo],0];
+assert shApply[Raw](g)==add(shTerm[B__to__1,[lo],1],shTerm[B__to__1,[lo],2]);
+let t0=shTotEmbed[B__from,0](shTerm[B__from__0,[lo],0]);
+let t1=shTotEmbed[B__from,1](g);
+assert shD(shBCApply[B](t0))==shBCApply[B](shD(t0));
+assert shD(shBCApply[B](t1))==shBCApply[B](shD(t1));
+let z=shhypergen[B__from,0,0];
+assert shBCApply[B](z)==shClass(shBCApply[B](shRep(z)));
+shbchom Degree0[B,0];
+shmaprank[Degree0,lo];
+shmaprank[Degree0,hi];
+shbcuniversal[Q,5];

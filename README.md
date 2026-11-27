@@ -320,6 +320,25 @@ The example suspends the finite product of two circles. For the constant sheaf o
 
 `shdelignecomplex T[j,K,c];` extends a bounded complex along a named open embedding and applies the same smart cutoff. This permits successive Deligne steps with different cutoffs. The double-suspension example adds two tips at each step to the finite torus. Cutoffs $(0,1)$ give ranks $1,0,0,2,1$ and cutoffs $(1,1)$ give $1,2,0,0,1$. The ranks agree in complementary degrees on the four-dimensional model. [Iterated Deligne example](examples/sheaf-iterated-deligne.asl)
 
+### Derived right Beck–Chevalley comparison
+
+`shbcsquare Q[f,u,v,fp];` checks named monotone maps $f:X\to Y$, $u:X'\to X$, $v:Y'\to Y$ and $f':X'\to Y'$ with $fu=vf'$. For a sheaf $F$ on $X$, `shbc B[Q,F];` constructs the right comparison $v^*Rf_*F\to Rf'_*u^*F$. Use `shbccomplex B[Q,K];` for a bounded complex. The named complexes `B__from` and `B__to` live on $Y'$. Their stalks at $y'$ are the total Roos cochains on $P=f^{-1}(\uparrow v(y'))$ and $P'=f'^{-1}(\uparrow y')$ with the indicated coefficients.
+
+For a strict flag in $P'$, the comparison reads the cochain on its image in $P$. A repeated image makes the flag degenerate and gives zero. For a strict image flag, the terminal stalk coordinate is unchanged. This is a cochain map and commutes with restriction on $Y'$. `shBCApply[B](a)` applies it to `ShTot(B__from,n)` or to `ShHyper(B__from,n)` via class representatives. `shbcmap M[B,q];` names the ordinary map of the two degree-$q$ cochain sheaves. `shbchom M[B,q];` names the induced map on the degree-$q$ cohomology sheaves `M__source` and `M__target`. [Normalized comparison example](examples/sheaf-base-change.asl)
+
+`shbcrank[B,y,q];` gives the source dimension, target dimension, rank, kernel dimension and cokernel dimension at stalk $y$. `shbckernel[B,y,q];` and `shbccokernel[B,y,q];` give a nonzero witness when the indicated obstruction exists and an empty list otherwise. Witnesses use the source or target cohomology basis of `shbchom` and list pairs of index and coefficient.
+
+`shbcuniversal[Q,p];` tests the derived comparison for **every** coefficient sheaf over $\mathbb F_p$. For each $y'\in Y'$ and $x\in P$, it computes the augmented homology of the comma poset $\{z\in P'\mid u(z)\le x\}$. All groups must vanish. This homological initiality criterion follows by resolving coefficients by injective diagrams. On the injective diagram that is $\mathbb F_p$ at points below $x$, the two local complexes compute the constant cohomology of the downset ending at $x$ in $P$ and of the comma poset, respectively. The former has a terminal point. Thus a nonzero augmented group gives a concrete coefficient obstruction, including a degree-zero kernel if the comma poset is empty. The report gives the first failing pair, the lowest failed augmented degree for that pair, and a signed nonboundary cycle.
+
+`shbccomma[Q,p,y,x];` lists all nonzero augmented ranks for that pair. `shbcwitness[Q,p,y,x,d,i];` gives an actual chain representative of the indexed homology class in degree $d$. The chain is printed as pairs of coefficients and ordered point lists. The empty flag represents the augmentation coordinate in degree $-1$.
+
+The generator takes the cone on a finite sphere or a triangulated projective plane and selects its link by a strict pullback square. For the sphere of dimension six, ordinary right Kan base change is invertible on the constant set family, and the first derived failure occurs in degree six. For the projective plane the universal comparison is exact at odd primes and has augmented obstructions in degrees one and two over $\mathbb F_2$. [Derived base-change generator](examples/sheaf-base-change.awk)
+
+```sh
+awk -v kind=sphere -v dim=6 -v prime=5 -f examples/sheaf-base-change.awk | cargo run --quiet -- -
+awk -v kind=rp2 -v prime=2 -f examples/sheaf-base-change.awk | cargo run --quiet -- -
+```
+
 ### Extraordinary inverse image and local supports
 
 `shextra K[i,F];` and `shextracomplex K[i,A];` construct $Ri^!$ of an ordinary sheaf `F` or a bounded complex `A` on the named target of $i:Z\to X$. The map must be injective, reflect the order, and have downward-closed image. At $z$ let $U$ be the principal open above $i(z)$ and let $U^\circ$ be its complement of the image of $Z$. The stalk model consists of Roos cochains on $U$ supported on chains meeting $Z$. Since $Z$ is closed, these chains begin in $Z$. The differential includes the signed stalk differential of the coefficients. Restrictions keep the same chains on smaller opens. The resulting complex on $Z$ has components `K__0`, `K__1`, and so on, and `shcohomology H[K,n];` takes its cohomology sheaf.

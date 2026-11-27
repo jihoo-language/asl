@@ -51,7 +51,7 @@ impl StalkQuotient {
         }
     }
 
-    fn representative(
+    pub(crate) fn representative(
         &self,
         model: &mut Model,
         prime: Prime,
@@ -113,10 +113,25 @@ pub(crate) fn cohomology(model: &mut Model, complex: &Complex, degree: usize) ->
         );
     };
     let original = component.sheaf.as_ref();
+    let quotients = quotients(model, complex, degree)?;
+    induced_sheaf(model, original, &quotients)
+}
+
+pub(crate) fn quotients(
+    model: &mut Model,
+    complex: &Complex,
+    degree: usize,
+) -> Result<Vec<StalkQuotient>> {
+    let Some(component) = complex.component_at(degree) else {
+        let count = complex.poset().names.len();
+        model.spend(count)?;
+        return Ok((0..count).map(|_| StalkQuotient::Full(0)).collect());
+    };
+    let original = component.sheaf.as_ref();
     let prime = complex.prime();
     let incoming = degree.checked_sub(1).and_then(|q| complex.maps().get(q));
     let outgoing = complex.maps().get(degree);
-    let quotients = original
+    original
         .dims()
         .iter()
         .enumerate()
@@ -129,6 +144,5 @@ pub(crate) fn cohomology(model: &mut Model, complex: &Complex, degree: usize) ->
                 outgoing.map(|m| m.matrix(point)),
             )
         })
-        .collect::<Result<Vec<_>>>()?;
-    induced_sheaf(model, original, &quotients)
+        .collect()
 }

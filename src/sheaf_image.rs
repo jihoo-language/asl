@@ -203,17 +203,29 @@ impl Site {
     pub(crate) fn open_families<T>(
         &self,
         model: &mut Model,
+        make: impl FnMut(&mut Model, &[bool]) -> Result<T>,
+    ) -> Result<Opens<T>> {
+        self.open_families_at(model, 0..self.target_poset.names.len(), make)
+    }
+
+    pub(crate) fn contains_in_future(&self, anchor: usize, source: usize) -> bool {
+        let image = self.images[source];
+        anchor == image || self.target_poset.strict_less(anchor, image)
+    }
+
+    pub(crate) fn open_families_at<T>(
+        &self,
+        model: &mut Model,
+        anchors: impl IntoIterator<Item = usize>,
         mut make: impl FnMut(&mut Model, &[bool]) -> Result<T>,
     ) -> Result<Opens<T>> {
         let mut unique = Vec::new();
-        let mut indices = Vec::with_capacity(self.target_poset.names.len());
+        let mut indices = Vec::new();
         let mut masks = BTreeMap::new();
-        for point in 0..self.target_poset.names.len() {
+        for point in anchors {
             model.spend(1 + self.images.len())?;
-            let filled: Vec<_> = self
-                .images
-                .iter()
-                .map(|&image| point == image || self.target_poset.strict_less(point, image))
+            let filled: Vec<_> = (0..self.images.len())
+                .map(|source| self.contains_in_future(point, source))
                 .collect();
             let index = match masks.entry(filled) {
                 Entry::Occupied(entry) => *entry.get(),

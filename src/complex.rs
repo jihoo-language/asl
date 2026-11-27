@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::error::{Error, Result};
-use crate::model::{Model, TypeId};
+use crate::model::{Model, Poset, TypeId};
 
 const MAX_SIMPLICES: usize = 50_000;
 const MAX_SIMPLEX_VERTICES: usize = 300_000;
@@ -47,6 +47,28 @@ impl OrderComplex {
             }
         }
         Ok(complex)
+    }
+
+    pub(crate) fn induced(model: &mut Model, site: &Poset, points: &[usize]) -> Result<Self> {
+        model.spend(points.len() * points.len())?;
+        let mut upper = vec![Vec::new(); points.len()];
+        let mut count = points.len();
+        for (i, &x) in points.iter().enumerate() {
+            for (j, &y) in points.iter().enumerate() {
+                if site.strict_less(x, y) {
+                    count += 1;
+                    if count > MAX_SIMPLICES {
+                        return Err(Error::plain("order complex exceeds the simplex limit"));
+                    }
+                    upper[i].push(j);
+                }
+            }
+        }
+        Ok(Self {
+            upper,
+            simplices: points.len(),
+            simplex_vertices: points.len(),
+        })
     }
 
     pub(crate) fn vertices(&self) -> Vec<Simplex> {
