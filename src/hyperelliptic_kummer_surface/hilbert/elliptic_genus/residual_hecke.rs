@@ -40,6 +40,37 @@ impl Specialization {
     ) -> Result<Self> {
         let prime = checked_prime(model, p)?;
         let root = root.rem_euclid(i128::from(prime.get())) as u32;
+        Self::at_prime(model, source, packet, prime, root)
+    }
+
+    pub(super) fn rational(
+        model: &mut Model,
+        source: Label,
+        packet: Rc<Packet>,
+        prime: Prime,
+    ) -> Result<Self> {
+        if packet.degree() != 1 {
+            return Err(Error::plain(
+                "a quadratic ordinary measure requires a named split residual embedding",
+            ));
+        }
+        let coefficient = packet.polynomial()[1];
+        let magnitude = coefficient.magnitude.residue(prime.get());
+        let root = if coefficient.negative {
+            magnitude
+        } else {
+            prime.negate(magnitude)
+        };
+        Self::at_prime(model, source, packet, prime, root)
+    }
+
+    fn at_prime(
+        model: &mut Model,
+        source: Label,
+        packet: Rc<Packet>,
+        prime: Prime,
+        root: u32,
+    ) -> Result<Self> {
         let (value, derivative) =
             evaluate_with_derivative(model, packet.polynomial(), prime, root)?;
         if value != 0 {
@@ -61,29 +92,52 @@ impl Specialization {
     }
 
     pub(crate) fn reduce(&self, model: &mut Model, value: &Element) -> Result<u32> {
-        let (numerator, mut unit) = value.fraction_parts();
+        self.reduce_to_modulus(model, value, u64::from(self.prime.get()))
+            .map(|value| value as u32)
+    }
+
+    pub(super) fn reduce_to_modulus(
+        &self,
+        model: &mut Model,
+        value: &Element,
+        modulus: u64,
+    ) -> Result<u64> {
+        let (numerator, denominator) = value.fraction_parts();
         let p = self.prime.get();
-        let prime = u64::from(p);
-        let mut modulus = prime;
-        loop {
-            model.spend(1)?;
-            let (quotient, remainder) = unit.divide_u32(p);
-            if remainder != 0 {
-                break;
-            }
-            unit = quotient;
-            modulus = modulus.checked_mul(prime).ok_or_else(precision)?;
-        }
-        let clearing = modulus / prime;
-        let root = self.lift_root(model, modulus)?;
-        let numerator = evaluate(model, numerator.iter().rev().copied(), root, modulus)?;
+        let (unit, exponent) = strip_denominator(model, denominator, p)?;
+        let clearing = u64::from(p).checked_pow(exponent).ok_or_else(precision)?;
+        let target = modulus.checked_mul(clearing).ok_or_else(precision)?;
+        let root = self.lift_root(model, target)?;
+        let numerator = evaluate(model, numerator.iter().rev().copied(), root, target)?;
         if !numerator.is_multiple_of(clearing) {
             return Err(Error::plain(
                 "Hecke eigenpacket value is nonintegral at the specified prime and root",
             ));
         }
-        let inverse = prime_linear::invert(model, self.prime, unit.residue(p))?;
-        Ok(self.prime.mul((numerator / clearing) as u32, inverse))
+        let (_, unit) = unit.divide(model, u128::from(modulus))?;
+        let inverse = invert_unit(model, p, unit as u64, modulus)?;
+        Ok(mul_mod(numerator / clearing, inverse, modulus))
+    }
+
+    pub(super) fn integrality_deficit(&self, model: &mut Model, value: &Element) -> Result<u32> {
+        let (numerator, denominator) = value.fraction_parts();
+        let p = self.prime.get();
+        let (_, exponent) = strip_denominator(model, denominator, p)?;
+        if exponent == 0 || numerator.len() == 1 {
+            return Ok(exponent);
+        }
+        let modulus = u64::from(p).checked_pow(exponent).ok_or_else(precision)?;
+        let root = self.lift_root(model, modulus)?;
+        let mut value = evaluate(model, numerator.iter().rev().copied(), root, modulus)?;
+        if value == 0 {
+            return Ok(0);
+        }
+        let mut deficit = exponent;
+        while value.is_multiple_of(u64::from(p)) {
+            value /= u64::from(p);
+            deficit -= 1;
+        }
+        Ok(deficit)
     }
 
     pub(crate) fn fourier(&self, model: &mut Model, n: u128) -> Result<u32> {
@@ -127,26 +181,74 @@ impl Specialization {
     }
 
     fn lift_root(&self, model: &mut Model, target: u64) -> Result<u64> {
-        let p = u64::from(self.prime.get());
-        let mut root = u64::from(self.root);
-        let mut step = p;
-        while step < target {
-            let next = step * p;
-            let value = evaluate(model, self.packet.polynomial().iter().copied(), root, next)?;
-            if !value.is_multiple_of(step) {
-                return Err(Error::plain(
-                    "inconsistent Hensel lift of the residual Hecke root",
-                ));
-            }
-            let digit = self.prime.negate(
-                self.prime
-                    .mul((value / step) as u32, self.inverse_derivative),
-            );
-            root += u64::from(digit) * step;
-            step = next;
-        }
-        Ok(root)
+        lift_simple_root(
+            model,
+            self.prime,
+            self.root,
+            self.inverse_derivative,
+            target,
+            |model, root, modulus| {
+                evaluate(
+                    model,
+                    self.packet.polynomial().iter().copied(),
+                    root,
+                    modulus,
+                )
+            },
+        )
     }
+}
+
+fn strip_denominator(
+    model: &mut Model,
+    mut unit: super::Magnitude,
+    p: u32,
+) -> Result<(super::Magnitude, u32)> {
+    let mut exponent = 0;
+    loop {
+        model.spend(1)?;
+        let (quotient, remainder) = unit.divide_u32(p);
+        if remainder != 0 {
+            return Ok((unit, exponent));
+        }
+        unit = quotient;
+        exponent += 1;
+    }
+}
+
+pub(super) fn invert_unit(model: &mut Model, p: u32, value: u64, modulus: u64) -> Result<u64> {
+    let p = u64::from(p);
+    if value.is_multiple_of(p) {
+        return Err(Error::plain("p-adic inversion requires a unit"));
+    }
+    let phi = (modulus / p) * (p - 1);
+    power_mod(model, value, u128::from(phi - 1), modulus)
+}
+
+pub(super) fn lift_simple_root(
+    model: &mut Model,
+    prime: Prime,
+    initial: u32,
+    inverse_derivative: u32,
+    target: u64,
+    mut evaluate: impl FnMut(&mut Model, u64, u64) -> Result<u64>,
+) -> Result<u64> {
+    let p = u64::from(prime.get());
+    let mut root = u64::from(initial);
+    let mut step = p;
+    while step < target {
+        let next = step * p;
+        let value = evaluate(model, root, next)?;
+        if !value.is_multiple_of(step) {
+            return Err(Error::plain(
+                "inconsistent Hensel lift of a simple Hecke root",
+            ));
+        }
+        let digit = prime.negate(prime.mul((value / step) as u32, inverse_derivative));
+        root += u64::from(digit) * step;
+        step = next;
+    }
+    Ok(root)
 }
 
 pub(crate) fn eisenstein(

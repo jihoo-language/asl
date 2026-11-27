@@ -875,3 +875,183 @@ fn modular_symbols_and_twists_reject_invalid_endpoints_parities_and_nonprimitive
         "{result}"
     );
 }
+
+fn sum_expressions(values: impl IntoIterator<Item = String>) -> String {
+    values
+        .into_iter()
+        .reduce(|left, right| format!("add({left},{right})"))
+        .unwrap()
+}
+
+#[test]
+fn mazur_tate_group_ring_trace_and_transfer_verify_the_distribution_relation() {
+    let mut source = String::from(
+        "rvheckepacket D(rvHeckeT[12,2]);
+         rvheckeeigenperiod P[D,plus,2]; rvheckeeigenperiod Q[D,minus,1];",
+    );
+    for (prefix, prime, level, r, a, moment, moment_den, lift_sum, lift_den) in [
+        ("P", 2u32, 1u32, 0, 1, -37764, 691, 869472, 691),
+        ("P", 3, 1, 2, 1, 3159, 1, 855117, 1),
+        ("Q", 3, 2, 1, 1, -300808089, 1, -76377417561_i128, 1),
+    ] {
+        let x = format!("{prefix}{prime}");
+        let next = level + 1;
+        let previous = level - 1;
+        let p_to_w = i128::from(prime).pow(10);
+        let modulus = prime.pow(level);
+        writeln!(source,
+            "let {x}prev = rvMazurTateTheta[{prefix},{prime},{previous},{r}];
+             let {x}mid = rvMazurTateTheta[{prefix},{prime},{level},{r}];
+             let {x}next = rvMazurTateTheta[{prefix},{prime},{next},{r}];
+             let {x}trace = rvMazurTateTrace({x}next);
+             let {x}transfer = rvMazurTateTransfer({x}prev);
+             assert {x}trace == add(rvMazurTateScale(rvHeckeEigenCoeff[D,{prime}],{x}mid),
+                     neg(rvMazurTateScale(rvHeckeEigenScalar[D,{p_to_w},1],{x}transfer)));
+             assert rvMazurTateCoeff[{a}]({x}mid) == rvHeckeEigenScalar[D,{moment},{moment_den}];
+             assert rvMazurTateCoeff[{a}]({x}trace) == rvHeckeEigenScalar[D,{lift_sum},{lift_den}];
+             assert rvMazurTateMoment[{prefix},{prime},{level},{r},{}] == rvMazurTateCoeff[{a}]({x}mid);
+             assert add({x}mid,neg({x}mid)) == zero[RVMazurTate({prefix},{prime},{level},{r})];
+             assert rvMazurTateCoeff[0]({x}mid) == rvHeckeEigenScalar[D,0,1];",
+            i128::from(a) - 7 * i128::from(modulus),
+        ).unwrap();
+        let fibre = if previous == 0 { prime - 1 } else { prime };
+        writeln!(
+            source,
+            "assert rvMazurTateTrace({x}transfer) ==
+                rvMazurTateScale(rvHeckeEigenScalar[D,{fibre},1],{x}prev);"
+        )
+        .unwrap();
+    }
+    assert_eq!(stdout(interpret(&source)), "");
+}
+
+#[test]
+fn mazur_tate_moments_and_ordinary_measure_match_the_eleven_adic_oracle() {
+    assert_eq!(
+        stdout(example("mazur-tate-ordinary")),
+        concat!(
+            "RVHeckeEigen(Delta){[3159]/1}\n",
+            "RVHeckeEigen(Delta){[855117]/1}\n",
+            "rvMazurTateOrdinaryData[O] = p=11, precision=12, modulus=3138428376721, a_p=534612, alpha=2853117240722, period_scale=11^0\n",
+            "RVMazurOrdinary(O){1331142842736}\n",
+        )
+    );
+    let moments =
+        sum_expressions((0..11).map(|b| format!("rvMazurTateMoment[P,11,2,2,{}]", 2 + 11 * b)));
+    let measures =
+        sum_expressions((0..11).map(|b| format!("rvMazurTateMeasure[O,2,2,{}]", 2 + 11 * b)));
+    let source = format!(
+        "rvheckepacket D(rvHeckeT[12,2]); rvheckeeigenperiod P[D,plus,2];
+         assert rvMazurTateMoment[P,11,1,2,2] == rvHeckeEigenScalar[D,225113639,1];
+         assert {moments} == rvHeckeEigenScalar[D,120374390197669,1];
+         let all = rvMazurTateTheta[P,11,2,2];
+         assert rvMazurTateCoeff[2](rvMazurTateTrace(all)) == rvHeckeEigenScalar[D,120374390197669,1];
+         rvmazurordinary O[P,11,12];
+         let parent = rvMazurTateMeasure[O,1,2,2];
+         assert {measures} == parent;
+         assert parent == rvMazurTateMeasure[O,1,2,-20];
+         assert add(parent,neg(parent)) == zero[RVMazurOrdinary(O)];",
+    );
+    assert_eq!(stdout(interpret(&source)), "");
+    let modulus = 3138428376721_i128;
+    let alpha = 2853117240722_i128;
+    assert_eq!(
+        (alpha * alpha - 534612 * alpha + 11_i128.pow(11)) % modulus,
+        0
+    );
+    assert_ne!(alpha % 11, 0);
+}
+
+fn ordinary_residue(line: &str) -> u64 {
+    line.split_once('{')
+        .unwrap()
+        .1
+        .strip_suffix('}')
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn ordinary_split_embedding_and_generator_change_agree() {
+    let descendants =
+        sum_expressions((0..13).map(|b| format!("rvMazurTateMeasure[A,2,2,{}]", 2 + 13 * b)));
+    let source = format!(
+        "let t = rvHeckeT[24,2];
+         rvheckepacket E(t);
+         rvheckepacket F(add(rvHeckeScale[5](t),rvHeckeScale[7](rvHeckeUnit[24])));
+         rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[F,plus,2];
+         let theta0 = rvMazurTateTheta[P,2,0,2];
+         let theta1 = rvMazurTateTheta[P,2,1,2];
+         let theta2 = rvMazurTateTheta[P,2,2,2];
+         assert rvMazurTateTrace(theta2) ==
+             add(rvMazurTateScale(rvHeckeEigenGenerator[E],theta1),
+                 neg(rvMazurTateScale(rvHeckeEigenScalar[E,4194304,1],rvMazurTateTransfer(theta0))));
+         rvheckeresidual B[E,13,2]; rvheckeresidual C[F,13,4];
+         rvmazurordinary A[P,B,5]; rvmazurordinary R[Q,C,5];
+         rvMazurTateOrdinaryData[A]; rvMazurTateOrdinaryData[R];
+         assert {descendants} == rvMazurTateMeasure[A,1,2,2];
+         show rvMazurTateMeasure[A,1,2,2]; show rvMazurTateMeasure[R,1,2,2];",
+    );
+    let report = stdout(interpret(&source));
+    let lines = report.lines().collect::<Vec<_>>();
+    assert_eq!(
+        lines[0].split_once(" = ").unwrap().1,
+        lines[1].split_once(" = ").unwrap().1
+    );
+    assert_eq!(lines[0], "rvMazurTateOrdinaryData[A] = p=13, precision=5, modulus=371293, a_p=225285, alpha=225285, period_scale=13^0");
+    assert_eq!(ordinary_residue(lines[2]), 252001);
+    assert_eq!(ordinary_residue(lines[2]), ordinary_residue(lines[3]));
+}
+
+#[test]
+fn mazur_tate_validates_moments_levels_ordinary_units_and_embedding_identity() {
+    let header = "rvheckepacket D(rvHeckeT[12,2]); rvheckeeigenperiod P[D,plus,2];";
+    for (program, expected) in [
+        ("show rvMazurTateTheta[P,4,2,2];", "is not prime"),
+        ("show rvMazurTateMoment[P,3,2,11,1];", "between 0 and k−2"),
+        ("show rvMazurTateTrace(rvMazurTateTheta[P,3,0,2]);", "trace requires level at least one"),
+        ("rvmazurordinary O[P,2,5];", "requires a p-adic unit a_p"),
+        ("rvmazurordinary O[P,11,0];", "precision must be positive"),
+        ("rvmazurordinary O[P,11,100];", "exceeds the unsigned 64-bit range"),
+        ("rvmazurordinary O[P,11,3]; show rvMazurTateMeasure[O,0,2,1];", "measure requires level at least one"),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeresidual R[E,11,-24]; rvmazurordinary O[P,R,3];",
+            "must use the eigenperiod's named packet",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvheckeeigenperiod Q[E,plus,2]; rvmazurordinary O[Q,13,3];",
+            "requires a named split residual embedding",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvheckeeigenperiod Q[E,plus,2]; rvheckeresidual R[E,13,12]; rvmazurordinary O[Q,R,3];",
+            "requires a p-adic unit a_p",
+        ),
+    ] {
+        let error = diagnostic(interpret(&format!("{header} {program}")));
+        assert!(error.contains(expected), "{program}: {error}");
+    }
+}
+
+#[test]
+fn ordinary_measure_clears_the_period_denominator_and_reduces_across_precisions() {
+    let report = stdout(interpret(
+        "rvheckepacket D(rvHeckeT[12,2]);
+         rvheckeeigenperiod P[D,plus,2]; rvheckeeigenperiod Q[D,plus,0];
+         rvmazurordinary A[P,691,2]; rvmazurordinary B[Q,691,2];
+         rvMazurTateOrdinaryData[A]; rvMazurTateOrdinaryData[B];
+         show rvMazurTateMeasure[A,1,2,2]; show rvMazurTateMeasure[B,1,2,2];
+         rvmazurordinary High[P,11,12]; rvmazurordinary Low[P,11,3];
+         show rvMazurTateMeasure[High,1,2,2]; show rvMazurTateMeasure[Low,1,2,2];",
+    ));
+    let lines = report.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "rvMazurTateOrdinaryData[A] = p=691, precision=2, modulus=477481, a_p=374523, alpha=374523, period_scale=691^1");
+    assert_eq!(lines[1], "rvMazurTateOrdinaryData[B] = p=691, precision=2, modulus=477481, a_p=374523, alpha=374523, period_scale=691^0");
+    assert_eq!(ordinary_residue(lines[2]), 453296);
+    assert_eq!(ordinary_residue(lines[3]), 411836);
+    assert_eq!((453296 + 36 * 411836) % 477481, 0);
+    assert_eq!(
+        ordinary_residue(lines[4]) % 1331,
+        ordinary_residue(lines[5])
+    );
+}

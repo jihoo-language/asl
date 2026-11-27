@@ -163,6 +163,8 @@ pub(crate) enum TypeForm {
     ModularHecke(u128),
     HeckeEigen(Label),
     HeckeSymbol(Label),
+    MazurTate(period::mazur_tate::Spec),
+    MazurOrdinary(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1068,6 +1070,7 @@ pub(crate) enum ExprForm {
     PeriodPolynomial(period::Expression),
     HeckeEigenperiod(period::eigenperiod::Expression),
     HeckeSymbol(period::modular_symbol::Expression),
+    MazurTate(period::mazur_tate::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1322,6 +1325,7 @@ pub(crate) enum StatementForm {
     HeckeQuadratic(quadratic_hecke::Query),
     PeriodPolynomial(period::Report),
     HeckeEigenperiod(period::eigenperiod::Declare),
+    MazurTate(period::mazur_tate::Statement),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -5089,6 +5093,101 @@ impl<'src> Parser<'src> {
         ))
     }
 
+    fn mazur_tate_spec(&mut self) -> Result<period::mazur_tate::Spec> {
+        let period = self.label()?;
+        self.expect(Token::Comma)?;
+        let (prime, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (level, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (index, _) = self.number()?;
+        Ok(period::mazur_tate::Spec(period, prime, level, index))
+    }
+
+    fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use period::mazur_tate::{Embedding, Statement};
+        self.advance()?;
+        let declaration = if name == "rvmazurordinary" {
+            let measure = self.label()?;
+            self.expect(Token::LBracket)?;
+            let period = self.label()?;
+            self.expect(Token::Comma)?;
+            let embedding = if matches!(self.token(), Token::Number(_)) {
+                Embedding::Rational(self.number()?.0)
+            } else {
+                Embedding::Residual(self.label()?)
+            };
+            self.expect(Token::Comma)?;
+            let (precision, _) = self.number()?;
+            Statement::Ordinary(measure, period, embedding, precision)
+        } else {
+            self.expect(Token::LBracket)?;
+            Statement::Data(self.label()?)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::MazurTate(declaration))
+    }
+
+    fn mazur_tate_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use period::mazur_tate::{Direction, Expression};
+        let (operation, depth) = match name {
+            "rvMazurTateScale" => {
+                let [scalar, distribution] = self.paren_pair(nest)?;
+                let depth = scalar.depth.max(distribution.depth) + 1;
+                (Expression::Scale(Box::new([scalar, distribution])), depth)
+            }
+            "rvMazurTateTrace" | "rvMazurTateTransfer" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let direction = if name == "rvMazurTateTrace" {
+                    Direction::Trace
+                } else {
+                    Direction::Transfer
+                };
+                (Expression::Change(direction, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                match name {
+                    "rvMazurTateCoeff" => {
+                        let a =
+                            self.signed_wide("a signed cyclotomic residue", "cyclotomic residue")?;
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        (Expression::Coefficient(a, Box::new(input)), depth)
+                    }
+                    "rvMazurTateMeasure" => {
+                        let measure = self.label()?;
+                        self.expect(Token::Comma)?;
+                        let (level, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        let (index, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        let a =
+                            self.signed_wide("a signed cyclotomic residue", "cyclotomic residue")?;
+                        self.expect(Token::RBracket)?;
+                        (Expression::Measure(measure, level, index, a), 0)
+                    }
+                    _ => {
+                        let spec = self.mazur_tate_spec()?;
+                        let query = if name == "rvMazurTateTheta" {
+                            Expression::Theta(spec)
+                        } else {
+                            self.expect(Token::Comma)?;
+                            let a = self
+                                .signed_wide("a signed cyclotomic residue", "cyclotomic residue")?;
+                            Expression::Moment(spec, a)
+                        };
+                        self.expect(Token::RBracket)?;
+                        (query, 0)
+                    }
+                }
+            }
+        };
+        expr(span, ExprForm::MazurTate(operation), depth)
+    }
+
     fn hecke_symbol_expression(
         &mut self,
         name: &str,
@@ -8770,6 +8869,9 @@ impl<'src> Parser<'src> {
                 name @ ("rvheckepacket" | "rvHeckeEigenData" | "rvHeckeEigenTrace"
                 | "rvHeckeEigenNorm" | "rvHeckeEigenCoord"),
             ) => self.hecke_eigen_statement(name)?,
+            Token::Word(name @ ("rvmazurordinary" | "rvMazurTateOrdinaryData")) => {
+                self.mazur_tate_statement(name)?
+            }
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -12293,6 +12395,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::PeriodPolynomial(grade), 0);
         }
+        if name.text == "RVMazurTate" && self.eat(Token::LParen)? {
+            let spec = self.mazur_tate_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MazurTate(spec), 0);
+        }
+        if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
+            let measure = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MazurOrdinary(measure), 0);
+        }
         if name.text == "RVHeckeSymbol" && self.eat(Token::LParen)? {
             let period = self.label()?;
             self.expect(Token::RParen)?;
@@ -14836,6 +14948,20 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvMazurTateMoment"
+                        | "rvMazurTateTheta"
+                        | "rvMazurTateCoeff"
+                        | "rvMazurTateMeasure"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvMazurTateTrace" | "rvMazurTateTransfer" | "rvMazurTateScale"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.mazur_tate_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

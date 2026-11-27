@@ -181,6 +181,45 @@ impl Symbol {
     }
 }
 
+pub(super) fn scaled_moment(
+    model: &mut Model,
+    period: &Eigenperiod,
+    modulus: u64,
+    r: usize,
+    residue: u64,
+    binomial: &[Vec<i128>],
+) -> Result<Element> {
+    let w = period.grade.degree();
+    let j = w - r;
+    let cusp = Cusp::new(i128::from(residue), i128::from(modulus))?;
+    let mut symbol = Symbol::zero(period);
+    symbol.accumulate_to_infinity(model, period, cusp, false)?;
+
+    // m^r times the shifted coefficient is the sum of
+    // binom(k,j) c_k a^(k-j) m^(w-k), with m=p^n.
+    // Evaluate by integral Horner to avoid large temporary denominators.
+    let mut value = Element::zero(period.packet.degree());
+    let mut power = Integer::from_i128(1);
+    let a = Integer::from_i128(i128::from(residue));
+    let m = Integer::from_i128(i128::from(modulus));
+    for (k, entry) in symbol.0.iter().enumerate().skip(j).rev() {
+        value = integer_scale(model, &value, a)?;
+        if !entry.is_zero() {
+            let scale = multiply(model, power, Integer::from_i128(binomial[k][j]))?;
+            let term = integer_scale(model, entry, scale)?;
+            value = value.add(model, &term)?;
+        }
+        if k != j {
+            power = multiply(model, power, m)?;
+        }
+    }
+    if j.is_multiple_of(2) {
+        Ok(value)
+    } else {
+        value.negate(model)
+    }
+}
+
 pub(crate) fn twist_ratio(
     model: &mut Model,
     period: &Eigenperiod,

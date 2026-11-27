@@ -11,6 +11,7 @@ use super::hecke::{self, Operator};
 
 pub(crate) mod eigenperiod;
 pub(crate) mod haberland;
+pub(crate) mod mazur_tate;
 pub(crate) mod modular_symbol;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

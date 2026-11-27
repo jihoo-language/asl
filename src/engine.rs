@@ -217,6 +217,7 @@ use crate::vbock;
 use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial, bp_rel};
 use crate::{mixed, mixed_page};
 use crate::{sheaf_serre, sheaf_stalk, sheaf_truncate};
+use period::mazur_tate;
 
 pub(crate) struct Engine {
     model: Model,
@@ -897,6 +898,16 @@ enum TypedForm {
     HeckeEigenNegate(Box<TypedExpr>),
     HeckeSymbolCoefficient(usize, Box<TypedExpr>),
     HeckeSymbolNegate(Box<TypedExpr>),
+    MazurTateCoefficient(mazur_tate::Grade, i128, Box<TypedExpr>),
+    MazurTateChange(
+        mazur_tate::Direction,
+        mazur_tate::Grade,
+        mazur_tate::Grade,
+        Box<TypedExpr>,
+    ),
+    MazurTateScale(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
+    MazurTateNegate(Box<TypedExpr>),
+    MazurOrdinaryNegate(u64, Box<TypedExpr>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2276,6 +2287,19 @@ impl Engine {
             }
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
+            StatementForm::MazurTate(command) => {
+                return match command {
+                    mazur_tate::Statement::Ordinary(name, period, embedding, precision) => {
+                        self.model
+                            .register_mazur_ordinary(name, period, embedding, precision)?;
+                        Ok(None)
+                    }
+                    mazur_tate::Statement::Data(name) => {
+                        let measure = self.model.mazur_ordinary(&name)?;
+                        Ok(Some(measure.data(&name.text)))
+                    }
+                };
+            }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
                 return Ok(None);
@@ -9012,6 +9036,17 @@ impl Engine {
                     (BinaryOp::Add, Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::MazurTate(a), Value::MazurTate(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => {
+                        let Kind::MazurOrdinary(_, modulus) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        Ok(Value::MazurOrdinary(crate::rv_unram::add_mod(
+                            a, b, *modulus,
+                        )))
+                    }
                     (BinaryOp::Add, Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11152,6 +11187,46 @@ impl Engine {
                     unreachable!()
                 };
                 packet.multiply(&mut self.model, &a, &b)
+            }
+            TypedForm::MazurTateCoefficient(grade, representative, input) => {
+                let Value::MazurTate(distribution) = self.eval(input)? else {
+                    unreachable!()
+                };
+                distribution.coefficient(&mut self.model, grade, *representative)
+            }
+            TypedForm::MazurTateChange(direction, source, target, input) => {
+                let Value::MazurTate(distribution) = self.eval(input)? else {
+                    unreachable!()
+                };
+                distribution
+                    .change(&mut self.model, source, target, *direction)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurTateScale(packet, input) => {
+                let (Value::HeckeEigen(scalar), Value::MazurTate(distribution)) =
+                    (self.eval(&input[0])?, self.eval(&input[1])?)
+                else {
+                    unreachable!()
+                };
+                distribution
+                    .scale(&mut self.model, packet, &scalar)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurTateNegate(input) => {
+                let Value::MazurTate(distribution) = self.eval(input)? else {
+                    unreachable!()
+                };
+                distribution
+                    .negate(&mut self.model)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurOrdinaryNegate(modulus, input) => {
+                let Value::MazurOrdinary(residue) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::MazurOrdinary(crate::rv_unram::sub_mod(
+                    0, residue, *modulus,
+                )))
             }
             TypedForm::HeckeSymbolCoefficient(index, input) => {
                 let Value::HeckeSymbol(symbol) = self.eval(input)? else {
@@ -13712,6 +13787,11 @@ impl Checker<'_> {
             TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::MazurTate(spec) => {
+                let (grade, _) = mazur_tate::Grade::resolve(self.model, spec)?;
+                self.model.mazur_tate_type(grade)
+            }
+            TypeForm::MazurOrdinary(name) => self.model.mazur_ordinary_type(&name),
             TypeForm::HeckeSymbol(name) => self.model.hecke_symbol_type(&name),
             TypeForm::PeriodPolynomial(grade) => self.model.period_type(grade),
             TypeForm::HeckeEigen(name) => self.model.hecke_eigen_type(&name),
@@ -14779,6 +14859,11 @@ impl Checker<'_> {
                     Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::MazurTate(grade) => {
+                        let period = self.model.hecke_eigenperiod(&grade.label(span))?;
+                        mazur_tate::Distribution::zero_for(&period).persist(self.model)?
+                    }
+                    Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::HeckeSymbol(name) => {
                         let period = self.model.hecke_eigenperiod(&Label { text: name.to_string(), span })?;
                         period::modular_symbol::Symbol::zero(&period).persist(self.model)?
@@ -17123,6 +17208,7 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::MazurTate(operation) => self.mazur_tate_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -17948,6 +18034,15 @@ impl Checker<'_> {
                             crate::lee_linear::Rational::integer(-1),
                             Box::new(input),
                         ),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::MazurTate(..)) {
+                    return Ok((input.ty, TypedForm::MazurTateNegate(Box::new(input))));
+                }
+                if let Kind::MazurOrdinary(_, modulus) = self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::MazurOrdinaryNegate(*modulus, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::HeckeSymbol(..)) {
@@ -21771,6 +21866,8 @@ impl Checker<'_> {
                         | Kind::ModularHecke(..)
                         | Kind::HeckeEigen(..)
                         | Kind::HeckeSymbol(..)
+                        | Kind::MazurTate(..)
+                        | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
@@ -25432,6 +25529,78 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn mazur_tate_expression(
+        &mut self,
+        expression: mazur_tate::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use mazur_tate::Expression;
+        match expression {
+            Expression::Moment(spec, representative) => {
+                let (grade, period) = mazur_tate::Grade::resolve(self.model, spec)?;
+                let ty = self.model.hecke_eigen_type(&period.source)?;
+                let value = grade.moment(self.model, &period, representative)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Theta(spec) => {
+                let (grade, period) = mazur_tate::Grade::resolve(self.model, spec)?;
+                let value = mazur_tate::Distribution::theta(self.model, &grade, &period)?
+                    .persist(self.model)?;
+                let ty = self.model.mazur_tate_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Coefficient(representative, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.mazur_tate_operand(&input, "rvMazurTateCoeff")?;
+                let period = self.model.hecke_eigenperiod(&grade.label(input.span))?;
+                let ty = self.model.hecke_eigen_type(&period.source)?;
+                Ok((
+                    ty,
+                    TypedForm::MazurTateCoefficient(grade, representative, Box::new(input)),
+                ))
+            }
+            Expression::Change(direction, input) => {
+                let input = self.expr(*input)?;
+                let source = self.mazur_tate_operand(&input, direction.name())?;
+                let target = source.change(direction)?;
+                let ty = self.model.mazur_tate_type(target.clone())?;
+                Ok((
+                    ty,
+                    TypedForm::MazurTateChange(direction, source, target, Box::new(input)),
+                ))
+            }
+            Expression::Scale(inputs) => {
+                let [scalar, distribution] = *inputs;
+                let scalar = self.expr(scalar)?;
+                let distribution = self.expr(distribution)?;
+                let grade = self.mazur_tate_operand(&distribution, "rvMazurTateScale")?;
+                let period = self
+                    .model
+                    .hecke_eigenperiod(&grade.label(distribution.span))?;
+                let source = self.model.hecke_eigen_type(&period.source)?;
+                self.require_type(source, &scalar, "rvMazurTateScale input")?;
+                let packet = self.model.hecke_eigenpacket(&period.source)?;
+                Ok((
+                    distribution.ty,
+                    TypedForm::MazurTateScale(packet, Box::new([scalar, distribution])),
+                ))
+            }
+            Expression::Measure(name, level, index, representative) => {
+                let measure = self.model.mazur_ordinary(&name)?;
+                let ty = self.model.mazur_ordinary_type(&name)?;
+                let value = measure.measure(self.model, level, index, representative)?;
+                Ok((ty, TypedForm::Constant(Value::MazurOrdinary(value))))
+            }
+        }
+    }
+
+    fn mazur_tate_operand(&self, input: &TypedExpr, operation: &str) -> Result<mazur_tate::Grade> {
+        if let Kind::MazurTate(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVMazurTate(P,p,n,r) distribution"))
+        }
     }
 
     fn hecke_symbol_expression(

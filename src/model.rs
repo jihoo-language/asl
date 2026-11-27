@@ -301,6 +301,8 @@ pub(crate) enum Kind {
     ModularHecke(u128),
     HeckeEigen(Box<str>),
     HeckeSymbol(Box<str>),
+    MazurTate(period::mazur_tate::Grade),
+    MazurOrdinary(Box<str>, u64),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -503,6 +505,8 @@ pub(crate) enum Value {
     ModularHecke(Rc<hecke::Operator>),
     HeckeEigen(Rc<eigenpacket::Element>),
     HeckeSymbol(Rc<period::modular_symbol::Symbol>),
+    MazurTate(Rc<period::mazur_tate::Distribution>),
+    MazurOrdinary(u64),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -718,6 +722,7 @@ pub(crate) struct Model {
     hecke_eigenpackets: HashMap<String, Rc<eigenpacket::Packet>>,
     hecke_residuals: HashMap<String, Rc<residual_hecke::Specialization>>,
     hecke_eigenperiods: HashMap<String, Rc<period::eigenperiod::Eigenperiod>>,
+    mazur_ordinary: HashMap<String, Rc<period::mazur_tate::Ordinary>>,
     period_bases: HashMap<period::Grade, Rc<period::Basis>>,
     integral_period_bases: HashMap<period::Grade, Rc<period::haberland::IntegralBasis>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
@@ -849,6 +854,7 @@ impl Model {
             hecke_eigenpackets: HashMap::new(),
             hecke_residuals: HashMap::new(),
             hecke_eigenperiods: HashMap::new(),
+            mazur_ordinary: HashMap::new(),
             period_bases: HashMap::new(),
             integral_period_bases: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
@@ -1147,6 +1153,7 @@ impl Model {
             Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
             Kind::PeriodPolynomial(grade) if grade.is_trivial() => 1,
+            Kind::MazurOrdinary(_, modulus) => usize::try_from(modulus).unwrap_or(usize::MAX),
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -1157,6 +1164,7 @@ impl Model {
             | Kind::ModularHecke(..)
             | Kind::HeckeEigen(..)
             | Kind::HeckeSymbol(..)
+            | Kind::MazurTate(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1379,6 +1387,7 @@ impl Model {
                 | Kind::ASOddDeRham(..)
                 | Kind::ASOddTate(..)
                 | Kind::PrimeScalar(..)
+                | Kind::MazurOrdinary(..)
                 | Kind::ASDeRham(..)
                 | Kind::BinaryScalar(..)
                 | Kind::EOType(..)
@@ -1431,6 +1440,7 @@ impl Model {
                 | Kind::ModularHecke(..)
                 | Kind::HeckeEigen(..)
                 | Kind::HeckeSymbol(..)
+                | Kind::MazurTate(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -4972,6 +4982,47 @@ impl Model {
             })
     }
 
+    pub(crate) fn mazur_tate_type(&mut self, grade: period::mazur_tate::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MazurTate(grade), 0)
+    }
+
+    pub(crate) fn mazur_ordinary_type(&mut self, name: &Label) -> Result<TypeId> {
+        let modulus = self.mazur_ordinary(name)?.modulus;
+        self.inhabited_type(Kind::MazurOrdinary(name.text.as_str().into(), modulus), 0)
+    }
+
+    pub(crate) fn register_mazur_ordinary(
+        &mut self,
+        name: Label,
+        period: Label,
+        embedding: period::mazur_tate::Embedding,
+        precision: usize,
+    ) -> Result<()> {
+        if self.mazur_ordinary.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "ordinary Mazur–Tate measure '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let measure = period::mazur_tate::Ordinary::new(self, &period, embedding, precision)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(name.text.len() + 20)?;
+        self.mazur_ordinary.insert(name.text, Rc::new(measure));
+        Ok(())
+    }
+
+    pub(crate) fn mazur_ordinary(&self, name: &Label) -> Result<Rc<period::mazur_tate::Ordinary>> {
+        self.mazur_ordinary.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown ordinary Mazur–Tate measure '{}'", name.text),
+            )
+        })
+    }
+
     pub(crate) fn hecke_symbol_type(&mut self, name: &Label) -> Result<TypeId> {
         self.hecke_eigenperiod(name)?;
         self.inhabited_type(Kind::HeckeSymbol(name.text.as_str().into()), 0)
@@ -6241,6 +6292,7 @@ impl Model {
             | Kind::ASOddDeRham(..)
             | Kind::ASOddTate(..)
             | Kind::PrimeScalar(..)
+            | Kind::MazurOrdinary(..)
             | Kind::ASDeRham(..)
             | Kind::BinaryScalar(..)
             | Kind::EOType(..)
@@ -6293,6 +6345,7 @@ impl Model {
             | Kind::ModularHecke(..)
             | Kind::HeckeEigen(..)
             | Kind::HeckeSymbol(..)
+            | Kind::MazurTate(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -6841,6 +6894,14 @@ impl Model {
             Kind::ModularHecke(weight) => out.push(&format!("RVHecke({weight})")),
             Kind::HeckeEigen(name) => out.push(&format!("RVHeckeEigen({name})")),
             Kind::HeckeSymbol(name) => out.push(&format!("RVHeckeSymbol({name})")),
+            Kind::MazurTate(grade) => out.push(&format!(
+                "RVMazurTate({},{},{},{})",
+                grade.period,
+                grade.prime.get(),
+                grade.level,
+                grade.index,
+            )),
+            Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
             }
@@ -7186,6 +7247,8 @@ impl Model {
             (Value::ModularHecke(a), Value::ModularHecke(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::MazurTate(a), Value::MazurTate(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7547,6 +7610,8 @@ impl Model {
             (Value::ModularHecke(a), Value::ModularHecke(b)) => a.compare(self, b),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => a.compare(self, b),
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => a.compare(self, b),
+            (Value::MazurTate(a), Value::MazurTate(b)) => a.compare(self, b),
+            (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -7954,6 +8019,26 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate rational Manin period polynomials",
                     ));
+                }
+                Kind::MazurTate(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an exact Mazur–Tate group ring",
+                    ));
+                }
+                Kind::MazurOrdinary(_, modulus) => {
+                    let size = usize::try_from(modulus).map_err(|_| {
+                        Error::plain(
+                            "ordinary Mazur–Tate residue ring exceeds the enumeration limit",
+                        )
+                    })?;
+                    if size > MAX_ELEMENTS {
+                        return Err(Error::plain(
+                            "ordinary Mazur–Tate residue ring exceeds the enumeration limit",
+                        ));
+                    }
+                    self.spend(size)?;
+                    self.allocate(size)?;
+                    (0..modulus).map(Value::MazurOrdinary).collect()
                 }
                 Kind::HeckeSymbol(..) => {
                     return Err(Error::plain(
@@ -9699,6 +9784,22 @@ impl Model {
                 out.push("{")?;
                 Self::write_hecke_element(out, element)?;
                 out.push("}")
+            }
+            Value::MazurTate(distribution) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, (residue, coefficient)) in distribution.terms().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{residue}: "))?;
+                    Self::write_hecke_element(out, coefficient)?;
+                }
+                out.push("}")
+            }
+            Value::MazurOrdinary(residue) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{residue}}}"))
             }
             Value::HeckeSymbol(symbol) => {
                 self.write_type(out, ty, 0)?;
