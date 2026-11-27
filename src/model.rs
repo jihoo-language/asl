@@ -645,6 +645,10 @@ pub(crate) struct Model {
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
+    og6_nilpotents: HashMap<
+        String,
+        Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Limit>,
+    >,
     og6_cusps: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp>>,
     og6_lattices: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>>,
     mukai_moduli: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>>,
@@ -760,6 +764,7 @@ impl Model {
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
+            og6_nilpotents: HashMap::new(),
             og6_cusps: HashMap::new(),
             og6_lattices: HashMap::new(),
             hilbert_square_form: None,
@@ -4185,6 +4190,32 @@ impl Model {
         self.allocate(name.text.len() + lattice.cells())?;
         self.og6_lattices.insert(name.text, Rc::new(lattice));
         Ok(())
+    }
+
+    pub(crate) fn define_og6_nilpotent(
+        &mut self,
+        name: Label,
+        limit: hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Limit,
+    ) -> Result<()> {
+        if self.og6_nilpotents.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("OG6 nilpotent '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(name.text.len() + limit.cells())?;
+        self.og6_nilpotents.insert(name.text, Rc::new(limit));
+        Ok(())
+    }
+
+    pub(crate) fn og6_nilpotent(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Limit>> {
+        self.og6_nilpotents
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown OG6 nilpotent '{}'", name.text)))
     }
 
     pub(crate) fn define_og6_cusp(

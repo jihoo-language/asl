@@ -711,6 +711,11 @@ enum TypedForm {
     OG6Negate(Box<TypedExpr>),
     OG6Reflect(Rc<og6::Lattice>, Box<[TypedExpr; 2]>),
     OG6CuspTransvection(Rc<og6::cusp::Cusp>, usize, Box<[TypedExpr; 2]>),
+    OG6Nilpotent(
+        Rc<og6::cusp::nilpotent::Limit>,
+        og6::cusp::nilpotent::Operation,
+        Box<TypedExpr>,
+    ),
     OG6CuspCentral(Rc<og6::cusp::Cusp>, i128, Box<TypedExpr>),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
     OG10Wall(
@@ -1878,6 +1883,7 @@ impl Engine {
             StatementForm::AbMukaiPair(inputs) => {
                 return self.abelian_mukai_pair(*inputs).map(Some)
             }
+            StatementForm::OG6Nilpotent(command) => return self.og6_nilpotent_command(*command),
             StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
             StatementForm::OG6(command) => return self.og6_command(*command),
             StatementForm::OG10(command) => return self.og10_command(*command).map(Some),
@@ -5970,6 +5976,64 @@ impl Engine {
         ))
     }
 
+    fn og6_nilpotent_command(
+        &mut self,
+        command: og6::cusp::nilpotent::Command,
+    ) -> Result<Option<String>> {
+        use og6::cusp::nilpotent::{Command, Limit};
+        match command {
+            Command::TypeII(name, cusp_name, k) => {
+                let cusp = self.model.og6_cusp(&cusp_name)?;
+                let lattice_name = Label {
+                    text: cusp.lattice_name.to_string(),
+                    span: cusp_name.span,
+                };
+                let lattice = self.model.og6_lattice(&lattice_name)?;
+                let limit = Limit::type_ii(&mut self.model, &lattice, cusp, k)?;
+                self.model.define_og6_nilpotent(name, limit)?;
+                Ok(None)
+            }
+            Command::TypeIII(name, cusp_name, index, input) => {
+                let cusp = self.model.og6_cusp(&cusp_name)?;
+                let lattice_name = Label {
+                    text: cusp.lattice_name.to_string(),
+                    span: cusp_name.span,
+                };
+                let lattice = self.model.og6_lattice(&lattice_name)?;
+                let input = self.checker().expr(*input)?;
+                let expected = self.model.og6_type(&lattice_name)?;
+                self.checker()
+                    .require_type(expected, &input, "rvog6nilpotentiii direction")?;
+                let Value::OG6(u) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let limit = Limit::type_iii(&mut self.model, &lattice, cusp, index, u)?;
+                self.model.define_og6_nilpotent(name, limit)?;
+                Ok(None)
+            }
+            Command::Data(name) => Ok(Some(self.model.og6_nilpotent(&name)?.report(&name.text)?)),
+            Command::InWeight(name, weight, input) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let lattice = Label {
+                    text: limit.cusp.lattice_name.to_string(),
+                    span: name.span,
+                };
+                let input = self.checker().expr(*input)?;
+                let expected = self.model.og6_type(&lattice)?;
+                self.checker()
+                    .require_type(expected, &input, "rvOG6NilpotentInWeight")?;
+                let Value::OG6(x) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let result = limit.in_weight(&mut self.model, weight, &x)?;
+                Ok(Some(format!(
+                    "rvOG6NilpotentInWeight[{}, {weight}] = {result}",
+                    name.text
+                )))
+            }
+        }
+    }
+
     fn og6_cusp_command(&mut self, command: og6::cusp::Command) -> Result<Option<String>> {
         use og6::cusp::Command;
         match command {
@@ -8802,6 +8866,14 @@ impl Engine {
                     unreachable!()
                 };
                 cusp.transvection(&mut self.model, *index, &u, &x)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG6Nilpotent(limit, operation, input) => {
+                let Value::OG6(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                limit
+                    .apply(&mut self.model, *operation, &x)?
                     .persist(&mut self.model)
             }
             TypedForm::OG6CuspCentral(cusp, k, input) => {
@@ -14697,6 +14769,21 @@ impl Checker<'_> {
             ExprForm::OG10(expression) => self.og10_expression(*expression),
             ExprForm::AbMukai(expression) => self.abelian_mukai_expression(*expression),
             ExprForm::OG6(expression) => self.og6_expression(*expression),
+            ExprForm::OG6Nilpotent(expression) => {
+                let og6::cusp::nilpotent::Expression(name, operation, input) = *expression;
+                let limit = self.model.og6_nilpotent(&name)?;
+                let lattice = Label {
+                    text: limit.cusp.lattice_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.og6_type(&lattice)?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, operation.name())?;
+                Ok((
+                    ty,
+                    TypedForm::OG6Nilpotent(limit, operation, Box::new(input)),
+                ))
+            }
             ExprForm::OG6Cusp(expression) => self.og6_cusp_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),

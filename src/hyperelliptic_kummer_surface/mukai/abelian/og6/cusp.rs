@@ -11,6 +11,8 @@ use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
 use crate::wide_integer::Natural;
 
+pub(crate) mod nilpotent;
+
 const RAW_RANK: usize = RANK + 1;
 const CUSP_RANK: usize = 3;
 type Column = [ColumnInteger; RAW_RANK];
@@ -69,20 +71,8 @@ impl Cusp {
         let f_raw = raw(&f);
         require_primitive_plane(model, &e_raw, &f_raw)?;
 
-        let mut lifts = lattice
-            .columns
-            .iter()
-            .map(|column| {
-                let mut lift = [column_integer(0); RAW_RANK];
-                lift[..RANK].copy_from_slice(column);
-                lift
-            })
-            .collect::<Vec<_>>();
-        let mut exceptional = [column_integer(0); RAW_RANK];
-        exceptional[RANK] = column_integer(1);
-        lifts.push(exceptional);
-
-        for vector in [&h_raw, &e_raw, &f_raw] {
+        let mut lifts = polarized_basis(model, lattice, &h_raw)?;
+        for vector in [&e_raw, &f_raw] {
             let row = pairing_row(vector)?;
             cut_kernel(model, &mut lifts, &row, false)?;
         }
@@ -196,6 +186,24 @@ impl Cusp {
         add_scaled(model, &mut result, &raw(e), fx)?;
         realize(&result)
     }
+}
+
+fn polarized_basis(model: &mut Model, lattice: &Lattice, h: &Column) -> Result<Vec<Column>> {
+    let mut columns = lattice
+        .columns
+        .iter()
+        .map(|column| {
+            let mut lift = [column_integer(0); RAW_RANK];
+            lift[..RANK].copy_from_slice(column);
+            lift
+        })
+        .collect::<Vec<_>>();
+    let mut exceptional = [column_integer(0); RAW_RANK];
+    exceptional[RANK] = column_integer(1);
+    columns.push(exceptional);
+    let row = pairing_row(h)?;
+    cut_kernel(model, &mut columns, &row, false)?;
+    Ok(columns)
 }
 
 fn require_primitive_plane(model: &mut Model, e: &Column, f: &Column) -> Result<()> {

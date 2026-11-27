@@ -1004,6 +1004,9 @@ pub(crate) enum ExprForm {
     AbMukai(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::Expression>),
     OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Expression>),
     OG6Cusp(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Expression>),
+    OG6Nilpotent(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Expression>,
+    ),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1219,6 +1222,9 @@ pub(crate) enum StatementForm {
     AbMukaiPair(Box<[ParsedExpr; 2]>),
     OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Command>),
     OG6Cusp(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Command>),
+    OG6Nilpotent(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Command>,
+    ),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -3008,6 +3014,66 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn og6_nilpotent_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Command;
+        self.advance()?;
+        let command = if matches!(operation, "rvog6nilpotentii" | "rvog6nilpotentiii") {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let cusp = self.label()?;
+            self.expect(Token::Comma)?;
+            if operation == "rvog6nilpotentii" {
+                let k = self.signed_wide("a signed integer", "OG6 nilpotent coefficient")?;
+                self.expect(Token::RBracket)?;
+                Command::TypeII(name, cusp, k)
+            } else {
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::TypeIII(name, cusp, index, Box::new(self.paren_expr(0)?))
+            }
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            if operation == "rvOG6NilpotentData" {
+                self.expect(Token::RBracket)?;
+                Command::Data(name)
+            } else {
+                self.expect(Token::Comma)?;
+                let weight = self.signed_wide("a signed integer", "OG6 filtration weight")?;
+                self.expect(Token::RBracket)?;
+                Command::InWeight(name, weight, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::OG6Nilpotent(Box::new(command)))
+    }
+
+    fn og6_nilpotent_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::{
+            Expression, Operation,
+        };
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let operation = if operation == "rvOG6NilpotentPower" {
+            Operation::Power(self.number()?.0)
+        } else {
+            Operation::Exp(self.signed_wide("a signed integer", "OG6 nilpotent exponent")?)
+        };
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(nest)?;
+        let depth = 1 + input.depth;
+        expr(
+            span,
+            ExprForm::OG6Nilpotent(Box::new(Expression(name, operation, Box::new(input)))),
+            depth,
+        )
     }
 
     fn og6_cusp_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -6230,6 +6296,12 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::AbMukaiPair(Box::new(self.paren_pair(0)?))
             }
+            Token::Word(
+                operation @ ("rvog6nilpotentii"
+                | "rvog6nilpotentiii"
+                | "rvOG6NilpotentData"
+                | "rvOG6NilpotentInWeight"),
+            ) => self.og6_nilpotent_statement(operation)?,
             Token::Word(operation @ ("rvog6cusp" | "rvOG6CuspGram")) => {
                 self.og6_cusp_statement(operation)?
             }
@@ -11840,6 +11912,13 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvAbMukaiKummerH2" && self.token() == Token::LParen)
                 {
                     return self.abelian_mukai_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvOG6NilpotentPower" | "rvOG6NilpotentExp"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.og6_nilpotent_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
