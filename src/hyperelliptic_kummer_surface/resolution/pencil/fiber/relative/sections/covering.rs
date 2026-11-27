@@ -15,6 +15,7 @@ use super::{
     field, from_polynomial, on_curve, quotient, read_polynomials, sum, Descent, Pencil, Section,
 };
 
+pub(crate) mod cassels;
 mod image;
 pub(crate) use image::MordellImage;
 
@@ -24,6 +25,9 @@ pub(crate) enum Command {
     DefineImage(Label, Label, Vec<ParsedExpr>),
     Image(Label),
     Status(Label, Option<Label>),
+    DefineCassels(Label, Label, Vec<cassels::AuxiliaryInput>),
+    CasselsTangents(Label),
+    CasselsPair(Label, Box<ParsedExpr>),
 }
 
 pub(crate) struct Cover {
@@ -46,20 +50,9 @@ impl Cover {
     ) -> Result<Self> {
         pencil.split_roots(model)?;
         let field = field(&pencil.curve);
-        let mut representatives = std::array::from_fn(|_| vec![field.one()]);
-        let nonsquare = if b.coordinates().any(|(odd, _)| odd) {
-            constant_nonsquare(model, field)?
-        } else {
-            field.one()
-        };
+        let representatives = representatives(model, field, &b)?;
         let mut product = vec![field.one()];
-        for (representative, (odd, factors)) in representatives.iter_mut().zip(b.coordinates()) {
-            if odd {
-                representative[0].clone_from(&nonsquare);
-            }
-            for factor in factors {
-                *representative = poly::multiply(model, field, representative, factor)?;
-            }
+        for representative in &representatives {
             product = poly::multiply(model, field, &product, representative)?;
         }
         let product_root = polynomial_square_root(model, field, &product)?;
@@ -115,32 +108,12 @@ impl Cover {
         field: Field<'_>,
         mut coordinates: [Polynomial; 4],
     ) -> Result<Point> {
-        let mut nonzero = coordinates.iter().filter(|p| !p.is_empty());
-        let first = nonzero
-            .next()
-            .ok_or_else(|| Error::plain("K3 pencil covering projective point must be nonzero"))?;
-        let mut common = first.clone();
-        for coordinate in nonzero {
-            if common.len() <= 1 {
-                break;
-            }
-            common = poly::gcd(model, field, common, coordinate.clone())?;
-        }
-        if common.len() > 1 {
-            for c in &mut coordinates {
-                *c = poly::exact_divide(model, field, c, &common)?;
-            }
-        }
-        let leading = coordinates
-            .iter()
-            .find_map(|p| p.last())
-            .expect("nonzero coordinate");
-        if *leading != field.one() {
-            let inverse = field.inverse_unit(model, leading)?;
-            for c in &mut coordinates {
-                *c = poly::scale(model, field, c, &inverse)?;
-            }
-        }
+        primitive_coordinates(
+            model,
+            field,
+            &mut coordinates,
+            "K3 pencil covering projective point must be nonzero",
+        )?;
         let [u0, u1, u2, w] = &coordinates;
         let [e0, e1, e2] = self.pencil.split_roots(model)?;
         let a = poly::multiply(model, field, u0, u0)?;
@@ -293,6 +266,59 @@ impl Pencil {
         let representatives = read_polynomials(model, field, representatives)?;
         Descent::from_representatives(model, field, representatives)
     }
+}
+
+fn primitive_coordinates<const N: usize>(
+    model: &mut Model,
+    field: Field<'_>,
+    coordinates: &mut [Polynomial; N],
+    zero_diagnostic: &'static str,
+) -> Result<()> {
+    let mut nonzero = coordinates.iter().filter(|p| !p.is_empty());
+    let first = nonzero
+        .next()
+        .ok_or_else(|| Error::plain(zero_diagnostic))?;
+    let mut common = first.clone();
+    for coordinate in nonzero {
+        if common.len() <= 1 {
+            break;
+        }
+        common = poly::gcd(model, field, common, coordinate.clone())?;
+    }
+    if common.len() > 1 {
+        for c in coordinates.iter_mut() {
+            *c = poly::exact_divide(model, field, c, &common)?;
+        }
+    }
+    let leading = coordinates
+        .iter()
+        .find_map(|p| p.last())
+        .expect("nonzero coordinate");
+    if *leading != field.one() {
+        let inverse = field.inverse_unit(model, leading)?;
+        for c in coordinates.iter_mut() {
+            *c = poly::scale(model, field, c, &inverse)?;
+        }
+    }
+    Ok(())
+}
+
+fn representatives(model: &mut Model, field: Field<'_>, b: &Descent) -> Result<[Polynomial; 3]> {
+    let nonsquare = if b.coordinates().any(|(odd, _)| odd) {
+        constant_nonsquare(model, field)?
+    } else {
+        field.one()
+    };
+    let mut representatives = std::array::from_fn(|_| vec![field.one()]);
+    for (representative, (odd, factors)) in representatives.iter_mut().zip(b.coordinates()) {
+        if odd {
+            representative[0].clone_from(&nonsquare);
+        }
+        for factor in factors {
+            *representative = poly::multiply(model, field, representative, factor)?;
+        }
+    }
+    Ok(representatives)
 }
 
 fn constant_nonsquare(model: &mut Model, field: Field<'_>) -> Result<Scalar> {

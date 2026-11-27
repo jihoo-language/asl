@@ -7742,6 +7742,27 @@ impl Engine {
                 let image = self.model.k3_pencil_mw_image(&name)?;
                 Ok(Some(image.report(&name.text)))
             }
+            Command::DefineCassels(name, cover, witnesses) => {
+                self.model.define_k3_cassels(name, &cover, witnesses)?;
+                Ok(None)
+            }
+            Command::CasselsTangents(name) => {
+                let pairing = self.model.k3_cassels(&name)?;
+                Ok(Some(pairing.tangents(&name.text)))
+            }
+            Command::CasselsPair(name, input) => {
+                let pairing = self.model.k3_cassels(&name)?;
+                let ty = self
+                    .model
+                    .k3_pencil_kummer2_type(&pairing.cover.pencil_name)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_type(ty, &input, "Cassels second squareclass")?;
+                let Value::K3PencilKummer2(right) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                pairing.pair(&mut self.model, &name.text, &right).map(Some)
+            }
             Command::Status(name, image) => {
                 let cover = self.model.k3_pencil_cover(&name)?;
                 let label = image.as_ref().map_or_else(

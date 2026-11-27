@@ -11,7 +11,7 @@ use super::{field, Descent, Pencil};
 
 // The finite support is contained in the three differences of torsion
 // roots, each of degree at most four. There are at most 26 global bits.
-const ROOT_DEGREE: usize = 4;
+pub(super) const ROOT_DEGREE: usize = 4;
 
 pub(crate) struct Selmer {
     factors: Vec<Polynomial>,
@@ -66,6 +66,10 @@ impl Pencil {
 }
 
 impl Selmer {
+    pub(super) fn finite_parameters(&self) -> impl Iterator<Item = &Scalar> {
+        self.finite_images.iter().map(|(parameter, _)| parameter)
+    }
+
     pub(crate) fn dimension(&self) -> usize {
         self.basis.len()
     }
@@ -215,7 +219,7 @@ fn finite_support(
     Ok(support.into_iter().collect())
 }
 
-fn local_roots(
+pub(super) fn local_roots(
     model: &mut Model,
     field: Field<'_>,
     roots: [&Polynomial; 3],
@@ -246,13 +250,13 @@ fn local_roots(
     Ok(charts)
 }
 
-struct ResidueSquares {
+pub(super) struct ResidueSquares {
     prime: usize,
     squares: Vec<bool>,
 }
 
 impl ResidueSquares {
-    fn new(model: &mut Model, field: Field<'_>) -> Result<Self> {
+    pub(super) fn new(model: &mut Model, field: Field<'_>) -> Result<Self> {
         let count = usize::try_from(field.ring.size_of_residue_field()?)
             .map_err(|_| Error::plain("K3 pencil Selmer residue field exceeds the work limit"))?;
         model.spend(count.saturating_mul(field.ring.degree()))?;
@@ -270,13 +274,17 @@ impl ResidueSquares {
         Ok(table)
     }
 
+    pub(super) fn count(&self) -> usize {
+        self.squares.len()
+    }
+
     fn index(&self, value: &Scalar) -> usize {
         value
             .iter()
             .fold(0, |i, &digit| i * self.prime + digit as usize)
     }
 
-    fn symbol(&self, angular: &Scalar, order: usize) -> u8 {
+    pub(super) fn symbol(&self, angular: &Scalar, order: usize) -> u8 {
         (order % 2) as u8 | (u8::from(!self.squares[self.index(angular)]) << 1)
     }
 }

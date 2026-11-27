@@ -6237,17 +6237,40 @@ impl<'src> Parser<'src> {
     }
 
     fn k3_pencil_cover_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::pencil::sections::covering::cassels::AuxiliaryInput;
         use crate::hyperelliptic_kummer_surface::pencil::sections::covering::Command;
         self.advance()?;
-        let command = if matches!(name, "rvk3pencilcover" | "rvk3pencilmw2") {
+        let command = if matches!(name, "rvk3pencilcover" | "rvk3pencilmw2" | "rvk3cassels") {
             let label = self.label()?;
             self.expect(Token::LBracket)?;
             let pencil = self.label()?;
             self.expect(Token::RBracket)?;
-            if name == "rvk3pencilcover" {
-                Command::Define(label, pencil, Box::new(self.paren_expr(0)?))
-            } else {
-                Command::DefineImage(label, pencil, self.set_named_rows(|p| p.expr(0))?)
+            match name {
+                "rvk3pencilcover" => Command::Define(label, pencil, Box::new(self.paren_expr(0)?)),
+                "rvk3pencilmw2" => {
+                    Command::DefineImage(label, pencil, self.set_named_rows(|p| p.expr(0))?)
+                }
+                _ => {
+                    let witnesses = self.set_named_rows(|p| {
+                        let omitted = p.number()?.0;
+                        let coefficient = |p: &mut Self| {
+                            p.signed_tuple(
+                                "a signed residue coordinate",
+                                "Cassels witness polynomial coefficient",
+                            )
+                        };
+                        let coordinates = [
+                            p.set_named_rows(coefficient)?,
+                            p.set_named_rows(coefficient)?,
+                            p.set_named_rows(coefficient)?,
+                        ];
+                        Ok(AuxiliaryInput {
+                            omitted,
+                            coordinates,
+                        })
+                    })?;
+                    Command::DefineCassels(label, pencil, witnesses)
+                }
             }
         } else {
             self.expect(Token::LBracket)?;
@@ -6255,6 +6278,14 @@ impl<'src> Parser<'src> {
             let command = match name {
                 "rvK3PencilCoverQuadrics" => Command::Quadrics(label),
                 "rvK3PencilMW2" => Command::Image(label),
+                "rvK3CasselsTangents" => Command::CasselsTangents(label),
+                "rvK3CasselsPair" => {
+                    self.expect(Token::RBracket)?;
+                    return Ok(StatementForm::K3PencilCover(Box::new(
+                        Command::CasselsPair(label, Box::new(self.paren_expr(0)?)),
+                    )));
+                }
+
                 _ => {
                     let image = if self.eat(Token::Comma)? {
                         Some(self.label()?)
@@ -7873,7 +7904,10 @@ impl<'src> Parser<'src> {
                 | "rvk3pencilmw2"
                 | "rvK3PencilCoverQuadrics"
                 | "rvK3PencilMW2"
-                | "rvK3PencilCoverStatus"),
+                | "rvK3PencilCoverStatus"
+                | "rvk3cassels"
+                | "rvK3CasselsPair"
+                | "rvK3CasselsTangents"),
             ) => self.k3_pencil_cover_statement(op)?,
             Token::Word(
                 op

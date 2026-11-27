@@ -678,6 +678,7 @@ pub(crate) struct Model {
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
+    k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
     k3_pencil_covers: HashMap<String, Rc<pencil::sections::covering::Cover>>,
     k3_pencil_mw_images: HashMap<String, Rc<pencil::sections::covering::MordellImage>>,
     k3_mordell: HashMap<String, Rc<mordell::Mordell>>,
@@ -808,6 +809,7 @@ impl Model {
             jacobian_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
+            k3_cassels: HashMap::new(),
             k3_pencil_covers: HashMap::new(),
             k3_pencil_mw_images: HashMap::new(),
             k3_mordell: HashMap::new(),
@@ -4268,6 +4270,38 @@ impl Model {
     pub(crate) fn k3_pencil_kummer2_type(&mut self, name: &Label) -> Result<TypeId> {
         self.k3_pencil(name)?;
         self.inhabited_type(Kind::K3PencilKummer2(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_k3_cassels(
+        &mut self,
+        name: Label,
+        cover: &Label,
+        witnesses: Vec<pencil::sections::covering::cassels::AuxiliaryInput>,
+    ) -> Result<()> {
+        if self.k3_cassels.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Cassels witnesses '{}' are already defined", name.text),
+            ));
+        }
+        let cover = self.k3_pencil_cover(cover)?;
+        let pairing = pencil::sections::covering::cassels::Pairing::new(self, cover, witnesses)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_cassels.insert(name.text, Rc::new(pairing));
+        Ok(())
+    }
+
+    pub(crate) fn k3_cassels(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<pencil::sections::covering::cassels::Pairing>> {
+        self.k3_cassels.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Cassels witnesses '{}'", name.text),
+            )
+        })
     }
 
     pub(crate) fn define_k3_pencil_cover(
