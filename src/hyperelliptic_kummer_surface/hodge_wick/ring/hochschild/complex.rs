@@ -209,6 +209,29 @@ impl Complex {
         })
     }
 
+    /// Choose the preimage with the free coordinates of the linear system zero.
+    pub(super) fn primitive(
+        &self,
+        model: &mut Model,
+        algebra: &Algebra,
+        grade: &Grade,
+        boundary: &Cochain,
+    ) -> Result<Cochain> {
+        let previous = Axis::new(model, algebra, &grade.with_arity_offset(-1)?)?;
+        let mut differential = linear::matrix(self.axis.len(), previous.len())?;
+        for (column, key) in previous.0.iter().enumerate() {
+            differential_terms(model, algebra, key, |model, term, coefficient| {
+                let coordinate = &mut differential[self.axis.locate(&term)?][column];
+                *coordinate = coordinate.add(model, coefficient)?;
+                Ok(())
+            })?;
+        }
+        let rhs = self.axis.coordinates(boundary)?;
+        let solution = linear::solve(model, differential, previous.len(), &rhs)?
+            .ok_or_else(|| Error::plain("Hochschild boundary has no exact primitive"))?;
+        previous.cochain(model, &solution)
+    }
+
     pub(super) fn dimensions(&self) -> [usize; 4] {
         let chains = self.axis.len();
         let cycles = chains - self.equations.rows.len();

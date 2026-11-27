@@ -2540,6 +2540,9 @@ impl Engine {
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
+            StatementForm::VerbitskyAssociative(command) => {
+                return self.verbitsky_associative_command(*command)
+            }
             StatementForm::VerbitskyHochschild(command) => {
                 return self.verbitsky_hh_command(*command).map(Some)
             }
@@ -6331,6 +6334,72 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn verbitsky_associative_command(
+        &mut self,
+        command: hochschild::kuranishi::Command,
+    ) -> Result<Option<String>> {
+        use hochschild::kuranishi::{Command, Jet};
+        match command {
+            Command::Declare(name, order, expressions) => {
+                let mut marking: Option<hochschild::Grade> = None;
+                let mut tangents = Vec::new();
+                for expression in expressions {
+                    let input = self.checker().expr(expression)?;
+                    let grade = self
+                        .checker()
+                        .verbitsky_hh_operand(&input, "rvverbitskyassoc")?
+                        .0
+                        .clone();
+                    if grade.arity != 2 {
+                        return Err(Error::plain("Verbitsky associative deformation requires Hochschild 2-cochains or 2-classes"));
+                    }
+                    if marking.as_ref().is_some_and(|base| {
+                        base.basis != grade.basis || base.length != grade.length
+                    }) {
+                        return Err(Error::plain("Verbitsky associative tangents must have the same marking and Hilbert length"));
+                    }
+                    let shift = grade.shift;
+                    marking.get_or_insert(grade);
+                    let Value::VerbitskyHochschild(value) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    tangents.push((shift, value));
+                }
+                let marking = marking.ok_or_else(|| {
+                    Error::plain("Verbitsky associative jet requires at least one tangent")
+                })?;
+                let form = self.model.hodge_wick(&marking.basis)?;
+                let jet = Jet::new(&mut self.model, &form, &marking, order, tangents)?;
+                self.model.register_verbitsky_associative(name, jet)?;
+                Ok(None)
+            }
+            Command::Report(name) => {
+                let jet = self.model.verbitsky_associative(&name)?;
+                let report = jet.report(&mut self.model)?;
+                Ok(Some(format!(
+                    "rvVerbitskyAssocReport[{}] = {report}",
+                    name.text
+                )))
+            }
+            Command::Product(name, left, right) => {
+                let jet = self.model.verbitsky_associative(&name)?;
+                let report = jet.product(&mut self.model, left, right)?;
+                Ok(Some(format!(
+                    "rvVerbitskyAssocProduct[{}, {left}, {right}] = {report}",
+                    name.text
+                )))
+            }
+            Command::Direction(name, direction) => {
+                let jet = self.model.verbitsky_associative(&name)?;
+                let report = jet.direction(&mut self.model, &direction)?;
+                Ok(Some(format!(
+                    "rvVerbitskyAssocDirection[{}] = {report}",
+                    name.text
+                )))
             }
         }
     }
@@ -19686,6 +19755,14 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::VerbitskyKoszul(operation) => self.koszul_expression(*operation),
+            ExprForm::VerbitskyAssociative(expression) => {
+                let hochschild::kuranishi::Expression(operation, name, powers) = *expression;
+                let jet = self.model.verbitsky_associative(&name)?;
+                let (grade, class) = jet.lookup_grade(operation, &powers)?;
+                let ty = self.model.verbitsky_hh_type(grade, class)?;
+                let value = jet.lookup(self.model, operation, &powers)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::VerbitskyHochschild(expression) => self.verbitsky_hh_expression(*expression),
             ExprForm::VerbitskyDeformation(operation) => {
                 self.verbitsky_deformation_expression(*operation)

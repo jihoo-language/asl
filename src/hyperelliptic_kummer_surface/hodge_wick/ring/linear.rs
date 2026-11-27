@@ -69,6 +69,35 @@ impl Echelon {
     }
 }
 
+pub(super) fn solve(
+    model: &mut Model,
+    mut matrix: Matrix,
+    width: usize,
+    rhs: &[Rational],
+) -> Result<Option<Vec<Rational>>> {
+    let mut solution = vec![Rational::zero(); width];
+    if rhs.iter().all(|entry| entry.is_zero()) {
+        return Ok(Some(solution));
+    }
+    storage(
+        matrix
+            .len()
+            .saturating_mul(width.saturating_add(1))
+            .saturating_mul(2 * LIMBS + 1),
+    )?;
+    for (row, &entry) in matrix.iter_mut().zip(rhs) {
+        row.push(entry);
+    }
+    let echelon = rref(model, matrix, width + 1)?;
+    if echelon.pivots.last() == Some(&width) {
+        return Ok(None);
+    }
+    for (&i, row) in echelon.pivots.iter().zip(echelon.rows) {
+        solution[i] = row[width];
+    }
+    Ok(Some(solution))
+}
+
 pub(super) fn restrict(model: &mut Model, gram: &Matrix, basis: &Matrix) -> Result<Matrix> {
     let mut product = matrix(basis.len(), gram.len())?;
     for (out, row) in product.iter_mut().zip(basis) {

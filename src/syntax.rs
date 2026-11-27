@@ -1067,6 +1067,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
+    VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Expression>),
@@ -1335,6 +1336,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
+    VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
     VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Command>),
@@ -7430,6 +7432,61 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_associative_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command;
+        self.advance()?;
+        let command = if name == "rvverbitskyassoc" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let order = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let tangents = self.set_named_rows(|parser| parser.expr(0))?;
+            Command::Declare(name, order, tangents)
+        } else {
+            self.expect(Token::LBracket)?;
+            let jet = self.label()?;
+            if name == "rvVerbitskyAssocProduct" {
+                self.expect(Token::Comma)?;
+                let left = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let right = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Product(jet, left, right)
+            } else {
+                self.expect(Token::RBracket)?;
+                if name == "rvVerbitskyAssocDirection" {
+                    let direction = self.set_named_rows(|parser| {
+                        parser.rational_entry("direction numerator", "direction denominator")
+                    })?;
+                    Command::Direction(jet, direction)
+                } else {
+                    Command::Report(jet)
+                }
+            }
+        };
+        Ok(StatementForm::VerbitskyAssociative(Box::new(command)))
+    }
+
+    fn verbitsky_associative_expression(&mut self, name: &str, span: Span) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::{
+            Expression, Lookup,
+        };
+        self.expect(Token::LBracket)?;
+        let jet = self.label()?;
+        self.expect(Token::RBracket)?;
+        let powers = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+        let operation = match name {
+            "rvVerbitskyAssocCoefficient" => Lookup::Coefficient,
+            "rvVerbitskyAssocResidual" => Lookup::Residual,
+            _ => Lookup::Obstruction,
+        };
+        expr(
+            span,
+            ExprForm::VerbitskyAssociative(Box::new(Expression(operation, jet, powers))),
+            0,
+        )
+    }
+
     fn verbitsky_hh_grade(&mut self) -> Result<(Label, i128, i128, i128)> {
         let basis = self.label()?;
         self.expect(Token::Comma)?;
@@ -10822,6 +10879,12 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyTorTable"
                 | "rvVerbitskyMinimalRelation"),
             ) => self.koszul_statement(command)?,
+            Token::Word(
+                command @ ("rvverbitskyassoc"
+                | "rvVerbitskyAssocReport"
+                | "rvVerbitskyAssocProduct"
+                | "rvVerbitskyAssocDirection"),
+            ) => self.verbitsky_associative_statement(command)?,
             Token::Word(command @ ("rvVerbitskyHHDims" | "rvVerbitskyHHCoeff")) => {
                 self.verbitsky_hh_statement(command)?
             }
@@ -17035,6 +17098,15 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyAssocCoefficient"
+                        | "rvVerbitskyAssocResidual"
+                        | "rvVerbitskyAssocObstruction"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.verbitsky_associative_expression(&name.text, span);
                 }
                 if (matches!(
                     name.text.as_str(),

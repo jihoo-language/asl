@@ -5,7 +5,6 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
 
-use super::super::super::rational::LIMBS;
 use super::super::linear::{self, Echelon, Matrix};
 use super::builder::{Axis, Catalog};
 use super::{
@@ -466,35 +465,6 @@ impl Form {
     }
 }
 
-fn solve(
-    model: &mut Model,
-    mut matrix: Matrix,
-    width: usize,
-    rhs: &[Rational],
-) -> Result<Option<Vec<Rational>>> {
-    let mut solution = vec![Rational::zero(); width];
-    if rhs.iter().all(|entry| entry.is_zero()) {
-        return Ok(Some(solution));
-    }
-    storage(
-        matrix
-            .len()
-            .saturating_mul(width.saturating_add(1))
-            .saturating_mul(2 * LIMBS + 1),
-    )?;
-    for (row, &entry) in matrix.iter_mut().zip(rhs) {
-        row.push(entry);
-    }
-    let echelon = linear::rref(model, matrix, width + 1)?;
-    if echelon.pivots.last() == Some(&width) {
-        return Ok(None);
-    }
-    for (&i, row) in echelon.pivots.iter().zip(echelon.rows) {
-        solution[i] = row[width];
-    }
-    Ok(Some(solution))
-}
-
 fn polynomial_dot(model: &mut Model, row: &Vector, column: &Vector) -> Result<Tensor> {
     let mut sum = Tensor::default();
     for (i, value) in &column.entries {
@@ -535,7 +505,7 @@ fn lift_relation(
     for (powers, &coefficient) in &residual.terms {
         rhs[target.locate(0, powers)?] = coefficient.negate();
     }
-    let solution = solve(model, matrix, source.len(), &rhs)?.ok_or_else(|| {
+    let solution = linear::solve(model, matrix, source.len(), &rhs)?.ok_or_else(|| {
         Error::plain("Verbitsky syzygy correction does not lift to the polynomial ideal")
     })?;
     let column = source.vector(model, &solution)?;
@@ -647,7 +617,7 @@ impl Form {
             .unwrap();
         } else {
             let rhs = coords.iter().map(|c| c.negate()).collect::<Vec<_>>();
-            let h = solve(model, complex.differential, complex.generators.len(), &rhs)?
+            let h = linear::solve(model, complex.differential, complex.generators.len(), &rhs)?
                 .ok_or_else(|| {
                     Error::plain("Verbitsky quadratic residual reduction failed verification")
                 })?;

@@ -185,7 +185,7 @@ fn cup(
     Ok(())
 }
 
-fn insertions(
+pub(super) fn insertions(
     model: &mut Model,
     result: &mut Cochain,
     outer: &Cochain,

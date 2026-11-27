@@ -808,6 +808,7 @@ pub(crate) struct Model {
     pub(crate) igusa_inverse_cache: inverse::Cache,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
     hodge_wick_forms: HashMap<String, Rc<hyperelliptic_kummer_surface::hodge_wick::Form>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -958,6 +959,7 @@ impl Model {
             igusa_inverse_cache: inverse::Cache::default(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
+            verbitsky_associative: HashMap::new(),
             hodge_wick_forms: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -5513,6 +5515,39 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
+    }
+
+    pub(crate) fn register_verbitsky_associative(
+        &mut self,
+        name: Label,
+        jet: hochschild::kuranishi::Jet,
+    ) -> Result<()> {
+        if self.verbitsky_associative.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "Verbitsky associative jet '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        self.verbitsky_associative.insert(name.text, Rc::new(jet));
+        Ok(())
+    }
+
+    pub(crate) fn verbitsky_associative(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hochschild::kuranishi::Jet>> {
+        self.verbitsky_associative
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Verbitsky associative jet '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn verbitsky_hh_type(
