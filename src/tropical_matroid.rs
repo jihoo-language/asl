@@ -4,6 +4,10 @@ use std::rc::Rc;
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::Model;
+use crate::odd_cobar::Prime;
+use crate::rv_phodge::valuation;
+
+mod determinant;
 
 const MAX_GROUND: usize = 64;
 
@@ -337,14 +341,19 @@ pub(crate) fn rational(
     }
     Matroid::build(model, grade, |model, basis| {
         let matrix = minor(model, &rows, basis)?;
-        let Some(det) = integer_determinant(model, matrix)? else {
-            return Ok(None);
-        };
-        Ok(Some(crate::rv_phodge::valuation(
-            model,
-            det.unsigned_abs(),
-            u128::from(grade.prime),
-        )?))
+        match integer_determinant(model, matrix)? {
+            IntegerDeterminant::Exact(Some(det)) => Ok(Some(valuation(
+                model,
+                det.unsigned_abs(),
+                u128::from(grade.prime),
+            )?)),
+            IntegerDeterminant::Exact(None) => Ok(None),
+            IntegerDeterminant::Overflow => {
+                let matrix = minor(model, &rows, basis)?;
+                determinant::rational(model, matrix, Prime::validated(grade.prime))
+                    .map_err(determinant::explain_limit)
+            }
+        }
     })
 }
 
@@ -357,7 +366,13 @@ pub(crate) fn quadratic(
     check_rows(grade, rows)?;
     Matroid::build(model, grade, |model, basis| {
         let matrix = minor(model, rows, basis)?;
-        quadratic_determinant_valuation(model, field, matrix)
+        match quadratic_determinant_valuation(model, field, matrix) {
+            Err(error) if crate::rv_qp_quad::is_coefficient_overflow(&error) => {
+                let matrix = minor(model, rows, basis)?;
+                determinant::quadratic(model, field, matrix).map_err(determinant::explain_limit)
+            }
+            result => result,
+        }
     })
 }
 
@@ -379,13 +394,21 @@ fn minor<T: Copy>(model: &mut Model, rows: &[Vec<T>], basis: &[usize]) -> Result
         .collect())
 }
 
-fn integer_determinant(model: &mut Model, mut matrix: Vec<Vec<i128>>) -> Result<Option<i128>> {
+enum IntegerDeterminant {
+    Exact(Option<i128>),
+    Overflow,
+}
+
+fn integer_determinant(
+    model: &mut Model,
+    mut matrix: Vec<Vec<i128>>,
+) -> Result<IntegerDeterminant> {
     let rank = matrix.len();
     let mut previous = 1;
     for k in 0..rank {
         model.spend(rank - k)?;
         let Some(pivot_row) = (k..rank).find(|&row| matrix[row][k] != 0) else {
-            return Ok(None);
+            return Ok(IntegerDeterminant::Exact(None));
         };
         matrix.swap(k, pivot_row);
         let pivot = matrix[k][k];
@@ -395,7 +418,7 @@ fn integer_determinant(model: &mut Model, mut matrix: Vec<Vec<i128>>) -> Result<
             model.spend(rank - k)?;
             let scale = row[k];
             for j in k + 1..rank {
-                let updated = row[j]
+                let Some(updated) = row[j]
                     .checked_mul(pivot)
                     .and_then(|lhs| {
                         scale
@@ -403,16 +426,16 @@ fn integer_determinant(model: &mut Model, mut matrix: Vec<Vec<i128>>) -> Result<
                             .and_then(|rhs| lhs.checked_sub(rhs))
                     })
                     .and_then(|numerator| numerator.checked_div(previous))
-                    .ok_or_else(|| {
-                        Error::plain("tropical integer minor exceeds exact i128 arithmetic")
-                    })?;
+                else {
+                    return Ok(IntegerDeterminant::Overflow);
+                };
                 row[j] = updated;
             }
         }
         // The valuation ignores the sign of row swaps.
         previous = pivot;
     }
-    Ok(Some(previous))
+    Ok(IntegerDeterminant::Exact(Some(previous)))
 }
 
 fn quadratic_determinant_valuation(

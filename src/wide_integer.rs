@@ -132,7 +132,10 @@ impl<const N: usize> Natural<N> {
     }
 
     pub(crate) fn multiply_u128(self, factor: u128) -> Option<Self> {
-        let rhs = Self::from_small(factor);
+        self.checked_product(Self::from_small(factor))
+    }
+
+    pub(crate) fn checked_product(self, rhs: Self) -> Option<Self> {
         let width = rhs.bits().div_ceil(32);
         let mut result = Self::default();
         for (i, &a) in self.0.iter().enumerate().filter(|&(_, &a)| a != 0) {

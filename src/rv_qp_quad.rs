@@ -123,6 +123,10 @@ impl Field {
         self.prime
     }
 
+    pub(crate) fn radicand(self) -> i128 {
+        self.d
+    }
+
     pub(crate) fn add(self, model: &mut Model, x: Element, y: Element) -> Result<Element> {
         affine_combination(model, x, y, false)
     }
@@ -172,8 +176,8 @@ impl Field {
         model.spend(2 * 16)?;
         normalize_wide(
             model,
-            Wide::product(x.a, x.c),
-            Wide::product(x.b, x.c).negate(),
+            QuadWide::product(x.a, x.c),
+            QuadWide::product(x.b, x.c).negate(),
             norm,
         )
     }
@@ -197,16 +201,16 @@ impl Field {
         Ok(value)
     }
 
-    fn numerator_norm(self, model: &mut Model, a: i128, b: i128) -> Result<Wide> {
+    fn numerator_norm(self, model: &mut Model, a: i128, b: i128) -> Result<QuadWide> {
         let small = || -> Option<i128> {
             a.checked_mul(a)?
                 .checked_sub(self.d.checked_mul(b.checked_mul(b)?)?)
         };
         if let Some(norm) = small() {
-            return Ok(Wide::from_i128(norm));
+            return Ok(QuadWide::from_i128(norm));
         }
         model.spend(2 * 16 + 4 * 8 + 2 * QUADRATIC_LIMBS)?;
-        Wide::product(a, a).add(Wide::product(b, b).multiply(self.d)?.negate())
+        QuadWide::product(a, a).add(QuadWide::product(b, b).multiply(self.d)?.negate())
     }
 
     pub(crate) fn valuation(self, model: &mut Model, x: Element) -> Result<Option<i64>> {
@@ -228,6 +232,57 @@ impl Field {
         Ok(Some(
             common + norm_order - valuation(model, x.c as u128, p)?,
         ))
+    }
+
+    // The caller chooses a limb count that also accommodates the norm
+    // of a canceled numerator. No i128 field coefficient is required.
+    pub(crate) fn wide_local<const N: usize>(
+        self,
+        model: &mut Model,
+        mut a: Wide<N>,
+        mut b: Wide<N>,
+    ) -> Result<Option<(i64, u32)>> {
+        if a.is_zero() && b.is_zero() {
+            return Ok(None);
+        }
+        let p = self.prime;
+        let mut order = 0;
+        let (residue_a, residue_b) = loop {
+            model.spend(2 * N)?;
+            let (qa, residue_a) = a.magnitude.divide_u32(p.get());
+            let (qb, residue_b) = b.magnitude.divide_u32(p.get());
+            if residue_a != 0 || residue_b != 0 {
+                break (
+                    if a.negative {
+                        p.negate(residue_a)
+                    } else {
+                        residue_a
+                    },
+                    if b.negative {
+                        p.negate(residue_b)
+                    } else {
+                        residue_b
+                    },
+                );
+            }
+            a.magnitude = qa;
+            b.magnitude = qb;
+            order += 1;
+        };
+        let b_root = p.mul(residue_b, self.root);
+        let chosen = p.add(residue_a, b_root);
+        if chosen != 0 {
+            return Ok(Some((order, chosen)));
+        }
+        let an = a.magnitude.bits().div_ceil(32);
+        let bn = b.magnitude.bits().div_ceil(32);
+        model.spend(an * an + bn * bn + 8 * bn + 3 * N)?;
+        let norm = a
+            .multiply_wide(a)?
+            .add(b.multiply_wide(b)?.multiply(self.d)?.negate())?;
+        let (extra, unit) = norm.prime_part(model, p)?;
+        let inverse = invert(model, p, p.add(residue_a, p.negate(b_root)))?;
+        Ok(Some((order + extra, p.mul(unit, inverse))))
     }
 
     fn local_numerator(self, a: i128, b: i128) -> (u32, u32) {
@@ -430,9 +485,9 @@ fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element
     model.spend(5 * 16 + 4 * 8 + 4 * QUADRATIC_LIMBS)?;
     normalize_wide(
         model,
-        Wide::product(a, e).add(Wide::product(b, f).multiply(d)?)?,
-        Wide::product(a, f).add(Wide::product(b, e))?,
-        Wide::product(x.c / h, y.c / g),
+        QuadWide::product(a, e).add(QuadWide::product(b, f).multiply(d)?)?,
+        QuadWide::product(a, f).add(QuadWide::product(b, e))?,
+        QuadWide::product(x.c / h, y.c / g),
     )
 }
 
@@ -457,44 +512,44 @@ fn affine_combination(model: &mut Model, x: Element, y: Element, minus: bool) ->
     }
     model.spend(5 * 16 + 4 * QUADRATIC_LIMBS)?;
     let combine = |a, b| {
-        let right = Wide::product(b, sy);
-        Wide::product(a, sx).add(if minus { right.negate() } else { right })
+        let right = QuadWide::product(b, sy);
+        QuadWide::product(a, sx).add(if minus { right.negate() } else { right })
     };
     normalize_wide(
         model,
         combine(x.a, y.a)?,
         combine(x.b, y.b)?,
-        Wide::product(x.c, sx),
+        QuadWide::product(x.c, sx),
     )
 }
 
 // Three i128 factors have magnitude at most 2^381. The signed sum
 // defining a norm or real product coordinate uses at most 382 bits.
 const QUADRATIC_LIMBS: usize = 12;
-type Magnitude = Natural<QUADRATIC_LIMBS>;
+type QuadWide = Wide<QUADRATIC_LIMBS>;
 
 #[derive(Clone, Copy)]
-struct Wide {
-    magnitude: Magnitude,
-    negative: bool,
+pub(crate) struct Wide<const N: usize> {
+    pub(crate) magnitude: Natural<N>,
+    pub(crate) negative: bool,
 }
 
-impl Wide {
-    fn from_i128(value: i128) -> Self {
+impl<const N: usize> Wide<N> {
+    pub(crate) fn from_i128(value: i128) -> Self {
         Self {
-            magnitude: Magnitude::from_small(value.unsigned_abs()),
+            magnitude: Natural::from_small(value.unsigned_abs()),
             negative: value < 0,
         }
     }
 
-    fn product(a: i128, b: i128) -> Self {
+    pub(crate) fn product(a: i128, b: i128) -> Self {
         Self {
-            magnitude: Magnitude::product(a, b),
+            magnitude: Natural::product(a, b),
             negative: (a < 0) != (b < 0),
         }
     }
 
-    fn multiply(self, coefficient: i128) -> Result<Self> {
+    pub(crate) fn multiply(self, coefficient: i128) -> Result<Self> {
         let magnitude = self
             .magnitude
             .multiply_u128(coefficient.unsigned_abs())
@@ -505,14 +560,42 @@ impl Wide {
         })
     }
 
-    fn negate(self) -> Self {
+    pub(crate) fn is_zero(self) -> bool {
+        self.magnitude.is_zero()
+    }
+
+    pub(crate) fn multiply_wide(self, rhs: Self) -> Result<Self> {
+        let magnitude = self
+            .magnitude
+            .checked_product(rhs.magnitude)
+            .ok_or_else(arithmetic)?;
+        Ok(Self {
+            magnitude,
+            negative: self.negative != rhs.negative,
+        })
+    }
+
+    pub(crate) fn divide_exact(self, model: &mut Model, rhs: Self) -> Result<Option<Self>> {
+        if rhs.is_zero() {
+            return Err(Error::plain("exact wide division by zero"));
+        }
+        Ok(self
+            .magnitude
+            .divide_exact(model, rhs.magnitude)?
+            .map(|magnitude| Self {
+                magnitude,
+                negative: self.negative != rhs.negative,
+            }))
+    }
+
+    pub(crate) fn negate(self) -> Self {
         Self {
             negative: !self.negative,
             ..self
         }
     }
 
-    fn add(mut self, mut other: Self) -> Result<Self> {
+    pub(crate) fn add(mut self, mut other: Self) -> Result<Self> {
         if self.negative == other.negative {
             self.magnitude
                 .add_multiple(other.magnitude, 1)
@@ -526,11 +609,11 @@ impl Wide {
         Ok(self)
     }
 
-    fn signed(self) -> Option<i128> {
+    pub(crate) fn signed(self) -> Option<i128> {
         self.magnitude.signed(self.negative)
     }
 
-    fn prime_part(self, model: &mut Model, p: Prime) -> Result<(i64, u32)> {
+    pub(crate) fn prime_part(self, model: &mut Model, p: Prime) -> Result<(i64, u32)> {
         let (order, unit) = self.peel_prime(model, p)?;
         let residue = unit.magnitude.residue(p.get());
         Ok((
@@ -555,11 +638,11 @@ impl Wide {
                 small /= p;
                 v += 1;
             }
-            self.magnitude = Magnitude::from_small(small);
+            self.magnitude = Natural::from_small(small);
             return Ok((v, self));
         }
         loop {
-            model.spend(QUADRATIC_LIMBS)?;
+            model.spend(N)?;
             let (quotient, residue) = self.magnitude.divide_u32(p.get());
             if residue != 0 {
                 return Ok((v, self));
@@ -579,7 +662,12 @@ impl Wide {
     }
 }
 
-fn normalize_wide(model: &mut Model, a: Wide, b: Wide, c: Wide) -> Result<Element> {
+fn normalize_wide<const N: usize>(
+    model: &mut Model,
+    a: Wide<N>,
+    b: Wide<N>,
+    c: Wide<N>,
+) -> Result<Element> {
     if c.magnitude.is_zero() {
         return Err(Error::plain("quadratic field denominator must be nonzero"));
     }
@@ -587,7 +675,7 @@ fn normalize_wide(model: &mut Model, a: Wide, b: Wide, c: Wide) -> Result<Elemen
         .magnitude
         .gcd(model, b.magnitude)?
         .gcd(model, c.magnitude)?;
-    let mut coefficient = |x: Wide, negative| {
+    let mut coefficient = |x: Wide<N>, negative| {
         x.magnitude
             .divide_exact(model, common)?
             .and_then(|magnitude| magnitude.signed(negative))
@@ -670,8 +758,14 @@ fn negate(a: i128) -> Result<i128> {
     a.checked_neg().ok_or_else(arithmetic)
 }
 
+const COEFFICIENT_RANGE: &str = "quadratic exact integer arithmetic is out of range";
+
+pub(crate) fn is_coefficient_overflow(error: &Error) -> bool {
+    error.message == COEFFICIENT_RANGE
+}
+
 fn arithmetic() -> Error {
-    Error::plain("quadratic exact integer arithmetic is out of range")
+    Error::plain(COEFFICIENT_RANGE)
 }
 
 fn modulus_error() -> Error {
