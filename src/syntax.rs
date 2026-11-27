@@ -121,6 +121,7 @@ pub(crate) enum TypeForm {
     RVCyclo(usize),
     RVCycloQ(usize),
     RVQpQuad(Label),
+    RVValMat(usize, usize, usize),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -898,6 +899,10 @@ pub(crate) enum ExprForm {
     CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
     QpQuadElement(Label, i128, i128, i128),
+    ValMat(usize, usize, Vec<Vec<i128>>),
+    ValMatQuad(Label, usize, Vec<Vec<ParsedExpr>>),
+    ValFil(Label, i64),
+    ValDual(Box<ParsedExpr>),
     QpQuadUnary(QuadUnary, Box<ParsedExpr>),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
@@ -1112,6 +1117,7 @@ pub(crate) enum StatementForm {
     RvPHodgeQuad(Label, Label, QuadraticSpec<ParsedExpr>),
     RvQpQuad(Label, usize, i128, i128),
     RvQpQuadReport(Option<usize>, ParsedExpr),
+    ValMatReport(crate::tropical_matroid::Query, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
     RVCTExact(Label, u128),
@@ -3538,6 +3544,36 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvQpQuad(name, p, d, r)
             }
+            Token::Word(
+                op @ ("rvValPlucker" | "rvValSupport" | "rvValInitial" | "rvValExchange"
+                | "rvValTie"),
+            ) => {
+                self.advance()?;
+                use crate::tropical_matroid::Query;
+                let query = if op == "rvValSupport" {
+                    Query::Support
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let query = match op {
+                        "rvValPlucker" => Query::Plucker(self.exponents()?),
+                        "rvValInitial" => Query::Initial(self.tropical_weights()?),
+                        _ => {
+                            let left = self.exponents()?;
+                            self.expect(Token::Comma)?;
+                            let right = self.exponents()?;
+                            if op == "rvValExchange" {
+                                self.expect(Token::Comma)?;
+                                Query::Exchange(left, right, self.number()?.0)
+                            } else {
+                                Query::Tie(left, right)
+                            }
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    query
+                };
+                StatementForm::ValMatReport(query, self.paren_expr(0)?)
+            }
             Token::Word("rvQpQuadVal" | "rvQpQuadResidue") => {
                 let valuation = self.token() == Token::Word("rvQpQuadVal");
                 self.advance()?;
@@ -4851,6 +4887,15 @@ impl<'src> Parser<'src> {
             let (level, strands, height) = self.tl_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RvTl(level, strands, height), 0);
+        }
+        if name.text == "RVValMat" && self.eat(Token::LParen)? {
+            let p = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let n = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let r = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVValMat(p, n, r), 0);
         }
         if name.text == "RVQpQuad" && self.eat(Token::LParen)? {
             let field = self.label()?;
@@ -6273,6 +6318,42 @@ impl<'src> Parser<'src> {
                     let level = self.number()?.0;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::CrystalCongruent(left, right, level), 0);
+                }
+                if name.text == "rvValMat" && self.eat(Token::LBracket)? {
+                    let p = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let n = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut rows = Vec::new();
+                    while self.token() != Token::RBrace {
+                        rows.push(self.signed_tuple("an integer row entry", "tropical row entry")?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::ValMat(p, n, rows), 0);
+                }
+                if name.text == "rvValMatQuad" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let n = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let (rows, depth) = self.tropical_rows(nest)?;
+                    return expr(span, ExprForm::ValMatQuad(field, n, rows), depth);
+                }
+                if name.text == "rvValFil" && self.eat(Token::LBracket)? {
+                    let module = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let cutoff = self.signed_degree()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::ValFil(module, cutoff), 0);
+                }
+                if name.text == "rvValDual" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::ValDual(Box::new(input)), depth);
                 }
                 if name.text == "rvQpQuad" && self.eat(Token::LBracket)? {
                     let field = self.label()?;
@@ -8725,6 +8806,44 @@ impl<'src> Parser<'src> {
         }
         self.expect(end)?;
         Ok(values)
+    }
+
+    fn tropical_weights(&mut self) -> Result<Vec<i64>> {
+        self.expect(Token::LBracket)?;
+        let mut weights = Vec::new();
+        while self.token() != Token::RBracket {
+            weights.push(self.signed_number("tropical weight")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(weights)
+    }
+
+    fn tropical_rows(&mut self, nest: usize) -> Result<(Vec<Vec<ParsedExpr>>, usize)> {
+        self.expect(Token::LBrace)?;
+        let mut rows = Vec::new();
+        let mut depth = 0;
+        while self.token() != Token::RBrace {
+            self.expect(Token::LBracket)?;
+            let mut row = Vec::new();
+            while self.token() != Token::RBracket {
+                let entry = self.expr(nest + 1)?;
+                depth = depth.max(entry.depth + 1);
+                row.push(entry);
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            rows.push(row);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok((rows, depth))
     }
 
     fn coweight(&mut self) -> Result<Vec<i64>> {

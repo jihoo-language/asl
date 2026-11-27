@@ -44,6 +44,7 @@ struct Operators {
 }
 
 pub(crate) struct Module {
+    prime: Prime,
     newton: Vec<i64>,
     required: Vec<Option<usize>>,
     chains: Vec<Vec<usize>>,
@@ -86,7 +87,7 @@ impl Rational {
     }
 }
 
-fn valuation(model: &mut Model, mut value: u128, p: u128) -> Result<i64> {
+pub(crate) fn valuation(model: &mut Model, mut value: u128, p: u128) -> Result<i64> {
     let mut order = 0;
     while value.is_multiple_of(p) {
         model.spend(1)?;
@@ -160,19 +161,22 @@ struct Step {
     slope: Slope,
 }
 
+pub(crate) fn residue_prime(model: &mut Model, p: usize) -> Result<Prime> {
+    if p < 2 || (p != 2 && p.is_multiple_of(2)) {
+        return Err(Error::plain(
+            "filtered module residue characteristic must be prime",
+        ));
+    }
+    if p == 2 {
+        Ok(Prime::validated(2))
+    } else {
+        Prime::new(model, p)
+    }
+}
+
 impl Module {
     pub(crate) fn build(model: &mut Model, spec: Specification) -> Result<Self> {
-        let p = spec.prime;
-        if p < 2 || (p != 2 && p.is_multiple_of(2)) {
-            return Err(Error::plain(
-                "filtered module residue characteristic must be prime",
-            ));
-        }
-        let prime = if p == 2 {
-            Prime::validated(2)
-        } else {
-            Prime::new(model, p)?
-        };
+        let prime = residue_prime(model, spec.prime)?;
         let n = spec.eigenvalues.len();
         validate_width(n, spec.filtration.len(), 2)?;
         let monodromy = spec
@@ -199,6 +203,7 @@ impl Module {
             |model, vector, cells| span.insert(model, vector, cells),
         )?;
         Ok(Self::with_filtration(
+            prime,
             operators,
             Filtration::Rational(columns),
         ))
@@ -234,18 +239,43 @@ impl Module {
             |model, vector, cells| span.insert(model, field, vector, cells),
         )?;
         Ok(Self::with_filtration(
+            field.prime(),
             operators,
             Filtration::Quadratic(field, columns),
         ))
     }
 
-    fn with_filtration(operators: Operators, filtration: Filtration) -> Self {
+    fn with_filtration(prime: Prime, operators: Operators, filtration: Filtration) -> Self {
         Self {
+            prime,
             newton: operators.newton,
             required: operators.required,
             chains: operators.chains,
             filtration,
             polygon: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn valuated_filtration(
+        &self,
+        model: &mut Model,
+        cutoff: i64,
+    ) -> Result<std::rc::Rc<crate::tropical_matroid::Matroid>> {
+        use crate::tropical_matroid::{self, Grade};
+        let ground = self.dimension();
+        model.spend(ground)?;
+        match &self.filtration {
+            Filtration::Rational(columns) => {
+                let rank = columns.partition_point(|(weight, _)| *weight >= cutoff);
+                let grade = Grade::new(self.prime.get(), ground, rank)?;
+                tropical_matroid::rational(model, grade, tropical_rows(&columns[..rank], ground, 0))
+            }
+            Filtration::Quadratic(field, columns) => {
+                let rank = columns.partition_point(|(weight, _)| *weight >= cutoff);
+                let grade = Grade::new(self.prime.get(), ground, rank)?;
+                let rows = tropical_rows(&columns[..rank], ground, Element::ZERO);
+                tropical_matroid::quadratic(model, grade, *field, &rows)
+            }
         }
     }
 
@@ -469,6 +499,19 @@ impl Module {
             }
         }
     }
+}
+
+fn tropical_rows<T: Copy>(columns: &[(i64, Column<T>)], ground: usize, zero: T) -> Vec<Vec<T>> {
+    columns
+        .iter()
+        .map(|(_, sparse)| {
+            let mut row = vec![zero; ground];
+            for &(index, value) in sparse {
+                row[index] = value;
+            }
+            row
+        })
+        .collect()
 }
 
 fn validate_width(n: usize, columns: usize, entry_cells: usize) -> Result<()> {
@@ -745,7 +788,7 @@ fn primitive(mut vector: Column) -> Column {
     vector
 }
 
-fn divide_content(value: i128, divisor: u128) -> i128 {
+pub(crate) fn divide_content(value: i128, divisor: u128) -> i128 {
     // 2^127 divides only i128::MIN among the nonzero signed inputs.
     i128::try_from(divisor).map_or(-1, |divisor| value / divisor)
 }

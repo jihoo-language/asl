@@ -99,6 +99,7 @@ use crate::sheaf_page;
 use crate::sheaf_support::{self, Supports};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
+use crate::tropical_matroid::{self, Grade as ValGrade, Matroid as ValMatroid};
 use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock::{self, BocksteinPage};
@@ -223,6 +224,7 @@ pub(crate) enum Kind {
     RVCyclo(usize),
     RVCycloQ(usize),
     RVQpQuad(Rc<str>),
+    RVValMat(ValGrade),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -366,6 +368,7 @@ pub(crate) enum Value {
     RVCyclo(rv_cyclotomic::Polynomial),
     RVCycloQ(rv_lens::Rational),
     RVQpQuad(QuadElement),
+    RVValMat(Rc<ValMatroid>),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -790,6 +793,8 @@ impl Model {
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
+            Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => 1,
+            Kind::RVValMat(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -984,6 +989,7 @@ impl Model {
                 | Kind::RVCyclo(..)
                 | Kind::RVCycloQ(..)
                 | Kind::RVQpQuad(..)
+                | Kind::RVValMat(..)
                 | Kind::RVWzw(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
@@ -2889,6 +2895,10 @@ impl Model {
         })
     }
 
+    pub(crate) fn rv_valuated_matroid_type(&mut self, grade: ValGrade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVValMat(grade), 0)
+    }
+
     pub(crate) fn qp_quad_type(&mut self, name: &Label) -> Result<TypeId> {
         self.qp_quad(name)?;
         self.inhabited_type(Kind::RVQpQuad(name.text.as_str().into()), 0)
@@ -3548,6 +3558,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
+            | Kind::RVValMat(..)
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..)
@@ -3965,6 +3976,10 @@ impl Model {
                 "RVTL({}, {}, {})",
                 grade.level, grade.strands, grade.height
             )),
+            Kind::RVValMat(grade) => out.push(&format!(
+                "RVValMat({}, {}, {})",
+                grade.prime, grade.ground, grade.rank
+            )),
             Kind::RVQpQuad(name) => out.push(&format!("RVQpQuad({name})")),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
@@ -4176,6 +4191,9 @@ impl Model {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left == right),
+            (Value::RVValMat(left), Value::RVValMat(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => {
                 Ok(rv_lens::compare(self, left, right)?.is_eq())
             }
@@ -4424,6 +4442,13 @@ impl Model {
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
+            (Value::RVValMat(left), Value::RVValMat(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
+            }
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
@@ -4644,6 +4669,16 @@ impl Model {
                         ));
                     }
                     vec![rv_tl::zero()]
+                }
+                Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => {
+                    vec![Value::RVValMat(tropical_matroid::Matroid::build(
+                        self,
+                        grade,
+                        |_, _| Ok(Some(0)),
+                    )?)]
+                }
+                Kind::RVValMat(..) => {
+                    return Err(Error::plain("cannot enumerate a tropical Grassmannian"))
                 }
                 Kind::RVQpQuad(..) => {
                     return Err(Error::plain("cannot enumerate a quadratic field"));
@@ -5901,6 +5936,21 @@ impl Model {
                         "{path:?}: {:?} / {}",
                         coefficient.numerator, coefficient.denominator
                     ))?;
+                }
+                out.push("}")
+            }
+            Value::RVValMat(value) => {
+                let grade = value.grade;
+                out.push(&format!(
+                    "RVValMat({}, {}, {}){{",
+                    grade.prime, grade.ground, grade.rank
+                ))?;
+                for (i, (basis, weight)) in value.entries().iter().enumerate() {
+                    self.spend(1 + basis.len())?;
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{basis:?}: {weight}"))?;
                 }
                 out.push("}")
             }

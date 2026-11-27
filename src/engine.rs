@@ -153,6 +153,7 @@ use crate::syntax::{OreOp, QuantumOp};
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::syntax::{TlOp, WzwOp};
 use crate::transfer;
+use crate::tropical_matroid::{self, Grade as ValGrade};
 use crate::v_bars;
 use crate::v_koszul;
 use crate::vbock;
@@ -432,6 +433,8 @@ enum TypedForm {
     RVLaurentMonomial(i64, Box<TypedExpr>),
     HeckeNegate(Box<TypedExpr>),
     QpQuadUnary(QuadField, QuadUnary, Box<TypedExpr>),
+    ValMatQuad(ValGrade, QuadField, Vec<Vec<TypedExpr>>),
+    ValDual(Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
@@ -2190,6 +2193,19 @@ impl Engine {
             StatementForm::RvQpQuad(name, p, d, r) => {
                 self.model.register_qp_quad(name, p, d, r)?;
                 return Ok(None);
+            }
+            StatementForm::ValMatReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVValMat(..)) {
+                    return Err(Error::new(
+                        input.span,
+                        "tropical Plücker query requires an RVValMat",
+                    ));
+                }
+                let Value::RVValMat(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                query.report(&mut self.model, &value)?
             }
             StatementForm::RvQpQuadReport(precision, input) => {
                 let input = self.checker().expr(input)?;
@@ -4480,6 +4496,33 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::ValMatQuad(grade, field, rows) => {
+                let rows = rows
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(|entry| {
+                                let Value::RVQpQuad(value) = self.eval(entry)? else {
+                                    unreachable!()
+                                };
+                                Ok(value)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Value::RVValMat(tropical_matroid::quadratic(
+                    &mut self.model,
+                    *grade,
+                    *field,
+                    &rows,
+                )?))
+            }
+            TypedForm::ValDual(input) => {
+                let Value::RVValMat(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::RVValMat(value.dual(&mut self.model)?))
+            }
             TypedForm::QpQuadUnary(field, operation, input) => {
                 let Value::RVQpQuad(value) = self.eval(input)? else {
                     unreachable!()
@@ -6216,6 +6259,10 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::FusionScale(..)
             | ExprForm::FusionDual(..)
             | ExprForm::QuantumBasis(..)
+            | ExprForm::ValMat(..)
+            | ExprForm::ValMatQuad(..)
+            | ExprForm::ValFil(..)
+            | ExprForm::ValDual(..)
             | ExprForm::RVCTInitial(..)
             | ExprForm::RVCTQuery(..)
             | ExprForm::RVCTLiteral(..)
@@ -6408,6 +6455,11 @@ impl Checker<'_> {
             TypeForm::RvTl(level, strands, height) => self
                 .model
                 .tl_type(rv_tl::Grade::checked(level, strands, height)?),
+            TypeForm::RVValMat(p, n, r) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = ValGrade::new(prime.get(), n, r)?;
+                self.model.rv_valuated_matroid_type(grade)
+            }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
@@ -9957,6 +10009,47 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(&input, "rvFusionDual", "a fusion element"));
                 };
                 Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
+            }
+            ExprForm::ValMat(p, n, rows) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = ValGrade::new(prime.get(), n, rows.len())?;
+                let value = tropical_matroid::rational(self.model, grade, rows)?;
+                let ty = self.model.rv_valuated_matroid_type(grade)?;
+                Ok((ty, TypedForm::Constant(Value::RVValMat(value))))
+            }
+            ExprForm::ValMatQuad(name, n, rows) => {
+                let field = self.model.qp_quad(&name)?;
+                let field_type = self.model.qp_quad_type(&name)?;
+                let grade = ValGrade::new(field.prime().get(), n, rows.len())?;
+                tropical_matroid::check_rows(grade, &rows)?;
+                let rows = rows
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|entry| {
+                                let entry = self.expr(entry)?;
+                                self.require_type(field_type, &entry, "rvValMatQuad")?;
+                                Ok(entry)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let ty = self.model.rv_valuated_matroid_type(grade)?;
+                Ok((ty, TypedForm::ValMatQuad(grade, field, rows)))
+            }
+            ExprForm::ValFil(name, cutoff) => {
+                let module = self.model.rv_phodge(&name)?;
+                let value = module.valuated_filtration(self.model, cutoff)?;
+                let ty = self.model.rv_valuated_matroid_type(value.grade)?;
+                Ok((ty, TypedForm::Constant(Value::RVValMat(value))))
+            }
+            ExprForm::ValDual(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVValMat(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvValDual", "an RVValMat"));
+                };
+                let ty = self.model.rv_valuated_matroid_type(grade.dual())?;
+                Ok((ty, TypedForm::ValDual(Box::new(input))))
             }
             ExprForm::QuantumBasis(rank, ambient, shape) => {
                 let grade = rv_qgr::Grade::checked(rank, ambient)?;

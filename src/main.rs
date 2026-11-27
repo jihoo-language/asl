@@ -165,6 +165,7 @@ mod sheaf_truncate;
 mod steenrod;
 mod syntax;
 mod transfer;
+mod tropical_matroid;
 mod v_bars;
 mod v_koszul;
 mod vbock;
