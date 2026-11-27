@@ -17,8 +17,10 @@ use crate::rv_unram::{add_mod, mul_mod, sub_mod};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod metaplectic;
+pub(crate) mod quotient;
 
 pub(crate) enum Statement {
+    Quotient(Box<quotient::Statement>),
     Metaplectic(metaplectic::Statement),
     Define(Label, Box<ParsedExpr>),
     Named(NamedReport, Label),
@@ -41,6 +43,7 @@ pub(crate) enum ElementReport {
 }
 
 pub(crate) enum Expression {
+    Quotient(Box<quotient::Expression>),
     Metaplectic(Box<metaplectic::Expression>),
     Element(Label, [i128; 4], bool),
     Operator(u64, Box<ParsedExpr>),
@@ -70,6 +73,7 @@ pub(crate) struct Kernel {
     surface: Rc<Abelian>,
     divisor: Divisor,
     matrix: Matrix,
+    symplectic_basis: Matrix,
     to_symplectic: Matrix,
     from_symplectic: Matrix,
     divisors: [u64; 2],
@@ -95,24 +99,7 @@ impl Kernel {
             ));
         }
         let hermitian = surface.matrix(model, divisor)?;
-        let omega = if surface.frames[2].fundamental % 4 == 0 {
-            Element::new(0, 1, 1)?
-        } else {
-            Element::new(1, 1, 2)?
-        };
-        let bases = [[Element::ONE, omega], surface.bases[2]];
-        let mut matrix = [[0; 4]; 4];
-        for (i, row) in hermitian.into_iter().enumerate() {
-            for (j, entry) in row.into_iter().enumerate() {
-                for (k, &input) in bases[j].iter().enumerate() {
-                    let value = surface.field.mul(model, entry, input)?;
-                    let output = surface.field.coordinates(model, bases[i], value)?;
-                    for (l, coordinate) in output.into_iter().enumerate() {
-                        matrix[2 * i + l][2 * j + k] = as_integer(coordinate)?;
-                    }
-                }
-            }
-        }
+        let matrix = lattice_matrix(model, &surface, hermitian)?;
         let form = multiply(J, matrix)?;
         for (i, row) in form.iter().enumerate() {
             if row[i] != 0
@@ -167,12 +154,13 @@ impl Kernel {
         if multiply(to_symplectic, from_symplectic)? != identity() {
             return Err(inconsistent());
         }
-        model.allocate(64)?;
+        model.allocate(80)?;
         let characteristic = surface.frames[2].endpoints[0].ring.prime();
         Ok(Self {
             surface,
             divisor,
             matrix,
+            symplectic_basis: basis,
             to_symplectic,
             from_symplectic,
             divisors,
@@ -572,6 +560,31 @@ impl Subgroup {
     pub(crate) fn members(&self) -> &[Point] {
         &self.members
     }
+}
+
+fn omega(surface: &Abelian) -> Result<Element> {
+    if surface.frames[2].fundamental % 4 == 0 {
+        Element::new(0, 1, 1)
+    } else {
+        Element::new(1, 1, 2)
+    }
+}
+
+fn lattice_matrix(model: &mut Model, surface: &Abelian, matrix: super::Matrix) -> Result<Matrix> {
+    let bases = [[Element::ONE, omega(surface)?], surface.bases[2]];
+    let mut output_matrix = [[0; 4]; 4];
+    for (i, row) in matrix.into_iter().enumerate() {
+        for (j, entry) in row.into_iter().enumerate() {
+            for (k, &input) in bases[j].iter().enumerate() {
+                let value = surface.field.mul(model, entry, input)?;
+                let output = surface.field.coordinates(model, bases[i], value)?;
+                for (l, coordinate) in output.into_iter().enumerate() {
+                    output_matrix[2 * i + l][2 * j + k] = as_integer(coordinate)?;
+                }
+            }
+        }
+    }
+    Ok(output_matrix)
 }
 
 fn lcm(a: u64, b: u64) -> u64 {

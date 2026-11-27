@@ -86,6 +86,7 @@ use crate::jacobian_level::cm_hom::fourier as cm_abelian;
 use crate::jacobian_level::cm_hom::fourier::period as cm_period;
 use crate::jacobian_level::cm_hom::fourier::theta as cm_theta;
 use crate::jacobian_level::cm_hom::fourier::theta::metaplectic as cm_meta;
+use crate::jacobian_level::cm_hom::fourier::theta::quotient as cm_quotient;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -713,6 +714,29 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+enum CMQuotientChart {
+    Base(Rc<cm_theta::Kernel>),
+    Quotient(Rc<cm_quotient::Quotient>),
+}
+
+enum CMQuotientOperation {
+    EndomorphismBasis(Rc<cm_quotient::Quotient>, usize),
+    EndomorphismFrobenius(Rc<cm_quotient::Quotient>),
+    EndomorphismRosati(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
+    EndomorphismBinary(Rc<cm_quotient::Quotient>, bool, Box<[TypedExpr; 2]>),
+    Include(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
+    Pullback(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
+    Transition {
+        source: Rc<cm_quotient::Quotient>,
+        target: Rc<cm_quotient::Quotient>,
+        dual: bool,
+        argument: Box<TypedExpr>,
+    },
+    Lift(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
+    Polarize(CMQuotientChart, Box<TypedExpr>),
+    Negate(Box<TypedExpr>),
+}
+
 struct TypedCMMeta {
     space: cm_meta::Space,
     operation: CMMetaOperation,
@@ -1066,6 +1090,7 @@ enum TypedForm {
     CMAbelian(Box<TypedCMAbelian>),
     CMPeriod(Box<TypedCMPeriod>),
     CMTheta(Box<TypedCMTheta>),
+    CMQuotient(Box<CMQuotientOperation>),
     CMMeta(Box<TypedCMMeta>),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
@@ -8307,9 +8332,77 @@ impl Engine {
         }
     }
 
+    fn cm_quotient_statement(
+        &mut self,
+        statement: cm_quotient::Statement,
+    ) -> Result<Option<String>> {
+        use cm_quotient::Statement;
+        let text = match statement {
+            Statement::Define(name, input) => {
+                let input = self.checker().expr(*input)?;
+                let (kernel_name, kernel) = self
+                    .checker()
+                    .cm_theta_operand(&input, Kind::CMThetaSubgroup)?;
+                let Value::CMThetaSubgroup(subgroup) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                self.model.define_cm_quotient(name, |model| {
+                    cm_quotient::Quotient::new(model, kernel_name, kernel, subgroup)
+                })?;
+                return Ok(None);
+            }
+            Statement::Data(named) => self.model.cm_quotient(&named.text)?.report(),
+            Statement::Order(named) => self
+                .model
+                .cm_quotient(&named.text)?
+                .order_report(&mut self.model)?,
+            Statement::Rosati(expression) => {
+                let input = self.checker().expr(*expression)?;
+                let (_, quotient) = self.checker().cm_quotient_endomorphism(&input)?;
+                let Value::CMQuotientEnd(map) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                quotient.rosati_report(map)?
+            }
+            Statement::Frobenius(named) => self
+                .model
+                .cm_quotient(&named.text)?
+                .frobenius_report(&mut self.model)?,
+            Statement::Profiles(named) => {
+                let kernel = self.model.cm_theta(&named.text)?;
+                cm_quotient::profiles(&mut self.model, named, kernel)?
+            }
+            Statement::Transition(source, target) => {
+                let source = self.model.cm_quotient(&source.text)?;
+                let target = self.model.cm_quotient(&target.text)?;
+                source.transition_report(&target)?
+            }
+            Statement::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let right = self.checker().expr(right)?;
+                let (_, chart) = self.checker().cm_quotient_chart(&left)?;
+                self.checker()
+                    .require_type(left.ty, &right, "CM quotient pairing argument")?;
+                let (Value::CMQuotientCoordinates(x), Value::CMQuotientCoordinates(y)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let pairing = match chart {
+                    CMQuotientChart::Base(kernel) => cm_quotient::pair_base(&kernel, x, y)?,
+                    CMQuotientChart::Quotient(quotient) => quotient.pair(x, y)?,
+                };
+                format!("rvCMQuotientPair = {pairing}")
+            }
+        };
+        Ok(Some(text))
+    }
+
     fn cm_theta_statement(&mut self, statement: cm_theta::Statement) -> Result<Option<String>> {
         use cm_theta::{ElementReport, NamedReport, Statement};
         let result = match statement {
+            Statement::Quotient(statement) => return self.cm_quotient_statement(*statement),
             Statement::Metaplectic(cm_meta::Statement::Verify(name)) => {
                 let kernel = self.model.cm_theta(&name.text)?;
                 cm_meta::Space::new(&kernel)?.verify(&mut self.model)?
@@ -8911,6 +9004,79 @@ impl Engine {
             _ => {}
         }
         Ok(value)
+    }
+
+    fn eval_cm_quotient(&mut self, operation: &CMQuotientOperation) -> Result<Value> {
+        use CMQuotientOperation as Op;
+        let vector = |engine: &mut Self, input: &TypedExpr| -> Result<cm_quotient::Vector> {
+            let Value::CMQuotientCoordinates(x) = engine.eval(input)? else {
+                unreachable!()
+            };
+            Ok(x)
+        };
+        let x = match operation {
+            Op::EndomorphismBasis(quotient, index) => {
+                return Ok(Value::CMQuotientEnd(
+                    quotient.endomorphism_basis(&mut self.model, *index)?,
+                ));
+            }
+            Op::EndomorphismFrobenius(quotient) => {
+                return Ok(Value::CMQuotientEnd(
+                    quotient.frobenius_endomorphism(&mut self.model)?,
+                ));
+            }
+            Op::EndomorphismRosati(quotient, input) => {
+                let Value::CMQuotientEnd(map) = self.eval(input)? else {
+                    unreachable!()
+                };
+                return Ok(Value::CMQuotientEnd(quotient.rosati_integral(map)?));
+            }
+            Op::EndomorphismBinary(quotient, apply, inputs) => {
+                let [left, right] = inputs.as_ref();
+                let Value::CMQuotientEnd(left) = self.eval(left)? else {
+                    unreachable!()
+                };
+                match self.eval(right)? {
+                    Value::CMQuotientCoordinates(vector) if *apply => left.apply(vector)?,
+                    Value::CMQuotientEnd(right) if !apply => {
+                        return Ok(Value::CMQuotientEnd(
+                            quotient.compose_endomorphism(left, right)?,
+                        ));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Op::Include(q, input) => q.include(vector(self, input)?)?,
+            Op::Pullback(q, input) => q.pullback(vector(self, input)?)?,
+            Op::Transition {
+                source,
+                target,
+                dual,
+                argument,
+            } => {
+                let x = vector(self, argument)?;
+                if *dual {
+                    source.pullback_transition(target, x)?
+                } else {
+                    source.move_to(target, x)?
+                }
+            }
+            Op::Lift(q, input) => {
+                let Value::CMTheta(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                q.lift(point)?
+            }
+            Op::Polarize(chart, input) => {
+                let x = vector(self, input)?;
+                match chart {
+                    CMQuotientChart::Base(kernel) => cm_quotient::polarize_base(kernel, x)?,
+                    CMQuotientChart::Quotient(quotient) => quotient.polarize(x)?,
+                }
+            }
+            Op::Negate(input) => cm_quotient::negate(vector(self, input)?)?,
+        };
+        Ok(Value::CMQuotientCoordinates(x))
     }
 
     fn eval_cm_theta(&mut self, plan: &TypedCMTheta) -> Result<Value> {
@@ -13493,6 +13659,11 @@ impl Engine {
                     (BinaryOp::Add, Value::CMHomCycle(a), Value::CMHomCycle(b)) => {
                         Ok(Value::CMHomCycle(kummer_cm::cycle_add(a, b)?))
                     }
+                    (
+                        BinaryOp::Add,
+                        Value::CMQuotientCoordinates(a),
+                        Value::CMQuotientCoordinates(b),
+                    ) => Ok(Value::CMQuotientCoordinates(cm_quotient::add(a, b)?)),
                     (BinaryOp::Add, Value::CMTheta(a), Value::CMTheta(b)) => {
                         let Kind::CMTheta(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -15405,6 +15576,7 @@ impl Engine {
             },
             TypedForm::CMPeriod(plan) => self.eval_cm_period(plan),
             TypedForm::CMTheta(plan) => self.eval_cm_theta(plan),
+            TypedForm::CMQuotient(plan) => self.eval_cm_quotient(plan),
             TypedForm::CMMeta(plan) => self.eval_cm_meta(plan),
             TypedForm::CMAbelian(plan) => self.eval_cm_abelian(plan),
             TypedForm::CMHomCoordinate(action) => {
@@ -20381,6 +20553,17 @@ impl Checker<'_> {
             TypeForm::CMMetaAuto(name) => self.cm_meta_type(&name, Kind::CMMetaAuto),
             TypeForm::CMMetaMat(name) => self.cm_meta_type(&name, Kind::CMMetaMat),
             TypeForm::CMMetaVec(name) => self.cm_meta_type(&name, Kind::CMMetaVec),
+            TypeForm::CMQuotientEnd(name) => {
+                self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)
+            }
+            TypeForm::CMQuotientDual(name) => {
+                self.model.cm_quotient_type(&name, Kind::CMQuotientDual)
+            }
+            TypeForm::CMQuotientLattice(name) => {
+                self.model.cm_quotient_type(&name, Kind::CMQuotientLattice)
+            }
+            TypeForm::CMPolarDual(name) => self.model.cm_theta_type(&name, Kind::CMPolarDual),
+            TypeForm::CMPolarLattice(name) => self.model.cm_theta_type(&name, Kind::CMPolarLattice),
             TypeForm::CMTheta(name) => self.model.cm_theta_type(&name, Kind::CMTheta),
             TypeForm::CMThetaOp(name) => self.model.cm_theta_type(&name, Kind::CMThetaOp),
             TypeForm::CMThetaSubgroup(name) => {
@@ -21656,6 +21839,8 @@ impl Checker<'_> {
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
+                    Kind::CMPolarLattice(..) | Kind::CMPolarDual(..) | Kind::CMQuotientLattice(..)
+                    | Kind::CMQuotientDual(..) => Value::CMQuotientCoordinates([0; 4]),
                     Kind::CMTheta(..) => Value::CMTheta([0; 4]),
                     Kind::CMCharge(..) => Value::CMCharge(cm_period::Charge::ZERO),
                     Kind::CMAbelianDiv(..) => Value::CMAbelianDiv(Rc::new(cm_abelian::Divisor::ZERO)),
@@ -25217,6 +25402,20 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
+                }
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::CMPolarLattice(..)
+                        | Kind::CMPolarDual(..)
+                        | Kind::CMQuotientLattice(..)
+                        | Kind::CMQuotientDual(..)
+                ) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMQuotient(Box::new(CMQuotientOperation::Negate(Box::new(
+                            input,
+                        )))),
                     ));
                 }
                 if let Kind::CMTheta(name) = self.model.kind(input.ty) {
@@ -29235,6 +29434,10 @@ impl Checker<'_> {
                         | Kind::CMHomWedge(..)
                         | Kind::CMHomCoordinate(..)
                         | Kind::CMTheta(..)
+                        | Kind::CMPolarLattice(..)
+                        | Kind::CMPolarDual(..)
+                        | Kind::CMQuotientLattice(..)
+                        | Kind::CMQuotientDual(..)
                         | Kind::CMAbelianDiv(..)
                         | Kind::CMAbelianMukai(..)
                         | Kind::ECLevel(..)
@@ -37157,6 +37360,212 @@ impl Checker<'_> {
         ))
     }
 
+    fn cm_quotient_endomorphism(
+        &self,
+        input: &TypedExpr,
+    ) -> Result<(Label, Rc<cm_quotient::Quotient>)> {
+        let Kind::CMQuotientEnd(name) = self.model.kind(input.ty) else {
+            return Err(Error::new(
+                input.span,
+                "expected a CM quotient endomorphism",
+            ));
+        };
+        let label = Label {
+            text: name.to_string(),
+            span: input.span,
+        };
+        Ok((label, self.model.cm_quotient(name)?))
+    }
+
+    fn cm_quotient_chart(&self, input: &TypedExpr) -> Result<(Label, CMQuotientChart)> {
+        let name = match self.model.kind(input.ty) {
+            Kind::CMPolarLattice(name) | Kind::CMQuotientLattice(name) => name,
+            _ => {
+                return Err(Error::new(
+                    input.span,
+                    "expected a primal CM quotient lattice vector",
+                ))
+            }
+        };
+        let chart = if matches!(self.model.kind(input.ty), Kind::CMPolarLattice(..)) {
+            CMQuotientChart::Base(self.model.cm_theta(name)?)
+        } else {
+            CMQuotientChart::Quotient(self.model.cm_quotient(name)?)
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            chart,
+        ))
+    }
+
+    fn cm_quotient_expression(
+        &mut self,
+        expression: cm_quotient::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_quotient::{Expression, Lattice, Map};
+        use CMQuotientOperation as Op;
+        let (ty, operation) = match expression {
+            Expression::Literal(lattice, name, vector) => {
+                let ty = match lattice {
+                    Lattice::Base => self.model.cm_theta_type(&name, Kind::CMPolarLattice)?,
+                    Lattice::BaseDual => self.model.cm_theta_type(&name, Kind::CMPolarDual)?,
+                    Lattice::Quotient => self
+                        .model
+                        .cm_quotient_type(&name, Kind::CMQuotientLattice)?,
+                    Lattice::QuotientDual => {
+                        self.model.cm_quotient_type(&name, Kind::CMQuotientDual)?
+                    }
+                };
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMQuotientCoordinates(vector)),
+                ));
+            }
+            Expression::Endomorphism(name, matrix) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMQuotientEnd(quotient.endomorphism(matrix)?)),
+                ));
+            }
+            Expression::EndomorphismIdentity(name) => {
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMQuotientEnd(
+                        cm_quotient::order::Endomorphism::identity(),
+                    )),
+                ));
+            }
+            Expression::EndomorphismBasis(name, index) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                (ty, Op::EndomorphismBasis(quotient, index))
+            }
+            Expression::EndomorphismFrobenius(name) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                (ty, Op::EndomorphismFrobenius(quotient))
+            }
+            Expression::EndomorphismRosati(input) => {
+                let input = self.expr(*input)?;
+                let (_, quotient) = self.cm_quotient_endomorphism(&input)?;
+                (input.ty, Op::EndomorphismRosati(quotient, Box::new(input)))
+            }
+            Expression::EndomorphismBinary(apply, inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let (name, quotient) = self.cm_quotient_endomorphism(&left)?;
+                let right = self.expr(right)?;
+                let ty = if apply {
+                    self.model
+                        .cm_quotient_type(&name, Kind::CMQuotientLattice)?
+                } else {
+                    left.ty
+                };
+                self.require_type(ty, &right, "CM quotient endomorphism second argument")?;
+                (
+                    ty,
+                    Op::EndomorphismBinary(quotient, apply, Box::new([left, right])),
+                )
+            }
+            Expression::Polarize(input) => {
+                let input = self.expr(*input)?;
+                let (name, chart) = self.cm_quotient_chart(&input)?;
+                let ty = match &chart {
+                    CMQuotientChart::Base(_) => {
+                        self.model.cm_theta_type(&name, Kind::CMPolarDual)?
+                    }
+                    CMQuotientChart::Quotient(_) => {
+                        self.model.cm_quotient_type(&name, Kind::CMQuotientDual)?
+                    }
+                };
+                (ty, Op::Polarize(chart, Box::new(input)))
+            }
+            Expression::Map(map, name, input) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let input = self.expr(*input)?;
+                match map {
+                    Map::Include => {
+                        let expected = self
+                            .model
+                            .cm_theta_type(&quotient.kernel_name, Kind::CMPolarLattice)?;
+                        self.require_type(expected, &input, "CM quotient inclusion argument")?;
+                        (
+                            self.model
+                                .cm_quotient_type(&name, Kind::CMQuotientLattice)?,
+                            Op::Include(quotient, Box::new(input)),
+                        )
+                    }
+                    Map::Pullback => {
+                        let expected = self.model.cm_quotient_type(&name, Kind::CMQuotientDual)?;
+                        self.require_type(expected, &input, "CM quotient pullback argument")?;
+                        let ty = self
+                            .model
+                            .cm_theta_type(&quotient.kernel_name, Kind::CMPolarDual)?;
+                        (ty, Op::Pullback(quotient, Box::new(input)))
+                    }
+                    Map::TorsionLift => {
+                        let expected = self
+                            .model
+                            .cm_theta_type(&quotient.kernel_name, Kind::CMTheta)?;
+                        self.require_type(expected, &input, "CM quotient theta lift argument")?;
+                        (
+                            self.model
+                                .cm_quotient_type(&name, Kind::CMQuotientLattice)?,
+                            Op::Lift(quotient, Box::new(input)),
+                        )
+                    }
+                    Map::Transition => {
+                        let Kind::CMQuotientLattice(source) = self.model.kind(input.ty) else {
+                            return Err(Error::new(
+                                input.span,
+                                "CM quotient transition requires a quotient lattice vector",
+                            ));
+                        };
+                        let source = self.model.cm_quotient(source)?;
+                        let ty = self
+                            .model
+                            .cm_quotient_type(&name, Kind::CMQuotientLattice)?;
+                        (
+                            ty,
+                            Op::Transition {
+                                source,
+                                target: quotient,
+                                dual: false,
+                                argument: Box::new(input),
+                            },
+                        )
+                    }
+                    Map::TransitionPullback => {
+                        let Kind::CMQuotientDual(target) = self.model.kind(input.ty) else {
+                            return Err(Error::new(
+                                input.span,
+                                "CM quotient transition pullback requires a quotient dual vector",
+                            ));
+                        };
+                        let target = self.model.cm_quotient(target)?;
+                        let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientDual)?;
+                        (
+                            ty,
+                            Op::Transition {
+                                source: quotient,
+                                target,
+                                dual: true,
+                                argument: Box::new(input),
+                            },
+                        )
+                    }
+                }
+            }
+        };
+        Ok((ty, TypedForm::CMQuotient(Box::new(operation))))
+    }
+
     fn cm_theta_operand(
         &self,
         input: &TypedExpr,
@@ -37186,6 +37595,7 @@ impl Checker<'_> {
         use cm_theta::Expression;
         use CMThetaOperation as Op;
         let (ty, kernel, operation) = match expression {
+            Expression::Quotient(expression) => return self.cm_quotient_expression(*expression),
             Expression::Metaplectic(expression) => return self.cm_meta_expression(*expression),
             Expression::Element(name, coordinates, lattice) => {
                 let kernel = self.model.cm_theta(&name.text)?;

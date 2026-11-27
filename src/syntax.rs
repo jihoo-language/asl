@@ -181,6 +181,11 @@ pub(crate) enum TypeForm {
     CMAbelianMap(Label),
     CMPeriod(Label),
     CMTheta(Label),
+    CMPolarLattice(Label),
+    CMPolarDual(Label),
+    CMQuotientLattice(Label),
+    CMQuotientDual(Label),
+    CMQuotientEnd(Label),
     CMMetaLift(Label),
     CMMetaAuto(Label),
     CMMetaMat(Label),
@@ -3488,6 +3493,142 @@ impl<'src> Parser<'src> {
             span,
             ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Theta(Box::new(
                 Theta::Metaplectic(Box::new(operation)),
+            )))))),
+            depth,
+        )
+    }
+
+    fn cm_quotient_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                theta::{quotient::Statement, Statement as Theta},
+                Statement as Abelian,
+            },
+            Statement as Hom,
+        };
+        self.advance()?;
+        let operation = match command {
+            "rvcmquotient" => Statement::Define(self.label()?, Box::new(self.paren_expr(0)?)),
+            "rvCMQuotientPair" => Statement::Pair(Box::new(self.paren_pair(0)?)),
+            "rvCMQuotientRosatiData" => Statement::Rosati(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let operation = match command {
+                    "rvCMQuotientData" => Statement::Data(name),
+                    "rvCMQuotientEndoData" => Statement::Order(name),
+                    "rvCMQuotientFrob" => Statement::Frobenius(name),
+                    "rvCMQuotientProfiles" => Statement::Profiles(name),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        Statement::Transition(name, self.label()?)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                operation
+            }
+        };
+        Ok(StatementForm::CMHom(Box::new(Hom::Fourier(Box::new(
+            Abelian::Theta(Box::new(Theta::Quotient(Box::new(operation)))),
+        )))))
+    }
+
+    fn cm_quotient_expression(
+        &mut self,
+        command: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                theta::{
+                    quotient::{Expression, Lattice, Map},
+                    Expression as Theta,
+                },
+                Expression as Abelian,
+            },
+            Expression as Hom,
+        };
+        let (operation, depth) = if matches!(command, "rvCMQuotientPolarize" | "rvCMQuotientRosati")
+        {
+            let input = Box::new(self.paren_expr(nest)?);
+            let depth = input.depth + 1;
+            let expression = if command == "rvCMQuotientPolarize" {
+                Expression::Polarize(input)
+            } else {
+                Expression::EndomorphismRosati(input)
+            };
+            (expression, depth)
+        } else if matches!(command, "rvCMQuotientEndCompose" | "rvCMQuotientEndApply") {
+            let inputs = Box::new(self.paren_pair(nest)?);
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            (
+                Expression::EndomorphismBinary(command == "rvCMQuotientEndApply", inputs),
+                depth,
+            )
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            if command == "rvCMQuotientEndBasis" {
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::EndomorphismBasis(name, i), 0)
+            } else {
+                self.expect(Token::RBracket)?;
+                if command == "rvCMQuotientEnd" {
+                    self.expect(Token::LBrace)?;
+                    let mut matrix = [[0; 4]; 4];
+                    for (i, entry) in matrix.iter_mut().flatten().enumerate() {
+                        if i != 0 {
+                            self.expect(Token::Comma)?;
+                        }
+                        *entry = self.signed_wide(
+                            "a signed matrix coordinate",
+                            "CM quotient endomorphism coordinate",
+                        )?;
+                    }
+                    self.expect(Token::RBrace)?;
+                    (Expression::Endomorphism(name, matrix), 0)
+                } else if command == "rvCMQuotientEndIdentity" {
+                    (Expression::EndomorphismIdentity(name), 0)
+                } else if command == "rvCMQuotientFrobenius" {
+                    (Expression::EndomorphismFrobenius(name), 0)
+                } else if let Some(lattice) = match command {
+                    "rvCMPolarVec" => Some(Lattice::Base),
+                    "rvCMPolarDualVec" => Some(Lattice::BaseDual),
+                    "rvCMQuotientVec" => Some(Lattice::Quotient),
+                    "rvCMQuotientDualVec" => Some(Lattice::QuotientDual),
+                    _ => None,
+                } {
+                    self.expect(Token::LBrace)?;
+                    let first =
+                        self.signed_wide("a signed lattice coordinate", "CM quotient coordinate")?;
+                    let mut next = || -> Result<i128> {
+                        self.expect(Token::Comma)?;
+                        self.signed_wide("a signed lattice coordinate", "CM quotient coordinate")
+                    };
+                    let point = [first, next()?, next()?, next()?];
+                    self.expect(Token::RBrace)?;
+                    (Expression::Literal(lattice, name, point), 0)
+                } else {
+                    let map = match command {
+                        "rvCMQuotientInclude" => Map::Include,
+                        "rvCMQuotientPullback" => Map::Pullback,
+                        "rvCMQuotientTransition" => Map::Transition,
+                        "rvCMQuotientTransitionPullback" => Map::TransitionPullback,
+                        _ => Map::TorsionLift,
+                    };
+                    let input = Box::new(self.paren_expr(nest)?);
+                    let depth = input.depth + 1;
+                    (Expression::Map(map, name, input), depth)
+                }
+            }
+        };
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Theta(Box::new(
+                Theta::Quotient(Box::new(operation)),
             )))))),
             depth,
         )
@@ -14598,6 +14739,16 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                name @ ("rvcmquotient"
+                | "rvCMQuotientData"
+                | "rvCMQuotientFrob"
+                | "rvCMQuotientProfiles"
+                | "rvCMQuotientTransitionData"
+                | "rvCMQuotientPair"
+                | "rvCMQuotientEndoData"
+                | "rvCMQuotientRosatiData"),
+            ) => self.cm_quotient_statement(name)?,
+            Token::Word(
                 name @ ("rvcmthetakernel"
                 | "rvCMThetaData"
                 | "rvCMThetaLagrangians"
@@ -18855,6 +19006,26 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
+            "RVCMPolarLattice"
+                | "RVCMPolarDual"
+                | "RVCMQuotientLattice"
+                | "RVCMQuotientDual"
+                | "RVCMQuotientEnd"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            let form = match name.text.as_str() {
+                "RVCMPolarLattice" => TypeForm::CMPolarLattice(label),
+                "RVCMPolarDual" => TypeForm::CMPolarDual(label),
+                "RVCMQuotientLattice" => TypeForm::CMQuotientLattice(label),
+                "RVCMQuotientDual" => TypeForm::CMQuotientDual(label),
+                _ => TypeForm::CMQuotientEnd(label),
+            };
+            return ty(span, form, 0);
+        }
+        if matches!(
+            name.text.as_str(),
             "RVCMMetaLift" | "RVCMMetaAuto" | "RVCMMetaMat" | "RVCMMetaVec"
         ) && self.eat(Token::LParen)?
         {
@@ -21669,6 +21840,32 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMPolarVec"
+                        | "rvCMPolarDualVec"
+                        | "rvCMQuotientVec"
+                        | "rvCMQuotientDualVec"
+                        | "rvCMQuotientInclude"
+                        | "rvCMQuotientPullback"
+                        | "rvCMQuotientTransition"
+                        | "rvCMQuotientTransitionPullback"
+                        | "rvCMQuotientTorsionLift"
+                        | "rvCMQuotientEnd"
+                        | "rvCMQuotientEndBasis"
+                        | "rvCMQuotientEndIdentity"
+                        | "rvCMQuotientFrobenius"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCMQuotientPolarize"
+                            | "rvCMQuotientRosati"
+                            | "rvCMQuotientEndCompose"
+                            | "rvCMQuotientEndApply"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cm_quotient_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

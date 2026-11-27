@@ -338,6 +338,11 @@ pub(crate) enum Kind {
     CMAbelianMukai(Rc<str>),
     CMAbelianMap(Rc<str>),
     CMTheta(Rc<str>),
+    CMPolarLattice(Rc<str>),
+    CMPolarDual(Rc<str>),
+    CMQuotientLattice(Rc<str>),
+    CMQuotientDual(Rc<str>),
+    CMQuotientEnd(Rc<str>),
     CMMetaLift(Rc<str>),
     CMMetaAuto(Rc<str>),
     CMMetaMat(Rc<str>),
@@ -618,6 +623,8 @@ pub(crate) enum Value {
     CMAbelianMukai(Rc<cm_hom::fourier::Mukai>),
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
     CMTheta(cm_hom::fourier::theta::Point),
+    CMQuotientCoordinates(cm_hom::fourier::theta::quotient::Vector),
+    CMQuotientEnd(cm_hom::fourier::theta::quotient::order::Endomorphism),
     CMMetaLift(cm_hom::fourier::theta::metaplectic::Lift),
     CMMetaAuto(cm_hom::fourier::theta::metaplectic::Auto),
     CMMetaMat(cm_hom::fourier::theta::metaplectic::Matrix),
@@ -885,6 +892,7 @@ pub(crate) struct Model {
     cm_hom: HashMap<String, Rc<cm_hom::Hom>>,
     cm_hom_markings: HashMap<String, Rc<cm_hom::marked::Marking>>,
     cm_hom_products: HashMap<String, Rc<cm_hom::composition::Product>>,
+    cm_quotients: HashMap<String, Rc<cm_hom::fourier::theta::quotient::Quotient>>,
     cm_theta: HashMap<String, Rc<cm_hom::fourier::theta::Kernel>>,
     cm_abelian: HashMap<String, Rc<cm_hom::fourier::Abelian>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
@@ -1077,6 +1085,7 @@ impl Model {
             cm_hom_markings: HashMap::new(),
             cm_hom_products: HashMap::new(),
             cm_theta: HashMap::new(),
+            cm_quotients: HashMap::new(),
             cm_abelian: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
@@ -1788,6 +1797,11 @@ impl Model {
             | Kind::CMMetaAuto(..)
             | Kind::CMMetaMat(..)
             | Kind::CMMetaVec(..) => usize::MAX,
+            Kind::CMPolarLattice(..)
+            | Kind::CMPolarDual(..)
+            | Kind::CMQuotientLattice(..)
+            | Kind::CMQuotientDual(..)
+            | Kind::CMQuotientEnd(..) => usize::MAX,
             Kind::CMThetaOp(..) | Kind::CMThetaSubgroup(..) => usize::MAX,
             Kind::CMHomCoordinate(..)
             | Kind::CMAbelianDiv(..)
@@ -2186,6 +2200,11 @@ impl Model {
                 | Kind::CMMetaAuto(..)
                 | Kind::CMMetaMat(..)
                 | Kind::CMMetaVec(..)
+                | Kind::CMPolarLattice(..)
+                | Kind::CMPolarDual(..)
+                | Kind::CMQuotientLattice(..)
+                | Kind::CMQuotientDual(..)
+                | Kind::CMQuotientEnd(..)
                 | Kind::CMThetaOp(..)
                 | Kind::CMThetaSubgroup(..)
                 | Kind::CMPeriod(..)
@@ -4995,6 +5014,42 @@ impl Model {
         self.allocate(name.text.len())?;
         self.cm_hom.insert(name.text, Rc::new(entry));
         Ok(())
+    }
+
+    pub(crate) fn define_cm_quotient(
+        &mut self,
+        name: Label,
+        make: impl FnOnce(&mut Self) -> Result<cm_hom::fourier::theta::quotient::Quotient>,
+    ) -> Result<()> {
+        if self.cm_quotients.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "CM polarized quotient is already defined",
+            ));
+        }
+        let quotient = make(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_quotients.insert(name.text, Rc::new(quotient));
+        Ok(())
+    }
+
+    pub(crate) fn cm_quotient(
+        &self,
+        name: &str,
+    ) -> Result<Rc<cm_hom::fourier::theta::quotient::Quotient>> {
+        self.cm_quotients
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM polarized quotient '{name}'")))
+    }
+
+    pub(crate) fn cm_quotient_type(
+        &mut self,
+        name: &Label,
+        kind: fn(Rc<str>) -> Kind,
+    ) -> Result<TypeId> {
+        self.cm_quotient(&name.text)?;
+        self.inhabited_type(kind(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_cm_theta(
@@ -8380,6 +8435,11 @@ impl Model {
             | Kind::CMMetaAuto(..)
             | Kind::CMMetaMat(..)
             | Kind::CMMetaVec(..)
+            | Kind::CMPolarLattice(..)
+            | Kind::CMPolarDual(..)
+            | Kind::CMQuotientLattice(..)
+            | Kind::CMQuotientDual(..)
+            | Kind::CMQuotientEnd(..)
             | Kind::CMThetaOp(..)
             | Kind::CMThetaSubgroup(..)
             | Kind::CMPeriod(..)
@@ -8989,6 +9049,11 @@ impl Model {
             Kind::CMMetaAuto(name) => out.push(&format!("RVCMMetaAuto({name})")),
             Kind::CMMetaMat(name) => out.push(&format!("RVCMMetaMat({name})")),
             Kind::CMMetaVec(name) => out.push(&format!("RVCMMetaVec({name})")),
+            Kind::CMPolarLattice(name) => out.push(&format!("RVCMPolarLattice({name})")),
+            Kind::CMPolarDual(name) => out.push(&format!("RVCMPolarDual({name})")),
+            Kind::CMQuotientLattice(name) => out.push(&format!("RVCMQuotientLattice({name})")),
+            Kind::CMQuotientDual(name) => out.push(&format!("RVCMQuotientDual({name})")),
+            Kind::CMQuotientEnd(name) => out.push(&format!("RVCMQuotientEnd({name})")),
             Kind::CMTheta(name) => out.push(&format!("RVCMTheta({name})")),
             Kind::CMThetaOp(name) => out.push(&format!("RVCMThetaOp({name})")),
             Kind::CMThetaSubgroup(name) => out.push(&format!("RVCMThetaSubgroup({name})")),
@@ -9513,6 +9578,8 @@ impl Model {
             (Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => Ok(a == b),
             (Value::CMMetaMat(a), Value::CMMetaMat(b)) => Ok(a == b),
             (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a == b),
+            (Value::CMQuotientCoordinates(a), Value::CMQuotientCoordinates(b)) => Ok(a == b),
+            (Value::CMQuotientEnd(a), Value::CMQuotientEnd(b)) => Ok(a == b),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a == b),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a == b),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a == b),
@@ -9983,6 +10050,8 @@ impl Model {
             (Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => Ok(a.cmp(b)),
             (Value::CMMetaMat(a), Value::CMMetaMat(b)) => Ok(a.cmp(b)),
             (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a.cmp(b)),
+            (Value::CMQuotientCoordinates(a), Value::CMQuotientCoordinates(b)) => Ok(a.cmp(b)),
+            (Value::CMQuotientEnd(a), Value::CMQuotientEnd(b)) => Ok(a.cmp(b)),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a.cmp(b)),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a.cmp(b)),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a.cmp(b)),
@@ -10493,6 +10562,17 @@ impl Model {
                 | Kind::CMMetaMat(..)
                 | Kind::CMMetaVec(..) => {
                     return Err(Error::plain("cannot enumerate CM metaplectic values"));
+                }
+                Kind::CMPolarLattice(..)
+                | Kind::CMPolarDual(..)
+                | Kind::CMQuotientLattice(..)
+                | Kind::CMQuotientDual(..) => {
+                    return Err(Error::plain("cannot enumerate a CM quotient lattice"));
+                }
+                Kind::CMQuotientEnd(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a CM quotient endomorphism order",
+                    ));
                 }
                 Kind::CMTheta(ref name) => self
                     .cm_theta(name)?
@@ -12556,6 +12636,14 @@ impl Model {
                     ))?;
                 }
                 out.push("}")
+            }
+            Value::CMQuotientEnd(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.0))
+            }
+            Value::CMQuotientCoordinates(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{value:?}}}"))
             }
             Value::CMTheta(value) => {
                 self.write_type(out, ty, 0)?;
