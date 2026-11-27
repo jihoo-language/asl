@@ -241,36 +241,8 @@ impl Cover {
         if let Some(character) = self.character.get() {
             return Ok(character.clone());
         }
-        let p = self.order();
         let n = self.factor_degree;
-        let histograms = trace_histograms(model, self.prime, &self.terms, n)?;
-        let mut sums = vec![Vec::new()];
-        for histogram in histograms.into_iter().skip(1) {
-            model.spend(p)?;
-            let counts = histogram
-                .into_iter()
-                .map(|entries| entries as i128)
-                .collect();
-            sums.push(cyclo::reduced(model, p, counts)?);
-        }
-        let mut factor = vec![vec![1]];
-        for k in 1..=n {
-            let mut coefficient = Vec::new();
-            for j in 1..=k {
-                let product = cyclo::product_coefficients(model, p, &sums[j], &factor[k - j])?;
-                cyclo::accumulate(model, &mut coefficient, &product, false)?;
-            }
-            model.spend(coefficient.len())?;
-            for value in &mut coefficient {
-                if *value % k as i128 != 0 {
-                    return Err(Error::plain(
-                        "odd Artin–Schreier character Newton division is not integral",
-                    ));
-                }
-                *value /= k as i128;
-            }
-            factor.push(coefficient);
-        }
+        let factor = stationary_factor(model, self.prime, &self.terms, self.degree())?;
         if factor[n].is_empty() {
             return Err(Error::plain(
                 "odd Artin–Schreier character factor has the wrong degree",
@@ -474,127 +446,134 @@ fn points_error() -> Error {
     Error::plain("odd Artin–Schreier point count is out of range")
 }
 
-fn trace_histograms(
+fn stationary_factor(
     model: &mut Model,
     prime: Prime,
     terms: &[(usize, u32)],
-    bound: usize,
-) -> Result<Vec<Vec<usize>>> {
+    degree: usize,
+) -> Result<Vec<Vec<i128>>> {
     let p = prime.get() as usize;
-    // Prepay at least one operation per monic candidate before building any
-    // fields or search tables. Only degrees 1..d-1 are needed for the factor.
-    check_storage((bound + 1).saturating_mul(p + 3))?;
-    let mut order = 1usize;
-    let mut orders = Vec::new();
-    for _ in 1..=bound {
-        order = order.checked_mul(p).ok_or_else(|| {
-            Error::plain("odd Artin–Schreier trace extension size is out of range")
+    let slots = degree / 2;
+    let last = degree - 1;
+    let constant = terms
+        .first()
+        .filter(|&&(exponent, _)| exponent == 0)
+        .map_or(0, |&(_, c)| c);
+
+    // The Euler coefficient of degree k is the sum of the character
+    // over all monic polynomials of degree k, including repeated roots.
+    // In its reversed polynomial A(t)=1+a_1 t+...+a_k t^k, the sum
+    // of the j-th powers of the roots is -[t^j] t A'(t)/A(t).
+    // Split A=L+H at floor(d/2). Terms quadratic in H vanish
+    // through degree d. The high part of t A'/A is t(H/L)′
+    // in this range, so each high variable enters linearly.
+    let cells = degree
+        .saturating_mul(p + 4)
+        .saturating_add(2 * slots)
+        .saturating_add(3usize.saturating_mul(terms.len()));
+    check_storage(cells)?;
+    let population = u32::try_from(slots)
+        .ok()
+        .and_then(|h| p.checked_pow(h))
+        .ok_or_else(|| {
+            Error::plain("odd Artin–Schreier stationary phase exceeds the computation limit")
         })?;
-        model.spend(order)?;
-        orders.push(order);
-    }
-    let mut histograms = vec![vec![0; p]; bound + 1];
-    let mut divisors: Vec<Vec<u32>> = Vec::new();
-    let mut divisor_cells = 0;
-    let trace_cells = terms.last().unwrap().0 + 1;
-    let mut traces = vec![0; trace_cells];
-    for (index, &count) in orders.iter().enumerate() {
-        let m = index + 1;
-        let mut monic = vec![1; m + 1];
-        let mut remainder = vec![0; m + 1];
-        'candidate: for mut code in 0..count {
-            if m > 1 && code.is_multiple_of(p) {
-                continue;
+    model.spend(population)?;
+    model.spend(terms.len())?;
+    let positive: Vec<_> = terms
+        .iter()
+        .filter(|&&(j, _)| j != 0)
+        .map(|&(j, c)| (j, c, prime.mul((j % p) as u32, c)))
+        .collect();
+    let mut histograms = vec![vec![0usize; p]; degree];
+    let mut low = vec![0; slots];
+    let mut derivative = vec![0; slots];
+    let mut reciprocal = vec![0; degree];
+    reciprocal[0] = 1;
+
+    for mut index in 0..population {
+        model.spend(slots)?;
+        let mut low_degree = 0;
+        for (i, (coefficient, derivative)) in low.iter_mut().zip(&mut derivative).enumerate() {
+            *coefficient = (index % p) as u32;
+            index /= p;
+            *derivative = prime.mul(((i + 1) % p) as u32, *coefficient);
+            if *coefficient != 0 {
+                low_degree = i + 1;
             }
-            model.spend(m)?;
-            for coefficient in &mut monic[..m] {
-                *coefficient = (code % p) as u32;
-                code /= p;
-            }
-            for divisor in &divisors {
-                if divisor.len() - 1 > m / 2 {
+        }
+
+        // Constant f contributes k*f_0, with k the number of roots
+        // including multiplicities. The remaining phase only depends
+        // on L, even when the low polynomial has smaller degree.
+        for i in 1..degree {
+            let width = i.min(low_degree);
+            model.spend(1 + width)?;
+            let coefficient = low[..width]
+                .iter()
+                .zip(reciprocal[i - width..i].iter().rev())
+                .fold(0, |sum, (&a, &b)| prime.add(sum, prime.mul(a, b)));
+            reciprocal[i] = prime.negate(coefficient);
+        }
+        let mut phase = 0;
+        for &(j, c, _) in &positive {
+            let width = j.min(low_degree);
+            model.spend(1 + width)?;
+            let sum = derivative[..width]
+                .iter()
+                .zip(reciprocal[j - width..j].iter().rev())
+                .fold(0, |sum, (&a, &b)| prime.add(sum, prime.mul(a, b)));
+            phase = prime.add(phase, prime.negate(prime.mul(c, sum)));
+        }
+
+        // Orthogonality kills every k that reaches the first nonzero
+        // coefficient of an available high variable. Up to that limit,
+        // each high variable contributes a factor of p.
+        let mut end = last;
+        let mut tail = positive.as_slice();
+        for i in slots + 1..=last {
+            while let Some(((j, _, _), rest)) = tail.split_first() {
+                if *j >= i {
                     break;
                 }
-                if divides(model, prime, &monic, divisor, &mut remainder)? {
-                    continue 'candidate;
-                }
-            }
-            let trace = trace_on_closed_point(model, prime, terms, &monic, &mut traces)? as usize;
-            // A point of degree m contributes m conjugate affine points
-            // over each degree k multiple of m, with trace multiplied by k/m.
-            for k in (m..=bound).step_by(m) {
                 model.spend(1)?;
-                let image = trace * (k / m) % p;
-                histograms[k][image] += m;
+                tail = rest;
             }
-            if m <= bound / 2 {
-                divisor_cells += 3 + monic.len();
-                check_storage(divisor_cells + histograms.len() * (p + 3) + traces.len())?;
-                divisors.push(monic.clone());
+            model.spend(1 + tail.len())?;
+            let coefficient = tail.iter().fold(0, |sum, &(j, _, weight)| {
+                prime.add(sum, prime.mul(weight, reciprocal[j - i]))
+            });
+            if coefficient != 0 {
+                end = i - 1;
+                break;
             }
         }
-    }
-    for (histogram, order) in histograms.iter().skip(1).zip(orders) {
-        model.spend(p)?;
-        if histogram.iter().sum::<usize>() != order {
-            return Err(Error::plain(
-                "odd Artin–Schreier trace counts disagree with the field size",
-            ));
+        model.spend(end + 1 - low_degree)?;
+        let mut phase = prime.add(phase, prime.mul((low_degree % p) as u32, constant));
+        for histogram in &mut histograms[low_degree..=end] {
+            histogram[phase as usize] += 1;
+            phase = prime.add(phase, constant);
         }
     }
-    Ok(histograms)
-}
 
-fn divides(
-    model: &mut Model,
-    prime: Prime,
-    monic: &[u32],
-    divisor: &[u32],
-    remainder: &mut [u32],
-) -> Result<bool> {
-    model.spend(1 + monic.len())?;
-    remainder.copy_from_slice(monic);
-    let degree = divisor.len() - 1;
-    for i in (degree..monic.len()).rev() {
-        let factor = remainder[i];
-        if factor == 0 {
-            continue;
+    let mut factor = Vec::with_capacity(degree);
+    let mut weight = 1i128;
+    for (k, histogram) in histograms.into_iter().enumerate() {
+        if k > slots {
+            weight = weight
+                .checked_mul(p as i128)
+                .ok_or_else(coefficient_error)?;
         }
-        model.spend(degree)?;
-        for (c, &d) in remainder[i - degree..i].iter_mut().zip(divisor) {
-            *c = prime.add(*c, prime.negate(prime.mul(factor, d)));
-        }
+        model.spend(histogram.len())?;
+        let counts = histogram
+            .into_iter()
+            .map(|count| {
+                (count as i128)
+                    .checked_mul(weight)
+                    .ok_or_else(coefficient_error)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        factor.push(cyclo::reduced(model, p, counts)?);
     }
-    Ok(remainder[..degree]
-        .iter()
-        .all(|&coefficient| coefficient == 0))
-}
-
-fn trace_on_closed_point(
-    model: &mut Model,
-    prime: Prime,
-    terms: &[(usize, u32)],
-    monic: &[u32],
-    traces: &mut [u32],
-) -> Result<u32> {
-    let m = monic.len() - 1;
-    let p = prime.get() as usize;
-    traces[0] = (m % p) as u32;
-    for k in 1..traces.len() {
-        let mut sum = if k <= m {
-            prime.mul((k % p) as u32, monic[m - k])
-        } else {
-            0
-        };
-        let limit = m.min(k - 1);
-        model.spend(1 + limit)?;
-        for j in 1..=limit {
-            sum = prime.add(sum, prime.mul(monic[m - j], traces[k - j]));
-        }
-        traces[k] = prime.negate(sum);
-    }
-    model.spend(terms.len())?;
-    Ok(terms.iter().fold(0, |trace, &(e, c)| {
-        prime.add(trace, prime.mul(c, traces[e]))
-    }))
+    Ok(factor)
 }
