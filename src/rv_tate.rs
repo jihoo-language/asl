@@ -8,7 +8,9 @@ use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
 use crate::rv_ore::gcd;
 use crate::rv_unram::{add_mod, mul_mod, reduce, sub_mod, Ring};
-use crate::syntax::ParsedExpr;
+use crate::syntax::{Label, ParsedExpr};
+
+pub(crate) mod tame;
 
 const MAX_DEGREE: usize = 256;
 
@@ -60,6 +62,7 @@ pub(crate) enum Report {
     Factors,
     Newton,
     Unramified(usize),
+    Tame(Label, usize),
 }
 
 impl Report {
@@ -70,6 +73,7 @@ impl Report {
             Self::Factors => "rvTateFactors",
             Self::Newton => "rvTateNewton",
             Self::Unramified(_) => "rvTateUnramified",
+            Self::Tame(..) => "rvTateTame",
         }
     }
 
@@ -88,6 +92,18 @@ impl Report {
                 ring.digits, ring.modulus
             ));
         }
+        let extension = if let Self::Tame(name, _) = &self {
+            let extension = model.rv_unram(name)?;
+            if extension.prime() != ring.p() {
+                return Err(Error::new(
+                    name.span,
+                    "tame residue field and Weierstrass coefficient primes do not match",
+                ));
+            }
+            Some(extension)
+        } else {
+            None
+        };
         let Some(prepared) = Preparation::new(model, ring, coefficients)? else {
             return Ok(format!(
                 "{name} = coordinate={coordinate}, precision={}, unresolved",
@@ -139,6 +155,14 @@ impl Report {
                     factor.residual
                 ))
             }
+            Self::Tame(name, index) => tame::report(
+                model,
+                &prepared,
+                &name.text,
+                &extension.expect("resolved coefficient ring"),
+                index,
+                header,
+            ),
             Self::Coefficient(_) => unreachable!(),
         }
     }

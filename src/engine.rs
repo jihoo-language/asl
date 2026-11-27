@@ -179,7 +179,7 @@ use crate::rv_sphhecke;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
-use crate::rv_tate;
+use crate::rv_tate::{self, tame};
 use crate::rv_tl;
 use crate::rv_tree;
 use crate::rv_unram::{self, Ring as UnramRing};
@@ -1031,6 +1031,9 @@ enum TypedForm {
     MazurOrdinaryNegate(u64, Box<TypedExpr>),
     TateProduct(rv_tate::Precision, Box<[TypedExpr; 2]>),
     TateNegate(rv_tate::Precision, Box<TypedExpr>),
+    TameUnary(tame::Unary, Box<TypedExpr>),
+    TameProduct(Box<[TypedExpr; 2]>),
+    TameEvaluate(Box<[TypedExpr; 2]>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2589,6 +2592,23 @@ impl Engine {
                         .map(Some),
                     _ => unreachable!(),
                 };
+            }
+            StatementForm::TameValuation(input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().tame_operand(&input, "rvTameVal")?;
+                let Value::Tame(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let ring = self
+                    .model
+                    .rv_unram_named(&grade.name)
+                    .expect("registered unramified ring");
+                let valuation = grade.algebra(&ring)?.valuation(&mut self.model, &value)?;
+                return Ok(Some(if valuation == grade.precision {
+                    format!("rvTameVal = at_least={valuation}")
+                } else {
+                    format!("rvTameVal = {valuation}")
+                }));
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -10313,6 +10333,19 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::Tame(a), Value::Tame(b)) => {
+                        let Kind::Tame(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let ring = self
+                            .model
+                            .rv_unram_named(&grade.name)
+                            .expect("registered unramified ring");
+                        let algebra = grade.algebra(&ring)?;
+                        algebra
+                            .add(&mut self.model, &a, &b)?
+                            .persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::Tate(a), Value::Tate(b)) => {
                         let Kind::Tate(ring) = *self.model.kind(expr.ty) else {
                             unreachable!()
@@ -12856,6 +12889,69 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::TameUnary(operation, input) => {
+                let value = self.eval(input)?;
+                let Kind::Tame(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let ring = self
+                    .model
+                    .rv_unram_named(&grade.name)
+                    .expect("registered unramified ring");
+                let algebra = grade.algebra(&ring)?;
+                let output = match (operation, value) {
+                    (tame::Unary::Negate, Value::Tame(value)) => {
+                        algebra.negate(&mut self.model, &value)?
+                    }
+                    (tame::Unary::Frobenius(k), Value::Tame(value)) => {
+                        algebra.frobenius(&mut self.model, &value, *k)?
+                    }
+                    (tame::Unary::Inertia, Value::Tame(value)) => {
+                        algebra.inertia(&mut self.model, &value)?
+                    }
+                    (tame::Unary::Teichmuller, Value::RVUnram(value)) => {
+                        algebra.teichmuller(&mut self.model, &value)?
+                    }
+                    _ => unreachable!(),
+                };
+                output.persist(&mut self.model)
+            }
+            TypedForm::TameProduct(inputs) => {
+                let (Value::Tame(a), Value::Tame(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::Tame(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let ring = self
+                    .model
+                    .rv_unram_named(&grade.name)
+                    .expect("registered unramified ring");
+                let algebra = grade.algebra(&ring)?;
+                algebra
+                    .multiply(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::TameEvaluate(inputs) => {
+                let (Value::Tame(point), Value::Tate(polynomial)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::Tame(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let ring = self
+                    .model
+                    .rv_unram_named(&grade.name)
+                    .expect("registered unramified ring");
+                let algebra = grade.algebra(&ring)?;
+                algebra
+                    .evaluate_rational(&mut self.model, polynomial.coefficients(), &point)?
                     .persist(&mut self.model)
             }
             TypedForm::TateProduct(ring, inputs) => {
@@ -15564,6 +15660,10 @@ impl Checker<'_> {
                 let grade = Rc::new(disc::Grade::new(source, chart)?);
                 self.model.mazur_disc_type(grade, root)
             }
+            TypeForm::Tame(spec) => {
+                let (grade, _) = tame::Grade::resolve(self.model, spec)?;
+                self.model.tame_type(grade)
+            }
             TypeForm::Tate(p, digits) => {
                 let ring = rv_tate::Precision::new(self.model, p, digits)?;
                 self.model.tate_type(ring)
@@ -16664,6 +16764,11 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::Tame(grade) => {
+                        let ring = self.model.rv_unram_named(&grade.name).expect("registered unramified ring");
+                        grade.algebra(&ring)?.zero().persist(self.model)?
+                    }
+
                     Kind::HeckeSymbol(name) => {
                         let period = self.model.hecke_eigenperiod(&Label { text: name.to_string(), span })?;
                         period::modular_symbol::Symbol::zero(&period).persist(self.model)?
@@ -19055,6 +19160,7 @@ impl Checker<'_> {
             ExprForm::MazurAmice(operation) => self.amice_expression(operation),
             ExprForm::MazurDisc(operation) => self.mazur_disc_expression(operation),
             ExprForm::Tate(operation) => self.tate_expression(operation),
+            ExprForm::Tame(operation) => self.tame_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -19936,6 +20042,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Tame(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::TameUnary(tame::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if let Kind::Tate(ring) = self.model.kind(input.ty) {
@@ -23810,6 +23922,7 @@ impl Checker<'_> {
                         | Kind::MazurTate(..)
                         | Kind::MazurAmice(..)
                         | Kind::Tate(..)
+                        | Kind::Tame(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -28502,6 +28615,97 @@ impl Checker<'_> {
                 self.require_type(a.ty, &b, "rvTateMul input")?;
                 Ok((a.ty, TypedForm::TateProduct(ring, Box::new([a, b]))))
             }
+        }
+    }
+
+    fn tame_expression(&mut self, expression: tame::Expression) -> Result<(TypeId, TypedForm)> {
+        use tame::Expression;
+        match expression {
+            Expression::Literal(spec, coefficients) => {
+                let (grade, ring) = tame::Grade::resolve(self.model, spec)?;
+                let algebra = grade.algebra(&ring)?;
+                let value = algebra
+                    .literal(self.model, coefficients)?
+                    .persist(self.model)?;
+                let ty = self.model.tame_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Teichmuller(spec, input) => {
+                let source = self.model.rv_unram_type(&spec.0)?;
+                let (grade, _) = tame::Grade::resolve(self.model, spec)?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvTameTeich input")?;
+                let ty = self.model.tame_type(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::TameUnary(tame::Unary::Teichmuller, Box::new(input)),
+                ))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.tame_operand(&a, "rvTameMul")?;
+                self.require_type(a.ty, &b, "rvTameMul input")?;
+                Ok((a.ty, TypedForm::TameProduct(Box::new([a, b]))))
+            }
+            Expression::Evaluate(inputs) => {
+                let [point, polynomial] = *inputs;
+                let point = self.expr(point)?;
+                let grade = self.tame_operand(&point, "rvTameEval")?;
+                let polynomial = self.expr(polynomial)?;
+                let Kind::Tate(source) = self.model.kind(polynomial.ty) else {
+                    return Err(self.invalid_operand(
+                        &polynomial,
+                        "rvTameEval",
+                        "an RVTate(p,s) series",
+                    ));
+                };
+                let ring = self
+                    .model
+                    .rv_unram_named(&grade.name)
+                    .expect("registered unramified ring");
+                if u64::from(source.prime.get()) != ring.prime() {
+                    return Err(Error::new(
+                        polynomial.span,
+                        "tame and Tate coefficient primes do not match",
+                    ));
+                }
+                if source.digits * grade.e < grade.precision {
+                    return Err(Error::new(
+                        polynomial.span,
+                        "Tate coefficient precision is insufficient for this tame evaluation",
+                    ));
+                }
+                Ok((
+                    point.ty,
+                    TypedForm::TameEvaluate(Box::new([point, polynomial])),
+                ))
+            }
+            Expression::Frobenius(exponent, input) => {
+                let input = self.expr(*input)?;
+                self.tame_operand(&input, "rvTameFrob")?;
+                Ok((
+                    input.ty,
+                    TypedForm::TameUnary(tame::Unary::Frobenius(exponent), Box::new(input)),
+                ))
+            }
+            Expression::Inertia(input) => {
+                let input = self.expr(*input)?;
+                self.tame_operand(&input, "rvTameInertia")?;
+                Ok((
+                    input.ty,
+                    TypedForm::TameUnary(tame::Unary::Inertia, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn tame_operand(&self, input: &TypedExpr, operation: &str) -> Result<tame::Grade> {
+        if let Kind::Tame(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVTame(B,e,M) element"))
         }
     }
 

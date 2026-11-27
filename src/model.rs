@@ -120,7 +120,7 @@ use crate::rv_qp_quad::{Element as QuadElement, Field as QuadField};
 use crate::rv_res_space::{self, Grade as ResGrade, Space as ResSpace};
 use crate::rv_satake;
 use crate::rv_sphhecke;
-use crate::rv_tate;
+use crate::rv_tate::{self, tame};
 use crate::rv_tl;
 use crate::rv_unram::{self, Ring as UnramRing};
 use crate::rv_witt_cover::Cover as RvWittCover;
@@ -331,6 +331,7 @@ pub(crate) enum Kind {
     MazurDiscRoot(Rc<period::disc::Grade>),
     MazurOrdinary(Box<str>, u64),
     Tate(rv_tate::Precision),
+    Tame(tame::Grade),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -551,6 +552,7 @@ pub(crate) enum Value {
     MazurDiscRoot(Rc<period::disc::Root>),
     MazurOrdinary(u64),
     Tate(Rc<rv_tate::Series>),
+    Tame(Rc<tame::Element>),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -1451,6 +1453,7 @@ impl Model {
             | Kind::MazurDisc(..)
             | Kind::MazurDiscRoot(..)
             | Kind::Tate(..)
+            | Kind::Tame(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1764,6 +1767,7 @@ impl Model {
                 | Kind::MazurDisc(..)
                 | Kind::MazurDiscRoot(..)
                 | Kind::Tate(..)
+                | Kind::Tame(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -5597,6 +5601,10 @@ impl Model {
         self.inhabited_type(Kind::Tate(ring), 0)
     }
 
+    pub(crate) fn tame_type(&mut self, grade: tame::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::Tame(grade), 0)
+    }
+
     pub(crate) fn mazur_ordinary_type(&mut self, name: &Label) -> Result<TypeId> {
         let modulus = self.mazur_ordinary(name)?.modulus;
         self.inhabited_type(Kind::MazurOrdinary(name.text.as_str().into(), modulus), 0)
@@ -6976,6 +6984,7 @@ impl Model {
             | Kind::MazurDisc(..)
             | Kind::MazurDiscRoot(..)
             | Kind::Tate(..)
+            | Kind::Tame(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -7577,6 +7586,10 @@ impl Model {
             Kind::MazurDisc(grade) => out.push(&grade.type_name(false)),
             Kind::MazurDiscRoot(grade) => out.push(&grade.type_name(true)),
             Kind::Tate(ring) => out.push(&format!("RVTate({},{})", ring.prime.get(), ring.digits)),
+            Kind::Tame(grade) => out.push(&format!(
+                "RVTame({},{},{})",
+                grade.name, grade.e, grade.precision
+            )),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
@@ -7953,6 +7966,7 @@ impl Model {
             (Value::MazurDiscRoot(a), Value::MazurDiscRoot(b)) => Ok(a == b),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a == b),
             (Value::Tate(a), Value::Tate(b)) => Ok(a == b),
+            (Value::Tame(a), Value::Tame(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8336,6 +8350,7 @@ impl Model {
             (Value::MazurDiscRoot(a), Value::MazurDiscRoot(b)) => Ok(a.cmp(b)),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a.cmp(b)),
             (Value::Tate(a), Value::Tate(b)) => Ok(a.cmp(b)),
+            (Value::Tame(a), Value::Tame(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -8851,6 +8866,11 @@ impl Model {
                 Kind::MazurAmice(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
+                    ));
+                }
+                Kind::Tame(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the bounded tame coefficient algebra",
                     ));
                 }
                 Kind::Tate(..) => {
@@ -10703,6 +10723,10 @@ impl Model {
             Value::MazurDiscRoot(root) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", root.data()))
+            }
+            Value::Tame(element) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", element.rows()))
             }
             Value::Tate(series) => {
                 self.write_type(out, ty, 0)?;
