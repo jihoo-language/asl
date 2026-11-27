@@ -216,14 +216,42 @@ pub(super) fn k3_symmetric_coefficients(
             let Some((fields, middle, step)) = traces else {
                 return Ok(Surface::Betti(SurfaceKind::K3));
             };
-            model.spend(2 * (limit + 1))?;
-            Ok(Surface::Frobenius {
-                powers: (0..=limit).map(|i| fields[i * step]).collect(),
-                middle: (0..=limit).map(|i| middle[i * step]).collect(),
-                first: Vec::new(),
-            })
+            sampled_k3(model, fields, middle, step, limit)
         },
     )
+}
+
+pub(super) fn k3_lefschetz_coefficient(
+    model: &mut Model,
+    length: u128,
+    fields: &[Magnitude],
+    middle: &[Integer],
+    step: usize,
+) -> Result<Integer> {
+    let rows = coefficients_from_surface(
+        model,
+        length,
+        None,
+        SurfaceKind::K3,
+        usize::MAX,
+        |model, limit| sampled_k3(model, fields, middle, step, limit),
+    )?;
+    Ok(rows.last().unwrap()[0])
+}
+
+fn sampled_k3(
+    model: &mut Model,
+    fields: &[Magnitude],
+    middle: &[Integer],
+    step: usize,
+    limit: usize,
+) -> Result<Surface> {
+    model.spend(2 * (limit + 1))?;
+    Ok(Surface::Frobenius {
+        powers: (0..=limit).map(|i| fields[i * step]).collect(),
+        middle: (0..=limit).map(|i| middle[i * step]).collect(),
+        first: Vec::new(),
+    })
 }
 
 pub(crate) fn symmetric_partition_product(

@@ -3692,6 +3692,15 @@ impl<'src> Parser<'src> {
                         Command::StratumTrace(name, base, shape, r, i, coefficient)
                     }
                 }
+                "rvK3FrobHilbOrbits" => {
+                    self.expect(Token::Comma)?;
+                    let base = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let length = self.wide_unsigned("K3 Hilbert-scheme length")?;
+                    self.expect(Token::Comma)?;
+                    let period = self.wide_unsigned("Hilbert-scheme primitive period")?;
+                    Command::HilbertOrbits(name, base, length, period)
+                }
                 "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed" | "rvK3FrobHilbTrace" => {
                     self.expect(Token::Comma)?;
                     let base = self.label()?;
@@ -5023,7 +5032,18 @@ impl<'src> Parser<'src> {
         span: Span,
         nest: usize,
     ) -> Result<ParsedExpr> {
-        use crate::rv_witt_spectrum::{Bridge, Expression};
+        use crate::rv_witt_spectrum::{Bridge, Expression, HilbertBridge};
+        let iteration = |parser: &mut Self| {
+            let span = parser.span();
+            let power = parser.wide_unsigned("K3 Frobenius iteration count")?;
+            if power == 0 {
+                return Err(Error::new(
+                    span,
+                    "K3 Frobenius iteration count must be positive",
+                ));
+            }
+            Ok(power)
+        };
         let (form, depth) = match name {
             "rvWittSpectrum" => {
                 self.expect(Token::LBrace)?;
@@ -5061,18 +5081,39 @@ impl<'src> Parser<'src> {
                 let depth = 1 + args[0].depth.max(args[1].depth);
                 (Expression::Tensor(Box::new(args)), depth)
             }
-            "rvWittSpectrumAdams" | "rvWittSpectrumExterior" => {
+            "rvWittSpectrumAdams" | "rvWittSpectrumExterior" | "rvWittSpectrumVerschiebung" => {
                 self.expect(Token::LBracket)?;
                 let index = self.wide_unsigned("Witt operation index")?;
                 self.expect(Token::RBracket)?;
                 let input = self.paren_expr(nest)?;
                 let depth = input.depth + 1;
-                let form = if name == "rvWittSpectrumAdams" {
-                    Expression::Adams(index, Box::new(input))
-                } else {
-                    Expression::Exterior(index, Box::new(input))
+                let input = Box::new(input);
+                let form = match name {
+                    "rvWittSpectrumAdams" => Expression::Adams(index, input),
+                    "rvWittSpectrumExterior" => Expression::Exterior(index, input),
+                    _ => Expression::Verschiebung(index, input),
                 };
                 (form, depth)
+            }
+            "rvK3FrobHilbSpectrum" => {
+                self.expect(Token::LBracket)?;
+                let word = self.label()?;
+                self.expect(Token::Comma)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.wide_unsigned("K3 Hilbert-scheme length")?;
+                self.expect(Token::Comma)?;
+                let r = iteration(self)?;
+                self.expect(Token::RBracket)?;
+                (
+                    Expression::HilbertBridge(HilbertBridge {
+                        word,
+                        base,
+                        length,
+                        r,
+                    }),
+                    0,
+                )
             }
             _ => {
                 self.expect(Token::LBracket)?;
@@ -5082,14 +5123,7 @@ impl<'src> Parser<'src> {
                 self.expect(Token::Comma)?;
                 let stratum = self.label()?;
                 self.expect(Token::Comma)?;
-                let span = self.span();
-                let r = self.wide_unsigned("K3 Frobenius iteration count")?;
-                if r == 0 {
-                    return Err(Error::new(
-                        span,
-                        "K3 Frobenius iteration count must be positive",
-                    ));
-                }
+                let r = iteration(self)?;
                 self.expect(Token::Comma)?;
                 let i = self.wide_unsigned("cohomological degree")?;
                 self.expect(Token::RBracket)?;
@@ -7157,6 +7191,7 @@ impl<'src> Parser<'src> {
                 | "rvK3FrobFixed"
                 | "rvK3FrobZeta"
                 | "rvK3FrobHilbFixed"
+                | "rvK3FrobHilbOrbits"
                 | "rvK3StratumFrobTrace"
                 | "rvK3StratumEulerFactor"
                 | "rvK3SpechtFrobTrace"
@@ -8141,7 +8176,10 @@ impl<'src> Parser<'src> {
                 )
             }
             Token::Word(
-                name @ ("rvWittSpectrumData" | "rvWittSpectrumGhost" | "rvWittSpectrumCoeff"),
+                name @ ("rvWittSpectrumData"
+                | "rvWittSpectrumGhost"
+                | "rvWittSpectrumCoeff"
+                | "rvWittSpectrumNecklace"),
             ) => {
                 use crate::rv_witt_spectrum::Query;
                 self.advance()?;
@@ -8151,10 +8189,10 @@ impl<'src> Parser<'src> {
                     self.expect(Token::LBracket)?;
                     let index = self.wide_unsigned("Witt spectrum query index")?;
                     self.expect(Token::RBracket)?;
-                    if name == "rvWittSpectrumGhost" {
-                        Query::Ghost(index)
-                    } else {
-                        Query::Factor(index)
+                    match name {
+                        "rvWittSpectrumGhost" => Query::Ghost(index),
+                        "rvWittSpectrumNecklace" => Query::Necklace(index),
+                        _ => Query::Factor(index),
                     }
                 };
                 StatementForm::WittSpectrumQuery(query, Box::new(self.paren_expr(0)?))
@@ -15003,6 +15041,8 @@ impl<'src> Parser<'src> {
                         | "rvWittSpectrumTensor"
                         | "rvWittSpectrumAdams"
                         | "rvWittSpectrumExterior"
+                        | "rvWittSpectrumVerschiebung"
+                        | "rvK3FrobHilbSpectrum"
                         | "rvK3SpechtSpectrum"
                         | "rvK3StratumSpectrum"
                 ) {

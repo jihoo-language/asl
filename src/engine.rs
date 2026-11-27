@@ -734,8 +734,10 @@ enum TypedForm {
     OG6Clifford(OG6CliffordAction),
     KSExterior(KSExteriorAction),
     WittBridge(Box<crate::rv_witt_spectrum::Bridge>),
+    WittHilbertBridge(Box<crate::rv_witt_spectrum::HilbertBridge>),
     WittTensor(Box<[TypedExpr; 2]>),
     WittAdams(u128, Box<TypedExpr>),
+    WittVerschiebung(u128, Box<TypedExpr>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -9817,6 +9819,10 @@ impl Engine {
                 kummer_surface::dynamics::stratum_spectrum(&mut self.model, bridge)?
                     .persist(&mut self.model)
             }
+            TypedForm::WittHilbertBridge(bridge) => {
+                kummer_surface::dynamics::hilbert_spectrum(&mut self.model, bridge)?
+                    .persist(&mut self.model)
+            }
             TypedForm::WittTensor(inputs) => {
                 let (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) =
                     (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
@@ -9830,6 +9836,14 @@ impl Engine {
                     unreachable!()
                 };
                 value.adams(&mut self.model, *r)?.persist(&mut self.model)
+            }
+            TypedForm::WittVerschiebung(n, input) => {
+                let Value::RVWittSpectrum(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .verschiebung(&mut self.model, *n)?
+                    .persist(&mut self.model)
             }
             TypedForm::WittExterior(r, input) => {
                 let Value::RVWittSpectrum(value) = self.eval(input)? else {
@@ -21961,6 +21975,11 @@ impl Checker<'_> {
                 self.require_type(ty, &input, "rvWittSpectrumAdams")?;
                 TypedForm::WittAdams(r, Box::new(input))
             }
+            Expression::Verschiebung(n, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvWittSpectrumVerschiebung")?;
+                TypedForm::WittVerschiebung(n, Box::new(input))
+            }
             Expression::Exterior(m, input) => {
                 let input = self.expr(*input)?;
                 self.require_type(ty, &input, "rvWittSpectrumExterior")?;
@@ -21977,6 +21996,13 @@ impl Checker<'_> {
                     self.model.hilbert_stratum(&bridge.stratum)?;
                 }
                 TypedForm::WittBridge(Box::new(bridge))
+            }
+            Expression::HilbertBridge(bridge) => {
+                self.model.k3_automorphism(&bridge.word)?;
+                self.model
+                    .kummer_curve(&bridge.base.text)
+                    .map_err(|error| error.at(bridge.base.span))?;
+                TypedForm::WittHilbertBridge(Box::new(bridge))
             }
         };
         Ok((ty, form))

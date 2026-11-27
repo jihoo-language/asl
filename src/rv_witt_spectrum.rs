@@ -12,13 +12,25 @@ type Integer = Wide<LIMBS>;
 type Magnitude = Natural<LIMBS>;
 type Polynomial = Vec<Integer>;
 
+mod necklace;
+pub(crate) use necklace::coordinate as primitive_coordinate;
+
 pub(crate) enum Expression {
     Literal(Vec<i128>, Option<Vec<i128>>),
     Line(i128),
     Tensor(Box<[ParsedExpr; 2]>),
     Adams(u128, Box<ParsedExpr>),
+    Verschiebung(u128, Box<ParsedExpr>),
     Exterior(u128, Box<ParsedExpr>),
     Bridge(Bridge),
+    HilbertBridge(HilbertBridge),
+}
+
+pub(crate) struct HilbertBridge {
+    pub(crate) word: Label,
+    pub(crate) base: Label,
+    pub(crate) length: u128,
+    pub(crate) r: u128,
 }
 
 pub(crate) struct Bridge {
@@ -34,6 +46,7 @@ pub(crate) enum Query {
     Data,
     Ghost(u128),
     Factor(u128),
+    Necklace(u128),
 }
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -160,6 +173,37 @@ impl Spectrum {
         Self::canonical(model, numerator, denominator)
     }
 
+    pub(crate) fn verschiebung(&self, model: &mut Model, n: u128) -> Result<Self> {
+        if n == 0 {
+            return Err(Error::plain(
+                "Witt spectrum Verschiebung index must be positive",
+            ));
+        }
+        let substitute = |model: &mut Model, coefficients: &[i128]| -> Result<Box<[i128]>> {
+            let degree = coefficients.len() - 1;
+            if degree == 0 || n == 1 {
+                return Ok(coefficients.into());
+            }
+            if n > (MAX_DEGREE / degree) as u128 {
+                return Err(degree_limit());
+            }
+            let step = n as usize;
+            let length = degree * step + 1;
+            model.spend(length)?;
+            let mut output = vec![0; length];
+            for (i, &coefficient) in coefficients.iter().enumerate() {
+                output[i * step] = coefficient;
+            }
+            Ok(output.into_boxed_slice())
+        };
+        // A Bezout identity over Q remains an identity after substitution.
+        // The two substituted factors are already coprime.
+        Ok(Self {
+            numerator: substitute(model, &self.numerator)?,
+            denominator: substitute(model, &self.denominator)?,
+        })
+    }
+
     pub(crate) fn exterior(&self, model: &mut Model, m: u128) -> Result<Self> {
         if m == 0 {
             return Self::line(1);
@@ -217,9 +261,8 @@ impl Spectrum {
                 if k == 0 {
                     return Err(Error::plain("Witt spectrum ghost index must be positive"));
                 }
-                let pos = power_trace(model, &self.numerator, k)?;
-                let neg = power_trace(model, &self.denominator, k)?;
-                let ghost = add(pos, neg.negate())?
+                let ghost = self
+                    .ghost(model, k)?
                     .signed()
                     .ok_or_else(coefficient_overflow)?;
                 Ok(format!("rvWittSpectrumGhost[{k}] = {ghost}"))
@@ -238,7 +281,39 @@ impl Spectrum {
                     get(&self.denominator),
                 ))
             }
+            Query::Necklace(n) => {
+                if n == 0 {
+                    return Err(Error::plain(
+                        "Witt spectrum necklace index must be positive",
+                    ));
+                }
+                let elementary = |coefficients: &[i128]| match coefficients {
+                    [1] => Some(0),
+                    [1, middle @ .., last] if middle.iter().all(|&c| c == 0) => {
+                        let degree = (coefficients.len() - 1) as u128;
+                        match last {
+                            -1 => Some(i128::from(n == degree)),
+                            1 => Some(i128::from(n == 2 * degree) - i128::from(n == degree)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let value = match (elementary(&self.numerator), elementary(&self.denominator)) {
+                    (Some(a), Some(b)) => a - b,
+                    _ => primitive_coordinate(model, n, |model, k| self.ghost(model, k))?
+                        .signed()
+                        .ok_or_else(coefficient_overflow)?,
+                };
+                Ok(format!("rvWittSpectrumNecklace[{n}] = {value}"))
+            }
         }
+    }
+
+    fn ghost(&self, model: &mut Model, k: u128) -> Result<Integer> {
+        let pos = power_trace(model, &self.numerator, k)?;
+        let neg = power_trace(model, &self.denominator, k)?;
+        add(pos, neg.negate())
     }
 
     fn canonical(model: &mut Model, mut p: Polynomial, mut q: Polynomial) -> Result<Self> {
@@ -526,11 +601,13 @@ fn add(a: Integer, b: Integer) -> Result<Integer> {
 
 pub(crate) fn require_degree(degree: usize) -> Result<()> {
     if degree > MAX_DEGREE {
-        return Err(Error::plain(
-            "Witt spectrum exceeds the determinant degree limit",
-        ));
+        return Err(degree_limit());
     }
     Ok(())
+}
+
+fn degree_limit() -> Error {
+    Error::plain("Witt spectrum exceeds the determinant degree limit")
 }
 
 fn zero() -> Integer {

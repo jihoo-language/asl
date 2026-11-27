@@ -11,10 +11,12 @@ use super::nikulin::{self, AFFINE};
 use super::polarized::{self, Divisor, COEFFICIENTS};
 
 mod involution;
+mod orbits;
 mod points;
 mod semilinear;
 mod spectrum;
 mod strata;
+pub(crate) use orbits::hilbert_spectrum;
 pub(crate) use strata::spectrum as stratum_spectrum;
 
 const RANK: usize = COEFFICIENTS;
@@ -39,6 +41,7 @@ pub(crate) enum Command {
     StratumTrace(Label, Label, Label, u128, u128, Option<u128>),
     SpechtTrace(Label, Label, Label, u128, u128, Option<u128>),
     FrobHilbert(Label, Label, u128, u128, Option<u128>),
+    HilbertOrbits(Label, Label, u128, u128),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Box<ParsedExpr>);
@@ -92,6 +95,9 @@ impl Command {
             }
             Self::FrobHilbert(name, base, length, power, grade) => {
                 semilinear::hilbert(model, &name, &base, length, power, grade).map(Some)
+            }
+            Self::HilbertOrbits(name, base, length, period) => {
+                orbits::report(model, &name, &base, length, period).map(Some)
             }
             Self::Nikulin(name) => {
                 let word = model.k3_automorphism(&name)?;
