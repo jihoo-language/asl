@@ -5244,7 +5244,10 @@ impl<'src> Parser<'src> {
                 let depth = 1 + args[0].depth.max(args[1].depth);
                 (Expression::Tensor(Box::new(args)), depth)
             }
-            "rvWittSpectrumAdams" | "rvWittSpectrumExterior" | "rvWittSpectrumVerschiebung" => {
+            "rvWittSpectrumAdams"
+            | "rvWittSpectrumExterior"
+            | "rvWittSpectrumVerschiebung"
+            | "rvWittSpectrumNorm" => {
                 self.expect(Token::LBracket)?;
                 let index = self.wide_unsigned("Witt operation index")?;
                 self.expect(Token::RBracket)?;
@@ -5254,7 +5257,8 @@ impl<'src> Parser<'src> {
                 let form = match name {
                     "rvWittSpectrumAdams" => Expression::Adams(index, input),
                     "rvWittSpectrumExterior" => Expression::Exterior(index, input),
-                    _ => Expression::Verschiebung(index, input),
+                    "rvWittSpectrumVerschiebung" => Expression::Verschiebung(index, input),
+                    _ => Expression::Norm(index, input),
                 };
                 (form, depth)
             }
@@ -6030,6 +6034,10 @@ impl<'src> Parser<'src> {
             }
             if name == "rvKummerHilbPoints" {
                 Command::Points(curve, length, extension)
+            } else if name == "rvKummerHilbWeilRestrictPoints" {
+                self.expect(Token::Comma)?;
+                let index = self.wide_unsigned("point-count extension degree")?;
+                Command::WeilRestriction(curve, length, extension, index)
             } else {
                 self.expect(Token::Comma)?;
                 let degree = self.wide_unsigned("cohomological degree")?;
@@ -7170,6 +7178,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 command @ ("rvKummerHilbPoints"
+                | "rvKummerHilbWeilRestrictPoints"
                 | "rvKummerHilbTrace"
                 | "rvKummerHilbBetti"
                 | "rvKummerHilbChar"
@@ -8382,12 +8391,20 @@ impl<'src> Parser<'src> {
                 name @ ("rvWittSpectrumData"
                 | "rvWittSpectrumGhost"
                 | "rvWittSpectrumCoeff"
-                | "rvWittSpectrumNecklace"),
+                | "rvWittSpectrumNecklace"
+                | "rvWittSpectrumNormGhost"),
             ) => {
                 use crate::rv_witt_spectrum::Query;
                 self.advance()?;
                 let query = if name == "rvWittSpectrumData" {
                     Query::Data
+                } else if name == "rvWittSpectrumNormGhost" {
+                    self.expect(Token::LBracket)?;
+                    let degree = self.wide_unsigned("tensor-induction degree")?;
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("Witt spectrum ghost index")?;
+                    self.expect(Token::RBracket)?;
+                    Query::NormGhost(degree, index)
                 } else {
                     self.expect(Token::LBracket)?;
                     let index = self.wide_unsigned("Witt spectrum query index")?;
@@ -15263,6 +15280,7 @@ impl<'src> Parser<'src> {
                         | "rvWittSpectrumAdams"
                         | "rvWittSpectrumExterior"
                         | "rvWittSpectrumVerschiebung"
+                        | "rvWittSpectrumNorm"
                         | "rvK3FrobHilbSpectrum"
                         | "rvK3SpechtSpectrum"
                         | "rvK3StratumSpectrum"

@@ -35,6 +35,7 @@ impl SurfaceKind {
 
 pub(crate) enum Command {
     Points(Label, u128, u128),
+    WeilRestriction(Label, u128, u128, u128),
     Trace(Label, u128, u128, u128),
     Betti(u128, u128),
     Characteristic(characteristic::Query),
@@ -65,6 +66,16 @@ impl Command {
                     name.text
                 ))
             }
+            Self::WeilRestriction(name, length, degree, index) => {
+                let curve = model
+                    .kummer_curve(&name.text)
+                    .map_err(|error| error.at(name.span))?;
+                let value = weil_restriction_count(model, &curve, length, degree, index)?;
+                Ok(format!(
+                    "rvKummerHilbWeilRestrictPoints[{}, {length}, {degree}, {index}] = {value}",
+                    name.text
+                ))
+            }
             Self::Trace(name, n, r, i) => {
                 let curve = model
                     .kummer_curve(&name.text)
@@ -81,6 +92,36 @@ impl Command {
             }
         }
     }
+}
+
+fn weil_restriction_count(
+    model: &mut Model,
+    curve: &Curve,
+    length: u128,
+    degree: u128,
+    index: u128,
+) -> Result<u128> {
+    use crate::rv_witt_spectrum::{norm_cycles, norm_power};
+    let (copies, relative_power) = norm_cycles(degree, index)?;
+    if length == 0 {
+        return Ok(1);
+    }
+    // Over F_{q^k}, the tensor product of the two finite fields has
+    // gcd(n,k) factors, each of degree lcm(n,k) over the named base.
+    let power = degree
+        .checked_mul(relative_power)
+        .ok_or_else(intermediate_overflow)?;
+    let fixed = coefficient(model, length, None, Some((curve, power)))?;
+    if fixed.negative && !fixed.is_zero() {
+        return Err(Error::plain(
+            "Kummer Hilbert-scheme point count became negative",
+        ));
+    }
+    unsigned(norm_power(model, fixed, copies)?).ok_or_else(|| {
+        Error::plain(
+            "Weil-restricted Kummer Hilbert-scheme point count exceeds unsigned 128-bit range",
+        )
+    })
 }
 
 pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
