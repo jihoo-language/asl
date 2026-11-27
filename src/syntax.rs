@@ -1137,6 +1137,7 @@ pub(crate) enum StatementForm {
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
+    KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -2879,6 +2880,33 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
 
+    fn kummer_k3_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::k3::{Command, Query};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let curve = self.label()?;
+        let query = if name == "rvKummerK3Zeta" {
+            Query::Zeta
+        } else {
+            self.expect(Token::Comma)?;
+            let span = self.span();
+            let degree = self.wide_unsigned("Kummer K3 extension degree")?;
+            if degree == 0 {
+                return Err(Error::new(
+                    span,
+                    "Kummer K3 extension degree must be positive",
+                ));
+            }
+            if name == "rvKummerK3Points" {
+                Query::Points(degree)
+            } else {
+                Query::Picard(degree)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KummerK3(Box::new(Command(curve, query))))
+    }
+
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::{Expression, Operation};
         let (expression, depth) = if name == "rvKummer" {
@@ -3680,6 +3708,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
+            Token::Word(command @ ("rvKummerK3Zeta" | "rvKummerK3Points" | "rvKummerK3Picard")) => {
+                self.kummer_k3_statement(command)?
+            }
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,
