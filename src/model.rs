@@ -74,6 +74,7 @@ use crate::rv_lens;
 use crate::rv_negative;
 use crate::rv_ore;
 use crate::rv_pcurv;
+use crate::rv_period::{self, Grade as PeriodGrade, Level as PeriodLevel, Period};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
 use crate::rv_satake;
@@ -209,6 +210,8 @@ pub(crate) enum Kind {
     RVQGr(rv_qgr::Grade),
     RVQGrP(rv_pcurv::ModGrade),
     RVOre,
+    RVCTState(PeriodGrade),
+    RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     RVCycloQ(usize),
@@ -348,6 +351,8 @@ pub(crate) enum Value {
     RVQGr(rv_qgr::Support),
     RVQGrP(rv_pcurv::Support),
     RVOre(rv_ore::Support),
+    PeriodState(rv_period::State),
+    PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     RVCycloQ(rv_lens::Rational),
@@ -466,6 +471,7 @@ pub(crate) struct Model {
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
+    rv_periods: HashMap<String, Rc<Period>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
@@ -523,6 +529,7 @@ impl Model {
             v_bars: HashMap::new(),
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
+            rv_periods: HashMap::new(),
             rv_as_covers: HashMap::new(),
             rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
@@ -755,6 +762,8 @@ impl Model {
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
+            Kind::RVCTState(..) => usize::MAX,
+            Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
             Kind::RVHive(..) => {
                 if inhabited {
                     usize::MAX
@@ -939,6 +948,8 @@ impl Model {
                 | Kind::RVQGr(..)
                 | Kind::RVQGrP(..)
                 | Kind::RVOre
+                | Kind::RVCTState(..)
+                | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
                 | Kind::RVCycloQ(..)
@@ -2607,6 +2618,56 @@ impl Model {
         Ok(())
     }
 
+    pub(crate) fn define_rv_period(
+        &mut self,
+        name: Label,
+        variables: usize,
+        terms: Vec<rv_period::Literal>,
+    ) -> Result<()> {
+        if self.rv_periods.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Laurent period '{}' is already defined", name.text),
+            ));
+        }
+        let period = Period::build(self, variables, terms)?;
+        self.rv_periods.insert(name.text, Rc::new(period));
+        Ok(())
+    }
+
+    pub(crate) fn rv_period(&self, name: &Label) -> Result<Rc<Period>> {
+        self.rv_periods
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Laurent period '{}'", name.text)))
+    }
+
+    pub(crate) fn rv_period_for(&self, grade: &PeriodGrade) -> Rc<Period> {
+        self.rv_periods[grade.period.as_ref()].clone()
+    }
+
+    pub(crate) fn rv_ct_state_grade(
+        &mut self,
+        name: Label,
+        p: usize,
+        s: usize,
+    ) -> Result<PeriodGrade> {
+        self.rv_period(&name)?;
+        let level = PeriodLevel::new(self, p, s)?;
+        Ok(PeriodGrade {
+            period: name.text.into(),
+            level,
+        })
+    }
+
+    pub(crate) fn rv_ct_state_type(&mut self, grade: PeriodGrade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVCTState(grade), 0)
+    }
+
+    pub(crate) fn rv_ct_residue_type(&mut self, level: PeriodLevel) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVCTResidue(level), 0)
+    }
+
     pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {
         self.rv_as_covers.get(name).cloned()
     }
@@ -3213,6 +3274,8 @@ impl Model {
             | Kind::RVQGr(..)
             | Kind::RVQGrP(..)
             | Kind::RVOre
+            | Kind::RVCTState(..)
+            | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
@@ -3633,6 +3696,14 @@ impl Model {
             )),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
+            Kind::RVCTState(grade) => out.push(&format!(
+                "RVCTState({}, {}, {})",
+                grade.period, grade.level.prime, grade.level.precision
+            )),
+            Kind::RVCTResidue(level) => out.push(&format!(
+                "RVCTResidue({}, {})",
+                level.prime, level.precision
+            )),
             Kind::RVOre => out.push("RVOre"),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
@@ -3835,6 +3906,10 @@ impl Model {
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 Ok(rv_cyclotomic::compare(self, left, right)?.is_eq())
             }
+            (Value::PeriodState(left), Value::PeriodState(right)) => {
+                Ok(Rc::ptr_eq(left, right) || rv_period::compare(self, left, right)?.is_eq())
+            }
+            (Value::PeriodResidue(left), Value::PeriodResidue(right)) => Ok(left == right),
             (Value::RVOre(left), Value::RVOre(right)) => {
                 Ok(rv_ore::compare(self, left, right)?.is_eq())
             }
@@ -4069,6 +4144,14 @@ impl Model {
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
             }
+            (Value::PeriodState(left), Value::PeriodState(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    rv_period::compare(self, left, right)
+                }
+            }
+            (Value::PeriodResidue(left), Value::PeriodResidue(right)) => Ok(left.cmp(right)),
             (Value::RVOre(left), Value::RVOre(right)) => rv_ore::compare(self, left, right),
             (Value::RVQGrP(left), Value::RVQGrP(right)) => rv_pcurv::compare(self, left, right),
             (Value::RVQGr(left), Value::RVQGr(right)) => rv_qgr::compare(self, left, right),
@@ -4286,6 +4369,23 @@ impl Model {
                 }
                 Kind::RVFusion(..) => {
                     return Err(Error::plain("cannot enumerate a Verlinde fusion ring"));
+                }
+                Kind::RVCTState(ref grade) => {
+                    self.rv_period_for(grade)
+                        .elements(self, grade.level, MAX_ELEMENTS)?
+                }
+                Kind::RVCTResidue(level) => {
+                    let size = usize::try_from(level.modulus)
+                        .ok()
+                        .filter(|&n| n <= MAX_ELEMENTS)
+                        .ok_or_else(|| {
+                            Error::plain(
+                                "Cartier residues exceed the finite type enumeration limit",
+                            )
+                        })?;
+                    self.spend(size)?;
+                    self.allocate(size)?;
+                    (0..level.modulus).map(Value::PeriodResidue).collect()
                 }
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVQGrP(..) => {
@@ -5526,6 +5626,27 @@ impl Model {
                         out.push(", ")?;
                     }
                     out.push(&format!("{weight:?}: {coefficient}"))?;
+                }
+                out.push("}")
+            }
+            Value::PeriodResidue(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{value}}}"))
+            }
+            Value::PeriodState(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, (term, coefficient)) in terms.iter().enumerate() {
+                    if i != 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push(&format!(
+                        "{coefficient}*z^{}{:?}",
+                        term.power, term.exponents
+                    ))?;
                 }
                 out.push("}")
             }

@@ -102,6 +102,7 @@ use crate::rv_negative;
 use crate::rv_newton;
 use crate::rv_ore;
 use crate::rv_pcurv;
+use crate::rv_period::{self, Grade as PeriodGrade, Level as PeriodLevel};
 use crate::rv_poly;
 use crate::rv_qconnection;
 use crate::rv_qgr;
@@ -383,6 +384,10 @@ enum TypedForm {
     SphericalEmbedding(Box<TypedExpr>),
     SatakeTransform(Box<TypedExpr>),
     QuantumProduct(rv_qgr::Grade, Box<[TypedExpr; 2]>),
+    PeriodInitial(PeriodGrade),
+    PeriodQuery(PeriodGrade, u128),
+    PeriodSection(PeriodGrade, u32, Box<TypedExpr>),
+    PeriodRead(PeriodGrade, Box<TypedExpr>),
     QuantumNabla(rv_qgr::Grade, Box<TypedExpr>),
     QuantumPNabla(rv_pcurv::ModGrade, Box<TypedExpr>),
     QuantumPUnary(rv_pcurv::ModGrade, QuantumOp, Box<TypedExpr>),
@@ -1820,6 +1825,15 @@ impl Engine {
                     .rv_as_two_cover(&name)?
                     .report(&mut self.model, &name.text, query)?
             }
+            StatementForm::RvPeriod(name, variables, terms) => {
+                self.model.define_rv_period(name, variables, terms)?;
+                return Ok(None);
+            }
+            StatementForm::RVCTExact(name, index) => {
+                let period = self.model.rv_period(&name)?;
+                let value = period.exact(&mut self.model, index)?;
+                format!("rvCTExact[{}, {index}] = {value}", name.text)
+            }
             StatementForm::RvAsOdd(name, prime, terms) => {
                 self.model.check_new_rv_as_odd_cover(&name)?;
                 let cover = RvAsOddCover::build(&mut self.model, prime, terms)?;
@@ -2954,6 +2968,24 @@ impl Engine {
                         };
                         rv_fusion::add(&mut self.model, grade, &a, &b)
                     }
+                    (BinaryOp::Add, Value::PeriodState(a), Value::PeriodState(b)) => {
+                        let Kind::RVCTState(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let level = grade.level;
+                        Ok(Value::PeriodState(rv_period::add(
+                            &mut self.model,
+                            level,
+                            &a,
+                            &b,
+                        )?))
+                    }
+                    (BinaryOp::Add, Value::PeriodResidue(a), Value::PeriodResidue(b)) => {
+                        let Kind::RVCTResidue(level) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        Ok(Value::PeriodResidue(level.add(a, b)))
+                    }
                     (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
                         rv_ore::add(&mut self.model, &a, &b)
                     }
@@ -4080,6 +4112,38 @@ impl Engine {
                     unreachable!()
                 };
                 rv_qconnection::nabla(&mut self.model, *grade, &v)
+            }
+            TypedForm::PeriodInitial(grade) => {
+                let period = self.model.rv_period_for(grade);
+                Ok(Value::PeriodState(
+                    period.initial(&mut self.model, grade.level)?,
+                ))
+            }
+            TypedForm::PeriodQuery(grade, index) => {
+                let period = self.model.rv_period_for(grade);
+                Ok(Value::PeriodResidue(period.query(
+                    &mut self.model,
+                    grade.level,
+                    *index,
+                )?))
+            }
+            TypedForm::PeriodSection(grade, digit, input) => {
+                let Value::PeriodState(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let period = self.model.rv_period_for(grade);
+                let image = period.section(&mut self.model, grade.level, *digit, &state)?;
+                Ok(Value::PeriodState(rv_period::persist(
+                    &mut self.model,
+                    image,
+                )?))
+            }
+            TypedForm::PeriodRead(grade, input) => {
+                let Value::PeriodState(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let period = self.model.rv_period_for(grade);
+                Ok(Value::PeriodResidue(period.read(&mut self.model, &state)?))
             }
             TypedForm::QuantumProduct(grade, arguments) => {
                 let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
@@ -5548,6 +5612,11 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::FusionScale(..)
             | ExprForm::FusionDual(..)
             | ExprForm::QuantumBasis(..)
+            | ExprForm::RVCTInitial(..)
+            | ExprForm::RVCTQuery(..)
+            | ExprForm::RVCTLiteral(..)
+            | ExprForm::RVCTSection(..)
+            | ExprForm::RVCTRead(..)
             | ExprForm::OreTerm(..)
             | ExprForm::OreProduct(..)
             | ExprForm::OreUnary(..)
@@ -5736,6 +5805,14 @@ impl Checker<'_> {
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
             TypeForm::RVOre => self.model.ore_type(),
+            TypeForm::RVCTState(name, p, s) => {
+                let grade = self.model.rv_ct_state_grade(name, p, s)?;
+                self.model.rv_ct_state_type(grade)
+            }
+            TypeForm::RVCTResidue(p, s) => {
+                let level = PeriodLevel::new(self.model, p, s)?;
+                self.model.rv_ct_residue_type(level)
+            }
             TypeForm::RVQGrP(prime, rank, ambient) => {
                 let grade = rv_pcurv::ModGrade::checked(self.model, prime, rank, ambient)?;
                 self.model.quantum_mod_type(grade)
@@ -6109,6 +6186,8 @@ impl Checker<'_> {
                     Kind::RVQGr(..) => rv_qgr::zero(),
                     Kind::RVQGrP(..) => rv_pcurv::zero(),
                     Kind::RVOre => rv_ore::zero(),
+                    Kind::RVCTState(..) => Value::PeriodState([].into()),
+                    Kind::RVCTResidue(..) => Value::PeriodResidue(0),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVCycloQ(..) => rv_lens::zero(),
@@ -8911,6 +8990,44 @@ impl Checker<'_> {
                 let value = rv_qgr::basis(self.model, grade, shape)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::RVCTInitial(name, p, s) => {
+                let grade = self.model.rv_ct_state_grade(name, p, s)?;
+                let ty = self.model.rv_ct_state_type(grade.clone())?;
+                Ok((ty, TypedForm::PeriodInitial(grade)))
+            }
+            ExprForm::RVCTQuery(name, p, s, index) => {
+                let grade = self.model.rv_ct_state_grade(name, p, s)?;
+                let ty = self.model.rv_ct_residue_type(grade.level)?;
+                Ok((ty, TypedForm::PeriodQuery(grade, index)))
+            }
+            ExprForm::RVCTLiteral(p, s, value) => {
+                let level = PeriodLevel::new(self.model, p, s)?;
+                let ty = self.model.rv_ct_residue_type(level)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(Value::PeriodResidue(value % level.modulus)),
+                ))
+            }
+            ExprForm::RVCTSection(digit, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVCTState(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvCTSection", "an RVCTState"));
+                };
+                let digit = grade.level.check_digit(digit)?;
+                Ok((
+                    input.ty,
+                    TypedForm::PeriodSection(grade.clone(), digit, Box::new(input)),
+                ))
+            }
+            ExprForm::RVCTRead(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVCTState(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvCTRead", "an RVCTState"));
+                };
+                let grade = grade.clone();
+                let ty = self.model.rv_ct_residue_type(grade.level)?;
+                Ok((ty, TypedForm::PeriodRead(grade, Box::new(input))))
+            }
             ExprForm::OreTerm(q, theta, coefficient) => {
                 let ty = self.model.ore_type()?;
                 let value = rv_ore::term(self.model, q, theta, coefficient)?;
@@ -11569,6 +11686,8 @@ impl Checker<'_> {
                         | Kind::RVQGr(..)
                         | Kind::RVQGrP(..)
                         | Kind::RVOre
+                        | Kind::RVCTState(..)
+                        | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::RVCycloQ(..)

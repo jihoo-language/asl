@@ -109,6 +109,8 @@ pub(crate) enum TypeForm {
     RVQGr(usize, usize),
     RVQGrP(usize, usize, usize),
     RVOre,
+    RVCTState(Label, usize, usize),
+    RVCTResidue(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
     RVCycloQ(usize),
@@ -712,6 +714,11 @@ pub(crate) enum ExprForm {
     QuantumPSection(usize, usize, usize, Vec<usize>, bool),
     QuantumCurvature(bool, Box<ParsedExpr>),
     QuantumAnnihilator(usize, usize),
+    RVCTInitial(Label, usize, usize),
+    RVCTQuery(Label, usize, usize, u128),
+    RVCTLiteral(usize, usize, u128),
+    RVCTSection(usize, Box<ParsedExpr>),
+    RVCTRead(Box<ParsedExpr>),
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
     OreUnary(OreOp, Box<ParsedExpr>),
@@ -1048,6 +1055,8 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
+    RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
+    RVCTExact(Label, u128),
     RvAsOdd(Label, usize, Vec<(usize, i128)>),
     RvAsOddQuery(AsOddQuery, Label),
     RvAsTwo(Label, usize, Vec<(i128, i128)>),
@@ -1337,6 +1346,24 @@ impl<'src> Parser<'src> {
             .map_err(|_| Error::new(span, "decimal integer is out of range"))?;
         self.advance()?;
         Ok((number, span))
+    }
+
+    fn wide_unsigned(&mut self, label: &str) -> Result<u128> {
+        let span = self.span();
+        let Token::Number(text) = self.token() else {
+            return Err(self.expected("a nonnegative decimal integer"));
+        };
+        let value = text
+            .parse()
+            .map_err(|_| Error::new(span, format!("{label} exceeds u128")))?;
+        self.advance()?;
+        Ok(value)
+    }
+
+    fn cartier_level(&mut self) -> Result<(usize, usize)> {
+        let prime = self.number()?.0;
+        self.expect(Token::Comma)?;
+        Ok((prime, self.number()?.0))
     }
 
     fn rho_grade(&mut self) -> Result<rho_bock::Grade> {
@@ -2894,6 +2921,39 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvAsTwoQuery(query, name)
             }
+            Token::Word("rvperiod") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let variables = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut terms = Vec::new();
+                while self.token() != Token::RBrace {
+                    self.expect(Token::LParen)?;
+                    let exponents =
+                        self.signed_tuple("a signed Laurent exponent", "Laurent exponent")?;
+                    self.expect(Token::Comma)?;
+                    let value =
+                        self.signed_wide("a signed Laurent coefficient", "Laurent coefficient")?;
+                    self.expect(Token::RParen)?;
+                    terms.push((exponents, value));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::RvPeriod(name, variables, terms)
+            }
+            Token::Word("rvCTExact") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let index = self.wide_unsigned("period index")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RVCTExact(name, index)
+            }
             Token::Word("rvasodd") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -4290,6 +4350,18 @@ impl<'src> Parser<'src> {
             let (level, _) = self.number()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVFusion(rank, level), 0);
+        }
+        if name.text == "RVCTState" && self.eat(Token::LParen)? {
+            let period = self.label()?;
+            self.expect(Token::Comma)?;
+            let (prime, exponent) = self.cartier_level()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVCTState(period, prime, exponent), 0);
+        }
+        if name.text == "RVCTResidue" && self.eat(Token::LParen)? {
+            let (prime, exponent) = self.cartier_level()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVCTResidue(prime, exponent), 0);
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
@@ -7274,6 +7346,45 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::FusionDual(Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "rvCTMod" | "rvCTInitial")
+                    && self.eat(Token::LBracket)?
+                {
+                    let period = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (prime, exponent) = self.cartier_level()?;
+                    let form = if name.text == "rvCTMod" {
+                        self.expect(Token::Comma)?;
+                        ExprForm::RVCTQuery(
+                            period,
+                            prime,
+                            exponent,
+                            self.wide_unsigned("period index")?,
+                        )
+                    } else {
+                        ExprForm::RVCTInitial(period, prime, exponent)
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, form, 0);
+                }
+                if name.text == "rvCTResidue" && self.eat(Token::LBracket)? {
+                    let (prime, exponent) = self.cartier_level()?;
+                    self.expect(Token::Comma)?;
+                    let value = self.wide_unsigned("Cartier residue")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RVCTLiteral(prime, exponent, value), 0);
+                }
+                if name.text == "rvCTSection" && self.eat(Token::LBracket)? {
+                    let digit = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RVCTSection(digit, Box::new(input)), depth);
+                }
+                if name.text == "rvCTRead" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RVCTRead(Box::new(input)), depth);
                 }
                 if matches!(name.text.as_str(), "rvQGrBasis" | "rvQGrOne")
                     && self.eat(Token::LBracket)?

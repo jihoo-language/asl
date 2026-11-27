@@ -1061,6 +1061,18 @@ In the $z=1$ Grassmannian quantum differential module, `rvQGrNabla(v)` is $\nabl
 
 For $\mathrm{Gr}(2,5)$, $B=\theta^2-q(11\theta^2+11\theta+3)-q^2(\theta+1)^2$ and $R=0$. The coefficients $1,3,19,147,1251,\ldots$ equal $\sum_{j=0}^d\binom{d}{j}^2\binom{d+j}{j}$ in degree $d$, the Apéry numbers for $\zeta(2)$. For $\mathrm{Gr}(2,4)$, $B=\theta-2q(2\theta+1)$ and the coefficients are $\binom{2d}{d}$. For projective space, the reduced equation is $(1-q)G=1$. The example also verifies Euler cancellation from order $14$ to order $4$ for $\mathrm{Gr}(3,6)$. [Quantum regularization example](examples/rv-quantum-regularization.asl)
 
+### Laurent periods and prime-power Cartier sections
+
+`rvperiod P[r] {([e1,...,er],c),...};` declares a Laurent polynomial $L$ in $r$ variables. Each term has signed integer exponents and a signed integer coefficient. Equal exponents are combined. `rvCTExact[P,n];` reports the constant term of $L^n$ by exact sparse multiplication. The exact integer and Laurent exponents use checked signed 128-bit arithmetic.
+
+`rvCTMod[P,p,s,n]` returns the constant term modulo $p^s$ for a prime $p$ and positive precision $s$. The index is an unsigned 128-bit integer. `RVCTResidue(p,s)` is the residue type, and `rvCTResidue[p,s,v]` reduces a nonnegative integer to that type. Residue values support `zero`, `add` and equality, using least nonnegative representatives for display.
+
+For the state model put $Q=1-zL$ and $M=p^{s-1}$. An `RVCTState(P,p,s)` stores the sparse numerator $V$ of $V/Q^M$ modulo $p^s$. `rvCTInitial[P,p,s]` starts with $V=Q^{M-1}$. `rvCTSection[d](v)` for $0\le d<p$ multiplies by $Q^{(p-1)M}$. It keeps monomials whose $z$ exponent is $d$ modulo $p$ and whose spatial exponents are all divisible by $p$. It subtracts $d$ from the $z$ exponent and divides all exponents by $p$. The congruence $Q(z,x)^{pM}\equiv Q(z^p,x^p)^M\pmod{p^s}$ preserves the denominator. At precision one the same section can use the $z^d$ coefficient $L^d$ of $Q^{p-1}$ directly.
+
+Apply sections from the least significant base-$p$ digit to the most significant. `rvCTRead(v)` reads the coefficient of $z^0x^0$ in the current numerator, which equals the constant term of the corresponding rational series at $z=0$. Section results are actual state values. They support `show`, `zero`, `add` and equality, and calls such as `rvCTRead(rvCTSection[2](rvCTSection[1](v)))` preserve the intermediate numerator. The finite state type has $z$ degrees $0,\ldots,M-1$ and spatial exponent intervals given by $M$ times the coordinate bounds of $1$ and $L$. Ordinary finite enumeration applies within the interpreter's size limit. A modular query reuses repeated transitions only after matching the whole sparse state and the digit.
+
+For $L=(1+x)(1+y)(1+x+y)/(xy)$, expanding the last factor in $L^n$ and extracting the two spatial coefficients gives $\sum_k\binom{n}{k}^2\binom{n+k}{k}$. These Apéry numbers are $(n!)^5$ times the normalized $\mathrm{Gr}(2,5)$ quantum-period coefficients. The example uses the two Cartier sections for $7$ in base $3$ to obtain $6$ modulo $9$, and evaluates the period at $3^{38}-1$ modulo $27$ and $2^{85}-1$ modulo $16$. It also shows a Laurent polynomial whose mod-two period needs a nonconstant state. [Laurent period example](examples/rv-laurent-period.asl)
+
 ### Quantum p-curvature
 
 `RVQGrP(p,k,n)` is the polynomial Schubert module in characteristic $p$. `rvQGrMod[p](v)` reduces an integral `RVQGr(k,n)` section exactly modulo $p$, and `rvQGrPBasis[p,k,n,[lambda0,...]]` constructs a basis section. The module supports `zero`, `add`, `neg`, equality, and the `rvQGrNabla`, `rvQGrScale`, `rvQGrShift`, `rvQGrTranspose`, `rvQGrClassical`, and `rvQGrCoeff` operations.
