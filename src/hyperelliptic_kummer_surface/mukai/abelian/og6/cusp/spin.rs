@@ -16,6 +16,7 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod exterior;
+pub(crate) mod projector;
 
 const RANK: usize = 7;
 const DIMENSION: usize = 1 << RANK;
@@ -78,10 +79,13 @@ pub(crate) struct Algebra {
     basis: Vec<Column>,
     dual: Vec<Column>,
     gram: [[Integer; RANK]; RANK],
+    projector: OnceCell<Box<projector::Marking>>,
 }
 
+type RegularColumns = Vec<Vec<(usize, Integer)>>;
+
 pub(super) struct Action {
-    columns: Vec<Vec<(usize, Integer)>>,
+    columns: RegularColumns,
     factors: OnceCell<Vec<Magnitude>>,
 }
 
@@ -139,7 +143,12 @@ impl Algebra {
                 gram[j][i] = value;
             }
         }
-        Ok(Self { basis, dual, gram })
+        Ok(Self {
+            basis,
+            dual,
+            gram,
+            projector: OnceCell::new(),
+        })
     }
 
     pub(crate) fn basis(&self, index: usize) -> Result<Class> {
@@ -282,19 +291,8 @@ impl Algebra {
         if !self.product(model, &lift, &lift)?.is_empty() {
             return Err(Error::plain("OG6 spin logarithm must square to zero"));
         }
-        let mut columns = Vec::with_capacity(EVEN_RANK);
-        let mut entries = 0;
-        for index in 0..EVEN_RANK {
-            let right = Terms::from([(even_mask(index), Integer::from_i128(1))]);
-            let column = self.product(model, &lift, &right)?;
-            entries += column.len();
-            columns.push(
-                column
-                    .into_iter()
-                    .map(|(mask, coefficient)| (even_index(mask), coefficient))
-                    .collect(),
-            );
-        }
+        let columns = self.regular_columns(model, &lift)?;
+        let entries: usize = columns.iter().map(Vec::len).sum();
         model.allocate(3 * EVEN_RANK + entries * (WORK_LIMBS + 3))?;
         Ok(limit.spin_action.get_or_init(|| {
             Box::new(Action {
@@ -302,6 +300,20 @@ impl Algebra {
                 factors: OnceCell::new(),
             })
         }))
+    }
+
+    fn regular_columns(&self, model: &mut Model, left: &Terms) -> Result<RegularColumns> {
+        let mut columns = Vec::with_capacity(EVEN_RANK);
+        for index in 0..EVEN_RANK {
+            let right = Terms::from([(even_mask(index), Integer::from_i128(1))]);
+            columns.push(
+                self.product(model, left, &right)?
+                    .into_iter()
+                    .map(|(mask, coefficient)| (even_index(mask), coefficient))
+                    .collect(),
+            );
+        }
+        Ok(columns)
     }
 }
 

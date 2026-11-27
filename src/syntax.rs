@@ -142,6 +142,7 @@ pub(crate) enum TypeForm {
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
+    KSEnd(Label),
     K3Spinor(Label, u8),
     Mukai(Label),
     MukaiQuotient(Label),
@@ -1013,6 +1014,9 @@ pub(crate) enum ExprForm {
     KSExterior(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Expression>,
     ),
+    KSEnd(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Expression>,
+    ),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
@@ -1242,6 +1246,9 @@ pub(crate) enum StatementForm {
         Box<
             crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Command,
         >,
+    ),
+    KSEnd(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Command>,
     ),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
@@ -3056,6 +3063,93 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn ks_end_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvKSVolumeSquare" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::VolumeSquare(name)
+            }
+            "rvKSEndCoeff" => {
+                self.expect(Token::LBracket)?;
+                let i = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let j = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Coefficient(i, j, Box::new(self.paren_expr(0)?))
+            }
+            "rvKSEndTrace" => Command::Trace(Box::new(self.paren_expr(0)?)),
+            _ => Command::TracePair(Box::new(self.paren_pair(0)?)),
+        };
+        Ok(StatementForm::KSEnd(Box::new(command)))
+    }
+
+    fn ks_end_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Expression;
+        let (expression, depth) = match operation {
+            "rvKSEndUnit" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let j = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Unit(name, i, j), 0)
+            }
+            "rvKSVolume" | "rvKSEmbed" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                if operation == "rvKSVolume" {
+                    (Expression::Volume(name), 0)
+                } else {
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    (Expression::Embed(name, Box::new(input)), depth)
+                }
+            }
+            "rvKSEndCompose" => {
+                let operands = self.paren_pair(nest)?;
+                let depth = 1 + operands[0].depth.max(operands[1].depth);
+                (Expression::Compose(Box::new(operands)), depth)
+            }
+            "rvKSEndScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("a signed numerator", "Kuga–Satake endomorphism numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wide_unsigned("Kuga–Satake endomorphism denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (
+                    Expression::Scale(numerator, denominator, Box::new(input)),
+                    depth,
+                )
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let expression = if operation == "rvKSEndLeft" {
+                    Expression::Left(Box::new(input))
+                } else {
+                    Expression::Project(Box::new(input))
+                };
+                (expression, depth)
+            }
+        };
+        expr(span, ExprForm::KSEnd(Box::new(expression)), depth)
     }
 
     fn ks_exterior_mask(&mut self) -> Result<u64> {
@@ -7226,6 +7320,10 @@ impl<'src> Parser<'src> {
             Token::Word(operation @ ("rvKSExteriorData" | "rvKSExteriorCoeff")) => {
                 self.ks_exterior_statement(operation)?
             }
+            Token::Word(
+                operation @ ("rvKSVolumeSquare" | "rvKSEndCoeff" | "rvKSEndTrace"
+                | "rvKSEndTracePair"),
+            ) => self.ks_end_statement(operation)?,
             Token::Word(operation @ ("rvog6cusp" | "rvOG6CuspGram")) => {
                 self.og6_cusp_statement(operation)?
             }
@@ -10715,6 +10813,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVKSEnd" && self.eat(Token::LParen)? {
+            let cusp = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KSEnd(cusp), 0);
+        }
         if name.text == "RVKSExterior" && self.eat(Token::LParen)? {
             let cusp = self.label()?;
             self.expect(Token::Comma)?;
@@ -13030,6 +13133,17 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.ks_exterior_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKSEndUnit" | "rvKSVolume" | "rvKSEmbed" | "rvKSEndScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKSEndLeft" | "rvKSProject" | "rvKSEndCompose"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ks_end_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

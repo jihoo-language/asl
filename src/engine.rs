@@ -45,6 +45,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
     eigenpacket, hecke, period_polynomial as period,
 };
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
     abelian::{self, og6},
@@ -595,6 +596,15 @@ enum OG6CliffordAction {
     Spin(Rc<og6::cusp::nilpotent::Limit>, Option<i128>),
 }
 
+enum KSEndAction {
+    Volume(Rc<og6::cusp::Cusp>),
+    Embed(Rc<og6::cusp::Cusp>, Box<TypedExpr>),
+    Left(Rc<og6::cusp::Cusp>, Box<TypedExpr>),
+    Compose(Box<[TypedExpr; 2]>),
+    Scale(i128, u128, Box<TypedExpr>),
+    Project(Rc<og6::cusp::Cusp>, Box<TypedExpr>),
+}
+
 enum KSExteriorAction {
     Embed(Box<TypedExpr>),
     ToSpin(Box<TypedExpr>),
@@ -737,6 +747,7 @@ enum TypedForm {
     NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
     OG6Clifford(OG6CliffordAction),
     KSExterior(KSExteriorAction),
+    KSEnd(KSEndAction),
     WittBridge(Box<crate::rv_witt_spectrum::Bridge>),
     WittHilbertBridge(Box<crate::rv_witt_spectrum::HilbertBridge>),
     WittTensor(Box<[TypedExpr; 2]>),
@@ -1986,6 +1997,7 @@ impl Engine {
             StatementForm::KSExterior(command) => {
                 return self.ks_exterior_command(*command).map(Some)
             }
+            StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
             StatementForm::OG6Nilpotent(command) => return self.og6_nilpotent_command(*command),
             StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
             StatementForm::OG6(command) => return self.og6_command(*command),
@@ -6322,6 +6334,104 @@ impl Engine {
         ))
     }
 
+    fn ks_end_command(&mut self, command: ks_projector::Command) -> Result<String> {
+        use ks_projector::Command;
+        match command {
+            Command::VolumeSquare(name) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                let lattice = self.og6_spin_lattice(&cusp, name.span)?;
+                let algebra = cusp.spin_algebra(&mut self.model, &lattice)?;
+                let square = algebra.volume_square(&mut self.model)?;
+                Ok(format!("rvKSVolumeSquare[{}] = {square}", name.text))
+            }
+            Command::Coefficient(i, j, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().ks_end_operand(&input, "rvKSEndCoeff")?;
+                let Value::KSEnd(end) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = end.entry(&mut self.model, i, j)?;
+                Ok(format!("rvKSEndCoeff[{i},{j}] = {coefficient}"))
+            }
+            Command::Trace(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().ks_end_operand(&input, "rvKSEndTrace")?;
+                let Value::KSEnd(end) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let trace = end.trace(&mut self.model)?;
+                Ok(format!("rvKSEndTrace = {trace}"))
+            }
+            Command::TracePair(inputs) => {
+                let (left, right) = {
+                    let mut checker = self.checker();
+                    let [left, right] = *inputs;
+                    let left = checker.expr(left)?;
+                    let right = checker.expr(right)?;
+                    checker.ks_end_operand(&left, "rvKSEndTracePair")?;
+                    checker.require_type(left.ty, &right, "rvKSEndTracePair")?;
+                    (left, right)
+                };
+                let (Value::KSEnd(left), Value::KSEnd(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let trace = left.trace_pair(&mut self.model, &right)?;
+                Ok(format!("rvKSEndTracePair = {trace}"))
+            }
+        }
+    }
+
+    fn eval_ks_end(&mut self, action: &KSEndAction, span: Span) -> Result<Value> {
+        let value = match action {
+            KSEndAction::Volume(cusp) => {
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                let algebra = cusp.spin_algebra(&mut self.model, &lattice)?;
+                return algebra.volume(&mut self.model)?.persist(&mut self.model);
+            }
+            KSEndAction::Embed(cusp, input) => {
+                let Value::OG6(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                let algebra = cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.embed(&mut self.model, cusp, &vector)?
+            }
+            KSEndAction::Left(cusp, input) => {
+                let Value::OG6Clifford(spin) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                let algebra = cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.left_end(&mut self.model, &spin)?
+            }
+            KSEndAction::Compose(inputs) => {
+                let (Value::KSEnd(left), Value::KSEnd(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                left.compose(&mut self.model, &right)?
+            }
+            KSEndAction::Scale(numerator, denominator, input) => {
+                let Value::KSEnd(end) = self.eval(input)? else {
+                    unreachable!()
+                };
+                end.scale(&mut self.model, *numerator, *denominator)?
+            }
+            KSEndAction::Project(cusp, input) => {
+                let Value::KSEnd(end) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                let algebra = cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.project(&mut self.model, &end)?
+            }
+        };
+        value.persist(&mut self.model)
+    }
+
     fn ks_exterior_command(&mut self, command: ks_exterior::Command) -> Result<String> {
         match command {
             ks_exterior::Command::Data(name, degree) => {
@@ -7842,6 +7952,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::KSExterior(a), Value::KSExterior(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::KSEnd(a), Value::KSEnd(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Clifford(a), Value::K3Clifford(b)) => {
@@ -9647,6 +9760,7 @@ impl Engine {
             }
             TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
             TypedForm::KSExterior(action) => self.eval_ks_exterior(action, expr.span),
+            TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
@@ -12330,6 +12444,7 @@ impl Checker<'_> {
             }
             TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
             TypeForm::KSExterior(name, degree) => self.model.ks_exterior_type(&name, degree),
+            TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
@@ -13387,6 +13502,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
+                    Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -15573,6 +15689,7 @@ impl Checker<'_> {
             }
             ExprForm::OG6Clifford(expression) => self.og6_clifford_expression(*expression),
             ExprForm::KSExterior(expression) => self.ks_exterior_expression(*expression),
+            ExprForm::KSEnd(expression) => self.ks_end_expression(*expression),
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
@@ -16382,6 +16499,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::KSExterior(KSExteriorAction::Scale(-1, Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KSEnd(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KSEnd(KSEndAction::Scale(-1, 1, Box::new(input))),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::K3Clifford(..)) {
@@ -20221,6 +20344,7 @@ impl Checker<'_> {
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
+                        | Kind::KSEnd(..)
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
@@ -22629,6 +22753,81 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Spinor(action)))
+    }
+
+    fn ks_end_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
+        let Kind::KSEnd(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVKSEnd endomorphism"));
+        };
+        Ok(Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn ks_end_expression(
+        &mut self,
+        expression: ks_projector::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ks_projector::{End, Expression};
+        let (ty, action) = match expression {
+            Expression::Unit(name, i, j) => {
+                let ty = self.model.ks_end_type(&name)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(End::unit(i, j)?.persist(self.model)?),
+                ));
+            }
+            Expression::Volume(name) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                let ty = self.model.og6_clifford_type(&name, 1)?;
+                (ty, KSEndAction::Volume(cusp))
+            }
+            Expression::Embed(name, input) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                let input = self.expr(*input)?;
+                let lattice = Label {
+                    text: cusp.lattice_name.to_string(),
+                    span: name.span,
+                };
+                let expected = self.model.og6_type(&lattice)?;
+                self.require_type(expected, &input, "rvKSEmbed")?;
+                let ty = self.model.ks_end_type(&name)?;
+                (ty, KSEndAction::Embed(cusp, Box::new(input)))
+            }
+            Expression::Left(input) => {
+                let input = self.expr(*input)?;
+                let (name, _) = self.og6_clifford_operand(&input, "rvKSEndLeft")?;
+                let expected = self.model.og6_clifford_type(&name, 0)?;
+                self.require_type(expected, &input, "rvKSEndLeft")?;
+                let cusp = self.model.og6_cusp(&name)?;
+                let ty = self.model.ks_end_type(&name)?;
+                (ty, KSEndAction::Left(cusp, Box::new(input)))
+            }
+            Expression::Compose(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                self.ks_end_operand(&left, "rvKSEndCompose")?;
+                self.require_type(left.ty, &right, "rvKSEndCompose")?;
+                (left.ty, KSEndAction::Compose(Box::new([left, right])))
+            }
+            Expression::Scale(numerator, denominator, input) => {
+                let input = self.expr(*input)?;
+                self.ks_end_operand(&input, "rvKSEndScale")?;
+                (
+                    input.ty,
+                    KSEndAction::Scale(numerator, denominator, Box::new(input)),
+                )
+            }
+            Expression::Project(input) => {
+                let input = self.expr(*input)?;
+                let name = self.ks_end_operand(&input, "rvKSProject")?;
+                let cusp = self.model.og6_cusp(&name)?;
+                (input.ty, KSEndAction::Project(cusp, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::KSEnd(action)))
     }
 
     fn ks_exterior_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, i128)> {

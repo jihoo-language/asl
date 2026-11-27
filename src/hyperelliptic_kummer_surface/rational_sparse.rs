@@ -77,12 +77,17 @@ impl<D: Domain, K: Copy + Ord> Coefficients<D, K> {
         model.allocate(3 + COEFFICIENT_LIMBS + (COEFFICIENT_LIMBS + 2) * self.terms.len())
     }
 
-    pub(super) fn product_denominator<E>(&self, other: &Coefficients<E, K>) -> Result<Magnitude> {
-        self.denominator
-            .resize::<WORK_LIMBS>()
-            .ok_or_else(Self::arithmetic)?
-            .checked_product(other.denominator.resize().ok_or_else(Self::arithmetic)?)
+    pub(super) fn product_denominator<E: Domain>(
+        &self,
+        other: &Coefficients<E, K>,
+    ) -> Result<Magnitude> {
+        self.denominator_wide()?
+            .checked_product(other.denominator_wide()?)
             .ok_or_else(Self::arithmetic)
+    }
+
+    pub(super) fn denominator_wide(&self) -> Result<Magnitude> {
+        self.denominator.resize().ok_or_else(Self::arithmetic)
     }
 
     pub(crate) fn coefficient(&self, model: &mut Model, key: K) -> Result<String> {
