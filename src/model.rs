@@ -179,6 +179,7 @@ pub(crate) enum Kind {
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
     SheafDeformation(Rc<str>, usize),
+    DiskHom(Rc<str>, Rc<str>, Prime),
     SheafHom(SheafForm, SheafEnds, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
     SheafLocal(Rc<str>, sheaf_support::Grade),
@@ -530,6 +531,9 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    disk_quivers: HashMap<Rc<str>, Rc<crate::sheaf_disk::Disk>>,
+    disk_homs: HashMap<(Rc<str>, Rc<str>), Rc<crate::sheaf_disk::Hom>>,
+    disk_realizations: HashMap<Rc<str>, Rc<crate::sheaf_disk::Realization>>,
     cone_gluings: HashMap<String, Rc<crate::sheaf_cone::Cone>>,
     cone_homotopies: HashMap<String, Rc<crate::sheaf_cone::Homotopy>>,
     bc_squares: HashMap<String, Rc<crate::sheaf_base_change::Square>>,
@@ -612,6 +616,9 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            disk_quivers: HashMap::new(),
+            disk_homs: HashMap::new(),
+            disk_realizations: HashMap::new(),
             cone_gluings: HashMap::new(),
             cone_homotopies: HashMap::new(),
             bc_squares: HashMap::new(),
@@ -733,6 +740,10 @@ impl Model {
                 if !grade.has_leading(self.sheaf_complexes[name.as_ref()].filtered()) =>
             {
                 1
+            }
+            Kind::DiskHom(ref from, ref to, prime) => {
+                let rank = self.disk_homs[&(from.clone(), to.clone())].rank();
+                (prime.get() as usize).saturating_pow(u32::try_from(rank).unwrap_or(u32::MAX))
             }
             Kind::SheafDeformation(_, 0) => 1,
             Kind::SheafDeformation(..) => usize::MAX,
@@ -1051,6 +1062,7 @@ impl Model {
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
                 | Kind::SheafDeformation(..)
+                | Kind::DiskHom(..)
                 | Kind::SheafHom(..)
                 | Kind::SheafPage(..)
                 | Kind::SheafLocal(..)
@@ -1561,6 +1573,62 @@ impl Model {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn disk_named(&self, name: &str) -> Result<Rc<crate::sheaf_disk::Disk>> {
+        self.disk_quivers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown disk quiver '{name}'")))
+    }
+
+    pub(crate) fn check_new_disk(&self, name: &Label) -> Result<()> {
+        if self.disk_quivers.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("disk quiver '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_disk(&mut self, name: String, disk: crate::sheaf_disk::Disk) {
+        self.disk_quivers.insert(name.into(), Rc::new(disk));
+    }
+
+    pub(crate) fn disk_hom_type(
+        &mut self,
+        from: Rc<str>,
+        to: Rc<str>,
+    ) -> Result<(TypeId, Rc<crate::sheaf_disk::Hom>)> {
+        let key = (from.clone(), to.clone());
+        let hom = if let Some(hom) = self.disk_homs.get(&key) {
+            hom.clone()
+        } else {
+            let a = self.disk_named(&from)?;
+            let b = self.disk_named(&to)?;
+            let hom = Rc::new(crate::sheaf_disk::Hom::build(self, a, b)?);
+            self.allocate(1)?;
+            self.disk_homs.insert(key, hom.clone());
+            hom
+        };
+        let ty = self.inhabited_type(Kind::DiskHom(from, to, hom.source.prime), 0)?;
+        Ok((ty, hom))
+    }
+
+    pub(crate) fn define_disk_realization(&mut self, value: crate::sheaf_disk::Realization) {
+        self.disk_realizations
+            .insert(value.name.clone(), Rc::new(value));
+    }
+
+    pub(crate) fn disk_realization(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::sheaf_disk::Realization>> {
+        self.disk_realizations
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown realized disk '{}'", name.text)))
     }
 
     pub(crate) fn define_cone_gluing(&mut self, name: String, value: crate::sheaf_cone::Cone) {
@@ -4265,6 +4333,7 @@ impl Model {
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
             | Kind::SheafDeformation(..)
+            | Kind::DiskHom(..)
             | Kind::SheafHom(..)
             | Kind::SheafPage(..)
             | Kind::SheafLocal(..)
@@ -4505,6 +4574,7 @@ impl Model {
                 out.push(&format!("{}({name}, {degree})", form.name()))
             }
             Kind::SheafDeformation(name, order) => out.push(&format!("ShDef({name}, {order})")),
+            Kind::DiskHom(from, to, _) => out.push(&format!("ShDiskHom({from}, {to})")),
             Kind::SheafHom(form, ends, degree) => {
                 let name = match form {
                     SheafForm::Cochain => "ShHomC",
@@ -6041,6 +6111,10 @@ impl Model {
                 Kind::SheafDeformation(ref name, order) => {
                     let hom = self.sheaf_hom(&SheafEnds::endomorphisms(name.clone()));
                     sheaf_deform::elements(self, &hom, order, MAX_ELEMENTS)?
+                }
+                Kind::DiskHom(ref from, ref to, prime) => {
+                    let rank = self.disk_homs[&(from.clone(), to.clone())].rank();
+                    odd_ext::elements(self, prime, rank, MAX_ELEMENTS)?
                 }
                 Kind::SheafHom(form, ref ends, degree) => {
                     let data = self.sheaf_hom(ends);

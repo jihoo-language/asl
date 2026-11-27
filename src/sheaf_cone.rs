@@ -19,7 +19,21 @@ struct Attachment {
     columns: Columns,
 }
 
-impl Attachment {
+pub(crate) trait Apex {
+    fn height(&self) -> Result<usize>;
+    fn size(&self, degree: usize) -> usize;
+    fn column(&self, degree: usize, index: usize) -> &[Term];
+    fn differential(&self, _degree: usize) -> Option<Rc<Matrix>> {
+        None
+    }
+}
+
+impl Apex for Attachment {
+    fn column(&self, degree: usize, index: usize) -> &[Term] {
+        debug_assert_eq!(degree, self.degree);
+        &self.columns[index]
+    }
+
     fn size(&self, degree: usize) -> usize {
         if degree == self.degree {
             self.columns.len()
@@ -77,7 +91,15 @@ impl Cone {
         model.check_new_sheaf_complex(&fiber_label)?;
         let opens = source.local_families_at(model, &site, 0..site.target_poset().names.len())?;
         let link_height = opens.unique[opens.indices[apex]].height();
-        let ambient = ambient_complex(model, name, site.target, &opens, &attachment, link_height)?;
+        let ambient = ambient_complex(
+            model,
+            name,
+            site.target,
+            &opens,
+            apex,
+            &attachment,
+            link_height,
+        )?;
         let fiber = fiber_complex(
             model,
             &fiber_label,
@@ -193,12 +215,27 @@ fn check_cone(model: &mut Model, source: &Input, site: &Site, apex: usize) -> Re
     Ok(())
 }
 
+pub(crate) fn strict_ambient(
+    model: &mut Model,
+    name: &Label,
+    source: &Input,
+    site: &Site,
+    apex: usize,
+    attachment: &dyn Apex,
+) -> Result<Complex> {
+    check_cone(model, source, site, apex)?;
+    let opens = source.local_families_at(model, site, 0..site.target_poset().names.len())?;
+    let height = opens.unique[opens.indices[apex]].height();
+    ambient_complex(model, name, site.target, &opens, apex, attachment, height)
+}
+
 fn ambient_complex(
     model: &mut Model,
     name: &Label,
     base: TypeId,
     opens: &Opens<Local<'_>>,
-    attachment: &Attachment,
+    apex: usize,
+    attachment: &dyn Apex,
     link_height: usize,
 ) -> Result<Complex> {
     let height = link_height.max(attachment.height()?).max(1);
@@ -212,19 +249,22 @@ fn ambient_complex(
         let layers = sheaf_leray::local_layers(model, opens, degree, &previous)?;
         let mut dims: Vec<_> = opens.indices.iter().map(|&i| layers[i].size).collect();
         let rank = attachment.size(degree);
-        dims[attachment.apex] = rank;
+        dims[apex] = rank;
         let mut restrictions = BTreeMap::<_, Rc<Matrix>>::new();
         let zero = Rc::new(Matrix::default());
         let sheaf = Sheaf::from_cover_maps(model, base, prime, dims, |model, x, y| {
             let j = opens.indices[y];
-            if x == attachment.apex {
+            if x == apex {
                 if rank == 0 {
                     return Ok(zero.clone());
                 }
                 let transition = Matrix::from_action(model, rank, |model, column| {
-                    index_support(model, &attachment.columns[column], &layers[j], |term| {
-                        opens.unique[j].contains(term)
-                    })
+                    index_support(
+                        model,
+                        attachment.column(degree, column),
+                        &layers[j],
+                        |term| opens.unique[j].contains(term),
+                    )
                 })?;
                 return Ok(Rc::new(transition));
             }
@@ -245,8 +285,10 @@ fn ambient_complex(
             let mut blocks = Vec::with_capacity(count);
             let mut cells = count;
             for (x, &i) in opens.indices.iter().enumerate() {
-                let block = if x == attachment.apex {
-                    zero.clone()
+                let block = if x == apex {
+                    attachment
+                        .differential(degree - 1)
+                        .unwrap_or_else(|| zero.clone())
                 } else if let Some(block) = cache.get(&i) {
                     block.clone()
                 } else {

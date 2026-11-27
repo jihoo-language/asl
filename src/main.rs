@@ -173,6 +173,7 @@ mod sheaf_bc_comma;
 mod sheaf_cellular;
 mod sheaf_cone;
 mod sheaf_deform;
+mod sheaf_disk;
 mod sheaf_ext;
 mod sheaf_higher;
 mod sheaf_hyper;

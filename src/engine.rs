@@ -656,6 +656,9 @@ enum TypedForm {
     MixedHShift(Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
+    DiskCompose(Box<crate::sheaf_disk::Composition>, Box<[TypedExpr; 2]>),
+    DiskMap(crate::sheaf_disk::Unary, Box<TypedExpr>),
+    DiskCostalkLift(Rc<crate::sheaf_disk::Realization>, usize, Box<TypedExpr>),
     SheafConeTail(Rc<crate::sheaf_cone::Cone>, usize, bool, Box<TypedExpr>),
     SheafConeTransfer(Rc<crate::sheaf_cone::Homotopy>, usize, bool, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
@@ -715,6 +718,126 @@ impl Engine {
             values: Vec::new(),
             locals: Vec::new(),
         }
+    }
+
+    fn disk_command(&mut self, command: crate::sheaf_disk::Command) -> Result<Option<String>> {
+        use crate::sheaf_disk::{Command, Disk, Realization};
+        match command {
+            Command::Declare(name, [p, n, m], [u, v]) => {
+                self.model.check_new_disk(&name)?;
+                let data = Disk::declared(&mut self.model, p, n, m, u, v)?;
+                self.model.define_disk(name.text, data);
+            }
+            Command::Extend(name, source, extension) => {
+                self.model.check_new_disk(&name)?;
+                let data = self.model.disk_named(&source.text)?;
+                let derived = data.extend(&mut self.model, source.text.into(), extension)?;
+                self.model.define_disk(name.text, derived);
+            }
+            Command::Dual(name, source) => {
+                self.model.check_new_disk(&name)?;
+                let dish = self.model.disk_named(&source.text)?;
+                let derived = dish.dual(&mut self.model, source.text.into())?;
+                self.model.define_disk(name.text, derived);
+            }
+            Command::Map(name, [from, to], [a, b]) => {
+                self.check_new_binding(&name)?;
+                let (ty, hom) = self.model.disk_hom_type(from.text.into(), to.text.into())?;
+                let value = hom.literal(&mut self.model, a, b)?;
+                self.bind(name.text, ty, value)?;
+            }
+            Command::Matrix(name, operator) => {
+                let disk = self.model.disk_named(&name.text)?;
+                let matrix = disk.report(&mut self.model, operator)?;
+                return Ok(Some(format!(
+                    "shdiskmat[{}, {}] = {matrix}",
+                    name.text,
+                    operator.name()
+                )));
+            }
+            Command::MapMatrix(input) => {
+                let input = self.checker().expr(*input)?;
+                let ends = disk_ends(&self.model, input.ty)?;
+                let (_, hom) = self.model.disk_hom_type(ends.0, ends.1)?;
+                let Value::OddClass(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(Some(format!(
+                    "shdiskmapmat = {}",
+                    hom.report(&mut self.model, &value)?
+                )));
+            }
+            Command::Ranks(name) => {
+                let disk = self.model.disk_named(&name.text)?;
+                let (n, m) = disk.dimensions();
+                let (stalk, costalk) = disk.cohomology_ranks(&mut self.model)?;
+                return Ok(Some(format!("shdiskranks[{}] = nearby {n}, vanishing {m}, stalk {stalk:?}, costalk {costalk:?}",name.text)));
+            }
+            Command::HomDimension([from, to]) => {
+                let (_, hom) = self
+                    .model
+                    .disk_hom_type(from.text.as_str().into(), to.text.as_str().into())?;
+                return Ok(Some(format!(
+                    "shdiskhomdim[{}, {}] = {}",
+                    from.text,
+                    to.text,
+                    hom.rank()
+                )));
+            }
+            Command::Complex(name, disk, costalk) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let disk = self.model.disk_named(&disk.text)?;
+                let complex = disk.complex(&mut self.model, &name, costalk)?;
+                for item in complex.components() {
+                    self.model
+                        .define_sheaf_shared(item.name.to_string(), item.sheaf.clone());
+                }
+                self.model.define_sheaf_complex(name.text, complex);
+            }
+            Command::Operator(name, disk, operator, [from, to]) => {
+                self.model.check_new_sheaf_map(&name)?;
+                let disk = self.model.disk_named(&disk.text)?;
+                let from = NamedSheaf::resolve(&self.model, &from)?;
+                let to = NamedSheaf::resolve(&self.model, &to)?;
+                let map = disk.native_operator(&mut self.model, from, to, operator)?;
+                self.model.define_sheaf_map(name.text, map);
+            }
+            Command::Realize(name, data) => {
+                let [disk, j, apex, a, b, c, d] = *data;
+                let disk = self.model.disk_named(&disk.text)?;
+                let site = self.sheaf_site(&j, "disk realization")?;
+                let apex = self.model.point(site.target, &apex)?;
+                let roles = [
+                    self.model.point(site.source, &a)?,
+                    self.model.point(site.source, &b)?,
+                    self.model.point(site.source, &c)?,
+                    self.model.point(site.source, &d)?,
+                ];
+                let realized =
+                    Realization::build(&mut self.model, &name, &disk, site, apex, roles)?;
+                self.model.define_sheaf_shared(
+                    realized.nearby.name.to_string(),
+                    realized.nearby.sheaf.clone(),
+                );
+                for item in realized
+                    .ambient
+                    .components()
+                    .iter()
+                    .chain(realized.costalk.components())
+                {
+                    self.model
+                        .define_sheaf_shared(item.name.to_string(), item.sheaf.clone());
+                }
+                self.model
+                    .define_sheaf_complex_shared(name.text, realized.ambient.clone());
+                self.model.define_sheaf_complex_shared(
+                    realized.costalk_name.to_string(),
+                    realized.costalk.clone(),
+                );
+                self.model.define_disk_realization(realized);
+            }
+        }
+        Ok(None)
     }
 
     fn sheaf_cone_columns(
@@ -1486,6 +1609,7 @@ impl Engine {
                 self.model.define_sheaf(name.text, image);
                 return Ok(None);
             }
+            StatementForm::Disk(command) => return self.disk_command(command),
             StatementForm::SheafConeGlue(form, [name, j, apex, source], degree, columns) => {
                 self.model.check_new_sheaf_complex(&name)?;
                 let site = self.sheaf_site(&j, "cone gluing")?;
@@ -4479,7 +4603,8 @@ impl Engine {
                             | Kind::ASOddDiff(_, p)
                             | Kind::ASTwoDiff(_, p)
                             | Kind::ASOddDeRham(_, p)
-                            | Kind::ASOddTate(_, p, _) => p,
+                            | Kind::ASOddTate(_, p, _)
+                            | Kind::DiskHom(_, _, p) => p,
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
@@ -7197,6 +7322,27 @@ impl Engine {
                 };
                 data.apply(&mut self.model, *grade, *operation, &coordinates)
             }
+            TypedForm::DiskCompose(composition, args) => {
+                let Value::OddClass(a) = self.eval(&args[0])? else {
+                    unreachable!()
+                };
+                let Value::OddClass(b) = self.eval(&args[1])? else {
+                    unreachable!()
+                };
+                composition.apply(&mut self.model, &a, &b)
+            }
+            TypedForm::DiskMap(operation, input) => {
+                let Value::OddClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                operation.apply(&mut self.model, &value)
+            }
+            TypedForm::DiskCostalkLift(data, degree, input) => {
+                let Value::SheafC(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.lift(&mut self.model, *degree, &value)
+            }
             TypedForm::SheafConeTail(cone, degree, lift, input) => {
                 let Value::SheafC(raw) = self.eval(input)? else {
                     unreachable!()
@@ -7654,6 +7800,16 @@ fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
     Ok(())
 }
 
+fn disk_ends(model: &Model, ty: TypeId) -> Result<(Rc<str>, Rc<str>)> {
+    match model.kind(ty) {
+        Kind::DiskHom(from, to, _) => Ok((from.clone(), to.clone())),
+        _ => Err(Error::plain(format!(
+            "expected a ShDiskHom, found {}",
+            model.type_name(ty)
+        ))),
+    }
+}
+
 fn cone_input_degree(model: &Model, source: &LerayInput, ty: TypeId) -> Option<usize> {
     match (source.form(), model.kind(ty)) {
         (SheafInputForm::Sheaf, Kind::Sheaf(SheafForm::Cochain, name, degree))
@@ -7839,6 +7995,10 @@ impl Checker<'_> {
                 )
             }
             TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
+            TypeForm::DiskHom(from, to) => Ok(self
+                .model
+                .disk_hom_type(from.text.into(), to.text.into())?
+                .0),
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
             }
@@ -8437,6 +8597,95 @@ impl Checker<'_> {
         Ok((ty, TypedForm::SetDependent(action, input)))
     }
 
+    fn disk_expression(
+        &mut self,
+        expression: crate::sheaf_disk::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::sheaf_disk::{Composition, Expression};
+        Ok(match expression {
+            Expression::Id(name) => {
+                let name: Rc<str> = name.text.into();
+                let (ty, hom) = self.model.disk_hom_type(name.clone(), name)?;
+                (ty, TypedForm::Constant(hom.identity(self.model)?))
+            }
+            Expression::Generator([from, to], index) => {
+                let (ty, hom) = self.model.disk_hom_type(from.text.into(), to.text.into())?;
+                let value = self.prime_generator(ty, hom.rank(), index, to.span)?;
+                (ty, TypedForm::Constant(value))
+            }
+            Expression::Compose(pair) => {
+                let [outer, inner] = *pair;
+                let outer = self.expr(outer)?;
+                let inner = self.expr(inner)?;
+                let (mid, to) = disk_ends(self.model, outer.ty)?;
+                let (from, other) = disk_ends(self.model, inner.ty)?;
+                if mid != other {
+                    return Err(Error::new(
+                        outer.span,
+                        "disk composition needs matching middle quivers",
+                    ));
+                }
+                let (_, a) = self.model.disk_hom_type(mid.clone(), to.clone())?;
+                let (_, b) = self.model.disk_hom_type(from.clone(), mid)?;
+                let (ty, output) = self.model.disk_hom_type(from, to)?;
+                (
+                    ty,
+                    TypedForm::DiskCompose(
+                        Box::new(Composition {
+                            outer: a,
+                            inner: b,
+                            output,
+                        }),
+                        Box::new([outer, inner]),
+                    ),
+                )
+            }
+            Expression::Bridge(bridge, [from, to], input) => {
+                if let Some(input) = input {
+                    let input = self.expr(*input)?;
+                    let ends = disk_ends(self.model, input.ty)?;
+                    let (ty, action) =
+                        bridge.map(self.model, from.text.into(), to.text.into(), ends)?;
+                    (ty, TypedForm::DiskMap(action, Box::new(input)))
+                } else {
+                    let (ty, value) =
+                        bridge.constant(self.model, from.text.into(), to.text.into())?;
+                    (ty, TypedForm::Constant(value))
+                }
+            }
+            Expression::Lift(name, input) => {
+                let data = self.model.disk_realization(&name)?;
+                let input = self.expr(*input)?;
+                let Kind::SheafComplex(SheafForm::Cochain, costalk, degree) =
+                    self.model.kind(input.ty)
+                else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "shDiskCostalkLift",
+                        "a raw cochain of its disk costalk",
+                    ));
+                };
+                if costalk != &data.costalk_name {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "shDiskCostalkLift",
+                        "a raw cochain of its disk costalk",
+                    ));
+                }
+                let degree = *degree;
+                let ty = self.model.known_sheaf_complex_type(
+                    SheafForm::Cochain,
+                    data.name.clone(),
+                    degree,
+                )?;
+                (
+                    ty,
+                    TypedForm::DiskCostalkLift(data, degree, Box::new(input)),
+                )
+            }
+        })
+    }
+
     fn set_nat_ends(&self, ty: TypeId) -> Result<(Rc<str>, Rc<str>)> {
         if let Kind::SetNat(source, target) = self.model.kind(ty) {
             return Ok((source.clone(), target.clone()));
@@ -8794,6 +9043,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
+                    Kind::DiskHom(..) => odd_ext::zero(),
                     Kind::ASOddDiff(..) | Kind::ASTwoDiff(..) => odd_ext::zero(),
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
@@ -9610,6 +9860,7 @@ impl Checker<'_> {
                     TypedForm::SheafLocalOperation(data, grade, operation, Box::new(input)),
                 ))
             }
+            ExprForm::Disk(expression) => self.disk_expression(expression),
             ExprForm::SheafConeApex(name, index) => {
                 let cone = self.model.cone_gluing(&name)?;
                 let value = cone.apex_vector(self.model, index)?;
@@ -10085,7 +10336,7 @@ impl Checker<'_> {
                     | Kind::ASOddDiff(_, p)
                     | Kind::ASTwoDiff(_, p)
                     | Kind::ASOddDeRham(_, p)
-                    | Kind::ASOddTate(_, p, _) => p,
+                    | Kind::ASOddTate(_, p, _) | Kind::DiskHom(_,_,p) => p,
                     Kind::MixedChain(grade, _) | Kind::MixedHomology(grade) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
@@ -15232,6 +15483,7 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
+                        | Kind::DiskHom(..)
                         | Kind::ASOddDiff(..)
                         | Kind::ASTwoDiff(..)
                         | Kind::ASOddDeRham(..)

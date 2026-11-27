@@ -74,6 +74,7 @@ pub(crate) enum TypeForm {
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
     SheafDeformation(Label, usize),
+    DiskHom(Label, Label),
     SheafHom(SheafForm, Label, Label, usize),
     SheafComplex(SheafForm, Label, usize),
     SheafPage(Label, SheafPageGrade),
@@ -753,6 +754,7 @@ pub(crate) enum ExprForm {
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
     SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
+    Disk(crate::sheaf_disk::Expression),
     SheafConeApex(Label, usize),
     SheafConeTail(Label, bool, Box<ParsedExpr>),
     SheafConeTransfer(Label, bool, Box<ParsedExpr>),
@@ -1081,6 +1083,7 @@ pub(crate) enum StatementForm {
     MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    Disk(crate::sheaf_disk::Command),
     SheafConeGlue(SheafInputForm, [Label; 4], usize, Vec<ParsedExpr>),
     SheafConeHomotopy([Label; 3], Vec<ParsedExpr>),
     SheafBCSquare(Label, [Label; 4]),
@@ -3567,6 +3570,12 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafImage(operation, name, function, sheaf)
             }
+            Token::Word(
+                command @ ("shdisk" | "shdiskshriek" | "shdiskstar" | "shdiskmiddle" | "shdiskdual"
+                | "shdiskmap" | "shdiskmat" | "shdiskmapmat" | "shdiskranks"
+                | "shdiskhomdim" | "shdiskstalk" | "shdiskcostalk" | "shdiskoperator"
+                | "shdiskrealize"),
+            ) => StatementForm::Disk(self.disk_command(command)?),
             Token::Word(op @ ("shconeglue" | "shconegluecomplex")) => {
                 let form = if op == "shconeglue" {
                     SheafInputForm::Sheaf
@@ -6068,6 +6077,13 @@ impl<'src> Parser<'src> {
             let (source, target, degree) = self.sheaf_hom_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::SheafHom(form, source, target, degree), 0);
+        }
+        if name.text == "ShDiskHom" && self.eat(Token::LParen)? {
+            let from = self.label()?;
+            self.expect(Token::Comma)?;
+            let to = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DiskHom(from, to), 0);
         }
         if matches!(name.text.as_str(), "ShC" | "ShH") && self.eat(Token::LParen)? {
             let form = if name.text == "ShC" {
@@ -8875,6 +8891,13 @@ impl<'src> Parser<'src> {
                 {
                     return self.sheaf_kuranishi_expression(&name.text, span);
                 }
+                if matches!(
+                    name.text.as_str(),
+                    "shDiskId" | "shDiskGen" | "shDiskComp" | "shDiskCostalkLift"
+                ) || crate::sheaf_disk::Bridge::detect(&name.text).is_some()
+                {
+                    return self.disk_expression(&name, span, nest);
+                }
                 if name.text == "shGlueApex" && self.eat(Token::LBracket)? {
                     let cone = self.label()?;
                     self.expect(Token::Comma)?;
@@ -10867,6 +10890,136 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, form, depth)
+    }
+
+    fn disk_command(&mut self, command: &str) -> Result<crate::sheaf_disk::Command> {
+        use crate::sheaf_disk::{Command, Extension, Operator};
+        self.advance()?;
+        if command == "shdiskmapmat" {
+            return Ok(Command::MapMatrix(Box::new(self.paren_expr(0)?)));
+        }
+        if command == "shdiskhomdim" {
+            return Ok(Command::HomDimension(self.disk_labels()?));
+        }
+        let name = if matches!(command, "shdiskmat" | "shdiskranks") {
+            None
+        } else {
+            Some(self.label()?)
+        };
+        Ok(match command {
+            "shdisk" => {
+                self.expect(Token::LBracket)?;
+                let p = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let n = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let m = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Declare(
+                    name.unwrap(),
+                    [p, n, m],
+                    [self.sheaf_matrix()?, self.sheaf_matrix()?],
+                )
+            }
+            "shdiskmap" => Command::Map(
+                name.unwrap(),
+                self.disk_labels()?,
+                [self.sheaf_matrix()?, self.sheaf_matrix()?],
+            ),
+            "shdiskmat" => {
+                let [disk, operator] = self.disk_labels()?;
+                Command::Matrix(disk, Operator::from_label(&operator)?)
+            }
+            "shdiskranks" => {
+                let [disk] = self.disk_labels()?;
+                Command::Ranks(disk)
+            }
+            "shdiskrealize" => Command::Realize(name.unwrap(), Box::new(self.disk_labels()?)),
+            "shdiskoperator" => {
+                let [disk, operator, source, target] = self.disk_labels()?;
+                Command::Operator(
+                    name.unwrap(),
+                    disk,
+                    Operator::from_label(&operator)?,
+                    [source, target],
+                )
+            }
+            _ => {
+                let [disk] = self.disk_labels()?;
+                let name = name.unwrap();
+                match command {
+                    "shdiskdual" => Command::Dual(name, disk),
+                    "shdiskstalk" | "shdiskcostalk" => {
+                        Command::Complex(name, disk, command == "shdiskcostalk")
+                    }
+                    _ => {
+                        let extension = match command {
+                            "shdiskshriek" => Extension::Shriek,
+                            "shdiskstar" => Extension::Star,
+                            "shdiskmiddle" => Extension::Middle,
+                            _ => unreachable!(),
+                        };
+                        Command::Extend(name, disk, extension)
+                    }
+                }
+            }
+        })
+    }
+
+    fn disk_labels<const N: usize>(&mut self) -> Result<[Label; N]> {
+        self.expect(Token::LBracket)?;
+        let mut names = Vec::with_capacity(N);
+        for i in 0..N {
+            if i != 0 {
+                self.expect(Token::Comma)?;
+            }
+            names.push(self.label()?);
+        }
+        self.expect(Token::RBracket)?;
+        Ok(names.try_into().ok().expect("fixed label count"))
+    }
+
+    fn disk_expression(&mut self, name: &Label, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::sheaf_disk::{Bridge, Expression};
+        let (form, depth) = match name.text.as_str() {
+            "shDiskId" => {
+                let [disk] = self.disk_labels()?;
+                (Expression::Id(disk), 0)
+            }
+            "shDiskGen" => {
+                self.expect(Token::LBracket)?;
+                let from = self.label()?;
+                self.expect(Token::Comma)?;
+                let to = self.label()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Generator([from, to], index), 0)
+            }
+            "shDiskComp" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (Expression::Compose(Box::new(pair)), depth)
+            }
+            "shDiskCostalkLift" => {
+                let [name] = self.disk_labels()?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Lift(name, Box::new(input)), depth)
+            }
+            operation => {
+                let bridge = Bridge::detect(operation).expect("known disk operator");
+                let names = self.disk_labels()?;
+                let input = if bridge.has_input() {
+                    Some(Box::new(self.paren_expr(nest)?))
+                } else {
+                    None
+                };
+                let depth = input.as_ref().map_or(0, |input| input.depth + 1);
+                (Expression::Bridge(bridge, names, input), depth)
+            }
+        };
+        expr(span, ExprForm::Disk(form), depth)
     }
 
     fn sheaf_cone_columns(&mut self) -> Result<Vec<ParsedExpr>> {
