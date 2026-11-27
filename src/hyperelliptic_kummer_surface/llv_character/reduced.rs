@@ -4,11 +4,10 @@ use std::fmt::Write;
 use crate::error::{Error, Result};
 use crate::model::{Model, MAX_SHOWN_BYTES};
 
+use super::orthogonal::{self, DIMENSION, RANK};
 use super::weyl::{self, RootSystem};
-use super::{arithmetic, decimal, guard, report_limit, work_limit};
+use super::{arithmetic, decimal, guard, report_limit};
 use super::{Magnitude, Oscillators};
-
-const RANK: usize = 11;
 
 enum Grade {
     Absent,
@@ -45,14 +44,9 @@ pub(super) fn multiplicity(
     model: &mut Model,
     n: u128,
     d: i128,
-    mut shape: Vec<u128>,
+    shape: Vec<u128>,
 ) -> Result<String> {
-    trim(&mut shape);
-    if shape.len() > RANK || !shape.windows(2).all(|pair| pair[0] >= pair[1]) {
-        return Err(Error::plain(
-            "type B11 highest weight must be weakly decreasing with at most eleven nonzero coordinates",
-        ));
-    }
+    let shape = validate_b11(shape)?;
     let count = match grade(n, d, false)? {
         Grade::Axis if shape.is_empty() => 1,
         Grade::Interior {
@@ -70,6 +64,16 @@ pub(super) fn multiplicity(
     Ok(format!(
         "rvHilbReducedLLVMultiplicity[{n}, {d}]{shape:?} = {count}"
     ))
+}
+
+pub(super) fn validate_b11(mut shape: Vec<u128>) -> Result<Vec<u128>> {
+    trim(&mut shape);
+    if shape.len() > RANK || !shape.windows(2).all(|pair| pair[0] >= pair[1]) {
+        return Err(Error::plain(
+            "type B11 highest weight must be weakly decreasing with at most eleven nonzero coordinates",
+        ));
+    }
+    Ok(shape)
 }
 
 pub(super) fn primitive_multiplicity(
@@ -197,6 +201,36 @@ fn nonnegative(count: i128) -> Result<i128> {
     }
 }
 
+// For primitive queries this virtual B11 character must be restricted to
+// an algebra fixing the ample class before interpreting its multiplicities.
+pub(super) fn visit_summands(
+    model: &mut Model,
+    n: u128,
+    d: i128,
+    primitive: bool,
+    mut visit: impl FnMut(&mut Model, &[u128], i128) -> Result<()>,
+) -> Result<()> {
+    match grade(n, d, primitive)? {
+        Grade::Absent => Ok(()),
+        Grade::Axis => visit(model, &[], 1),
+        Grade::Interior {
+            charge,
+            weight_bound,
+        } => {
+            let oscillators = Oscillators::new(model, n)?;
+            graded_shapes(model, weight_bound, &mut Vec::new(), &mut |model, shape| {
+                let count =
+                    degree_difference(&oscillators, model, shape, charge as usize, primitive)?;
+                if count == 0 {
+                    Ok(())
+                } else {
+                    visit(model, shape, count)
+                }
+            })
+        }
+    }
+}
+
 pub(super) fn decomposition(
     model: &mut Model,
     n: u128,
@@ -210,36 +244,18 @@ pub(super) fn decomposition(
     };
     let mut report = format!("{name}[{n}, {d}] = components=[");
     let mut components = BTreeMap::new();
-    match grade(n, d, primitive)? {
-        Grade::Absent => {}
-        Grade::Axis => {
-            components.insert(Vec::new(), 1);
+    visit_summands(model, n, d, primitive, |model, shape, count| {
+        if primitive {
+            branch(model, shape, &mut |shape| {
+                let entry = components.entry(shape).or_insert(0i128);
+                *entry = entry.checked_add(count).ok_or_else(arithmetic)?;
+                guard(components.len().saturating_mul(4 * RANK + 8))
+            })
+        } else {
+            components.insert(shape.iter().map(|&part| part as i128).collect(), count);
+            guard(components.len().saturating_mul(4 * RANK + 8))
         }
-        Grade::Interior {
-            charge,
-            weight_bound,
-        } => {
-            let oscillators = Oscillators::new(model, n)?;
-            let mut emit = |model: &mut Model, shape: &[u128]| {
-                let count =
-                    degree_difference(&oscillators, model, shape, charge as usize, primitive)?;
-                if count == 0 {
-                    return Ok(());
-                }
-                if primitive {
-                    branch(model, shape, &mut |shape| {
-                        let entry = components.entry(shape).or_insert(0i128);
-                        *entry = entry.checked_add(count).ok_or_else(arithmetic)?;
-                        guard(components.len().saturating_mul(4 * RANK + 8))
-                    })
-                } else {
-                    components.insert(shape.iter().map(|&part| part as i128).collect(), count);
-                    guard(components.len().saturating_mul(4 * RANK + 8))
-                }
-            };
-            graded_shapes(model, weight_bound, &mut Vec::new(), &mut emit)?;
-        }
-    }
+    })?;
     let roots = if primitive {
         RootSystem::D
     } else {
@@ -307,43 +323,15 @@ fn branch(
     shape: &[u128],
     emit: &mut impl FnMut(Vec<i128>) -> Result<()>,
 ) -> Result<()> {
-    let mut upper = [0; RANK];
-    for (part, &value) in upper.iter_mut().zip(shape) {
-        *part = value as i128;
-    }
-    let mut limits = [(0, 0); RANK];
-    for i in 0..RANK - 1 {
-        limits[i] = (upper[i + 1], upper[i]);
-    }
-    limits[RANK - 1] = (-upper[RANK - 1], upper[RANK - 1]);
-    let branches = limits
-        .iter()
-        .try_fold(1usize, |size, &(low, high)| {
-            size.checked_mul(usize::try_from(high - low + 1).ok()?)
-        })
-        .ok_or_else(work_limit)?;
-    guard(branches.saturating_mul(4 * RANK + 8))?;
-    model.spend(branches * RANK)?;
-    branch_at(&limits, &mut [0; RANK], 0, emit)
-}
-
-fn branch_at(
-    limits: &[(i128, i128); RANK],
-    shape: &mut [i128; RANK],
-    i: usize,
-    emit: &mut impl FnMut(Vec<i128>) -> Result<()>,
-) -> Result<()> {
-    if i == RANK {
-        let mut canonical = shape.to_vec();
-        trim(&mut canonical);
-        return emit(canonical);
-    }
-    let (low, high) = limits[i];
-    for value in low..=high {
-        shape[i] = value;
-        branch_at(limits, shape, i + 1, emit)?;
-    }
-    Ok(())
+    orthogonal::branch(model, DIMENSION, shape, RANK, &mut |_, shape, signs| {
+        let positive: Vec<_> = shape.iter().map(|&part| part as i128).collect();
+        if signs == 2 {
+            let mut negative = positive.clone();
+            negative[RANK - 1] = -negative[RANK - 1];
+            emit(negative)?;
+        }
+        emit(positive)
+    })
 }
 
 fn interlacers(
@@ -413,7 +401,7 @@ mod tests {
         .unwrap_or_else(|err| panic!("{err}"));
         let mut negative = vec![1; RANK];
         negative[RANK - 1] = -1;
-        assert_eq!(branches, [negative, vec![1; RANK - 1], vec![1; RANK]]);
+        assert_eq!(branches, [vec![1; RANK - 1], negative, vec![1; RANK]]);
 
         let branch_dimensions: Vec<_> = branches
             .iter()
@@ -425,7 +413,7 @@ mod tests {
                     .unwrap()
             })
             .collect();
-        assert_eq!(branch_dimensions, [352_716, 646_646, 352_716]);
+        assert_eq!(branch_dimensions, [646_646, 352_716, 352_716]);
         let unrestricted = weyl::dimension_for(&mut model, &[1; RANK], RANK, RootSystem::B)
             .unwrap_or_else(|err| panic!("{err}"))
             .small()

@@ -5,6 +5,8 @@ use crate::rv_qp_quad::Wide;
 use crate::wide_integer::Natural;
 
 mod hodge;
+mod invariants;
+mod orthogonal;
 mod reduced;
 mod weyl;
 
@@ -28,6 +30,8 @@ pub(crate) enum Command {
     ReducedDecompose(u128, i128),
     PrimitiveMultiplicity(u128, i128, Vec<i128>),
     PrimitiveDecompose(u128, i128),
+    HodgeInvariantMultiplicity(u128, Vec<u128>),
+    HodgeInvariant(u128, i128, u128, bool),
 }
 
 impl Command {
@@ -75,6 +79,12 @@ impl Command {
                 reduced::primitive_multiplicity(model, n, d, shape)
             }
             Self::PrimitiveDecompose(n, d) => reduced::decomposition(model, n, d, true),
+            Self::HodgeInvariantMultiplicity(rho, shape) => {
+                invariants::multiplicity(model, rho, shape)
+            }
+            Self::HodgeInvariant(n, d, rho, primitive) => {
+                invariants::dimension(model, n, d, rho, primitive)
+            }
         }
     }
 }

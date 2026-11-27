@@ -6270,8 +6270,24 @@ impl<'src> Parser<'src> {
             Command::Dimension(shape(self)?)
         } else {
             self.expect(Token::LBracket)?;
-            let n = self.wide_unsigned("Hilbert length")?;
+            let n = self.wide_unsigned(if name == "rvHilbHodgeInvariantMultiplicity" {
+                "Hodge polarization rank"
+            } else {
+                "Hilbert length"
+            })?;
             match name {
+                "rvHilbHodgeInvariantMultiplicity" => {
+                    self.expect(Token::RBracket)?;
+                    Command::HodgeInvariantMultiplicity(n, shape(self)?)
+                }
+                "rvHilbHodgeInvariant" | "rvHilbPrimitiveHodgeInvariant" => {
+                    self.expect(Token::Comma)?;
+                    let d = self.signed_wide("a signed degree", "cohomological degree")?;
+                    self.expect(Token::Comma)?;
+                    let rho = self.wide_unsigned("Hodge polarization rank")?;
+                    self.expect(Token::RBracket)?;
+                    Command::HodgeInvariant(n, d, rho, name == "rvHilbPrimitiveHodgeInvariant")
+                }
                 "rvHilbReducedLLVMultiplicity"
                 | "rvHilbReducedLLVDecomposition"
                 | "rvHilbPrimitiveLLVMultiplicity"
@@ -7596,7 +7612,10 @@ impl<'src> Parser<'src> {
                 | "rvHilbReducedLLVMultiplicity"
                 | "rvHilbReducedLLVDecomposition"
                 | "rvHilbPrimitiveLLVMultiplicity"
-                | "rvHilbPrimitiveLLVDecomposition"),
+                | "rvHilbPrimitiveLLVDecomposition"
+                | "rvHilbHodgeInvariantMultiplicity"
+                | "rvHilbHodgeInvariant"
+                | "rvHilbPrimitiveHodgeInvariant"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {
