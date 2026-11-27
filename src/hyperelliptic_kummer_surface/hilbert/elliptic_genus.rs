@@ -19,6 +19,7 @@ pub(crate) mod hurwitz;
 pub(crate) mod inverse;
 pub(crate) mod maass;
 mod mock;
+pub(crate) mod period_polynomial;
 
 mod generalized;
 

@@ -32,6 +32,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynomial as period;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
@@ -286,6 +287,7 @@ pub(crate) enum Kind {
     SiegelWeight,
     ModularHecke(u128),
     HeckeEigen(Box<str>),
+    PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -477,6 +479,7 @@ pub(crate) enum Value {
     SiegelWeight(crate::siegel::Weight),
     ModularHecke(Rc<hecke::Operator>),
     HeckeEigen(Rc<eigenpacket::Element>),
+    PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -680,6 +683,7 @@ pub(crate) struct Model {
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     hecke_eigenpackets: HashMap<String, Rc<eigenpacket::Packet>>,
+    period_bases: HashMap<period::Grade, Rc<period::Basis>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
@@ -799,6 +803,7 @@ impl Model {
             bielliptic_quotients: HashMap::new(),
             elliptic_gluings: HashMap::new(),
             hecke_eigenpackets: HashMap::new(),
+            period_bases: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
             siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
@@ -1091,6 +1096,7 @@ impl Model {
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
+            Kind::PeriodPolynomial(grade) if grade.is_trivial() => 1,
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -1099,7 +1105,8 @@ impl Model {
             | Kind::OG6(..)
             | Kind::SiegelWeight
             | Kind::ModularHecke(..)
-            | Kind::HeckeEigen(..) => usize::MAX,
+            | Kind::HeckeEigen(..)
+            | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade) | Kind::HilbertCohomology(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
@@ -1349,6 +1356,7 @@ impl Model {
                 | Kind::SiegelWeight
                 | Kind::ModularHecke(..)
                 | Kind::HeckeEigen(..)
+                | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -4505,6 +4513,19 @@ impl Model {
         self.inhabited_type(Kind::HeckeEigen(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn period_type(&mut self, grade: period::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::PeriodPolynomial(grade), 0)
+    }
+
+    pub(crate) fn period_basis(&mut self, grade: period::Grade) -> Result<Rc<period::Basis>> {
+        if let Some(basis) = self.period_bases.get(&grade) {
+            return Ok(basis.clone());
+        }
+        let basis = Rc::new(period::Basis::new(self, grade)?);
+        self.period_bases.insert(grade, basis.clone());
+        Ok(basis)
+    }
+
     pub(crate) fn register_siegel_chamber(
         &mut self,
         name: Label,
@@ -5787,6 +5808,7 @@ impl Model {
             | Kind::SiegelWeight
             | Kind::ModularHecke(..)
             | Kind::HeckeEigen(..)
+            | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECEndOrder(..)
@@ -6322,6 +6344,9 @@ impl Model {
             Kind::SiegelWeight => out.push("RVSiegelWeight"),
             Kind::ModularHecke(weight) => out.push(&format!("RVHecke({weight})")),
             Kind::HeckeEigen(name) => out.push(&format!("RVHeckeEigen({name})")),
+            Kind::PeriodPolynomial(grade) => {
+                out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
+            }
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -6634,6 +6659,9 @@ impl Model {
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a == b),
             (Value::ModularHecke(a), Value::ModularHecke(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6984,6 +7012,7 @@ impl Model {
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a.cmp(b)),
             (Value::ModularHecke(a), Value::ModularHecke(b)) => a.compare(self, b),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => a.compare(self, b),
+            (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -7362,6 +7391,14 @@ impl Model {
                 Kind::HilbertSquare(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a rational Hilbert-square component",
+                    ));
+                }
+                Kind::PeriodPolynomial(grade) if grade.is_trivial() => {
+                    vec![period::Polynomial::zero(grade).persist(self)?]
+                }
+                Kind::PeriodPolynomial(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate rational Manin period polynomials",
                     ));
                 }
                 Kind::HeckeEigen(..) => {
@@ -9012,6 +9049,17 @@ impl Model {
             Value::HilbertCohomology(class) => {
                 self.write_type(out, ty, 0)?;
                 self.write_nakajima_terms(out, class.numerator(), class.denominator())
+            }
+            Value::PeriodPolynomial(polynomial) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{[")?;
+                for (i, coefficient) in polynomial.coordinates().iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push("]}")
             }
             Value::HeckeEigen(element) => {
                 self.write_type(out, ty, 0)?;

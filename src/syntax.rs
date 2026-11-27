@@ -7,6 +7,7 @@ use crate::eo::Report as EoReport;
 use crate::error::{Error, Result, Span};
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynomial as period;
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
@@ -151,6 +152,7 @@ pub(crate) enum TypeForm {
     SiegelWeight,
     ModularHecke(u128),
     HeckeEigen(Label),
+    PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -1036,6 +1038,7 @@ pub(crate) enum ExprForm {
     SiegelWeight(crate::siegel::Weight),
     ModularHecke(hecke::Expression),
     HeckeEigen(eigenpacket::Expression),
+    PeriodPolynomial(period::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1272,6 +1275,7 @@ pub(crate) enum StatementForm {
     ),
     ModularHecke(hecke::Report, Box<ParsedExpr>),
     HeckeEigen(eigenpacket::Statement),
+    PeriodPolynomial(period::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -4498,6 +4502,104 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::SiegelMaass(Box::new(command)))
     }
 
+    fn period_grade(&mut self) -> Result<period::Grade> {
+        let weight = self.wide_unsigned("period-polynomial weight")?;
+        self.expect(Token::Comma)?;
+        let name = self.label()?;
+        let sign = match name.text.as_str() {
+            "plus" => period::Sign::Plus,
+            "minus" => period::Sign::Minus,
+            _ => {
+                return Err(Error::new(
+                    name.span,
+                    "period-polynomial sign must be plus or minus",
+                ))
+            }
+        };
+        period::Grade::new(weight, sign).map_err(|error| error.at(name.span))
+    }
+
+    fn period_statement(&mut self, name: &str) -> Result<StatementForm> {
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let report = if name == "rvPeriodCoeff" {
+            let index = self.wide_unsigned("period-polynomial coefficient index")?;
+            self.expect(Token::RBracket)?;
+            period::Report::Coefficient(index, Box::new(self.paren_expr(0)?))
+        } else {
+            let grade = self.period_grade()?;
+            self.expect(Token::RBracket)?;
+            if name == "rvPeriodDim" {
+                period::Report::Dimension(grade)
+            } else {
+                period::Report::Matrix(grade, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::PeriodPolynomial(report))
+    }
+
+    fn period_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use period::Expression;
+        let (operation, depth) = if name == "rvPeriodHecke" {
+            let [operator, polynomial] = self.paren_pair(nest)?;
+            let depth = operator.depth.max(polynomial.depth) + 1;
+            (Expression::Hecke(Box::new([operator, polynomial])), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            if name == "rvPeriodScale" {
+                let numerator =
+                    self.signed_wide("an integer numerator", "period-polynomial numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator =
+                    self.signed_wide("a positive denominator", "period-polynomial denominator")?;
+                self.expect(Token::RBracket)?;
+                let scalar =
+                    period::ratio(numerator, denominator).map_err(|error| error.at(span))?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Scale(scalar, Box::new(input)), depth)
+            } else {
+                let grade = self.period_grade()?;
+                if name == "rvPeriodBasis" {
+                    self.expect(Token::Comma)?;
+                    let (index, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    (Expression::Basis(grade, index), 0)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let mut coefficients = Vec::new();
+                    while self.token() != Token::RParen {
+                        let fraction = self.eat(Token::LParen)?;
+                        let numerator = self
+                            .signed_wide("an integer numerator", "period-polynomial numerator")?;
+                        let denominator = if fraction {
+                            self.expect(Token::Comma)?;
+                            let denominator = self.signed_wide(
+                                "a positive denominator",
+                                "period-polynomial denominator",
+                            )?;
+                            self.expect(Token::RParen)?;
+                            denominator
+                        } else {
+                            1
+                        };
+                        coefficients.push(
+                            period::ratio(numerator, denominator)
+                                .map_err(|error| error.at(span))?,
+                        );
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    (Expression::Polynomial(grade, coefficients), 0)
+                }
+            }
+        };
+        expr(span, ExprForm::PeriodPolynomial(operation), depth)
+    }
+
     fn hecke_eigen_statement(&mut self, name: &str) -> Result<StatementForm> {
         use eigenpacket::{Report, Statement};
         self.advance()?;
@@ -7239,6 +7341,9 @@ impl<'src> Parser<'src> {
                 name @ ("rvheckepacket" | "rvHeckeEigenData" | "rvHeckeEigenTrace"
                 | "rvHeckeEigenNorm" | "rvHeckeEigenCoord"),
             ) => self.hecke_eigen_statement(name)?,
+            Token::Word(name @ ("rvPeriodDim" | "rvPeriodCoeff" | "rvPeriodHeckeMatrix")) => {
+                self.period_statement(name)?
+            }
             Token::Word(name @ ("rvHeckeActionTrace" | "rvHeckeChar" | "rvHeckeCharCoeff")) => {
                 self.hecke_operator_statement(name)?
             }
@@ -10612,6 +10717,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
+        if name.text == "RVPeriod" && self.eat(Token::LParen)? {
+            let grade = self.period_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::PeriodPolynomial(grade), 0);
+        }
         if name.text == "RVHeckeEigen" && self.eat(Token::LParen)? {
             let packet = self.label()?;
             self.expect(Token::RParen)?;
@@ -12988,6 +13098,14 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvPeriodBasis" | "rvPeriodPoly" | "rvPeriodScale"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvPeriodHecke" && self.token() == Token::LParen)
+                {
+                    return self.period_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

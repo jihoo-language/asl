@@ -41,7 +41,9 @@ use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{eigenpacket, hecke};
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
+    eigenpacket, hecke, period_polynomial as period,
+};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
@@ -802,6 +804,8 @@ enum TypedForm {
     HeckeEigenCoefficient(Rc<eigenpacket::Packet>, hecke::Operator),
     HeckeEigenMultiply(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
     HeckeEigenNegate(Box<TypedExpr>),
+    PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
+    PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
     ModularHeckeBinary(hecke::Pair, u128, Box<[TypedExpr; 2]>),
     SiegelNegate(Box<TypedExpr>),
@@ -2034,6 +2038,7 @@ impl Engine {
             }
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
+            StatementForm::PeriodPolynomial(report) => return self.period_statement(report),
             StatementForm::HeckeEigen(command) => return self.hecke_eigen_statement(command),
             StatementForm::ModularHecke(query, input) => {
                 let input = self.checker().expr(*input)?;
@@ -5551,6 +5556,43 @@ impl Engine {
         Ok(format!("rvNakajimaPair = {pair}"))
     }
 
+    fn period_statement(&mut self, report: period::Report) -> Result<Option<String>> {
+        match report {
+            period::Report::Dimension(grade) => {
+                let dimension = self.model.period_basis(grade)?.dimension();
+                Ok(Some(format!(
+                    "rvPeriodDim[{}, {}] = {dimension}",
+                    grade.weight,
+                    grade.sign.text(),
+                )))
+            }
+            period::Report::Coefficient(index, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().period_operand(&input, "rvPeriodCoeff")?;
+                let Value::PeriodPolynomial(polynomial) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                Ok(Some(format!(
+                    "rvPeriodCoeff[{index}] = {}",
+                    polynomial.coefficient(index)
+                )))
+            }
+            period::Report::Matrix(grade, input) => {
+                let input = self.checker().expr(*input)?;
+                let operator_type = self.model.modular_hecke_type(grade.weight as u128)?;
+                self.checker()
+                    .require_type(operator_type, &input, "rvPeriodHeckeMatrix input")?;
+                let Value::ModularHecke(operator) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let basis = self.model.period_basis(grade)?;
+                basis
+                    .hecke_matrix(&mut self.model, grade, &operator)
+                    .map(Some)
+            }
+        }
+    }
+
     fn hecke_eigen_statement(&mut self, command: eigenpacket::Statement) -> Result<Option<String>> {
         use eigenpacket::Statement;
         match command {
@@ -7831,6 +7873,9 @@ impl Engine {
                     (BinaryOp::Add, Value::HilbertSquare(a), Value::HilbertSquare(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::HeckeEigen(a), Value::HeckeEigen(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -9814,6 +9859,24 @@ impl Engine {
                     unreachable!()
                 };
                 word.iterate(&mut self.model, point, *power)
+            }
+            TypedForm::PeriodScale(scalar, input) => {
+                let Value::PeriodPolynomial(polynomial) = self.eval(input)? else {
+                    unreachable!()
+                };
+                polynomial
+                    .scale(&mut self.model, *scalar)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PeriodHecke(grade, inputs) => {
+                let (Value::ModularHecke(operator), Value::PeriodPolynomial(polynomial)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                polynomial
+                    .hecke(&mut self.model, *grade, &operator)?
+                    .persist(&mut self.model)
             }
             TypedForm::HeckeEigenImage(packet, input) => {
                 let Value::ModularHecke(operator) = self.eval(input)? else {
@@ -12268,6 +12331,7 @@ impl Checker<'_> {
             TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::PeriodPolynomial(grade) => self.model.period_type(grade),
             TypeForm::HeckeEigen(name) => self.model.hecke_eigen_type(&name),
             TypeForm::ModularHecke(weight) => self.model.modular_hecke_type(weight),
             TypeForm::SiegelWeight => self.model.siegel_weight_type(),
@@ -13324,6 +13388,7 @@ impl Checker<'_> {
                     Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::PeriodPolynomial(grade) => period::Polynomial::zero(*grade).persist(self.model)?,
                     Kind::HeckeEigen(ref name) => {
                         let packet = self.model.hecke_eigenpacket(&Label {
                             text: name.to_string(),
@@ -15578,6 +15643,7 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::PeriodPolynomial(operation) => self.period_expression(operation),
             ExprForm::HeckeEigen(operation) => self.hecke_eigen_expression(operation),
             ExprForm::ModularHecke(operation) => match operation {
                 hecke::Expression::Basis(weight, index) => Ok((
@@ -16357,6 +16423,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HilbertSquareScale(
+                            crate::lee_linear::Rational::integer(-1),
+                            Box::new(input),
+                        ),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::PeriodPolynomial(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PeriodScale(
                             crate::lee_linear::Rational::integer(-1),
                             Box::new(input),
                         ),
@@ -20149,6 +20224,7 @@ impl Checker<'_> {
                         | Kind::SiegelWeight
                         | Kind::ModularHecke(..)
                         | Kind::HeckeEigen(..)
+                        | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -23181,6 +23257,51 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn period_expression(&mut self, expression: period::Expression) -> Result<(TypeId, TypedForm)> {
+        use period::Expression;
+        match expression {
+            Expression::Basis(grade, index) => {
+                let ty = self.model.period_type(grade)?;
+                let basis = self.model.period_basis(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(basis.vector(index)?.persist(self.model)?),
+                ))
+            }
+            Expression::Polynomial(grade, entries) => {
+                let ty = self.model.period_type(grade)?;
+                let value =
+                    period::Polynomial::new(self.model, grade, entries)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Scale(scalar, input) => {
+                let input = self.expr(*input)?;
+                self.period_operand(&input, "rvPeriodScale")?;
+                Ok((input.ty, TypedForm::PeriodScale(scalar, Box::new(input))))
+            }
+            Expression::Hecke(inputs) => {
+                let [operator, polynomial] = *inputs;
+                let operator = self.expr(operator)?;
+                let polynomial = self.expr(polynomial)?;
+                let grade = self.period_operand(&polynomial, "rvPeriodHecke")?;
+                let operator_type = self.model.modular_hecke_type(grade.weight as u128)?;
+                self.require_type(operator_type, &operator, "rvPeriodHecke operator")?;
+                Ok((
+                    polynomial.ty,
+                    TypedForm::PeriodHecke(grade, Box::new([operator, polynomial])),
+                ))
+            }
+        }
+    }
+
+    fn period_operand(&self, input: &TypedExpr, operation: &str) -> Result<period::Grade> {
+        if let Kind::PeriodPolynomial(grade) = *self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVPeriod(k,sign) polynomial"))
+        }
     }
 
     fn hecke_eigen_expression(
