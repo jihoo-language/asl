@@ -237,6 +237,15 @@ pub(crate) fn gram_report(model: &mut Model, name: &Label) -> Result<String> {
         name,
         "K3 lattices require a certified genus-two level-2 basis",
     )?;
+    let gram = integral_gram(model)?;
+    let index = 1i128 << GLUE_DIMENSION;
+    // The unglued U(2)^3 ⊕ A_1^16 has determinant −2^22. Passing to an
+    // overlattice of this index divides its determinant by the square index.
+    let determinant = -(1i128 << RANK) / (index * index);
+    Ok(format!("rvK3LatticeGram[{}] = rank={RANK}, signature=(3, 19), index={index}, determinant={determinant}, gram={gram:?}", name.text))
+}
+
+pub(crate) fn integral_gram(model: &mut Model) -> Result<[[i128; RANK]; RANK]> {
     let basis = integral_basis(model)?;
     let mut gram = [[0i128; RANK]; RANK];
     for (i, left) in basis.iter().enumerate() {
@@ -249,9 +258,5 @@ pub(crate) fn gram_report(model: &mut Model, name: &Label) -> Result<String> {
             gram[j][i] = pair;
         }
     }
-    let index = 1i128 << GLUE_DIMENSION;
-    // The unglued U(2)^3 ⊕ A_1^16 has determinant −2^22. Passing to an
-    // overlattice of this index divides its determinant by the square index.
-    let determinant = -(1i128 << RANK) / (index * index);
-    Ok(format!("rvK3LatticeGram[{}] = rank={RANK}, signature=(3, 19), index={index}, determinant={determinant}, gram={gram:?}", name.text))
+    Ok(gram)
 }

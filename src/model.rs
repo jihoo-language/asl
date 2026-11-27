@@ -30,7 +30,9 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
-use crate::hyperelliptic_kummer_surface::{self, nikulin, unimodular, Point as KummerPoint};
+use crate::hyperelliptic_kummer_surface::{
+    self, nakajima, nikulin, unimodular, Point as KummerPoint,
+};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -257,6 +259,7 @@ pub(crate) enum Kind {
     KummerDisc(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
+    Nakajima(nakajima::Grade),
     Mukai(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -426,6 +429,7 @@ pub(crate) enum Value {
     KummerDisc(u8),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
+    Nakajima(Rc<nakajima::State>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -602,6 +606,7 @@ pub(crate) struct Model {
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
+    nakajima_gram: Option<Rc<nakajima::Gram>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
@@ -699,6 +704,7 @@ impl Model {
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
             k3_automorphisms: HashMap::new(),
+            nakajima_gram: None,
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
@@ -987,6 +993,13 @@ impl Model {
             }
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::K3Lattice(..) | Kind::Mukai(..) => usize::MAX,
+            Kind::Nakajima(ref grade) => {
+                if grade.supports_states() {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1203,6 +1216,7 @@ impl Model {
                 | Kind::KummerDisc(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
+                | Kind::Nakajima(..)
                 | Kind::Mukai(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -3840,6 +3854,34 @@ impl Model {
         self.inhabited_type(Kind::Mukai(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn nakajima_type(
+        &mut self,
+        name: &Label,
+        length: i128,
+        degree: i128,
+    ) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "Nakajima states require a certified genus-two level-2 basis",
+        )?;
+        let grade = nakajima::Grade {
+            basis: name.text.as_str().into(),
+            length,
+            degree,
+        };
+        self.inhabited_type(Kind::Nakajima(grade), 0)
+    }
+
+    pub(crate) fn nakajima_gram(&mut self) -> Result<Rc<nakajima::Gram>> {
+        if let Some(gram) = &self.nakajima_gram {
+            return Ok(gram.clone());
+        }
+        let gram = Rc::new(nakajima::Gram::new(self)?);
+        self.nakajima_gram = Some(gram.clone());
+        Ok(gram)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -4963,6 +5005,7 @@ impl Model {
             | Kind::KummerDisc(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
+            | Kind::Nakajima(..)
             | Kind::Mukai(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -5467,6 +5510,10 @@ impl Model {
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::Nakajima(grade) => out.push(&format!(
+                "RVNakajima({},{},{})",
+                grade.basis, grade.length, grade.degree
+            )),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
@@ -5750,6 +5797,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Mukai(a), Value::Mukai(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
@@ -6079,6 +6127,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
+            (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::Mukai(a), Value::Mukai(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -6401,6 +6450,14 @@ impl Model {
                     return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
                 Kind::Mukai(..) => return Err(Error::plain("cannot enumerate a Mukai lattice")),
+                Kind::Nakajima(ref grade) => {
+                    if grade.supports_states() {
+                        return Err(Error::plain(
+                            "cannot enumerate an integral Nakajima component",
+                        ));
+                    }
+                    vec![nakajima::State::zero().persist(self)?]
+                }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
                         "an elliptic rational morphism type cannot be enumerated",
@@ -7848,6 +7905,28 @@ impl Model {
                     "{{r={}, w={w:?}, b={b:?}, s={}}}",
                     vector.r, vector.s
                 ))
+            }
+            Value::Nakajima(state) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, (monomial, coefficient)) in state.terms().enumerate() {
+                    self.spend(1 + monomial.len())?;
+                    if i > 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{coefficient}*["))?;
+                    for (j, factor) in monomial.iter().enumerate() {
+                        if j > 0 {
+                            out.push(", ")?;
+                        }
+                        out.push(&format!(
+                            "({},{},{})",
+                            factor.mode.length, factor.mode.color, factor.exponent
+                        ))?;
+                    }
+                    out.push("]")?;
+                }
+                out.push("}")
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

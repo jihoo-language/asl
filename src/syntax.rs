@@ -128,6 +128,7 @@ pub(crate) enum TypeForm {
     KummerDisc(Label),
     KummerDiv(Label),
     K3Lattice(Label),
+    Nakajima(Label, i128, i128),
     Mukai(Label),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -972,6 +973,7 @@ pub(crate) enum ExprForm {
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
+    Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
@@ -1158,6 +1160,7 @@ pub(crate) enum StatementForm {
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
+    NakajimaPair(Box<[ParsedExpr; 2]>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     Richelot(Box<crate::richelot::Command>),
@@ -3084,6 +3087,54 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::K3Lattice(Box::new(expression)), depth)
     }
 
+    fn nakajima_mode(&mut self) -> Result<crate::hyperelliptic_kummer_surface::nakajima::Mode> {
+        let span = self.span();
+        let length = self.wide_unsigned("Nakajima mode length")?;
+        self.expect(Token::Comma)?;
+        let color = self.number()?.0;
+        crate::hyperelliptic_kummer_surface::nakajima::Mode::new(length, color)
+            .map_err(|error| error.at(span))
+    }
+
+    fn nakajima_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::nakajima::{Expression, Factor, Operation};
+        self.expect(Token::LBracket)?;
+        let (expression, depth) = match name {
+            "rvNakajimaVac" | "rvNakajimaMonomial" => {
+                let basis = self.label()?;
+                self.expect(Token::RBracket)?;
+                let expression = if name == "rvNakajimaVac" {
+                    Expression::Vacuum(basis)
+                } else {
+                    let factors = self.set_named_rows(|parser| {
+                        parser.expect(Token::LParen)?;
+                        let mode = parser.nakajima_mode()?;
+                        parser.expect(Token::Comma)?;
+                        let exponent = parser.wide_unsigned("Nakajima multiplicity")?;
+                        parser.expect(Token::RParen)?;
+                        Ok(Factor { mode, exponent })
+                    })?;
+                    Expression::Monomial(basis, factors)
+                };
+                (expression, 0)
+            }
+            _ => {
+                let operation = match name {
+                    "rvNakajimaCreate" => Operation::Create(self.nakajima_mode()?),
+                    "rvNakajimaAnn" => Operation::Annihilate(self.nakajima_mode()?),
+                    _ => Operation::Scale(
+                        self.signed_wide("a signed Nakajima scalar", "Nakajima scalar")?,
+                    ),
+                };
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Apply(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::Nakajima(Box::new(expression)), depth)
+    }
+
     fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::nikulin::Command;
         self.advance()?;
@@ -4424,6 +4475,10 @@ impl<'src> Parser<'src> {
             }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
+            }
+            Token::Word("rvNakajimaPair") => {
+                self.advance()?;
+                StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
             }
             Token::Word(name @ ("rvk3autom" | "rvK3Entropy")) => {
                 self.k3_automorphism_statement(name)?
@@ -7710,6 +7765,19 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
+        if name.text == "RVNakajima" && self.eat(Token::LParen)? {
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let length =
+                self.signed_wide("a signed Nakajima length grade", "Nakajima length grade")?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_wide(
+                "a signed Nakajima cohomological degree",
+                "Nakajima cohomological degree",
+            )?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Nakajima(basis, length, degree), 0);
+        }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
             self.expect(Token::RParen)?;
@@ -9694,6 +9762,17 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvK3Reflect" && self.token() == Token::LParen)
                 {
                     return self.k3_lattice_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvNakajimaVac"
+                        | "rvNakajimaMonomial"
+                        | "rvNakajimaCreate"
+                        | "rvNakajimaAnn"
+                        | "rvNakajimaScale"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.nakajima_expression(&name.text, span, nest);
                 }
                 if (matches!(name.text.as_str(), "rvMukai" | "rvMukaiIdeal")
                     && self.token() == Token::LBracket)

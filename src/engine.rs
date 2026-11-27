@@ -34,7 +34,8 @@ use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Diviso
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::mukai;
 use crate::hyperelliptic_kummer_surface::{
-    self as kummer_surface, nikulin, polarized as kummer_div, unimodular, Point as KummerPoint,
+    self as kummer_surface, nakajima, nikulin, polarized as kummer_div, unimodular,
+    Point as KummerPoint,
 };
 use crate::jacobian_level;
 use crate::jet_hom;
@@ -628,6 +629,7 @@ enum TypedForm {
     K3LatticeReflect(Box<[TypedExpr; 2]>),
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
     K3LatticeNegate(Box<TypedExpr>),
+    Nakajima(nakajima::Operation, Box<TypedExpr>),
     Mukai(MukaiAction),
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
@@ -1614,6 +1616,7 @@ impl Engine {
             }
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
+            StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
@@ -4653,6 +4656,37 @@ impl Engine {
         }
     }
 
+    fn nakajima_pair(&mut self, [left, right]: [ParsedExpr; 2]) -> Result<String> {
+        let left = self.checker().expr(left)?;
+        let right = self.checker().expr(right)?;
+        let left_grade = self
+            .checker()
+            .nakajima_grade(&left, "rvNakajimaPair")?
+            .clone();
+        let right_grade = self
+            .checker()
+            .nakajima_grade(&right, "rvNakajimaPair")?
+            .clone();
+        if left_grade.basis != right_grade.basis {
+            return Err(Error::new(
+                right.span,
+                "rvNakajimaPair requires the same named level basis",
+            ));
+        }
+        let (Value::Nakajima(left), Value::Nakajima(right)) =
+            (self.eval(&left)?, self.eval(&right)?)
+        else {
+            unreachable!();
+        };
+        let pair = if left_grade.complementary(&right_grade) {
+            let gram = self.model.nakajima_gram()?;
+            left.pair(&mut self.model, &gram, &right)?
+        } else {
+            0
+        };
+        Ok(format!("rvNakajimaPair = {pair}"))
+    }
+
     fn jacobian_command(
         &mut self,
         command: hyperelliptic_jacobian::Command,
@@ -5999,6 +6033,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::Nakajima(a), Value::Nakajima(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
@@ -7467,6 +7504,20 @@ impl Engine {
                 };
                 word.apply(&mut self.model, &divisor)?
                     .persist(&mut self.model)
+            }
+            TypedForm::Nakajima(operation, input) => {
+                let Value::Nakajima(input) = self.eval(input)? else {
+                    unreachable!();
+                };
+                let output = match *operation {
+                    nakajima::Operation::Create(mode) => input.create(&mut self.model, mode)?,
+                    nakajima::Operation::Annihilate(mode) => {
+                        let gram = self.model.nakajima_gram()?;
+                        input.annihilate(&mut self.model, &gram, mode)?
+                    }
+                    nakajima::Operation::Scale(scalar) => input.scale(&mut self.model, scalar)?,
+                };
+                output.persist(&mut self.model)
             }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
@@ -9799,6 +9850,9 @@ impl Checker<'_> {
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::Nakajima(name, length, degree) => {
+                self.model.nakajima_type(&name, length, degree)
+            }
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
@@ -10839,6 +10893,7 @@ impl Checker<'_> {
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
+                    Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
@@ -12972,6 +13027,7 @@ impl Checker<'_> {
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
+            ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
@@ -13669,6 +13725,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::Mukai(MukaiAction::Negate(Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Nakajima(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::Nakajima(nakajima::Operation::Scale(-1), Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
@@ -17391,6 +17453,7 @@ impl Checker<'_> {
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
                         | Kind::K3Lattice(..)
+                        | Kind::Nakajima(..)
                         | Kind::Mukai(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
@@ -18882,6 +18945,45 @@ impl Checker<'_> {
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn nakajima_expression(
+        &mut self,
+        expression: nakajima::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use nakajima::Expression;
+        match expression {
+            Expression::Vacuum(name) => {
+                let ty = self.model.nakajima_type(&name, 0, 0)?;
+                let value = nakajima::State::vacuum().persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Monomial(name, factors) => {
+                let (state, length, degree) = nakajima::State::monomial(self.model, factors)?;
+                let ty = self.model.nakajima_type(&name, length, degree)?;
+                let value = state.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.nakajima_grade(&input, operation.name())?;
+                let (length, degree) = operation.grades(grade)?;
+                let basis = Label {
+                    text: grade.basis.to_string(),
+                    span: input.span,
+                };
+                let ty = self.model.nakajima_type(&basis, length, degree)?;
+                Ok((ty, TypedForm::Nakajima(operation, Box::new(input))))
+            }
+        }
+    }
+
+    fn nakajima_grade(&self, input: &TypedExpr, operation: &str) -> Result<&nakajima::Grade> {
+        if let Kind::Nakajima(grade) = self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "a Nakajima state"))
         }
     }
 
