@@ -1138,6 +1138,14 @@ The interpreter compares every coefficient of the expanded polynomial with the n
 
 The optional final argument `[[col0],...]` gives the exponent columns for the $x$ variables followed by the $y$ variables. Each column has the number of coordinates declared for `P`. The interpreter verifies full column rank over $\mathbb Q$ by fraction-free elimination. The associated map of exponent lattices is injective, so only a zero exponent can map to zero, even when the image is a proper sublattice. For $u=2,v=0,z=-1$, the single column `[[2,4]]` takes $x-x^{-1}$ to $X^2Y^4-X^{-2}Y^{-4}$ with the same period.
 
+### A certified mirror for $\mathrm{Gr}(2,5)$
+
+The example computes the Grassmannian unit annihilator, applies the factorial transform, and checks the Euler factorization. It uses `rvCTWZCheck` on the resulting cofactor $B=\theta^2-q(11\theta^2+11\theta+3)-q^2(\theta+1)^2$ and on the declared Laurent polynomial. This certifies both the mirror identity and the WZ recurrence. The quantum forcing term vanishes. In degree $n>0$ the coefficient of the new term is $n^2$, so the common initial value $A(0)=1$ determines the entire period.
+
+For this mirror the general Laurent formula becomes $L=(1+x)(1+y)(1+x+y)/(xy)$. Its period is $[x^ny^n](1+x)^n(1+y)^n(1+x+y)^n$. Choosing $(1+x)^j y^{n-j}$ from the last factor gives $\binom{n}{j}[x^n](1+x)^{n+j}[y^j](1+y)^n$, hence the sum $\sum_j\binom{n}{j}^2\binom{n+j}{j}$ in every degree.
+
+The program applies the base-three sections for $7$ to obtain $A(7)\equiv6\pmod{9}$. Modulo $27$ it checks that the whole state after the first digit $2$ is fixed by that section. All $38$ digits of $3^{38}-1=1350851717672992088$ are $2$, so reading this fixed state gives $A(1350851717672992088)\equiv19\pmod{27}$. [Grassmannian–Apéry proof example](examples/rv-grassmannian-apery-proof.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.
