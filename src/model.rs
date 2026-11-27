@@ -29,6 +29,7 @@ use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, nakajima, nikulin, unimodular, Point as KummerPoint,
@@ -256,6 +257,7 @@ pub(crate) enum Kind {
     Jacobian(Rc<str>),
     Kummer(Rc<str>),
     KummerK3(Rc<str>),
+    Enriques(Rc<str>),
     KummerDisc(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
@@ -426,6 +428,7 @@ pub(crate) enum Value {
     Jacobian(Rc<Divisor>),
     Kummer(Rc<KummerPoint>),
     KummerK3(Rc<KummerK3Point>),
+    Enriques(Rc<enriques::Orbit>),
     KummerDisc(u8),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
@@ -605,6 +608,7 @@ pub(crate) struct Model {
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
+    enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
@@ -703,6 +707,7 @@ impl Model {
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
+            enriques_quotients: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             nakajima_gram: None,
             richelot_isogenies: HashMap::new(),
@@ -991,6 +996,7 @@ impl Model {
             Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
                 usize::MAX
             }
+            Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::K3Lattice(..) | Kind::Mukai(..) => usize::MAX,
             Kind::Nakajima(ref grade) => {
@@ -1213,6 +1219,7 @@ impl Model {
                 | Kind::Jacobian(..)
                 | Kind::Kummer(..)
                 | Kind::KummerK3(..)
+                | Kind::Enriques(..)
                 | Kind::KummerDisc(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
@@ -3831,6 +3838,32 @@ impl Model {
         self.inhabited_type(Kind::KummerK3(name), 0)
     }
 
+    pub(crate) fn define_enriques(&mut self, declaration: enriques::Declare) -> Result<()> {
+        let enriques::Declare(name, base, cover, basis, mask) = declaration;
+        if self.enriques_quotients.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Enriques quotient '{}' is already defined", name.text),
+            ));
+        }
+        let quotient = enriques::Quotient::new(self, base, cover, &basis, mask)?;
+        self.allocate(1 + name.text.len())?;
+        self.enriques_quotients.insert(name.text, Rc::new(quotient));
+        Ok(())
+    }
+
+    pub(crate) fn enriques_quotient(&self, name: &str) -> Result<Rc<enriques::Quotient>> {
+        self.enriques_quotients
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Enriques quotient '{name}'")))
+    }
+
+    pub(crate) fn enriques_type(&mut self, name: Rc<str>) -> Result<TypeId> {
+        self.enriques_quotient(&name)?;
+        self.inhabited_type(Kind::Enriques(name), 0)
+    }
+
     pub(crate) fn kummer_disc_type(&mut self, name: &Label) -> Result<TypeId> {
         nikulin::basis(self, name)?;
         self.inhabited_type(Kind::KummerDisc(name.text.as_str().into()), 0)
@@ -5002,6 +5035,7 @@ impl Model {
             | Kind::Jacobian(..)
             | Kind::Kummer(..)
             | Kind::KummerK3(..)
+            | Kind::Enriques(..)
             | Kind::KummerDisc(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
@@ -5507,6 +5541,7 @@ impl Model {
             Kind::Jacobian(name) => out.push(&format!("RVJac({name})")),
             Kind::Kummer(name) => out.push(&format!("RVKummer({name})")),
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
+            Kind::Enriques(name) => out.push(&format!("RVEnriques({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
@@ -5794,6 +5829,7 @@ impl Model {
             (Value::Jacobian(a), Value::Jacobian(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Kummer(a), Value::Kummer(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::Enriques(a), Value::Enriques(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6124,6 +6160,7 @@ impl Model {
             (Value::Jacobian(a), Value::Jacobian(b)) => a.compare(self, b),
             (Value::Kummer(a), Value::Kummer(b)) => a.compare(self, b),
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
+            (Value::Enriques(a), Value::Enriques(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -6434,6 +6471,9 @@ impl Model {
                 Kind::KummerK3(ref name) => {
                     let curve = self.kummer_curve(name)?;
                     hyperelliptic_kummer_surface::resolution::elements(self, &curve, MAX_ELEMENTS)?
+                }
+                Kind::Enriques(ref name) => {
+                    self.enriques_quotient(name)?.elements(self, MAX_ELEMENTS)?
                 }
                 Kind::KummerDisc(..) => {
                     let count = usize::from(nikulin::ORDER);
@@ -7872,6 +7912,20 @@ impl Model {
                 out.push("{base=")?;
                 self.write_ec_polynomial(out, point.base().coordinates())?;
                 if let Some(direction) = point.direction() {
+                    out.push(", direction=")?;
+                    self.write_ec_polynomial(out, direction)?;
+                }
+                out.push("}")
+            }
+            Value::Enriques(orbit) => {
+                self.write_type(out, ty, 0)?;
+                out.push(if orbit.split {
+                    "{split, base="
+                } else {
+                    "{nonsplit, base="
+                })?;
+                self.write_ec_polynomial(out, orbit.representative.base().coordinates())?;
+                if let Some(direction) = orbit.representative.direction() {
                     out.push(", direction=")?;
                     self.write_ec_polynomial(out, direction)?;
                 }

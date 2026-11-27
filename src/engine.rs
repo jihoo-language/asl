@@ -32,6 +32,7 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai;
 use crate::hyperelliptic_kummer_surface::{
     self as kummer_surface, nakajima, nikulin, polarized as kummer_div, unimodular,
@@ -550,6 +551,11 @@ enum MukaiAction {
     Negate(Box<TypedExpr>),
 }
 
+enum EnriquesAction {
+    Orbit(Rc<enriques::Quotient>, bool, Box<TypedExpr>),
+    Read(Rc<enriques::Quotient>, enriques::Read, Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -622,6 +628,7 @@ enum TypedForm {
     Jacobian(JacobianAction),
     JacobianLevelCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
     Kummer(KummerAction),
+    Enriques(EnriquesAction),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
@@ -1596,6 +1603,10 @@ impl Engine {
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::KummerK3(command) => return command.execute(&mut self.model).map(Some),
+            StatementForm::DeclareEnriques(declaration) => {
+                self.model.define_enriques(*declaration)?;
+                return Ok(None);
+            }
             StatementForm::KummerEnriques(command) => {
                 return command.execute(&mut self.model).map(Some)
             }
@@ -7452,6 +7463,26 @@ impl Engine {
                 Ok(Value::PrimeScalar(value))
             }
             TypedForm::Kummer(action) => self.eval_kummer(action),
+            TypedForm::Enriques(action) => match action {
+                EnriquesAction::Orbit(quotient, from_base, input) => {
+                    let Value::KummerK3(point) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    quotient.orbit(&mut self.model, point, *from_base)
+                }
+                EnriquesAction::Read(quotient, read, input) => {
+                    let Value::Enriques(orbit) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    match read {
+                        enriques::Read::Split => Ok(Value::Point(usize::from(orbit.split))),
+                        enriques::Read::Representative => {
+                            Ok(Value::KummerK3(orbit.representative.clone()))
+                        }
+                        enriques::Read::Lift => quotient.lift(&mut self.model, &orbit),
+                    }
+                }
+            },
             TypedForm::KummerDiscQuadratic(input) => {
                 let Value::KummerDisc(mask) = self.eval(input)? else {
                     unreachable!()
@@ -9847,6 +9878,7 @@ impl Checker<'_> {
             TypeForm::Jacobian(name) => self.model.jacobian_type(name.text.into()),
             TypeForm::Kummer(name) => self.model.kummer_type(name.text.into()),
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
+            TypeForm::Enriques(name) => self.model.enriques_type(name.text.into()),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -13024,6 +13056,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
+            ExprForm::Enriques(expression) => self.enriques_expression(*expression),
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
@@ -19202,6 +19235,63 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn enriques_expression(
+        &mut self,
+        expression: enriques::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use enriques::{Expression, Read};
+        let (ty, action) = match expression {
+            Expression::Orbit(name, input) => {
+                let quotient = self
+                    .model
+                    .enriques_quotient(&name.text)
+                    .map_err(|error| error.at(name.span))?;
+                let input = self.expr(*input)?;
+                let from_base = match self.model.kind(input.ty) {
+                    Kind::KummerK3(curve) if curve == &quotient.base_name => true,
+                    Kind::KummerK3(curve) if curve == &quotient.cover_name => false,
+                    _ => {
+                        return Err(Error::new(
+                            input.span,
+                            format!(
+                                "rvEnriquesOrbit requires RVKummerK3({}) or RVKummerK3({})",
+                                quotient.base_name, quotient.cover_name
+                            ),
+                        ))
+                    }
+                };
+                let ty = self.model.enriques_type(name.text.into())?;
+                (
+                    ty,
+                    EnriquesAction::Orbit(quotient, from_base, Box::new(input)),
+                )
+            }
+            Expression::Read(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::Enriques(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "Enriques orbit operation",
+                        "an RVEnriques point",
+                    ));
+                };
+                let quotient = self.model.enriques_quotient(name)?;
+                let ty = match operation {
+                    Read::Split => self.model.named("S").unwrap(),
+                    Read::Representative => {
+                        self.model.kummer_k3_type(quotient.cover_name.clone())?
+                    }
+                    Read::Lift => self.model.kummer_k3_type(quotient.base_name.clone())?,
+                };
+                (
+                    ty,
+                    EnriquesAction::Read(quotient, operation, Box::new(input)),
+                )
+            }
+        };
+        Ok((ty, TypedForm::Enriques(action)))
     }
 
     fn kummer_expression(

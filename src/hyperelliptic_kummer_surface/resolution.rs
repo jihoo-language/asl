@@ -182,10 +182,14 @@ impl ResolvedPoint {
         Ok(self.direction.cmp(&other.direction))
     }
 
-    pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
+    pub(super) fn keep(self, model: &mut Model) -> Result<Rc<Self>> {
         let cells = self.direction.as_ref().map_or(0, |h| 4 * (3 + h[0].len()));
         model.allocate(2 + cells)?;
-        Ok(Value::KummerK3(Rc::new(self)))
+        Ok(Rc::new(self))
+    }
+
+    pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
+        Ok(Value::KummerK3(self.keep(model)?))
     }
 }
 

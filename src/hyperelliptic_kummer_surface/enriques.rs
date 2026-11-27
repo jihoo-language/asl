@@ -1,8 +1,12 @@
 use crate::error::{Error, Result};
+use crate::hw_closed::Curve;
+use crate::jacobian_level::Basis;
 use crate::model::Model;
 use crate::syntax::Label;
 
 use super::{k3, nikulin::NodePermutation};
+
+pub(crate) mod points;
 
 const NODES: usize = 16;
 const DIVISORS: usize = 1 + NODES;
@@ -24,39 +28,10 @@ impl Command {
     pub(crate) fn execute(self, model: &mut Model) -> Result<String> {
         let Self(name, base, mask, query) = self;
         let basis = model.jacobian_level(&name)?;
-        if basis.prime.get() != 2 || basis.len() != 4 {
-            return Err(Error::new(
-                name.span,
-                "Enriques quotients require a certified genus-two level-2 basis",
-            ));
-        }
         let curve = model
             .kummer_curve(&base.text)
             .map_err(|error| error.at(base.span))?;
-        let frobenius =
-            NodePermutation::new(model, &basis, &curve, 1).map_err(|error| error.at(base.span))?;
-        let mut odd = 0u16;
-        for node in 0..NODES {
-            if basis.binary_combination(model, node as u8)?.u.len() <= 2 {
-                odd |= 1 << node;
-            }
-        }
-        if odd.count_ones() != 6 || frobenius.on_truth_table(odd) != odd {
-            return Err(Error::plain(
-                "expected six base-Frobenius-stable nodes on the odd trope",
-            ));
-        }
-        if odd & (1 << mask) != 0 {
-            return Err(Error::plain(
-                "Enriques quotient requires an even theta characteristic",
-            ));
-        }
-        if usize::from(frobenius.image(mask)) != mask {
-            return Err(Error::plain(
-                "Enriques switch mask must be fixed by base Frobenius",
-            ));
-        }
-        let action = Action::new(model, frobenius, odd, mask)?;
+        let action = Action::validate(model, &basis, &curve, mask)?;
         let q = curve.ring.size_of_residue_field()?;
         let name = name.text;
         let base = base.text;
@@ -94,6 +69,37 @@ struct Action {
 }
 
 impl Action {
+    fn validate(model: &mut Model, basis: &Basis, curve: &Curve, mask: usize) -> Result<Self> {
+        if basis.prime.get() != 2 || basis.len() != 4 {
+            return Err(Error::plain(
+                "Enriques quotients require a certified genus-two level-2 basis",
+            ));
+        }
+        let frobenius = NodePermutation::new(model, basis, curve, 1)?;
+        let mut odd = 0u16;
+        for node in 0..NODES {
+            if basis.binary_combination(model, node as u8)?.u.len() <= 2 {
+                odd |= 1 << node;
+            }
+        }
+        if odd.count_ones() != 6 || frobenius.on_truth_table(odd) != odd {
+            return Err(Error::plain(
+                "expected six base-Frobenius-stable nodes on the odd trope",
+            ));
+        }
+        if odd & (1 << mask) != 0 {
+            return Err(Error::plain(
+                "Enriques quotient requires an even theta characteristic",
+            ));
+        }
+        if usize::from(frobenius.image(mask)) != mask {
+            return Err(Error::plain(
+                "Enriques switch mask must be fixed by base Frobenius",
+            ));
+        }
+        Self::new(model, frobenius, odd, mask)
+    }
+
     fn new(model: &mut Model, frobenius: NodePermutation, odd: u16, mask: usize) -> Result<Self> {
         // Use (H, E_0, ..., E_15) on the divisor cohomology, with the Tate
         // factor removed from Frobenius. Store 2σ so every entry is integral.

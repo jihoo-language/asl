@@ -125,6 +125,7 @@ pub(crate) enum TypeForm {
     Jacobian(Label),
     Kummer(Label),
     KummerK3(Label),
+    Enriques(Label),
     KummerDisc(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -970,6 +971,7 @@ pub(crate) enum ExprForm {
     JacobianRichelotKernel(Label, Label, usize, usize),
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
+    Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
@@ -1154,6 +1156,7 @@ pub(crate) enum StatementForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
+    DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
@@ -3277,6 +3280,45 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::GeneralizedKummer(Box::new(command)))
     }
 
+    fn declare_enriques_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::enriques::points::Declare;
+        self.advance()?;
+        let name = self.label()?;
+        self.expect(Token::LBracket)?;
+        let base = self.label()?;
+        self.expect(Token::Comma)?;
+        let cover = self.label()?;
+        self.expect(Token::Comma)?;
+        let basis = self.label()?;
+        let mask = self.kummer_theta_index("Enriques switch mask", 15)?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::DeclareEnriques(Box::new(Declare(
+            name, base, cover, basis, mask,
+        ))))
+    }
+
+    fn enriques_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::enriques::points::{Expression, Read};
+        let (expression, depth) = if name == "rvEnriquesOrbit" {
+            self.expect(Token::LBracket)?;
+            let quotient = self.label()?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Orbit(quotient, Box::new(input)), depth)
+        } else {
+            let operation = match name {
+                "rvEnriquesSplit" => Read::Split,
+                "rvEnriquesRepresentative" => Read::Representative,
+                _ => Read::Lift,
+            };
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Read(operation, Box::new(input)), depth)
+        };
+        expr(span, ExprForm::Enriques(Box::new(expression)), depth)
+    }
+
     fn kummer_enriques_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::enriques::{Command, Query};
         self.advance()?;
@@ -4456,6 +4498,7 @@ impl<'src> Parser<'src> {
             Token::Word(command @ ("rvKummerEnriquesPoints" | "rvKummerEnriquesZeta")) => {
                 self.kummer_enriques_statement(command)?
             }
+            Token::Word("rvenriques") => self.declare_enriques_statement()?,
             Token::Word(
                 command @ ("rvKummerK3Zeta"
                 | "rvKummerK3Points"
@@ -7746,6 +7789,7 @@ impl<'src> Parser<'src> {
             "RVJac"
                 | "RVKummer"
                 | "RVKummerK3"
+                | "RVEnriques"
                 | "RVKummerDisc"
                 | "RVKummerDiv"
                 | "RVK3Lattice"
@@ -7758,6 +7802,7 @@ impl<'src> Parser<'src> {
                 "RVJac" => TypeForm::Jacobian(endpoint),
                 "RVKummer" => TypeForm::Kummer(endpoint),
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
+                "RVEnriques" => TypeForm::Enriques(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
@@ -9682,6 +9727,14 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.jacobian_expression(&name.text, name.span, nest);
+                }
+                if (name.text == "rvEnriquesOrbit" && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvEnriquesSplit" | "rvEnriquesRepresentative" | "rvEnriquesLift"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.enriques_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacTorsionCoord" && self.eat(Token::LBracket)? {
                     let basis = self.label()?;

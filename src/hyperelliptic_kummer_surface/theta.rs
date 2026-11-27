@@ -237,7 +237,7 @@ fn solve_scales(
     Ok([a, b, c, d])
 }
 
-fn apply(
+pub(super) fn apply(
     model: &mut Model,
     field: Field<'_>,
     matrix: &Matrix<Scalar>,
