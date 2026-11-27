@@ -1140,6 +1140,7 @@ pub(crate) enum StatementForm {
     JacobianLevel(Box<crate::jacobian_level::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
+    EllipticGlue(Box<crate::elliptic_gluing::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
@@ -3011,13 +3012,13 @@ impl<'src> Parser<'src> {
         Ok((basis, base))
     }
 
-    fn bielliptic_statement(&mut self) -> Result<StatementForm> {
+    fn elliptic_quotient_statement(&mut self, glue: bool) -> Result<StatementForm> {
         self.advance()?;
-        let source = self.label()?;
+        let curve = self.label()?;
         self.expect(Token::LBracket)?;
-        let plus = self.label()?;
+        let left = self.label()?;
         self.expect(Token::Comma)?;
-        let minus = self.label()?;
+        let right = self.label()?;
         self.expect(Token::RBracket)?;
         self.expect(Token::LParen)?;
         let a = self.expr(1)?;
@@ -3028,12 +3029,25 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let d = self.expr(1)?;
         self.expect(Token::RParen)?;
-        let command = crate::bielliptic::Command {
-            source,
-            targets: [plus, minus],
-            matrix: [a, b, c, d],
-        };
-        Ok(StatementForm::Bielliptic(Box::new(command)))
+        let matrix = [a, b, c, d];
+        let factors = [left, right];
+        if glue {
+            Ok(StatementForm::EllipticGlue(Box::new(
+                crate::elliptic_gluing::Command {
+                    name: curve,
+                    factors,
+                    matrix,
+                },
+            )))
+        } else {
+            Ok(StatementForm::Bielliptic(Box::new(
+                crate::bielliptic::Command {
+                    source: curve,
+                    targets: factors,
+                    matrix,
+                },
+            )))
+        }
     }
 
     fn jacobian_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
@@ -3119,15 +3133,24 @@ impl<'src> Parser<'src> {
                 let depth = 1 + xy[0].depth.max(xy[1].depth);
                 (Expression::HalfAt(curve, index, Box::new(xy)), depth)
             }
-            "rvRichelotPoint" | "rvBiellipticPoint" => {
+            "rvRichelotPoint" | "rvBiellipticPoint" | "rvEllGlueLeft" | "rvEllGlueRight" => {
                 let target = self.label()?;
                 self.expect(Token::RBracket)?;
                 let coordinates = Box::new(self.paren_pair(nest)?);
                 let depth = 1 + coordinates[0].depth.max(coordinates[1].depth);
-                let expression = if name == "rvRichelotPoint" {
-                    Expression::RichelotPoint(target, coordinates)
-                } else {
-                    Expression::BiellipticPoint(target, coordinates)
+                let expression = match name {
+                    "rvRichelotPoint" => Expression::RichelotPoint(target, coordinates),
+                    "rvBiellipticPoint" => Expression::BiellipticPoint(target, coordinates),
+                    "rvEllGlueLeft" => Expression::EllipticGluePoint(
+                        target,
+                        crate::elliptic_gluing::Side::Left,
+                        coordinates,
+                    ),
+                    _ => Expression::EllipticGluePoint(
+                        target,
+                        crate::elliptic_gluing::Side::Right,
+                        coordinates,
+                    ),
                 };
                 (expression, depth)
             }
@@ -3662,7 +3685,9 @@ impl<'src> Parser<'src> {
                 | "rvJacRichelotKernels"
                 | "rvrichelotfromlevel"),
             ) => self.richelot_statement(command)?,
-            Token::Word("rvbielliptic") => self.bielliptic_statement()?,
+            Token::Word(name @ ("rvbielliptic" | "rvellglue")) => {
+                self.elliptic_quotient_statement(name == "rvellglue")?
+            }
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -8791,6 +8816,8 @@ impl<'src> Parser<'src> {
                         | "rvBiellipticPoint"
                         | "rvBiellipticPush"
                         | "rvBiellipticPull"
+                        | "rvEllGlueLeft"
+                        | "rvEllGlueRight"
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"

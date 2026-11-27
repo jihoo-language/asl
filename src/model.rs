@@ -593,6 +593,7 @@ pub(crate) struct Model {
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
+    elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -688,6 +689,7 @@ impl Model {
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
+            elliptic_gluings: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -3673,6 +3675,37 @@ impl Model {
                 Error::new(
                     target.span,
                     format!("curve '{}' has no stored bielliptic quotient", target.text),
+                )
+            })
+    }
+
+    pub(crate) fn define_elliptic_gluing(
+        &mut self,
+        name: Label,
+        factors: [crate::elliptic_gluing::Factor; 2],
+        matrix: [ECScalar; 4],
+    ) -> Result<()> {
+        self.require_fresh_hyperelliptic_name(&name)?;
+        let gluing =
+            crate::elliptic_gluing::Gluing::build(self, name.text.as_str().into(), factors, matrix)
+                .map_err(|error| error.at(name.span))?;
+        self.hw_closed_curves
+            .insert(name.text.clone(), gluing.curve.clone());
+        self.elliptic_gluings.insert(name.text, Rc::new(gluing));
+        Ok(())
+    }
+
+    pub(crate) fn elliptic_gluing(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::elliptic_gluing::Gluing>> {
+        self.elliptic_gluings
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("curve '{}' has no stored elliptic gluing", name.text),
                 )
             })
     }

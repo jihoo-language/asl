@@ -1290,6 +1290,12 @@ The pushforward traces squarefree quadratic support over its quadratic algebra a
 
 The example checks on all 64 source classes and all eight classes of each factor that push after pull doubles on the same factor and vanishes on the other. The sum of the two pull-after-push maps doubles on the source. [Split Picard isogeny example](examples/hyperelliptic-bielliptic-picard.asl)
 
+#### Gluing elliptic curves along two-torsion
+
+`rvellglue C[E,F](a,b,c,d);` glues the monic cubics $E:y^2=f(x)$ and $F:y^2=g(x)$ over the same named odd finite field. The Möbius map $(ax+b)/(cx+d)$ must have nonzero determinant and $c\ne0$. Set $A=-d/c$, $B=a/c$, $m=(bc-ad)/c^2$, and $k=g(B)$. The declaration checks $f(A)k\ne0$ and $u^3g(B+m/u)=k f(A+u)$ as a polynomial identity. This identifies the three finite branch points, including nonsplit orbits, and gives the genus-two sextic $C:Y^2=f(A+kt^2)$.
+
+`rvEllGlueLeft[C](t,Y)` gives $(A+kt^2,Y)$ in `RVJac(E)`. `rvEllGlueRight[C](t,Y)` gives $(B+m/(kt^2),Y/(kt^3))$ in `RVJac(F)`, with $t=0$ sent to infinity. Both expressions check that the input lies on `C`. The example over $\mathbb F_5$ glues two irreducible cubics by $x\mapsto1/x$ and checks the maps and Frobenius polynomials of all three curves. [Elliptic gluing example](examples/hyperelliptic-elliptic-gluing.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

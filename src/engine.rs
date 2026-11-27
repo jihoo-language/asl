@@ -21,6 +21,7 @@ use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
+use crate::elliptic_gluing;
 use crate::elliptic_local;
 use crate::eo;
 use crate::error::{Error, Result, Span};
@@ -459,6 +460,11 @@ enum JacobianAction {
         Box<crate::bielliptic::picard::Map>,
         crate::bielliptic::picard::Direction,
         Box<TypedExpr>,
+    ),
+    EllipticGluePoint(
+        Rc<elliptic_gluing::Gluing>,
+        elliptic_gluing::Side,
+        Box<[TypedExpr; 2]>,
     ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
@@ -1523,6 +1529,10 @@ impl Engine {
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
                 self.bielliptic_command(*command)?;
+                return Ok(None);
+            }
+            StatementForm::EllipticGlue(command) => {
+                self.elliptic_glue_command(*command)?;
                 return Ok(None);
             }
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
@@ -4741,7 +4751,7 @@ impl Engine {
         let crate::bielliptic::Command {
             source,
             targets,
-            matrix: [a, b, c, d],
+            matrix,
         } = command;
         let curve = self.model.hww_curve(&source)?;
         if curve.grade.genus != 2 || curve.ring.precision() != 1 {
@@ -4754,25 +4764,56 @@ impl Engine {
             text: curve.grade.ring.to_string(),
             span: source.span,
         };
-        let expected = self.model.rv_unram_type(&field)?;
+        let matrix = self.elliptic_chart_matrix(&field, matrix, "bielliptic chart coefficient")?;
+        self.model
+            .define_bielliptic(targets, curve, matrix)
+            .map_err(|error| error.at(source.span))
+    }
+
+    fn elliptic_glue_command(&mut self, command: elliptic_gluing::Command) -> Result<()> {
+        let elliptic_gluing::Command {
+            name,
+            factors: [left, right],
+            matrix,
+        } = command;
+        let factor = |label: &Label| -> Result<_> {
+            Ok(elliptic_gluing::Factor {
+                name: label.text.as_str().into(),
+                curve: self.model.hww_curve(label)?,
+            })
+        };
+        let factors = [factor(&left)?, factor(&right)?];
+        let field = Label {
+            text: factors[0].curve.grade.ring.to_string(),
+            span: name.span,
+        };
+        let matrix =
+            self.elliptic_chart_matrix(&field, matrix, "rvellglue matching coefficient")?;
+        self.model.define_elliptic_gluing(name, factors, matrix)
+    }
+
+    fn elliptic_chart_matrix(
+        &mut self,
+        field: &Label,
+        [a, b, c, d]: [ParsedExpr; 4],
+        context: &str,
+    ) -> Result<[crate::ec_poly::Scalar; 4]> {
+        let expected = self.model.rv_unram_type(field)?;
         let mut coordinate = |coefficient| {
             let coefficient = self.checker().expr(coefficient)?;
             self.checker()
-                .require_type(expected, &coefficient, "bielliptic chart coefficient")?;
+                .require_type(expected, &coefficient, context)?;
             let Value::RVUnram(value) = self.eval(&coefficient)? else {
                 unreachable!()
             };
             Ok(value.to_vec())
         };
-        let matrix = [
+        Ok([
             coordinate(a)?,
             coordinate(b)?,
             coordinate(c)?,
             coordinate(d)?,
-        ];
-        self.model
-            .define_bielliptic(targets, curve, matrix)
-            .map_err(|error| error.at(source.span))
+        ])
     }
 
     fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
@@ -4842,6 +4883,12 @@ impl Engine {
                     Direction::Pull => (map.pull(&mut self.model, &input)?, &map.source),
                 };
                 value.persist(&mut self.model, target)
+            }
+            JacobianAction::EllipticGluePoint(gluing, side, coordinates) => {
+                let [t, y] = self.eval_jacobian_point(coordinates)?;
+                gluing
+                    .point(&mut self.model, *side, &t, &y)?
+                    .persist(&mut self.model, &gluing.factor(*side).curve)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -18004,6 +18051,21 @@ impl Checker<'_> {
                         Box::new(map),
                         direction,
                         Box::new(input),
+                    )),
+                ))
+            }
+            Expression::EllipticGluePoint(name, side, coordinates) => {
+                let gluing = self.model.elliptic_gluing(&name)?;
+                let context = format!("{} coordinate", side.name());
+                let xy =
+                    self.jacobian_point_inputs(&name, &gluing.curve, *coordinates, &context)?;
+                let ty = self.model.jacobian_type(gluing.factor(side).name.clone())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::EllipticGluePoint(
+                        gluing,
+                        side,
+                        Box::new(xy),
                     )),
                 ))
             }
