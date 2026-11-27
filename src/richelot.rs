@@ -1,11 +1,13 @@
 use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
+use crate::hw_closed::Curve;
 use crate::model::Model;
 use crate::syntax::Label;
 
 pub(crate) mod correspondence;
 pub(crate) mod descent;
+pub(crate) mod hecke;
 
 type Literal = Vec<Vec<i128>>;
 type Splitting = [Polynomial; 3];
@@ -16,6 +18,8 @@ pub(crate) enum Command {
     Data(Label),
     Descend(Label, Label, Label),
     Descent(Label),
+    Kernels(Label, Label),
+    FromLevel(Label, Label, Label, usize),
 }
 
 pub(crate) struct Isogeny {
@@ -37,6 +41,11 @@ impl Command {
             Self::Descent(target) => {
                 let data = model.richelot_descent(&target)?;
                 return Ok(Some(data.report(&target)));
+            }
+            Self::Kernels(basis, base) => return Ok(Some(hecke::report(model, &basis, &base)?)),
+            Self::FromLevel(target, basis, base, index) => {
+                hecke::define(model, target, &basis, &base, index)?;
+                return Ok(None);
             }
             Self::Data(target) => {
                 let isogeny = model.richelot(&target)?;
@@ -74,35 +83,53 @@ impl Command {
         } else {
             model.richelot(&source)?.target_factors.clone()
         };
-        if factors.iter().any(|g| !(2..=3).contains(&g.len())) {
-            return Err(Error::new(
-                target.span,
-                "Richelot splitting factors must have degree one or two",
-            ));
-        }
-        if product(model, field, &factors)? != curve.polynomial() {
-            return Err(Error::new(
-                target.span,
-                "Richelot factors must multiply to the source equation",
-            ));
-        }
-        let (determinant, target_factors) =
-            transform(model, field, &factors).map_err(|error| error.at(target.span))?;
-        let polynomial = product(model, field, &target_factors)?;
-        let data = Isogeny {
-            source: source.text,
-            source_factors: factors,
-            target_factors,
-            determinant,
-        };
-        model.allocate(data.cells(field))?;
-        let ring = Label {
-            text: curve.grade.ring.to_string(),
-            span: source.span,
-        };
-        model.define_richelot(target, &ring, polynomial, data)?;
+        register(model, target, source, &curve, factors)?;
         Ok(None)
     }
+}
+
+fn validate_splitting(model: &mut Model, curve: &Curve, factors: &Splitting) -> Result<()> {
+    if factors.iter().any(|g| !(2..=3).contains(&g.len())) {
+        return Err(Error::plain(
+            "Richelot splitting factors must have degree one or two",
+        ));
+    }
+    let field = Field { ring: &curve.ring };
+    if product(model, field, factors)? != curve.polynomial() {
+        return Err(Error::plain(
+            "Richelot factors must multiply to the source equation",
+        ));
+    }
+    Ok(())
+}
+
+fn register(
+    model: &mut Model,
+    target: Label,
+    source: Label,
+    curve: &Curve,
+    factors: Splitting,
+) -> Result<()> {
+    validate_splitting(model, curve, &factors).map_err(|error| error.at(target.span))?;
+    let field = Field { ring: &curve.ring };
+    let (determinant, target_factors) = transform(model, field, &factors)
+        .map_err(|error| error.at(target.span))?
+        .ok_or_else(|| Error::new(target.span,
+            "Richelot determinant is zero, so the quotient is a product of elliptic curves over the algebraic closure",
+        ))?;
+    let polynomial = product(model, field, &target_factors)?;
+    let data = Isogeny {
+        source: source.text,
+        source_factors: factors,
+        target_factors,
+        determinant,
+    };
+    model.allocate(data.cells(field))?;
+    let ring = Label {
+        text: curve.grade.ring.to_string(),
+        span: source.span,
+    };
+    model.define_richelot(target, &ring, polynomial, data)
 }
 
 impl Isogeny {
@@ -126,7 +153,7 @@ fn transform(
     model: &mut Model,
     field: Field<'_>,
     factors: &Splitting,
-) -> Result<(Scalar, Splitting)> {
+) -> Result<Option<(Scalar, Splitting)>> {
     let zero = field.zero();
     let [a, b, c] = factors
         .each_ref()
@@ -138,9 +165,7 @@ fn transform(
         determinant = field.add(model, &determinant, &term)?;
     }
     if field.is_zero(&determinant) {
-        return Err(Error::plain(
-            "Richelot determinant is zero, so the quotient is a product of elliptic curves over the algebraic closure",
-        ));
+        return Ok(None);
     }
     let second = cross_product(model, field, c, a)?;
     let third = cross_product(model, field, a, b)?;
@@ -155,10 +180,10 @@ fn transform(
     let first = bracket(model, first)?;
     let inverse = field.inverse_unit(model, &determinant)?;
     let first = poly::scale(model, field, &first, &inverse)?;
-    Ok((
+    Ok(Some((
         determinant,
         [first, bracket(model, second)?, bracket(model, third)?],
-    ))
+    )))
 }
 
 fn cross_product(

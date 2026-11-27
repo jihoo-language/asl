@@ -12302,6 +12302,12 @@ impl Checker<'_> {
             ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::Jacobian(expression) => self.jacobian_expression(*expression),
+            ExprForm::JacobianRichelotKernel(basis, base, plane, generator) => {
+                let (curve, value) =
+                    crate::richelot::hecke::kernel(self.model, &basis, &base, plane, generator)?;
+                let ty = self.model.jacobian_type(curve)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::JacobianLevelCoordinate(name, index, input) => {
                 let basis = self.model.jacobian_level(&name)?;
                 if index >= basis.len() {

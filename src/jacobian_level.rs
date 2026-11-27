@@ -99,6 +99,20 @@ impl Basis {
         self.generators.len()
     }
 
+    pub(crate) fn binary_combination(&self, model: &mut Model, mut mask: u8) -> Result<Divisor> {
+        let mut result = Divisor::zero(&self.curve);
+        for generator in &self.generators {
+            if mask == 0 {
+                break;
+            }
+            if mask & 1 != 0 {
+                result = result.add(model, &self.curve, generator)?;
+            }
+            mask >>= 1;
+        }
+        Ok(result)
+    }
+
     pub(crate) fn coordinate(&self, model: &mut Model, t: &Divisor, index: usize) -> Result<u32> {
         let order = u64::from(self.prime.get());
         if !is_torsion(model, &self.curve, order, t)? {

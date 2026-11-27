@@ -961,6 +961,7 @@ pub(crate) enum ExprForm {
     EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Expression>),
+    JacobianRichelotKernel(Label, Label, usize, usize),
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
@@ -2942,46 +2943,72 @@ impl<'src> Parser<'src> {
     fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::richelot::Command;
         self.advance()?;
-        let command = if matches!(name, "rvRichelotData" | "rvRichelotDescent") {
-            self.expect(Token::LBracket)?;
-            let target = self.label()?;
-            self.expect(Token::RBracket)?;
-            if name == "rvRichelotData" {
-                Command::Data(target)
-            } else {
-                Command::Descent(target)
+        let command = match name {
+            "rvRichelotData" | "rvRichelotDescent" => {
+                self.expect(Token::LBracket)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                if name == "rvRichelotData" {
+                    Command::Data(target)
+                } else {
+                    Command::Descent(target)
+                }
             }
-        } else {
-            let target = self.label()?;
-            self.expect(Token::LBracket)?;
-            let source = self.label()?;
-            let extension_target = if name == "rvrichelotdescend" {
+            "rvrichelotdescend" => {
+                let target = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
                 self.expect(Token::Comma)?;
-                Some(self.label()?)
-            } else {
-                None
-            };
-            self.expect(Token::RBracket)?;
-            if let Some(extension_target) = extension_target {
+                let extension_target = self.label()?;
+                self.expect(Token::RBracket)?;
                 Command::Descend(target, source, extension_target)
-            } else if name == "rvrichelotdual" {
-                Command::Dual(target, source)
-            } else {
-                let coefficient = |parser: &mut Self| {
-                    parser.signed_tuple(
-                        "a signed residue coordinate",
-                        "Richelot coefficient coordinate",
-                    )
-                };
-                let factors = [
-                    self.set_named_rows(coefficient)?,
-                    self.set_named_rows(coefficient)?,
-                    self.set_named_rows(coefficient)?,
-                ];
-                Command::Define(target, source, factors)
+            }
+            "rvJacRichelotKernels" => {
+                self.expect(Token::LBracket)?;
+                let (basis, base) = self.richelot_level_names()?;
+                self.expect(Token::RBracket)?;
+                Command::Kernels(basis, base)
+            }
+            "rvrichelotfromlevel" => {
+                let target = self.label()?;
+                self.expect(Token::LBracket)?;
+                let (basis, base) = self.richelot_level_names()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::FromLevel(target, basis, base, index)
+            }
+            _ => {
+                let target = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                if name == "rvrichelotdual" {
+                    Command::Dual(target, source)
+                } else {
+                    let coefficient = |parser: &mut Self| {
+                        parser.signed_tuple(
+                            "a signed residue coordinate",
+                            "Richelot coefficient coordinate",
+                        )
+                    };
+                    let factors = [
+                        self.set_named_rows(coefficient)?,
+                        self.set_named_rows(coefficient)?,
+                        self.set_named_rows(coefficient)?,
+                    ];
+                    Command::Define(target, source, factors)
+                }
             }
         };
         Ok(StatementForm::Richelot(Box::new(command)))
+    }
+
+    fn richelot_level_names(&mut self) -> Result<(Label, Label)> {
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let base = self.label()?;
+        Ok((basis, base))
     }
 
     fn bielliptic_statement(&mut self) -> Result<StatementForm> {
@@ -3611,8 +3638,13 @@ impl<'src> Parser<'src> {
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,
             Token::Word(
-                command @ ("rvrichelot" | "rvrichelotdual" | "rvrichelotdescend" | "rvRichelotData"
-                | "rvRichelotDescent"),
+                command @ ("rvrichelot"
+                | "rvrichelotdual"
+                | "rvrichelotdescend"
+                | "rvRichelotData"
+                | "rvRichelotDescent"
+                | "rvJacRichelotKernels"
+                | "rvrichelotfromlevel"),
             ) => self.richelot_statement(command)?,
             Token::Word("rvbielliptic") => self.bielliptic_statement()?,
             Token::Eof => return Ok(None),
@@ -8788,6 +8820,19 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);
+                }
+                if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
+                    let (basis, base) = self.richelot_level_names()?;
+                    self.expect(Token::Comma)?;
+                    let plane = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let generator = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::JacobianRichelotKernel(basis, base, plane, generator),
+                        0,
+                    );
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;
