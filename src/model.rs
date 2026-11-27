@@ -763,6 +763,7 @@ pub(crate) struct Model {
     ec_torsion_levels: HashMap<String, Rc<ec_level::Level>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
+    dwork_hecke_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
@@ -923,6 +924,7 @@ impl Model {
             ec_torsion_levels: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
+            dwork_hecke_equations: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
@@ -6545,6 +6547,19 @@ impl Model {
             exponent,
         };
         self.inhabited_type(Kind::CMOrder(grade), 0)
+    }
+
+    pub(crate) fn dwork_hecke_equation(
+        &mut self,
+        ell: usize,
+    ) -> Result<Rc<crate::elliptic_modular::Polynomial>> {
+        use crate::dwork_k3::fricke::hecke;
+        if let Some(polynomial) = self.dwork_hecke_equations.get(&ell) {
+            return Ok(polynomial.clone());
+        }
+        let polynomial = Rc::new(hecke::construct(self, hecke::level(ell)?)?);
+        self.dwork_hecke_equations.insert(ell, polynomial.clone());
+        Ok(polynomial)
     }
 
     pub(crate) fn elliptic_modular_polynomial(

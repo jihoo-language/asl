@@ -76,7 +76,7 @@ fn eta_product(model: &mut Model, degree: usize) -> Result<Series> {
     Ok(product_so_far)
 }
 
-fn eisenstein_difference(degree: usize) -> Series {
+pub(super) fn eisenstein_difference(degree: usize) -> Series {
     let mut sums = vec![0i128; degree + 1];
     for d in 1..=degree {
         for n in (d..=degree).step_by(d) {

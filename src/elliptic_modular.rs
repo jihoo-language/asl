@@ -8,7 +8,7 @@ use crate::rv_unram::Ring;
 use crate::syntax::ParsedExpr;
 
 const LIMBS: usize = 40;
-type Integer = Wide<LIMBS>;
+pub(crate) type Integer = Wide<LIMBS>;
 
 pub(crate) enum Statement {
     Degree(usize),
@@ -44,47 +44,62 @@ pub(crate) fn degree(level: Prime) -> usize {
 
 impl Polynomial {
     pub(crate) fn new(model: &mut Model, level: Prime) -> Result<Self> {
+        Self::from_hauptmodul(model, level, 0, |_, cutoff| shifted_j(cutoff))
+    }
+
+    pub(crate) fn from_hauptmodul(
+        model: &mut Model,
+        level: Prime,
+        audit: usize,
+        shifted: impl FnOnce(&mut Model, usize) -> Result<Vec<Integer>>,
+    ) -> Result<Self> {
         let ell = level.get() as usize;
         let r = degree(level);
         let m = ell.saturating_mul(r);
-        // Construct qj-powers through m, then solve r triangular systems
-        // and take r Newton steps. Charge for the cubic work before allocation.
-        let work = (m as u128)
+        // The trace of the k-th power has cusp pole at most ell*k.
+        // The extra widths admit the positive trace coefficients and
+        // direct substitution on the separate F(q^ell) branch.
+        let low_extra = if audit == 0 {
+            0
+        } else {
+            (ell * audit).max(m + audit)
+        };
+        let width = (m + audit).max(r + low_extra);
+        let cubic = (m as u128)
             .saturating_mul(m.saturating_add(1) as u128)
             .saturating_mul(m.saturating_add(2) as u128)
             / 6;
-        let work = work
-            .saturating_add(8u128.saturating_mul(m as u128).saturating_mul(m as u128))
+        let extra = (m as u128)
+            .saturating_mul(audit as u128)
+            .saturating_mul(width as u128)
+            .saturating_add(
+                (r as u128)
+                    .saturating_mul(low_extra as u128)
+                    .saturating_mul(width as u128),
+            );
+        let work = cubic
+            .saturating_add(extra)
+            .saturating_add(
+                8u128
+                    .saturating_mul(width as u128)
+                    .saturating_mul(width as u128),
+            )
             .saturating_mul((LIMBS * 2) as u128);
         let work = usize::try_from(work).map_err(|_| computation_limit())?;
         model.spend(work).map_err(|_| computation_limit())?;
         model.allocate((r + 1) * (r + 1) * (LIMBS + 1))?;
 
-        let j = shifted_j(m)?;
-        let powers = shifted_powers(&j)?;
+        let series = shifted(model, width)?;
+        if series.len() != width + 1 || series[0].signed() != Some(1) {
+            return Err(Error::plain(
+                "modular Hauptmodul must have simple pole with leading coefficient one",
+            ));
+        }
+        let precision = (1..=m).map(|d| d + if d <= r { low_extra } else { audit });
+        let powers = shifted_powers(&series, precision)?;
         let mut traces = vec![Vec::new()];
         for k in 1..=r {
-            let mut series = vec![Integer::from_i128(0); ell * k + 1];
-            for d in (0..series.len()).step_by(ell) {
-                series[d] = powers[k][k - d / ell];
-            }
-            for d in 0..=k / ell {
-                series[d] = series[d].add(powers[k][k - ell * d].multiply(ell as i128)?)?;
-            }
-            // The distinct leading poles of 1,j,j^2,... give a unit
-            // triangular basis for the nonpositive Laurent coefficients.
-            let mut trace = vec![Integer::from_i128(0); series.len()];
-            for d in (0..series.len()).rev() {
-                let coefficient = series[d];
-                trace[d] = coefficient;
-                if !coefficient.is_zero() {
-                    for k in 1..=d {
-                        series[d - k] =
-                            series[d - k].add(coefficient.multiply_wide(powers[d][k])?.negate())?;
-                    }
-                }
-            }
-            traces.push(trace);
+            traces.push(trace_polynomial(ell, k, audit, &powers)?);
         }
 
         let mut elementary = vec![vec![Integer::from_i128(1)]];
@@ -125,6 +140,9 @@ impl Polynomial {
                     ));
                 }
             }
+        }
+        if audit > 0 {
+            check_neighbor_branch(model, ell, audit, &rows, &powers)?;
         }
         Ok(Self { rows })
     }
@@ -228,6 +246,90 @@ pub(crate) fn special_char_coefficient(
     }
 }
 
+fn trace_polynomial(
+    ell: usize,
+    k: usize,
+    audit: usize,
+    powers: &[Vec<Integer>],
+) -> Result<Vec<Integer>> {
+    let pole = ell * k;
+    let mut expansion = vec![Integer::from_i128(0); pole + audit + 1];
+    for (i, &coefficient) in powers[k].iter().enumerate() {
+        let exponent = i as i64 - k as i64;
+        let stretched = exponent * ell as i64;
+        if stretched <= audit as i64 {
+            let n = (pole as i64 + stretched) as usize;
+            expansion[n] = expansion[n].add(coefficient)?;
+        }
+        if exponent % ell as i64 == 0 {
+            let contracted = exponent / ell as i64;
+            if contracted <= audit as i64 {
+                let n = (pole as i64 + contracted) as usize;
+                expansion[n] = expansion[n].add(coefficient.multiply(ell as i128)?)?;
+            }
+        }
+    }
+    // 1,F,...,F^pole form a monic triangular basis for principal parts.
+    let mut trace = vec![Integer::from_i128(0); pole + 1];
+    for d in (0..=pole).rev() {
+        let coefficient = expansion[pole - d];
+        trace[d] = coefficient;
+        if !coefficient.is_zero() {
+            for (output, &b) in expansion[pole - d..].iter_mut().zip(&powers[d]) {
+                *output = output.add(coefficient.multiply_wide(b)?.negate())?;
+            }
+        }
+    }
+    if expansion.iter().any(|c| !c.is_zero()) {
+        return Err(Error::plain(
+            "modular Hauptmodul trace failed the extra q-coefficient check",
+        ));
+    }
+    Ok(trace)
+}
+
+// The fully reconstructed polynomial is checked independently on the
+// neighbor F(q^ell), with all terms of exponent <= audit retained.
+fn check_neighbor_branch(
+    model: &mut Model,
+    ell: usize,
+    audit: usize,
+    rows: &[Vec<Integer>],
+    powers: &[Vec<Integer>],
+) -> Result<()> {
+    let pole = (rows.len() - 1) * (ell + 1);
+    let mut residual = vec![Integer::from_i128(0); pole + audit + 1];
+    for (j, row) in rows.iter().enumerate() {
+        for (i, &coefficient) in row.iter().enumerate() {
+            if coefficient.is_zero() {
+                continue;
+            }
+            let offset = pole - i - ell * j;
+            for (b, &y) in powers[j].iter().enumerate() {
+                let start = offset + ell * b;
+                if start >= residual.len() {
+                    break;
+                }
+                if y.is_zero() {
+                    continue;
+                }
+                let cy = coefficient.multiply_wide(y)?;
+                let count = (residual.len() - start).min(powers[i].len());
+                model.spend(count)?;
+                for (out, &x) in residual[start..start + count].iter_mut().zip(&powers[i]) {
+                    *out = out.add(cy.multiply_wide(x)?)?;
+                }
+            }
+        }
+    }
+    if residual.iter().any(|c| !c.is_zero()) {
+        return Err(Error::plain(
+            "modular polynomial failed direct q-branch substitution",
+        ));
+    }
+    Ok(())
+}
+
 fn shifted_j(m: usize) -> Result<Vec<Integer>> {
     let mut sigma = vec![0i128; m + 1];
     let mut e4 = vec![Integer::from_i128(0); m + 1];
@@ -260,7 +362,10 @@ fn shifted_j(m: usize) -> Result<Vec<Integer>> {
     Ok(j)
 }
 
-fn shifted_powers(j: &[Integer]) -> Result<Vec<Vec<Integer>>> {
+fn shifted_powers(
+    j: &[Integer],
+    precision: impl Iterator<Item = usize>,
+) -> Result<Vec<Vec<Integer>>> {
     let mut logarithm = vec![Integer::from_i128(0); j.len()];
     for n in 1..j.len() {
         let mut coefficient = j[n].multiply(n as i128)?;
@@ -270,9 +375,10 @@ fn shifted_powers(j: &[Integer]) -> Result<Vec<Vec<Integer>>> {
         logarithm[n] = coefficient;
     }
     let mut powers = vec![vec![Integer::from_i128(1)]];
-    for d in 1..j.len() {
+    for (index, bound) in precision.enumerate() {
+        let d = index + 1;
         let mut power = vec![Integer::from_i128(1)];
-        for n in 1..=d {
+        for n in 1..=bound {
             let mut coefficient = Integer::from_i128(0);
             for k in 1..=n {
                 coefficient = coefficient.add(logarithm[k].multiply_wide(power[n - k])?)?;
@@ -284,7 +390,7 @@ fn shifted_powers(j: &[Integer]) -> Result<Vec<Vec<Integer>>> {
     Ok(powers)
 }
 
-fn divide_small(value: Integer, divisor: usize) -> Result<Integer> {
+pub(crate) fn divide_small(value: Integer, divisor: usize) -> Result<Integer> {
     let (magnitude, remainder) = value.magnitude.divide_u32(divisor as u32);
     if remainder != 0 {
         return Err(Error::plain(

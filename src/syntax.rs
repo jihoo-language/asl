@@ -879,6 +879,9 @@ pub(crate) enum ExprForm {
     RVCTSection(usize, Box<ParsedExpr>),
     RVCTRead(Box<ParsedExpr>),
     DworkMirrorOperator(crate::dwork_k3::mirror::Operator),
+    DworkHeckeEval(usize, Box<[ParsedExpr; 2]>),
+    DworkHeckeSpecialize(usize, usize, Box<ParsedExpr>),
+    DworkHauptmodul(crate::dwork_k3::fricke::hecke::Coordinate, Box<ParsedExpr>),
     DworkFrickeValue(crate::dwork_k3::fricke::Invariant, Box<ParsedExpr>),
     DworkFrickeMap([Label; 2], bool, Box<ParsedExpr>),
     DworkPCurvatureAt(crate::dwork_k3::mirror::curvature::PrimePoint),
@@ -1425,6 +1428,9 @@ pub(crate) enum StatementForm {
     DworkK3ClosedUnit(ParsedExpr),
     DworkMirror(crate::dwork_k3::mirror::Report),
     DworkMirrorApply(usize, usize, usize, ParsedExpr),
+    DworkHeckeEquation(usize),
+    DworkHeckeCoefficient(usize, usize, usize),
+    DworkHeckeNeighbors(usize, ParsedExpr),
     DworkFricke(crate::dwork_k3::fricke::Report),
     DworkFrickeField(bool, ParsedExpr),
     DworkFrickeDefine([Label; 2], ParsedExpr),
@@ -12025,6 +12031,26 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::DworkPCurvatureClosedFiber(rank, self.paren_expr(0)?)
             }
+            Token::Word(
+                command @ ("rvDworkHeckeEquation" | "rvDworkHeckeCoeff" | "rvDworkHeckeNeighbors"),
+            ) => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let ell = self.number()?.0;
+                if command == "rvDworkHeckeCoeff" {
+                    self.expect(Token::Comma)?;
+                    let (i, j) = self.quantum_grade()?;
+                    self.expect(Token::RBracket)?;
+                    StatementForm::DworkHeckeCoefficient(ell, i, j)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    if command == "rvDworkHeckeNeighbors" {
+                        StatementForm::DworkHeckeNeighbors(ell, self.paren_expr(0)?)
+                    } else {
+                        StatementForm::DworkHeckeEquation(ell)
+                    }
+                }
+            }
             Token::Word("rvDworkFrickeIdentity") => {
                 self.advance()?;
                 StatementForm::DworkFricke(crate::dwork_k3::fricke::Report::Identity)
@@ -20766,6 +20792,48 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::DworkFrickeValue(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDworkHauptmodulZ" | "rvDworkHauptmodulT"
+                ) && self.token() == Token::LParen
+                {
+                    use crate::dwork_k3::fricke::hecke::Coordinate;
+                    let operation = if name.text == "rvDworkHauptmodulZ" {
+                        Coordinate::Z
+                    } else {
+                        Coordinate::T
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::DworkHauptmodul(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDworkHeckeEval" | "rvDworkHeckeSpecCoeff"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let ell = self.number()?.0;
+                    if name.text == "rvDworkHeckeEval" {
+                        self.expect(Token::RBracket)?;
+                        let args = self.paren_pair(nest)?;
+                        let depth = 1 + args[0].depth.max(args[1].depth);
+                        return expr(span, ExprForm::DworkHeckeEval(ell, Box::new(args)), depth);
+                    }
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::DworkHeckeSpecialize(ell, index, Box::new(input)),
                         depth,
                     );
                 }

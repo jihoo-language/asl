@@ -3,6 +3,7 @@ use crate::model::Model;
 
 mod eta;
 mod fiber;
+pub(crate) mod hecke;
 mod identity;
 
 pub(crate) use fiber::{base_report, define, fiber_report, map, Invariant};
