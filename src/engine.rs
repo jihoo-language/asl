@@ -974,6 +974,14 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionTauUnary(
+        crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Unary,
+        Box<TypedExpr>,
+    ),
+    PartitionTauBinary(
+        crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Binary,
+        Box<[TypedExpr; 2]>,
+    ),
     PartitionHomCompose(Box<[TypedExpr; 2]>),
     PartitionHomScale(i128, i128, Box<TypedExpr>),
     PartitionHomApply(u128, Box<TypedExpr>),
@@ -2379,6 +2387,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionTauReport(report) => {
+                return self.partition_tau_report(report).map(Some);
             }
             StatementForm::PartitionHomReport(report) => {
                 return self.partition_hom_report(report).map(Some);
@@ -10816,6 +10827,51 @@ impl Engine {
         }
     }
 
+    fn partition_tau_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report,
+    ) -> Result<String> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report;
+        match report {
+            Report::Summary(parameter) => Ok(self.model.partition_tau_fan(parameter)?.summary()),
+            Report::Walls(parameter) => Ok(self.model.partition_tau_fan(parameter)?.walls()),
+            Report::Green(parameter) => self
+                .model
+                .partition_tau_fan(parameter)?
+                .green(&mut self.model),
+            Report::Object(query, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().partition_tau_operand(&input, query.mode())?;
+                let value = self.eval_partition_tau(&input)?;
+                self.model
+                    .partition_tau_fan(grade.parameter)?
+                    .object_report(query, value)
+            }
+            Report::Pair(query, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                let grade = self.checker().partition_tau_operand(&a, query.mode())?;
+                self.checker().partition_tau_same_grade(&b, grade)?;
+                let a = self.eval_partition_tau(&a)?;
+                let b = self.eval_partition_tau(&b)?;
+                self.model
+                    .partition_tau_fan(grade.parameter)?
+                    .pair_report(query, a, b)
+            }
+        }
+    }
+
+    fn eval_partition_tau(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Record> {
+        let Value::RVPartitionTau(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_hom_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::auslander::Report,
@@ -14959,6 +15015,25 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionTauUnary(op, input) => {
+                let value = self.eval_partition_tau(input)?;
+                Ok(Value::RVPartitionTau(
+                    self.model
+                        .partition_tau_fan(value.grade.parameter)?
+                        .unary(*op, value)?,
+                ))
+            }
+            TypedForm::PartitionTauBinary(op, inputs) => {
+                let a = self.eval_partition_tau(&inputs[0])?;
+                let b = self.eval_partition_tau(&inputs[1])?;
+                let fan = self.model.partition_tau_fan(a.grade.parameter)?;
+                Ok(Value::RVPartitionTau(fan.binary(
+                    &mut self.model,
+                    *op,
+                    a,
+                    b,
+                )?))
+            }
             TypedForm::PartitionHomCompose(inputs) => {
                 let g = self.eval_partition_hom(&inputs[0])?;
                 let f = self.eval_partition_hom(&inputs[1])?;
@@ -17573,6 +17648,7 @@ impl Checker<'_> {
             TypeForm::RVPartitionFiber(grade) => self.model.partition_fiber_type(grade),
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
+            TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
             TypeForm::RVKaroubiMap([source, target]) => {
                 self.model.karoubi_map_type(&source, &target)
             }
@@ -20902,6 +20978,7 @@ impl Checker<'_> {
             ExprForm::PartitionFiber(expression) => self.partition_fiber_expression(*expression),
             ExprForm::PartitionExt(expression) => self.partition_ext_expression(*expression),
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
+            ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -28546,6 +28623,73 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn partition_tau_expression(
+        &mut self,
+        expression: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::{
+            Expression, Grade,
+        };
+        match expression {
+            Expression::Literal(parameter, literal) => {
+                let value = self.model.partition_tau_fan(parameter)?.literal(literal)?;
+                let ty = self.model.partition_tau_type(value.grade)?;
+                Ok((ty, TypedForm::Constant(Value::RVPartitionTau(value))))
+            }
+            Expression::Unary(op, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.partition_tau_operand(&input, op.input_mode())?;
+                let mode = op.output_mode();
+                let ty = self.model.partition_tau_type(Grade { mode, ..grade })?;
+                Ok((ty, TypedForm::PartitionTauUnary(op, Box::new(input))))
+            }
+            Expression::Binary(op, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let grade = self.partition_tau_operand(&a, op.mode())?;
+                self.partition_tau_same_grade(&b, grade)?;
+                Ok((a.ty, TypedForm::PartitionTauBinary(op, Box::new([a, b]))))
+            }
+        }
+    }
+
+    fn partition_tau_operand(
+        &self,
+        input: &TypedExpr,
+        mode: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Mode,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Mode;
+        match *self.model.kind(input.ty) {
+            Kind::RVPartitionTau(grade, _) if grade.mode == mode => Ok(grade),
+            _ => Err(Error::new(
+                input.span,
+                match mode {
+                    Mode::Pair => {
+                        "partition tau-tilting operation requires an RVPartitionTauPair value"
+                    }
+                    Mode::Torsion => {
+                        "partition tau-tilting operation requires an RVPartitionTauTorsion value"
+                    }
+                },
+            )),
+        }
+    }
+
+    fn partition_tau_same_grade(
+        &self,
+        input: &TypedExpr,
+        grade: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade,
+    ) -> Result<()> {
+        if self.partition_tau_operand(input, grade.mode)? != grade {
+            return Err(Error::new(
+                input.span,
+                "partition tau-tilting inputs require the same rank and integral parameter",
+            ));
+        }
+        Ok(())
     }
 
     fn partition_hom_expression(

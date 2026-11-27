@@ -22,6 +22,10 @@ struct Part {
 }
 
 impl Mesh {
+    pub(super) fn translate(&self) -> usize {
+        self.translate
+    }
+
     pub(super) fn render(&self, data: &Auslander) -> String {
         let middle: Vec<_> = self.parts.iter().map(|p| data.key(p.middle)).collect();
         let left: Vec<_> = self.parts.iter().map(|p| (p.arrows[0], p.sign)).collect();

@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use crate::error::{Error, Result};
 use crate::lee_linear::Rational;
@@ -11,6 +13,7 @@ use super::super::super::{
 use super::{Nakayama, Path, State};
 
 mod mesh;
+pub(crate) mod tau;
 use mesh::Mesh;
 
 type Terms = BTreeMap<usize, Rational>;
@@ -138,6 +141,7 @@ pub(crate) struct Auslander {
     arrows: Vec<Basis>,
     meshes: BTreeMap<usize, Mesh>,
     quiver_layers: Vec<usize>,
+    tau_fan: RefCell<Option<Rc<tau::Fan>>>,
     projectives: BTreeSet<usize>,
 }
 
@@ -186,6 +190,7 @@ impl Auslander {
             meshes: BTreeMap::new(),
             quiver_layers: Vec::new(),
             projectives,
+            tau_fan: RefCell::default(),
         };
         let mut basis = BTreeSet::new();
         for i in 0..data.modules.len() {
@@ -233,6 +238,15 @@ impl Auslander {
             data.powers.iter().map(BTreeSet::len).sum::<usize>() + 12 * data.modules.len().pow(2);
         model.allocate(4 * work)?;
         Ok(data)
+    }
+
+    pub(crate) fn tau_fan(&self, model: &mut Model, algebra: &Nakayama) -> Result<Rc<tau::Fan>> {
+        if let Some(fan) = self.tau_fan.borrow().as_ref() {
+            return Ok(fan.clone());
+        }
+        let fan = Rc::new(tau::Fan::new(model, algebra, self)?);
+        *self.tau_fan.borrow_mut() = Some(fan.clone());
+        Ok(fan)
     }
 
     fn certify_homs(

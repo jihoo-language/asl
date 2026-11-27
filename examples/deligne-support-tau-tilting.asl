@@ -1,0 +1,14 @@
+rvPartitionTauTilting[2,0];
+let initial = rvPartitionTauChamber[2,0,3];
+let a = rvPartitionTauMutate[2](initial);
+let b = rvPartitionTauMutate[0](initial);
+assert a == rvPartitionTauChamber[2,0,2];
+assert b == rvPartitionTauChamber[2,0,7];
+assert rvPartitionTauDrop[2](a) == rvPartitionTauDrop[2](initial);
+rvPartitionTauSummands(initial);
+rvPartitionTauVectors(initial);
+rvPartitionTauVectors(a);
+rvPartitionTauWall(initial,a);
+rvPartitionTauWall(initial,b);
+rvPartitionTauInclusion(rvPartitionTauFac(b),rvPartitionTauFac(a));
+rvPartitionTauGreen[2,0];

@@ -289,6 +289,10 @@ pub(crate) enum Kind {
         crate::partition_algebra::fiber::gabriel::derived::auslander::Grade,
         bool,
     ),
+    RVPartitionTau(
+        crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade,
+        usize,
+    ),
     RVPartitionExt(
         crate::partition_algebra::fiber::gabriel::derived::Grade,
         bool,
@@ -530,6 +534,7 @@ pub(crate) enum Value {
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
     RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
+    RVPartitionTau(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Record),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class),
     RVPartitionHom(Rc<crate::partition_algebra::fiber::gabriel::derived::auslander::Map>),
     RVKaroubiMap(Rc<crate::partition_algebra::karoubi::Map>),
@@ -1691,6 +1696,7 @@ impl Model {
             Kind::RVUnram(ref name) => self.rv_unram_rings[name.as_ref()].count(),
             Kind::RVPartitionFiber(grade) if grade.is_zero_ring() => 1,
             Kind::RVPartitionExt(_, false) | Kind::RVPartitionHom(_, false) => 1,
+            Kind::RVPartitionTau(_, count) => count,
             Kind::RVQGr(..)
             | Kind::RVQGrP(..)
             | Kind::RVOre
@@ -1902,6 +1908,7 @@ impl Model {
                 | Kind::RVPartitionFiber(..)
                 | Kind::RVPartitionExt(..)
                 | Kind::RVPartitionHom(..)
+                | Kind::RVPartitionTau(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -3937,6 +3944,23 @@ impl Model {
 
     pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn partition_tau_fan(
+        &mut self,
+        parameter: crate::partition_algebra::fiber::Parameter,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Fan>> {
+        let algebra = self.partition_fiber(parameter)?.nakayama(self)?;
+        let category = algebra.auslander(self)?;
+        category.tau_fan(self, &algebra)
+    }
+
+    pub(crate) fn partition_tau_type(
+        &mut self,
+        grade: crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade,
+    ) -> Result<TypeId> {
+        let count = self.partition_tau_fan(grade.parameter)?.count(grade.mode);
+        self.inhabited_type(Kind::RVPartitionTau(grade, count), 0)
     }
 
     pub(crate) fn partition_hom_type(
@@ -7478,6 +7502,7 @@ impl Model {
             | Kind::RVPartitionFiber(..)
             | Kind::RVPartitionExt(..)
             | Kind::RVPartitionHom(..)
+            | Kind::RVPartitionTau(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -8246,6 +8271,7 @@ impl Model {
             Kind::RVPartitionLocal(rank) => out.push(&format!("RVPartitionLocal({rank})")),
             Kind::RVPartitionFiber(grade) => out.push(&grade.render()),
             Kind::RVPartitionExt(grade, _) => out.push(&grade.render()),
+            Kind::RVPartitionTau(grade, _) => out.push(&grade.render()),
             Kind::RVPartitionHom(grade, _) => out.push(&grade.render()),
             Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
@@ -8542,6 +8568,7 @@ impl Model {
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a == b),
+            (Value::RVPartitionTau(a), Value::RVPartitionTau(b)) => Ok(a == b),
             (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
@@ -9023,6 +9050,7 @@ impl Model {
             (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a.compare(self, b),
             (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => a.compare(self, b),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a.cmp(b)),
+            (Value::RVPartitionTau(a), Value::RVPartitionTau(b)) => Ok(a.cmp(b)),
             (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
@@ -9772,6 +9800,9 @@ impl Model {
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
                 }
+                Kind::RVPartitionTau(grade, _) => self
+                    .partition_tau_fan(grade.parameter)?
+                    .values(self, grade.mode)?,
                 Kind::RVPartitionHom(grade, false) => vec![
                     crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(grade)
                         .persist(self)?,
@@ -11739,6 +11770,7 @@ impl Model {
             Value::RVPartitionLocal(value) => out.push(&value.render()),
             Value::RVPartitionFiber(value) => out.push(&value.render()),
             Value::RVPartitionExt(value) => out.push(&value.render()),
+            Value::RVPartitionTau(value) => out.push(&value.render()),
             Value::RVPartitionHom(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {

@@ -138,6 +138,7 @@ pub(crate) enum TypeForm {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionTau(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Grade),
     RVPartitionHom(crate::partition_algebra::fiber::gabriel::derived::auslander::Grade),
     RVKaroubiMap([Label; 2]),
@@ -906,6 +907,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionTau(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Expression>),
     PartitionExt(Box<crate::partition_algebra::fiber::gabriel::derived::Expression>),
     PartitionHom(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::Expression>),
     Karoubi(Box<crate::partition_algebra::karoubi::Expression>),
@@ -1485,6 +1487,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionTauReport(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report),
     PartitionExtReport(crate::partition_algebra::fiber::gabriel::derived::Report),
     PartitionHomReport(crate::partition_algebra::fiber::gabriel::derived::auslander::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
@@ -8920,6 +8923,71 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_tau_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::{
+            Binary, Expression, Literal, Unary,
+        };
+        let (operation, depth) = match name {
+            "rvPartitionTauCombine" | "rvPartitionTauJoin" | "rvPartitionTauMeet" => {
+                let op = match name {
+                    "rvPartitionTauCombine" => Binary::Combine,
+                    "rvPartitionTauJoin" => Binary::Join,
+                    _ => Binary::Meet,
+                };
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Binary(op, Box::new(inputs)), depth)
+            }
+            "rvPartitionTauDrop"
+            | "rvPartitionTauMutate"
+            | "rvPartitionTauFac"
+            | "rvPartitionTauRecover" => {
+                let op = if name == "rvPartitionTauFac" {
+                    Unary::Fac
+                } else if name == "rvPartitionTauRecover" {
+                    Unary::Recover
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let index = self.wide_unsigned("partition tau-tilting summand index")?;
+                    self.expect(Token::RBracket)?;
+                    if name == "rvPartitionTauDrop" {
+                        Unary::Drop(index)
+                    } else {
+                        Unary::Mutate(index)
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Unary(op, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let parameter = self.partition_parameter()?;
+                let literal = match name {
+                    "rvPartitionTauEmpty" => Literal::Empty,
+                    "rvPartitionTauModule" => Literal::Module(self.partition_indices()?),
+                    "rvPartitionTauFace" => Literal::Face(self.partition_indices()?),
+                    _ => {
+                        let [index] = self.partition_indices()?;
+                        match name {
+                            "rvPartitionTauShift" => Literal::Shift(index),
+                            "rvPartitionTauClass" => Literal::Torsion(index),
+                            _ => Literal::Chamber(index),
+                        }
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                (Expression::Literal(parameter, literal), 0)
+            }
+        };
+        expr(span, ExprForm::PartitionTau(Box::new(operation)), depth)
+    }
+
     fn partition_hom_grade(
         &mut self,
     ) -> Result<crate::partition_algebra::fiber::gabriel::derived::auslander::Grade> {
@@ -13466,6 +13534,61 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvPartitionTauTilting"
+                | "rvPartitionTauGreen"
+                | "rvPartitionTauWalls"
+                | "rvPartitionTauWall"
+                | "rvPartitionTauSummands"
+                | "rvPartitionTauVectors"
+                | "rvPartitionTauMembers"
+                | "rvPartitionTauContains"
+                | "rvPartitionTauInclusion"
+                | "rvPartitionTauCompatible"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::{
+                    ObjectQuery, PairQuery, Report,
+                };
+                self.advance()?;
+                let report = match name {
+                    "rvPartitionTauTilting" | "rvPartitionTauGreen" | "rvPartitionTauWalls" => {
+                        self.expect(Token::LBracket)?;
+                        let parameter = self.partition_parameter()?;
+                        self.expect(Token::RBracket)?;
+                        match name {
+                            "rvPartitionTauTilting" => Report::Summary(parameter),
+                            "rvPartitionTauGreen" => Report::Green(parameter),
+                            _ => Report::Walls(parameter),
+                        }
+                    }
+                    "rvPartitionTauCompatible"
+                    | "rvPartitionTauInclusion"
+                    | "rvPartitionTauWall" => {
+                        let query = match name {
+                            "rvPartitionTauCompatible" => PairQuery::Compatible,
+                            "rvPartitionTauInclusion" => PairQuery::Inclusion,
+                            _ => PairQuery::Wall,
+                        };
+                        Report::Pair(query, Box::new(self.paren_pair(0)?))
+                    }
+                    _ => {
+                        let query = match name {
+                            "rvPartitionTauSummands" => ObjectQuery::Summands,
+                            "rvPartitionTauVectors" => ObjectQuery::Vectors,
+                            "rvPartitionTauMembers" => ObjectQuery::Members,
+                            _ => {
+                                self.expect(Token::LBracket)?;
+                                let i = self.wide_unsigned("partition module top")?;
+                                let [l] = self.partition_indices()?;
+                                self.expect(Token::RBracket)?;
+                                ObjectQuery::Contains([i, l])
+                            }
+                        };
+                        Report::Object(query, Box::new(self.paren_expr(0)?))
+                    }
+                };
+                StatementForm::PartitionTauReport(report)
+            }
+            Token::Word(
                 name @ ("rvPartitionIndecomposables"
                 | "rvPartitionAuslander"
                 | "rvPartitionAR"
@@ -16507,6 +16630,21 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if matches!(
+            name.text.as_str(),
+            "RVPartitionTauPair" | "RVPartitionTauTorsion"
+        ) && self.eat(Token::LParen)?
+        {
+            use crate::partition_algebra::fiber::gabriel::derived::auslander::tau::{Grade, Mode};
+            let parameter = self.partition_parameter()?;
+            self.expect(Token::RParen)?;
+            let mode = if name.text == "RVPartitionTauPair" {
+                Mode::Pair
+            } else {
+                Mode::Torsion
+            };
+            return ty(span, TypeForm::RVPartitionTau(Grade { parameter, mode }), 0);
         }
         if name.text == "RVPartitionHom" && self.eat(Token::LParen)? {
             let grade = self.partition_hom_grade()?;
@@ -21430,6 +21568,24 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionTauEmpty"
+                        | "rvPartitionTauModule"
+                        | "rvPartitionTauShift"
+                        | "rvPartitionTauFace"
+                        | "rvPartitionTauChamber"
+                        | "rvPartitionTauClass"
+                        | "rvPartitionTauDrop"
+                        | "rvPartitionTauMutate"
+                        | "rvPartitionTauFac"
+                        | "rvPartitionTauRecover"
+                        | "rvPartitionTauCombine"
+                        | "rvPartitionTauJoin"
+                        | "rvPartitionTauMeet"
+                ) {
+                    return self.partition_tau_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
