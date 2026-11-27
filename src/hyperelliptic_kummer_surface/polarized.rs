@@ -39,7 +39,7 @@ pub(crate) fn basis(model: &Model, name: &Label) -> Result<Rc<Basis>> {
     )
 }
 
-fn trope_origin(model: &mut Model, basis: &Basis) -> Result<u16> {
+pub(crate) fn trope_origin(model: &mut Model, basis: &Basis) -> Result<u16> {
     let mut support = 0u16;
     for mask in 0..NODES {
         if basis.binary_combination(model, mask as u8)?.u.len() <= 2 {

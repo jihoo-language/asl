@@ -601,6 +601,7 @@ pub(crate) struct Model {
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
+    k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
@@ -697,6 +698,7 @@ impl Model {
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
+            k3_automorphisms: HashMap::new(),
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
@@ -3559,6 +3561,37 @@ impl Model {
     pub(crate) fn kummer_divisor_type(&mut self, basis: &Label) -> Result<TypeId> {
         crate::hyperelliptic_kummer_surface::polarized::basis(self, basis)?;
         self.inhabited_type(Kind::KummerDiv(basis.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_k3_automorphism(
+        &mut self,
+        name: Label,
+        word: hyperelliptic_kummer_surface::dynamics::Word,
+    ) -> Result<()> {
+        if self.k3_automorphisms.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("K3 automorphism word '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(5 + name.text.len() + word.generators.len())?;
+        self.k3_automorphisms.insert(name.text, Rc::new(word));
+        Ok(())
+    }
+
+    pub(crate) fn k3_automorphism(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::dynamics::Word>> {
+        self.k3_automorphisms
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown K3 automorphism word '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn show_jacobian_level_frobenius(

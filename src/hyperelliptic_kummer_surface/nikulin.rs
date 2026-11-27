@@ -79,6 +79,26 @@ pub(crate) fn affine_code() -> impl Iterator<Item = u16> {
     (0..1u8 << AFFINE.len()).map(|mask| combine(mask, &AFFINE))
 }
 
+pub(crate) fn binary_rref(rows: &mut [u32], width: usize) -> Vec<usize> {
+    let mut pivots = Vec::new();
+    for column in 0..width {
+        let rank = pivots.len();
+        let bit = 1 << column;
+        let Some(pivot) = (rank..rows.len()).find(|&r| rows[r] & bit != 0) else {
+            continue;
+        };
+        rows.swap(rank, pivot);
+        let value = rows[rank];
+        for (i, row) in rows.iter_mut().enumerate() {
+            if i != rank && *row & bit != 0 {
+                *row ^= value;
+            }
+        }
+        pivots.push(column);
+    }
+    pivots
+}
+
 pub(crate) struct NodePermutation([u8; NODES]);
 
 impl NodePermutation {

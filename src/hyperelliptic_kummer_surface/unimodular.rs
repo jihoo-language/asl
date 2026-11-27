@@ -202,24 +202,8 @@ fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
     for (row, &table) in rows[6..].iter_mut().zip(&AFFINE) {
         *row = u32::from(table) << 6;
     }
-    let mut rank = 0;
-    let mut pivots = 0;
-    for column in 0..RANK {
-        let bit = 1 << column;
-        let Some(pivot) = (rank..rows.len()).find(|&r| rows[r] & bit != 0) else {
-            continue;
-        };
-        rows.swap(rank, pivot);
-        let value = rows[rank];
-        for (i, row) in rows.iter_mut().enumerate() {
-            if i != rank && *row & bit != 0 {
-                *row ^= value;
-            }
-        }
-        pivots |= bit;
-        rank += 1;
-    }
-    if rank != GLUE_DIMENSION {
+    let pivots = nikulin::binary_rref(&mut rows, RANK);
+    if pivots.len() != GLUE_DIMENSION {
         return Err(Error::plain(
             "K3 lattice gluing code has the wrong dimension",
         ));
@@ -234,7 +218,7 @@ fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
             std::array::from_fn(|i| coordinate(i + 6)),
         )?);
     }
-    for column in (0..RANK).filter(|&column| pivots & (1 << column) == 0) {
+    for column in (0..RANK).filter(|column| !pivots.contains(column)) {
         result.push(Vector::zero().map(|i, _| Ok(if i == column { 2 } else { 0 }))?);
     }
     Ok(result)

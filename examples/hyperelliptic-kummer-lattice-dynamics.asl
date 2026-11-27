@@ -1,0 +1,27 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zero = rvUnramElem[W]{};
+let one = rvUnramElem[W]{1};
+let i = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zero,zero);
+let r1 = rvJacPoint[L](one,zero);
+let r2 = rvJacPoint[L](neg(one),zero);
+let ri = rvJacPoint[L](i,zero);
+rvjactorsionbasis B[L,2](neg(one)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),ri)};
+
+let h = rvKummerHyperplane[B];
+rvk3autom Parabolic[B]{project(0),project(1)};
+rvk3autom Quadratic[B]{project(0),project(1),project(2)};
+rvk3autom Salem[B]{project(0),project(1),project(2),project(3)};
+rvk3autom Reverse[B]{project(3),project(2),project(1),project(0)};
+assert rvK3AutoDiv[Reverse](rvK3AutoDiv[Salem](h)) == h;
+let moved = rvK3AutoDiv[Parabolic](h);
+assert moved == rvKummerDiv[B]{18,-8,-24,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+rvKummerDivPair(moved,moved);
+rvK3Entropy[Parabolic];
+rvK3Entropy[Quadratic];
+rvK3Entropy[Salem];

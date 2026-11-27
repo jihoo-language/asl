@@ -629,6 +629,7 @@ enum TypedForm {
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
     K3LatticeNegate(Box<TypedExpr>),
     Mukai(MukaiAction),
+    K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1612,6 +1613,7 @@ impl Engine {
                 return self.k3_lattice_command(*command).map(Some)
             }
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
+            StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
@@ -7459,6 +7461,13 @@ impl Engine {
                 };
                 vector.negate(&mut self.model)?.persist(&mut self.model)
             }
+            TypedForm::K3AutoDiv(word, input) => {
+                let Value::KummerDiv(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                word.apply(&mut self.model, &divisor)?
+                    .persist(&mut self.model)
+            }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -12964,6 +12973,18 @@ impl Checker<'_> {
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
+            ExprForm::K3AutoDiv(expression) => {
+                let kummer_surface::dynamics::Expression(name, input) = *expression;
+                let word = self.model.k3_automorphism(&name)?;
+                let basis = Label {
+                    text: word.basis_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.kummer_divisor_type(&basis)?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvK3AutoDiv input")?;
+                Ok((ty, TypedForm::K3AutoDiv(word, Box::new(input))))
+            }
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;

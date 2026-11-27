@@ -973,6 +973,7 @@ pub(crate) enum ExprForm {
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
+    K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1158,6 +1159,7 @@ pub(crate) enum StatementForm {
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
+    K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -2962,6 +2964,48 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Mukai(Box::new(expression)), depth)
     }
 
+    fn k3_automorphism_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::dynamics::{Command, Generator};
+        self.advance()?;
+        let command = if operation == "rvk3autom" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            self.expect(Token::RBracket)?;
+            let generators = self.set_named_rows(|parser| {
+                let name = parser.label()?;
+                let generator = match name.text.as_str() {
+                    "translate" => Generator::Translate,
+                    "switch" => Generator::Switch,
+                    "project" => Generator::Project,
+                    _ => {
+                        return Err(Error::new(
+                            name.span,
+                            "expected translate, switch, or project",
+                        ))
+                    }
+                };
+                parser.expect(Token::LParen)?;
+                let (mask, span) = parser.number()?;
+                if mask >= 16 {
+                    return Err(Error::new(
+                        span,
+                        "K3 automorphism mask must be between 0 and 15",
+                    ));
+                }
+                parser.expect(Token::RParen)?;
+                Ok(generator(mask as u8))
+            })?;
+            Command::Define(name, basis, generators)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Entropy(name)
+        };
+        Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
     fn k3_lattice_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::unimodular::Command;
         self.advance()?;
@@ -4380,6 +4424,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
+            }
+            Token::Word(name @ ("rvk3autom" | "rvK3Entropy")) => {
+                self.k3_automorphism_statement(name)?
             }
             Token::Word(
                 command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
@@ -9661,6 +9708,17 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.mukai_expression(&name.text, span, nest);
+                }
+                if name.text == "rvK3AutoDiv" && self.eat(Token::LBracket)? {
+                    let word = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    let expression = crate::hyperelliptic_kummer_surface::dynamics::Expression(
+                        word,
+                        Box::new(input),
+                    );
+                    return expr(span, ExprForm::K3AutoDiv(Box::new(expression)), depth);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;
