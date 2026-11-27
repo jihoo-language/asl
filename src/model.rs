@@ -824,8 +824,8 @@ impl Model {
                     1
                 }
             }
-            Kind::Khovanov(ref braid, grade, _) => {
-                if self.kh_braids[braid].possible(grade) {
+            Kind::Khovanov(ref braid, grade, form) => {
+                if self.kh_braids[braid].possible(grade, form) {
                     usize::MAX
                 } else {
                     1
@@ -4360,12 +4360,13 @@ impl Model {
                 grade.fusion.rank, grade.fusion.level
             )),
             Kind::Lee(name, grade) => out.push(&format!("LeeC({name}, {}, {})", grade.i, grade.f)),
-            Kind::Khovanov(name, grade, form) => out.push(&format!(
-                "{}({name}, {}, {})",
-                form.name(),
-                grade.i,
-                grade.j
-            )),
+            Kind::Khovanov(name, grade, form) => {
+                out.push(&format!("{}({name}, {}, {}", form.name(), grade.i, grade.j))?;
+                if let Some(k) = form.annular().or_else(|| form.cutoff()) {
+                    out.push(&format!(", {k}"))?;
+                }
+                out.push(")")
+            }
             Kind::RvTl(grade) => out.push(&format!(
                 "RVTL({}, {}, {})",
                 grade.level, grade.strands, grade.height
@@ -5142,9 +5143,14 @@ impl Model {
                 }
                 Kind::Khovanov(ref name, grade, form) => {
                     let braid = self.kh_braid(name)?;
-                    match form {
-                        KhForm::Chain => braid.chain_elements(self, grade)?,
-                        KhForm::Class => braid.group(self, grade)?.elements(self, MAX_ELEMENTS)?,
+                    if let Some(k) = form.cutoff() {
+                        braid.binary_elements(self, grade, k, MAX_ELEMENTS)?
+                    } else if form.is_class() {
+                        braid
+                            .group(self, grade, form.annular())?
+                            .elements(self, MAX_ELEMENTS)?
+                    } else {
+                        braid.chain_elements(self, grade, form.annular())?
                     }
                 }
                 Kind::RvTl(grade) => {

@@ -2270,6 +2270,11 @@ impl<'src> Parser<'src> {
         Ok(crate::khovanov::Grade { i, j })
     }
 
+    fn kh_k(&mut self) -> Result<i64> {
+        self.expect(Token::Comma)?;
+        self.signed_number("Khovanov annular degree")
+    }
+
     fn kh_statement(&mut self, command: &str) -> Result<StatementForm> {
         use crate::khovanov::Command;
         self.advance()?;
@@ -2283,10 +2288,13 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
-            if command == "khGroup" {
-                Command::Group(name, self.kh_grade()?)
-            } else {
-                Command::Euler(name)
+            match command {
+                "khGroup" => Command::Group(name, self.kh_grade()?),
+                "khAnnularGroup" => Command::AnnularGroup(name, self.kh_grade()?, self.kh_k()?),
+                "khAnnularEuler" => Command::AnnularEuler(name),
+                "khAnnularCheck" => Command::AnnularCheck(name),
+                "khKappa" => Command::Kappa(name),
+                _ => Command::Euler(name),
             }
         };
         self.expect(Token::RBracket)?;
@@ -2380,24 +2388,45 @@ impl<'src> Parser<'src> {
 
     fn kh_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::khovanov::{Generator, Operation, Query};
-        let mut depth = 0;
-        let query = if matches!(command, "khD" | "khClass" | "khRep" | "khScale") {
-            let op = match command {
-                "khD" => Operation::Differential,
-                "khClass" => Operation::Project,
-                "khRep" => Operation::Representative,
-                _ => {
-                    self.expect(Token::LBracket)?;
-                    let scale = self.signed_wide("an integer scalar", "Khovanov scalar")?;
-                    self.expect(Token::RBracket)?;
-                    Operation::Scale(scale)
-                }
-            };
+        let operation = match command {
+            "khD" => Some(Operation::Differential),
+            "khD0" => Some(Operation::AnnularDifferential(0)),
+            "khDMinus2" => Some(Operation::AnnularDifferential(-2)),
+            "khForgetK" => Some(Operation::ForgetK),
+            "khClass" => Some(Operation::Project),
+            "khRep" => Some(Operation::Representative),
+            "khScale" => {
+                self.expect(Token::LBracket)?;
+                let scale = self.signed_wide("an integer scalar", "Khovanov scalar")?;
+                self.expect(Token::RBracket)?;
+                Some(Operation::Scale(scale))
+            }
+            "khAnnular" | "khToF2" => {
+                self.expect(Token::LBracket)?;
+                let k = self.signed_number("Khovanov annular degree")?;
+                self.expect(Token::RBracket)?;
+                Some(if command == "khAnnular" {
+                    Operation::AnnularPart(k)
+                } else {
+                    Operation::ToF2(k)
+                })
+            }
+            _ => None,
+        };
+        let (query, depth) = if let Some(operation) = operation {
             self.expect(Token::LParen)?;
             let input = self.expr(nest)?;
             self.expect(Token::RParen)?;
-            depth = 1 + input.depth;
-            Query::Operation(op, Box::new(input))
+            let depth = 1 + input.depth;
+            (Query::Operation(operation, Box::new(input)), depth)
+        } else if command == "khPair" {
+            self.expect(Token::LParen)?;
+            let left = self.expr(nest)?;
+            self.expect(Token::Comma)?;
+            let right = self.expr(nest)?;
+            self.expect(Token::RParen)?;
+            let depth = 1 + left.depth.max(right.depth);
+            (Query::Pair(Box::new([left, right])), depth)
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
@@ -2418,20 +2447,26 @@ impl<'src> Parser<'src> {
                     self.expect(Token::Comma)?;
                     Query::EulerAt(name, self.number()?.0)
                 }
+                "khPsi" => Query::Psi(name),
+                "khKappaNull" => Query::KappaNull(name),
+                "khKappaDual" => Query::KappaDual(name),
                 _ => {
                     let grade = self.kh_grade()?;
+                    let annular = matches!(command, "khABasis" | "khAGen" | "khANull")
+                        .then(|| self.kh_k())
+                        .transpose()?;
                     self.expect(Token::Comma)?;
                     let index = self.number()?.0;
                     let kind = match command {
-                        "khBasis" => Generator::Basis,
-                        "khGen" => Generator::Class,
+                        "khBasis" | "khABasis" => Generator::Basis,
+                        "khGen" | "khAGen" => Generator::Class,
                         _ => Generator::Null,
                     };
-                    Query::Generator(name, grade, index, kind)
+                    Query::Generator(name, grade, annular, index, kind)
                 }
             };
             self.expect(Token::RBracket)?;
-            query
+            (query, 0)
         };
         expr(span, ExprForm::Khovanov(Box::new(query)), depth)
     }
@@ -2448,9 +2483,10 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 self.lee_command(command)?
             }
-            Token::Word(command @ ("khbraid" | "khGroup" | "khEuler")) => {
-                self.kh_statement(command)?
-            }
+            Token::Word(
+                command @ ("khbraid" | "khGroup" | "khEuler" | "khAnnularGroup" | "khAnnularEuler"
+                | "khAnnularCheck" | "khKappa"),
+            ) => self.kh_statement(command)?,
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -5507,15 +5543,23 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Lee(braid, grade), 0);
         }
-        if matches!(name.text.as_str(), "KhC" | "KhH") && self.eat(Token::LParen)? {
+        if matches!(
+            name.text.as_str(),
+            "KhC" | "KhH" | "KhAC" | "KhAH" | "KhFC" | "KhFD"
+        ) && self.eat(Token::LParen)?
+        {
+            use crate::khovanov::Form;
             let braid = self.label()?;
             let grade = self.kh_grade()?;
-            self.expect(Token::RParen)?;
-            let form = if name.text == "KhC" {
-                crate::khovanov::Form::Chain
-            } else {
-                crate::khovanov::Form::Class
+            let form = match name.text.as_str() {
+                "KhC" => Form::Chain,
+                "KhH" => Form::Class,
+                "KhAC" => Form::AnnularChain(self.kh_k()?),
+                "KhAH" => Form::AnnularClass(self.kh_k()?),
+                "KhFC" => Form::Filtered(self.kh_k()?),
+                _ => Form::Dual(self.kh_k()?),
             };
+            self.expect(Token::RParen)?;
             return ty(span, TypeForm::Khovanov(braid, grade, form), 0);
         }
         if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
@@ -8841,10 +8885,25 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "khTerm" | "khBasis" | "khGen" | "khNull" | "khEulerAt" | "khScale"
+                    "khTerm"
+                        | "khBasis"
+                        | "khGen"
+                        | "khNull"
+                        | "khEulerAt"
+                        | "khScale"
+                        | "khABasis"
+                        | "khAGen"
+                        | "khANull"
+                        | "khAnnular"
+                        | "khToF2"
+                        | "khPsi"
+                        | "khKappaNull"
+                        | "khKappaDual"
                 ) && self.token() == Token::LBracket
-                    || matches!(name.text.as_str(), "khD" | "khClass" | "khRep")
-                        && self.token() == Token::LParen
+                    || matches!(
+                        name.text.as_str(),
+                        "khD" | "khD0" | "khDMinus2" | "khForgetK" | "khClass" | "khRep" | "khPair"
+                    ) && self.token() == Token::LParen
                 {
                     return self.kh_expression(&name.text, span, nest + 1);
                 }

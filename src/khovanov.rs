@@ -10,17 +10,28 @@ use crate::rv_lens::{self, Rational};
 use crate::rv_tl;
 use crate::syntax::{Label, ParsedExpr};
 
+mod annular;
+pub(crate) use annular::{add_binary, pair};
+
 pub(crate) enum Command {
     Braid(Label, usize, Vec<i128>),
     Group(Label, Grade),
     Euler(Label),
+    AnnularGroup(Label, Grade, i64),
+    AnnularEuler(Label),
+    AnnularCheck(Label),
+    Kappa(Label),
 }
 
 pub(crate) enum Query {
     Term(Label, Vec<usize>, Vec<usize>, i128),
-    Generator(Label, Grade, usize, Generator),
+    Generator(Label, Grade, Option<i64>, usize, Generator),
     EulerAt(Label, usize),
     Operation(Operation, Box<ParsedExpr>),
+    Psi(Label),
+    KappaNull(Label),
+    KappaDual(Label),
+    Pair(Box<[ParsedExpr; 2]>),
 }
 
 #[derive(Clone, Copy)]
@@ -33,6 +44,10 @@ pub(crate) enum Generator {
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     Differential,
+    AnnularDifferential(i64),
+    AnnularPart(i64),
+    ForgetK,
+    ToF2(i64),
     Project,
     Representative,
     Scale(i128),
@@ -42,6 +57,11 @@ impl Operation {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Differential => "khD",
+            Self::AnnularDifferential(0) => "khD0",
+            Self::AnnularDifferential(_) => "khDMinus2",
+            Self::AnnularPart(_) => "khAnnular",
+            Self::ForgetK => "khForgetK",
+            Self::ToF2(_) => "khToF2",
             Self::Project => "khClass",
             Self::Representative => "khRep",
             Self::Scale(_) => "khScale",
@@ -53,6 +73,10 @@ impl Operation {
 pub(crate) enum Form {
     Chain,
     Class,
+    AnnularChain(i64),
+    AnnularClass(i64),
+    Filtered(i64),
+    Dual(i64),
 }
 
 impl Form {
@@ -60,11 +84,34 @@ impl Form {
         match self {
             Self::Chain => "KhC",
             Self::Class => "KhH",
+            Self::AnnularChain(_) => "KhAC",
+            Self::AnnularClass(_) => "KhAH",
+            Self::Filtered(_) => "KhFC",
+            Self::Dual(_) => "KhFD",
         }
+    }
+
+    pub(crate) fn annular(self) -> Option<i64> {
+        match self {
+            Self::AnnularChain(k) | Self::AnnularClass(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn cutoff(self) -> Option<i64> {
+        match self {
+            Self::Filtered(k) | Self::Dual(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_class(self) -> bool {
+        matches!(self, Self::Class | Self::AnnularClass(_))
     }
 }
 
 type State = u128;
+type GroupKey = (Grade, Option<i64>);
 pub(crate) type Chain = Rc<[(Cell, i128)]>;
 pub(crate) type Class = Rc<[(usize, i128)]>;
 
@@ -107,7 +154,8 @@ pub(crate) struct Braid {
     crossings: Vec<Crossing>,
     ends: Vec<usize>,
     negative: usize,
-    groups: RefCell<HashMap<Grade, Rc<Group>>>,
+    groups: RefCell<HashMap<GroupKey, Rc<Group>>>,
+    transverse: RefCell<Option<Rc<annular::Transverse>>>,
 }
 
 impl Braid {
@@ -152,29 +200,41 @@ impl Braid {
             ends,
             negative,
             groups: RefCell::default(),
+            transverse: RefCell::default(),
         })
     }
 
-    pub(crate) fn group(&self, model: &mut Model, grade: Grade) -> Result<Rc<Group>> {
-        if let Some(group) = self.groups.borrow().get(&grade) {
+    pub(crate) fn group(
+        &self,
+        model: &mut Model,
+        grade: Grade,
+        k: Option<i64>,
+    ) -> Result<Rc<Group>> {
+        if let Some(group) = self.groups.borrow().get(&(grade, k)) {
             return Ok(group.clone());
         }
-        let group = Rc::new(Group::build(model, self, grade)?);
-        self.groups.borrow_mut().insert(grade, group.clone());
+        let group = Rc::new(Group::build(model, self, grade, k)?);
+        self.groups.borrow_mut().insert((grade, k), group.clone());
         Ok(group)
     }
 
-    pub(crate) fn invariants(&self, model: &mut Model, grade: Grade) -> Result<Invariants> {
-        if let Some(group) = self.groups.borrow().get(&grade) {
+    pub(crate) fn invariants(
+        &self,
+        model: &mut Model,
+        grade: Grade,
+        k: Option<i64>,
+    ) -> Result<Invariants> {
+        if let Some(group) = self.groups.borrow().get(&(grade, k)) {
             model.spend(group.invariants.torsion.len())?;
             return Ok(group.invariants.clone());
         }
-        let mut context = Context::new(self);
-        let basis = context.basis(model, grade)?;
+        let mut context = Context::with_annular(self, k.is_some());
+        let slice = k.map(Slice::Exact);
+        let basis = context.basis(model, grade, slice)?;
         let chains = basis.len();
-        let outgoing = incident(model, &mut context, &basis, false)?;
+        let outgoing = incident(model, &mut context, &basis, false, slice)?;
         let outgoing = incidence_smith(model, chains, outgoing, Track::None)?;
-        let incoming = incident(model, &mut context, &basis, true)?;
+        let incoming = incident(model, &mut context, &basis, true, slice)?;
         // The reversed incidence rows give the transpose of the incoming
         // differential, with the same Smith factors. The image of the
         // outgoing differential is free, so its kernel splits integrally.
@@ -194,18 +254,27 @@ impl Braid {
         &self,
         model: &mut Model,
         grade: Grade,
+        k: Option<i64>,
         index: usize,
     ) -> Result<Chain> {
-        let cell = Context::new(self)
-            .basis(model, grade)?
+        let cell = Context::with_annular(self, k.is_some())
+            .basis(model, grade, k.map(Slice::Exact))?
             .into_iter()
             .nth(index)
             .ok_or_else(|| Error::plain("Khovanov basis index is out of range"))?;
         persist(model, vec![(cell, 1)])
     }
 
-    pub(crate) fn chain_elements(&self, model: &mut Model, grade: Grade) -> Result<Vec<Value>> {
-        if !Context::new(self).basis(model, grade)?.is_empty() {
+    pub(crate) fn chain_elements(
+        &self,
+        model: &mut Model,
+        grade: Grade,
+        k: Option<i64>,
+    ) -> Result<Vec<Value>> {
+        if !Context::with_annular(self, k.is_some())
+            .basis(model, grade, k.map(Slice::Exact))?
+            .is_empty()
+        {
             return Err(Error::plain(
                 "cannot enumerate a nonzero free Khovanov chain group",
             ));
@@ -214,8 +283,22 @@ impl Braid {
         Ok(vec![Value::KhChain(Rc::default())])
     }
 
-    pub(crate) fn possible(&self, grade: Grade) -> bool {
+    pub(crate) fn possible(&self, grade: Grade, form: Form) -> bool {
         self.grading(grade).is_some()
+            && form
+                .annular()
+                .is_none_or(|k| self.possible_slice(Slice::Exact(k)))
+            && form
+                .cutoff()
+                .is_none_or(|k| self.possible_slice(Slice::AtMost(k)))
+    }
+
+    fn possible_slice(&self, slice: Slice) -> bool {
+        let n = self.ends.len() as i64;
+        match slice {
+            Slice::Exact(k) => (-n..=n).contains(&k) && k.rem_euclid(2) == n.rem_euclid(2),
+            Slice::AtMost(k) => k >= -n,
+        }
     }
 
     pub(crate) fn components(&self, model: &mut Model) -> Result<usize> {
@@ -297,7 +380,7 @@ impl Braid {
             }
             state |= bit;
         }
-        let resolution = self.resolve(model, state)?;
+        let resolution = self.resolve(model, state, false)?;
         if xs.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(Error::plain(
                 "Khovanov circle indices must be strictly increasing",
@@ -319,8 +402,8 @@ impl Braid {
         Ok((grade, chain))
     }
 
-    fn resolve(&self, model: &mut Model, state: State) -> Result<Resolution> {
-        integral::storage(5 * self.vertices())?;
+    fn resolve(&self, model: &mut Model, state: State, annular: bool) -> Result<Resolution> {
+        integral::storage((5 + usize::from(annular)) * self.vertices())?;
         model.spend(4 * self.vertices())?;
         let mut components = Disjoint::new(self.vertices());
         for (i, edge) in self.crossings.iter().enumerate() {
@@ -347,15 +430,36 @@ impl Braid {
             }
             labels.push(root_label[root]);
         }
-        Ok(Resolution { labels, anchors })
+        let (essential, essential_count) = if annular {
+            let mut essential = vec![false; anchors.len()];
+            model.spend(self.ends.len() + essential.len())?;
+            for &circle in &labels[..self.ends.len()] {
+                essential[circle] = !essential[circle];
+            }
+            let count = essential.iter().filter(|&&essential| essential).count();
+            (essential, count)
+        } else {
+            (Vec::new(), 0)
+        };
+        Ok(Resolution {
+            labels,
+            anchors,
+            essential,
+            essential_count,
+        })
     }
 
-    pub(crate) fn differential(&self, model: &mut Model, input: &Chain) -> Result<Chain> {
-        self.integral_differential(model, input, Saddle::Khovanov)
+    pub(crate) fn differential(
+        &self,
+        model: &mut Model,
+        input: &Chain,
+        k: Option<i64>,
+    ) -> Result<Chain> {
+        self.integral_differential(model, input, Saddle::Khovanov, k.map(Slice::Exact))
     }
 
     pub(crate) fn lee_perturbation(&self, model: &mut Model, input: &Chain) -> Result<Chain> {
-        self.integral_differential(model, input, Saddle::Perturbation)
+        self.integral_differential(model, input, Saddle::Perturbation, None)
     }
 
     fn integral_differential(
@@ -363,11 +467,12 @@ impl Braid {
         model: &mut Model,
         input: &Chain,
         saddle: Saddle,
+        slice: Option<Slice>,
     ) -> Result<Chain> {
-        let mut context = Context::new(self);
+        let mut context = Context::with_annular(self, slice.is_some());
         let mut output = ChainSum::default();
         for (cell, coefficient) in input.iter() {
-            context.edges_for(model, cell, false, saddle, |model, target, sign| {
+            context.edges_for(model, cell, false, saddle, slice, |model, target, sign| {
                 output.add(
                     model,
                     target,
@@ -387,7 +492,7 @@ impl Braid {
         model.spend(state_count)?;
         let mut euler = BTreeMap::<i64, i128>::new();
         for state in 0..state_count {
-            let resolution = self.resolve(model, state as u128)?;
+            let resolution = self.resolve(model, state as u128, false)?;
             let ones = state.count_ones() as usize;
             let circles = resolution.anchors.len();
             let j = self.shift(ones) + circles as i64;
@@ -476,6 +581,8 @@ impl Disjoint {
 struct Resolution {
     labels: Vec<usize>,
     anchors: Vec<usize>,
+    essential: Vec<bool>,
+    essential_count: usize,
 }
 
 impl Resolution {
@@ -492,7 +599,28 @@ impl Resolution {
     }
 
     fn cells(&self) -> usize {
-        8 + self.labels.len() + self.anchors.len()
+        8 + self.labels.len() + self.anchors.len() + self.essential.len()
+    }
+
+    fn k(&self, model: &mut Model, xs: &[usize]) -> Result<i64> {
+        model.spend(xs.len() + 1)?;
+        let essential_xs = xs.iter().filter(|&&x| self.essential[x]).count();
+        Ok(self.essential_count as i64 - 2 * essential_xs as i64)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Slice {
+    Exact(i64),
+    AtMost(i64),
+}
+
+impl Slice {
+    fn contains(self, k: i64) -> bool {
+        match self {
+            Self::Exact(exact) => k == exact,
+            Self::AtMost(upper) => k <= upper,
+        }
     }
 }
 
@@ -505,14 +633,20 @@ enum Saddle {
 
 pub(crate) struct Context<'a> {
     braid: &'a Braid,
+    annular: bool,
     cache: HashMap<State, Rc<Resolution>>,
     cache_cells: usize,
 }
 
 impl<'a> Context<'a> {
     pub(crate) fn new(braid: &'a Braid) -> Self {
+        Self::with_annular(braid, false)
+    }
+
+    pub(crate) fn with_annular(braid: &'a Braid, annular: bool) -> Self {
         Self {
             braid,
+            annular,
             cache: HashMap::new(),
             cache_cells: 0,
         }
@@ -523,7 +657,7 @@ impl<'a> Context<'a> {
         if let Some(found) = self.cache.get(&state) {
             return Ok(found.clone());
         }
-        let entry = Rc::new(self.braid.resolve(model, state)?);
+        let entry = Rc::new(self.braid.resolve(model, state, self.annular)?);
         // The cache is optional. A sparse differential can stream additional
         // resolutions after its working cache fills.
         if integral::storage(self.cache_cells + entry.cells()).is_ok() {
@@ -538,9 +672,10 @@ impl<'a> Context<'a> {
         model: &mut Model,
         cell: &Cell,
         reverse: bool,
+        slice: Option<Slice>,
         visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
     ) -> Result<()> {
-        self.edges_for(model, cell, reverse, Saddle::Khovanov, visit)
+        self.edges_for(model, cell, reverse, Saddle::Khovanov, slice, visit)
     }
 
     pub(crate) fn lee_edges(
@@ -550,7 +685,7 @@ impl<'a> Context<'a> {
         reverse: bool,
         visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
     ) -> Result<()> {
-        self.edges_for(model, cell, reverse, Saddle::Lee, visit)
+        self.edges_for(model, cell, reverse, Saddle::Lee, None, visit)
     }
 
     fn edges_for(
@@ -559,9 +694,11 @@ impl<'a> Context<'a> {
         cell: &Cell,
         reverse: bool,
         saddle: Saddle,
+        slice: Option<Slice>,
         mut visit: impl FnMut(&mut Model, Cell, i128) -> Result<()>,
     ) -> Result<()> {
         let old = self.resolution(model, cell.state)?;
+        let old_k = slice.map(|_| old.k(model, &cell.xs)).transpose()?;
         for (i, &edge) in self.braid.crossings.iter().enumerate() {
             model.spend(1)?;
             let bit = 1u128 << i;
@@ -593,6 +730,22 @@ impl<'a> Context<'a> {
                 xs.extend(extra);
                 model.spend(xs.len() * (1 + xs.len().max(1).ilog2() as usize))?;
                 xs.sort_unstable();
+                if let (Some(slice), Some(old_k)) = (slice, old_k) {
+                    let new_k = new.k(model, &xs)?;
+                    let drop = if reverse {
+                        new_k - old_k
+                    } else {
+                        old_k - new_k
+                    };
+                    if !matches!(drop, 0 | 2) {
+                        return Err(Error::plain(
+                            "Khovanov saddle changes annular degree by an invalid amount",
+                        ));
+                    }
+                    if !slice.contains(new_k) {
+                        return Ok(());
+                    }
+                }
                 visit(
                     model,
                     Cell {
@@ -636,18 +789,27 @@ impl<'a> Context<'a> {
         Ok(())
     }
 
-    fn basis(&mut self, model: &mut Model, grade: Grade) -> Result<Vec<Cell>> {
+    fn basis(
+        &mut self,
+        model: &mut Model,
+        grade: Grade,
+        slice: Option<Slice>,
+    ) -> Result<Vec<Cell>> {
+        if slice.is_some_and(|slice| !self.braid.possible_slice(slice)) {
+            return Ok(Vec::new());
+        }
         let Some((ones, label_degree)) = self.braid.grading(grade) else {
             return Ok(Vec::new());
         };
         let mut cells = 0;
         let mut basis = Vec::new();
-        self.visit_resolutions(model, ones, |model, state, circles| {
+        self.visit_resolutions(model, ones, |model, state, resolution| {
+            let circles = resolution.anchors.len();
             let difference = circles as i64 - label_degree;
             if difference < 0 || difference as usize > 2 * circles || difference % 2 != 0 {
                 return Ok(());
             }
-            choose(model, circles, difference as usize / 2, |_, xs| {
+            resolution.visit_labels(model, difference as usize / 2, slice, |_, xs| {
                 let cell = Cell {
                     state,
                     xs: xs.into(),
@@ -677,7 +839,8 @@ impl<'a> Context<'a> {
         let shift = self.braid.shift(ones);
         let mut cells = 0;
         let mut basis = Vec::new();
-        self.visit_resolutions(model, ones, |model, state, circles| {
+        self.visit_resolutions(model, ones, |model, state, resolution| {
+            let circles = resolution.anchors.len();
             for count in 0..=circles {
                 let j = shift + circles as i64 - 2 * count as i64;
                 choose(model, circles, count, |_, xs| {
@@ -702,12 +865,12 @@ impl<'a> Context<'a> {
         &mut self,
         model: &mut Model,
         ones: usize,
-        mut visit: impl FnMut(&mut Model, State, usize) -> Result<()>,
+        mut visit: impl FnMut(&mut Model, State, &Resolution) -> Result<()>,
     ) -> Result<()> {
         choose(model, self.braid.crossings.len(), ones, |model, ones| {
             let state = ones.iter().fold(0u128, |acc, i| acc | (1u128 << i));
             let resolution = self.resolution(model, state)?;
-            visit(model, state, resolution.anchors.len())
+            visit(model, state, &resolution)
         })
     }
 }
@@ -817,15 +980,16 @@ pub(crate) struct Group {
 }
 
 impl Group {
-    fn build(model: &mut Model, braid: &Braid, grade: Grade) -> Result<Self> {
-        let mut context = Context::new(braid);
-        let basis = context.basis(model, grade)?;
-        let after = incident(model, &mut context, &basis, false)?;
+    fn build(model: &mut Model, braid: &Braid, grade: Grade, k: Option<i64>) -> Result<Self> {
+        let mut context = Context::with_annular(braid, k.is_some());
+        let slice = k.map(Slice::Exact);
+        let basis = context.basis(model, grade, slice)?;
+        let after = incident(model, &mut context, &basis, false, slice)?;
         let outgoing = incidence_smith(model, basis.len(), after, Track::Both)?;
         let rank = outgoing.factors.len();
         let kernel = basis.len() - rank;
 
-        let before = incident(model, &mut context, &basis, true)?;
+        let before = incident(model, &mut context, &basis, true, slice)?;
         let mut previous = Vec::with_capacity(before.len());
         let incoming = if before.is_empty() {
             integral::Smith::empty()
@@ -1136,11 +1300,12 @@ fn incident(
     context: &mut Context<'_>,
     basis: &[Cell],
     reverse: bool,
+    slice: Option<Slice>,
 ) -> Result<BTreeMap<Cell, Vector>> {
     let mut cells = 0;
     let mut incidences = BTreeMap::<Cell, Vector>::new();
     for (index, cell) in basis.iter().enumerate() {
-        context.edges(model, cell, reverse, |model, opposite, sign| {
+        context.edges(model, cell, reverse, slice, |model, opposite, sign| {
             model.spend(opposite.cells() * (1 + incidences.len().max(1).ilog2() as usize))?;
             let width = opposite.cells();
             let column = incidences.entry(opposite).or_insert_with(|| {

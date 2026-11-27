@@ -1385,6 +1385,16 @@ A basis term `khTerm[K,[ones],[xs]]` lists the positions of the one resolutions 
 
 `leeS[K];` takes the mean of the two surviving jumps in homological degree zero for a knot. Links also have the full filtration queries. For the positive braid $(\sigma_1\sigma_2)^8$ closing to $T(3,8)$, the jumps are $13,15$ and $s=14$. The bound $g_4\ge |s|/2$ and the genus-seven surface from the braid give $g_4=7$. The example also verifies a nontrivial filtration lift and an exact half-integral boundary preimage on a stabilized unknot. [Lee and Rasmussen example](examples/lee-rasmussen.asl)
 
+#### Annular Khovanov homology and the transverse cycle
+
+A resolution circle is essential exactly when it crosses the braid closure seam an odd number of times. Its label contributes $+1$ for $1$ or $-1$ for $X$ to the annular degree $k$. Trivial circles contribute zero. `khAnnular[k](c)` selects that homogeneous component as `KhAC(K,i,j,k)`, and `khForgetK` returns its underlying integral chain. Use `khABasis[K,i,j,k,g]` for the ordered homogeneous basis. The actual signed differential has degrees $0$ and $-2$ in $k$, given by `khD0` and `khDMinus2`. The bounded `khAnnularCheck[K];` checks these two degrees and $d^2=0$ on the enhanced cube, which gives $d_0^2=\partial^2=d_0\partial+\partial d_0=0$ by degree.
+
+`khAnnularGroup[K,i,j,k];` computes the integral homology of $d_0$ by Smith reduction. The class type is `KhAH(K,i,j,k)`. Use `khClass`, `khRep`, `khAGen` and `khANull` for classes, representatives, generators and torsion nulls. `khAnnularEuler[K];` reports the signed Euler polynomial as $((j,k),\text{coefficient})$ pairs.
+
+`khPsi[K]` is the transverse cycle in the oriented resolution, with all circles labeled $X$. Its degrees are $(i,j,k)=(0,w-n,-n)$ for braid writhe $w$ and strand count $n$. `KhFC(K,i,j,k)` is the $\mathbb F_2$ subcomplex cut off at annular degree $k$. `khToF2[k]` reduces integer coefficients modulo two and retains the terms at or below that cutoff. It can also widen or truncate an already filtered chain. `khD` on `KhFC` uses the whole filtered differential, and on the dual type `KhFD(K,i,j,k)` it uses the transpose in the opposite homological direction. `khPair(dual,chain)` is `S.hi` when their pairing is one.
+
+`khKappa[K];` finds the first cutoff $k$ at which $\psi$ is a boundary and reports $n+k$, or infinity if $\psi$ survives. In the finite case `khKappaNull[K]` gives its actual filtered primitive. `khKappaDual[K]` annihilates all boundaries at cutoff $k-2$ and pairs to one with $\psi$. For infinity the dual certifies nonvanishing in the full complex. The four-strand examples have $\kappa=4$ and $\kappa=2$, and the program checks both primitives and lower-cutoff duals. The invariant is defined for braid conjugacy. The illustrated positive stabilization of the second four-braid raises $\kappa$ from two to four, with both certificates checked again. [Annular example](examples/annular-khovanov.asl) · [Hubbard and Saltz](https://arxiv.org/abs/1507.06263)
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is
