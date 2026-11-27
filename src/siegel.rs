@@ -3,7 +3,7 @@ use std::fmt;
 use crate::error::{Error, Result};
 use crate::hyperelliptic_kummer_surface::hilbert::{
     elliptic_genus::{decimal, half_k3_coefficient},
-    Integer,
+    Integer, Magnitude,
 };
 use crate::model::Model;
 
@@ -142,12 +142,33 @@ fn root_multiplicity(model: &mut Model, norm: Integer, r: i128) -> Result<Intege
         magnitude,
         ..norm.negate()
     };
-    let shifted = discriminant.add(Integer::from_i128(parity))?;
-    let (degree, _) = shifted.magnitude.divide_u32(4);
-    let degree = degree.small().ok_or_else(|| {
+    let degree = reduced_jacobi_degree(discriminant, parity)?.ok_or_else(|| {
         Error::plain("Siegel root coefficient exceeds the elliptic genus coefficient storage limit")
     })?;
     half_k3_coefficient(model, degree, parity)
+}
+
+pub(crate) fn discriminant(a: u128, b: u128, r: i128) -> Result<Integer> {
+    let product = Integer {
+        magnitude: Magnitude::from_small(a),
+        negative: false,
+    }
+    .multiply_wide(Integer {
+        magnitude: Magnitude::from_small(b),
+        negative: false,
+    })?;
+    product.multiply(4)?.add(Integer::product(r, r).negate())
+}
+
+pub(crate) fn reduced_jacobi_degree(discriminant: Integer, parity: i128) -> Result<Option<u128>> {
+    let shifted = discriminant.add(Integer::from_i128(parity))?;
+    let (degree, remainder) = shifted.magnitude.divide_u32(4);
+    if remainder != 0 || (shifted.negative && !shifted.is_zero()) {
+        return Err(Error::plain(
+            "invalid index-one Jacobi discriminant and parity",
+        ));
+    }
+    Ok(degree.small())
 }
 
 fn coordinate_overflow() -> Error {

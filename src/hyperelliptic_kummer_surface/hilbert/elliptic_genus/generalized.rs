@@ -5,7 +5,7 @@ use crate::model::Model;
 use crate::rv_ore::gcd;
 
 use super::{
-    add, multiply, multiply_factor, overflow, storage, Cutoff, Integer, Product, Seed, TERM_LIMIT,
+    add, jacobi_minus_two, multiply, overflow, storage, Cutoff, Integer, Product, Seed, TERM_LIMIT,
 };
 
 type Laurent = BTreeMap<i128, Integer>;
@@ -43,7 +43,7 @@ pub(super) fn coefficient(model: &mut Model, n: u128, degree: u128, r: i128) -> 
         return Err(storage());
     }
     let cutoff = Cutoff::new(model, 0, primitive as u128)?;
-    let seed = jacobi_seed(model, cutoff)?;
+    let seed = jacobi_minus_two(model, cutoff)?;
     let mut quotient = Seed::new();
     for d in 0..=degree {
         let mut residual = hecke_row(model, n, d, &seed)?;
@@ -66,27 +66,6 @@ pub(super) fn coefficient(model: &mut Model, n: u128, degree: u128, r: i128) -> 
         .get(&(degree, r))
         .copied()
         .unwrap_or_else(|| Integer::from_i128(0)))
-}
-
-fn jacobi_seed(model: &mut Model, cutoff: Cutoff) -> Result<Product> {
-    let mut seed = Product::from([
-        ((0, 0, -1), Integer::from_i128(1)),
-        ((0, 0, 0), Integer::from_i128(-2)),
-        ((0, 0, 1), Integer::from_i128(1)),
-    ]);
-    for j in 1..=cutoff.q {
-        for (r, exponent) in [(-1, 2), (0, -4), (1, 2)] {
-            multiply_factor(
-                model,
-                &mut seed,
-                cutoff,
-                (0, j, r),
-                Integer::from_i128(exponent),
-                false,
-            )?;
-        }
-    }
-    Ok(seed)
 }
 
 fn seed_row(seed: &Product, degree: usize) -> impl Iterator<Item = (i128, Integer)> + '_ {

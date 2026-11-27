@@ -12,6 +12,7 @@ use super::Integer;
 use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
 
 mod cyclic;
+pub(crate) mod maass;
 
 mod generalized;
 
@@ -189,14 +190,41 @@ pub(crate) fn delta5_report(model: &mut Model, weight: SiegelWeight) -> Result<S
 
 pub(crate) fn half_k3_coefficient(model: &mut Model, degree: u128, r: i128) -> Result<Integer> {
     let cutoff = Cutoff::new(model, degree, 1)?;
-    let mut seed = Seed::new();
-    add_theta(model, &mut seed, cutoff.p, false)?;
-    add_theta(model, &mut seed, cutoff.p, true)?;
-    let coefficient = seed
+    let seed = jacobi_zero(model, cutoff.p)?;
+    Ok(seed
         .get(&(cutoff.p, r))
         .copied()
-        .unwrap_or(Integer::from_i128(0));
-    half(model, coefficient)
+        .unwrap_or(Integer::from_i128(0)))
+}
+
+fn jacobi_zero(model: &mut Model, degree: usize) -> Result<Seed> {
+    let mut seed = Seed::new();
+    add_theta(model, &mut seed, degree, false)?;
+    add_theta(model, &mut seed, degree, true)?;
+    halve_seed(model, &mut seed)?;
+    Ok(seed)
+}
+
+fn jacobi_minus_two(model: &mut Model, cutoff: Cutoff) -> Result<Product> {
+    let mut seed = Product::from([
+        ((0, 0, -1), Integer::from_i128(1)),
+        ((0, 0, 0), Integer::from_i128(-2)),
+        ((0, 0, 1), Integer::from_i128(1)),
+    ]);
+    // (y - 2 + y⁻¹) ∏ (1 - qʲy)^2 (1 - qʲy⁻¹)^2 / (1 - qʲ)^4.
+    for j in 1..=cutoff.q {
+        for (r, exponent) in [(-1, 2), (0, -4), (1, 2)] {
+            multiply_factor(
+                model,
+                &mut seed,
+                cutoff,
+                (0, j, r),
+                Integer::from_i128(exponent),
+                false,
+            )?;
+        }
+    }
+    Ok(seed)
 }
 
 #[derive(Clone, Copy)]
@@ -281,22 +309,15 @@ fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Pro
 
 fn halve_seed(model: &mut Model, seed: &mut Seed) -> Result<()> {
     for coefficient in seed.values_mut() {
-        *coefficient = half(model, *coefficient)?;
+        let (magnitude, remainder) = coefficient.magnitude.divide(model, 2)?;
+        if remainder != 0 {
+            return Err(Error::plain(
+                "K3 elliptic genus coefficient does not halve exactly",
+            ));
+        }
+        coefficient.magnitude = magnitude;
     }
     Ok(())
-}
-
-fn half(model: &mut Model, coefficient: Integer) -> Result<Integer> {
-    let (magnitude, remainder) = coefficient.magnitude.divide(model, 2)?;
-    if remainder != 0 {
-        return Err(Error::plain(
-            "K3 elliptic genus coefficient does not halve exactly",
-        ));
-    }
-    Ok(Integer {
-        magnitude,
-        ..coefficient
-    })
 }
 
 fn add_theta(model: &mut Model, seed: &mut Seed, degree: usize, shifted: bool) -> Result<()> {

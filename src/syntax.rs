@@ -1204,6 +1204,7 @@ pub(crate) enum StatementForm {
     SiegelPair(Box<[ParsedExpr; 2]>),
     SiegelRoot(Box<ParsedExpr>),
     SiegelDelta5At(Box<ParsedExpr>),
+    SiegelMaass(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::maass::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -3523,6 +3524,68 @@ impl<'src> Parser<'src> {
         Ok(crate::siegel::Weight(coordinates))
     }
 
+    fn siegel_maass_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::maass::{
+            Command, Family, Monomial,
+        };
+        self.advance()?;
+        let command = if name == "rvsiegelmaass" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let weight = self.wide_unsigned("Maaß weight")?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LBrace)?;
+            let mut terms = Vec::new();
+            while self.token() != Token::RBrace {
+                let family = self.label()?;
+                let family = match family.text.as_str() {
+                    "minus" => Family::MinusTwo,
+                    "zero" => Family::Zero,
+                    _ => {
+                        return Err(Error::new(
+                            family.span,
+                            "expected a minus or zero Jacobi monomial",
+                        ))
+                    }
+                };
+                self.expect(Token::LParen)?;
+                let mut exponents = [0; 3];
+                for exponent in &mut exponents {
+                    *exponent = self.wide_unsigned("Jacobi modular-factor exponent")?;
+                    self.expect(Token::Comma)?;
+                }
+                let scale =
+                    self.signed_wide("a signed Jacobi coefficient", "Jacobi coefficient")?;
+                self.expect(Token::RParen)?;
+                terms.push((Monomial(family, exponents), scale));
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBrace)?;
+            Command::Declare(name, weight, terms)
+        } else {
+            self.expect(Token::LBracket)?;
+            let query = if name == "rvIgusaChi12" {
+                Command::Chi12(self.elliptic_genus_index("P exponent")?)
+            } else {
+                let form = self.label()?;
+                self.expect(Token::Comma)?;
+                if name == "rvSiegelMaassJacobi" {
+                    let n = self.wide_unsigned("q exponent")?;
+                    self.expect(Token::Comma)?;
+                    let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+                    Command::Jacobi(form, n, r)
+                } else {
+                    Command::Lift(form, self.elliptic_genus_index("P exponent")?)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            query
+        };
+        Ok(StatementForm::SiegelMaass(Box::new(command)))
+    }
+
     fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
         let (expression, depth) = match name {
@@ -5451,6 +5514,12 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::SiegelDelta5At(Box::new(self.paren_expr(0)?))
             }
+            Token::Word(
+                name @ ("rvsiegelmaass"
+                | "rvSiegelMaassJacobi"
+                | "rvSiegelMaassCoeff"
+                | "rvIgusaChi12"),
+            ) => self.siegel_maass_statement(name)?,
             Token::Word("rvSiegelDelta5") => {
                 use crate::hyperelliptic_kummer_surface::hilbert::{
                     elliptic_genus::Query, Command,

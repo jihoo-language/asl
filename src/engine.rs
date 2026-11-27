@@ -1807,6 +1807,7 @@ impl Engine {
                 )
                 .map(Some);
             }
+            StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {

@@ -30,6 +30,7 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::maass;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
@@ -638,6 +639,7 @@ pub(crate) struct Model {
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
+    siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -743,6 +745,7 @@ impl Model {
             richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
             elliptic_gluings: HashMap::new(),
+            siegel_maass_forms: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -4149,6 +4152,31 @@ impl Model {
 
     pub(crate) fn siegel_weight_type(&mut self) -> Result<TypeId> {
         self.inhabited_type(Kind::SiegelWeight, 0)
+    }
+
+    pub(crate) fn register_siegel_maass(
+        &mut self,
+        name: Label,
+        weight: u128,
+        terms: Vec<(maass::Monomial, i128)>,
+    ) -> Result<()> {
+        if self.siegel_maass_forms.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Maaß lift '{}' is already defined", name.text),
+            ));
+        }
+        let form = maass::Form::new(self, weight, terms).map_err(|error| error.at(name.span))?;
+        self.allocate(name.text.len() + 1)?;
+        self.siegel_maass_forms.insert(name.text, Rc::new(form));
+        Ok(())
+    }
+
+    pub(crate) fn siegel_maass(&self, name: &Label) -> Result<Rc<maass::Form>> {
+        self.siegel_maass_forms
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Maaß lift '{}'", name.text)))
     }
 
     pub(crate) fn show_jacobian_kummer(

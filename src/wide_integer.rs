@@ -9,11 +9,13 @@ pub(crate) struct Natural<const N: usize>([u32; N]);
 
 impl<const N: usize> Default for Natural<N> {
     fn default() -> Self {
-        Self([0; N])
+        Self::ZERO
     }
 }
 
 impl<const N: usize> Natural<N> {
+    pub(crate) const ZERO: Self = Self([0; N]);
+
     pub(crate) fn from_small(mut n: u128) -> Self {
         let mut value = Self::default();
         for digit in &mut value.0[..4] {
