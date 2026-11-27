@@ -12,6 +12,7 @@ use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::real_extensions::Operation as RealExtOp;
+use crate::real_rho::{self, Operation as RealRhoOp};
 use crate::rho_bock;
 use crate::rho_localized;
 use crate::rho_minimal::Operation as RhoMinOp;
@@ -73,6 +74,7 @@ pub(crate) enum TypeForm {
     Cobar(usize, usize),
     MCobar(MotivicGrade),
     RMCobar(MotivicGrade),
+    RealRho(bool, real_rho::Grade),
     RhoBock(rho_bock::Grade),
     RhoLoc(MotivicGrade),
     RhoMin(MotivicGrade),
@@ -742,10 +744,12 @@ pub(crate) enum ExprForm {
     ExtGenerator(usize, usize, usize, Span),
     MExtGenerator(MotivicGrade, usize, Span),
     RMExtGenerator(MotivicGrade, usize, Span),
+    RealRhoGenerator(real_rho::Grade, usize, Span),
     RealBar(RealBarOp, usize, i128, usize, Span),
     RealBarTerm(MotivicGrade, usize, Span),
     RealExtension(RealExtOp, Box<ParsedExpr>),
     RhoProductNull(usize, Box<[ParsedExpr; 2]>),
+    RealRhoOperation(RealRhoOp, Box<ParsedExpr>),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
@@ -972,6 +976,7 @@ pub(crate) enum StatementForm {
     ExtDimension(usize, usize),
     MExtDimension(MotivicGrade),
     RMExtDimension(MotivicGrade),
+    RealRhoDimension(real_rho::Grade),
     RhoOrder(Box<ParsedExpr>),
     RhoDepth(Box<ParsedExpr>),
     RhoHidden(Box<[ParsedExpr; 2]>),
@@ -1311,6 +1316,13 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (f, _) = self.number()?;
         Ok(rho_bock::Grade { chain, r, f })
+    }
+
+    fn real_rho_grade(&mut self) -> Result<real_rho::Grade> {
+        let (exponent, at) = self.number()?;
+        self.expect(Token::Comma)?;
+        let chain = self.motivic_grade()?;
+        real_rho::Grade::new(exponent, chain).map_err(|error| error.at(at))
     }
 
     fn motivic_grade(&mut self) -> Result<MotivicGrade> {
@@ -2571,6 +2583,13 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::RhoHidden(self.real_extension_pair(0, span, "rhohidden")?)
             }
+            Token::Word("rmrhoextdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let grade = self.real_rho_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RealRhoDimension(grade)
+            }
             Token::Word("rmTripleDim") => {
                 self.advance()?;
                 StatementForm::RealTripleDim(Box::new(self.paren_expr(0)?))
@@ -3766,6 +3785,11 @@ impl<'src> Parser<'src> {
             let grade = self.rho_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RhoBock(grade), 0);
+        }
+        if matches!(name.text.as_str(), "RMRhoCobar" | "RMRhoExt") && self.eat(Token::LParen)? {
+            let grade = self.real_rho_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RealRho(name.text == "RMRhoExt", grade), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -5864,6 +5888,32 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RealExtension(op, Box::new(input)), depth);
                 }
+                if name.text == "rhoReduce" && self.eat(Token::LBracket)? {
+                    let (exponent, at) = self.number()?;
+                    if exponent == 0 {
+                        return Err(Error::new(at, "rho truncation exponent must be positive"));
+                    }
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RealRhoOperation(RealRhoOp::Reduce(exponent), Box::new(input)),
+                        depth,
+                    );
+                }
+                let real_rho = match name.text.as_str() {
+                    "rhoTruncLift" => Some(RealRhoOp::Lift),
+                    "rhoConnect" => Some(RealRhoOp::Connect),
+                    "rhoConnectRep" => Some(RealRhoOp::ConnectRep),
+                    "rhoBeta" => Some(RealRhoOp::Beta),
+                    _ => None,
+                };
+                if let Some(op) = real_rho.filter(|_| self.token() == Token::LParen) {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RealRhoOperation(op, Box::new(input)), depth);
+                }
                 if name.text == "rhoNull" && self.eat(Token::LBracket)? {
                     let (power, _) = self.number()?;
                     self.expect(Token::RBracket)?;
@@ -6363,6 +6413,13 @@ impl<'src> Parser<'src> {
                         _ => RealBarOp::Witness,
                     };
                     return expr(span, ExprForm::RealBar(op, s, k, index, at), 0);
+                }
+                if name.text == "rmrhoextgen" && self.eat(Token::LBracket)? {
+                    let grade = self.real_rho_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RealRhoGenerator(grade, index, at), 0);
                 }
                 if name.text == "rmextgen" && self.eat(Token::LBracket)? {
                     let grade = self.motivic_grade()?;

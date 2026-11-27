@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::hash::Hash;
 
 use crate::adams;
@@ -21,24 +22,65 @@ pub(crate) struct Group {
 
 impl Group {
     pub(crate) fn build(model: &mut Model, grade: Grade) -> Result<Self> {
-        let terms = real_motivic::basis(model, grade, MAX_BASIS)?;
+        Self::build_below(model, grade, None)
+    }
+
+    pub(crate) fn build_below(
+        model: &mut Model,
+        grade: Grade,
+        cutoff: Option<usize>,
+    ) -> Result<Self> {
+        if let Some(cycles) = degree_one_cycles(model, grade, cutoff)? {
+            return Self::from_cycle_supports(model, cycles);
+        }
+        Self::from_matrix(model, grade, cutoff)
+    }
+
+    fn from_matrix(model: &mut Model, grade: Grade, cutoff: Option<usize>) -> Result<Self> {
+        let max = cutoff.map_or(usize::MAX, |exponent| exponent - 1);
+        let bound = cutoff.map_or(u128::MAX, |exponent| exponent as u128);
+        let terms = real_motivic::basis_window(model, grade, 0..=max, MAX_BASIS)?;
         if terms.is_empty() {
             return Ok(Self::default());
         }
         let mut boundaries = Basis::default();
         if let Some(previous) = grade.previous() {
-            for term in real_motivic::basis(model, previous, MAX_BASIS)? {
-                let image = real_motivic::differential_support(model, &[term])?;
-                let column = indices(model, &terms, &image)?;
+            for term in real_motivic::basis_window(model, previous, 0..=max, MAX_BASIS)? {
+                let image = real_motivic::differential_below(model, &[term], bound)?;
+                let column = indices(model, &terms, &image, wrong_degree)?;
                 boundaries.insert(model, column)?;
             }
         }
         let mut rows = real_motivic::Rows::default();
         let quotient = QuotientBasis::build(model, boundaries, terms.len(), |model, index| {
-            let image =
-                real_motivic::differential_support(model, std::slice::from_ref(&terms[index]))?;
+            let image = real_motivic::differential_below(
+                model,
+                std::slice::from_ref(&terms[index]),
+                bound,
+            )?;
             rows.column(model, &image)
         })?;
+        Ok(Self { terms, quotient })
+    }
+
+    fn from_cycle_supports(model: &mut Model, cycles: Vec<Vec<Term>>) -> Result<Self> {
+        let mut terms = BTreeSet::new();
+        let mut cells = 0;
+        for t in cycles.iter().flatten() {
+            model.spend(t.cells() * (1 + terms.len().max(1).ilog2() as usize))?;
+            if terms.insert(t.clone()) {
+                cells += t.cells();
+                cobar::check_storage(cells)?;
+            }
+        }
+        model.allocate(cells)?;
+        let terms: Vec<_> = terms.into_iter().collect();
+        let mut span = Basis::default();
+        for cycle in cycles {
+            let column = indices(model, &terms, &cycle, wrong_degree)?;
+            span.insert(model, column)?;
+        }
+        let quotient = QuotientBasis::from_cycle_span(model, span)?;
         Ok(Self { terms, quotient })
     }
 
@@ -56,26 +98,110 @@ impl Group {
     }
 
     pub(crate) fn project(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<usize>> {
-        let support = indices(model, &self.terms, terms)?;
+        let support = indices(model, &self.terms, terms, not_closed)?;
         self.quotient
             .project(model, support)?
             .ok_or_else(not_closed)
     }
 }
 
+fn degree_one_cycles(
+    model: &mut Model,
+    grade: Grade,
+    cutoff: Option<usize>,
+) -> Result<Option<Vec<Vec<Term>>>> {
+    if grade.s != 1 || grade.t <= 0 {
+        // At positive t there are no boundaries from scalar degree.
+        return Ok(None);
+    }
+    let Some(k) = grade.t.checked_sub(i128::from(grade.w)) else {
+        return Ok(None);
+    };
+    let Some(mut upper) = k.checked_mul(2) else {
+        return Ok(None);
+    };
+    if let Some(e) = cutoff {
+        upper = upper.min(grade.t.saturating_add(e as i128 - 1));
+    }
+    if upper < grade.t {
+        return Ok(Some(Vec::new()));
+    }
+    let (Ok(lower), Ok(upper)) = (usize::try_from(grade.t), usize::try_from(upper)) else {
+        return Ok(None);
+    };
+    let mut powers = Vec::new();
+    let mut top = 1usize;
+    while top <= upper {
+        model.spend(1)?;
+        if top >= lower {
+            if top as i128 != k && top as i128 != 2 * k {
+                return Ok(None);
+            }
+            powers.push(top);
+        }
+        let Some(next) = top.checked_mul(2) else {
+            break;
+        };
+        top = next;
+    }
+
+    // In each rho level the leading cycle is a complex-motivic primitive;
+    // degree-one primitives in the classical encoding are xi_1^(2^j).
+    // When every possible leading term has a closed lift, they form the
+    // full cycle space. At top=k use the actual d(tau^k)/rho^t, and at
+    // top=2k use a power of the primitive real generator xi_1.
+    let mut cycles = Vec::new();
+    for top in powers {
+        if top as i128 == k {
+            let scalar = Term {
+                rho: 0,
+                tau: top,
+                word: [].into(),
+            };
+            let bound = cutoff.map_or(u128::MAX, |e| lower as u128 + e as u128);
+            let mut cycle = real_motivic::differential_below(model, &[scalar], bound)?;
+            for term in &mut cycle {
+                term.rho = term
+                    .rho
+                    .checked_sub(lower)
+                    .ok_or_else(|| Error::plain("rho primitive has insufficient filtration"))?;
+            }
+            if cycle.first().map(|term| term.rho) != Some(top - lower) {
+                return Err(Error::plain("rho primitive has an unexpected leading term"));
+            }
+            cycles.push(cycle);
+        } else {
+            let factor: Monomial = [top].into();
+            cycles.push(vec![Term {
+                rho: top - lower,
+                tau: 0,
+                word: [factor].into(),
+            }]);
+        }
+    }
+    Ok(Some(cycles))
+}
+
 fn not_closed() -> Error {
     Error::plain("operation requires a closed real-motivic cobar cochain")
 }
 
-fn indices(model: &mut Model, basis: &[Term], terms: &[Term]) -> Result<Vec<usize>> {
+fn wrong_degree() -> Error {
+    Error::plain("word is outside its real-motivic cobar tridegree")
+}
+
+fn indices(
+    model: &mut Model,
+    basis: &[Term],
+    terms: &[Term],
+    missing: fn() -> Error,
+) -> Result<Vec<usize>> {
     let steps = 1 + basis.len().max(1).ilog2() as usize;
     terms
         .iter()
         .map(|term| {
             model.spend(steps * term.cells())?;
-            basis
-                .binary_search(term)
-                .map_err(|_| Error::plain("word is outside its real-motivic cobar tridegree"))
+            basis.binary_search(term).map_err(|_| missing())
         })
         .collect()
 }
@@ -471,4 +597,40 @@ pub(crate) fn null(
         return Err(Error::plain("rhoNull power is not the minimal exponent"));
     }
     real_motivic::persist(model, witness)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn degree_one_shortcut_preserves_ordinary_and_truncated_canonical_representatives() {
+        check_degree_one().unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    fn check_degree_one() -> Result<()> {
+        let mut compared = 0;
+        for cutoff in [None, Some(1), Some(2), Some(3), Some(5)] {
+            for t in 1..=8 {
+                for w in -4..=4 {
+                    let grade = Grade { s: 1, t, w };
+                    let mut model = Model::new();
+                    if let Some(cycles) = degree_one_cycles(&mut model, grade, cutoff)? {
+                        let compact = Group::from_cycle_supports(&mut model, cycles)?;
+                        let matrix = Group::from_matrix(&mut model, grade, cutoff)?;
+                        assert_eq!(compact.rank(), matrix.rank(), "{grade:?}, {cutoff:?}");
+                        for i in 0..matrix.rank() {
+                            let ordinary = matrix.representative(&mut model, &[i])?;
+                            let fast = compact.representative(&mut model, &[i])?;
+                            assert_eq!(fast, ordinary, "{grade:?}, {cutoff:?}");
+                            assert_eq!(compact.project(&mut model, &fast)?, [i]);
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(compared >= 20);
+        Ok(())
+    }
 }

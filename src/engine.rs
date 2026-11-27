@@ -55,6 +55,7 @@ use crate::real_ext;
 use crate::real_extensions::{self, Operation as RealExtOp};
 use crate::real_massey;
 use crate::real_motivic;
+use crate::real_rho::{self, Operation as RealRhoOp};
 use crate::real_transfer;
 use crate::restriction_transfer;
 use crate::rho_bock;
@@ -479,6 +480,7 @@ enum TypedForm {
     RealBar(RealBarOp, usize, i128, usize),
     RealExtension(RealExtOp, motivic::Grade, Box<TypedExpr>),
     RhoProductNull(usize, Box<[TypedExpr; 2]>),
+    RealRhoOperation(RealRhoOp, motivic::Grade, Box<TypedExpr>),
     RealMassey(bool, real_massey::Layout, Box<[TypedExpr; 3]>),
     RealMasseyNull(motivic::Grade, Box<[TypedExpr; 2]>),
     RealTripleClass(Option<usize>, Box<TypedExpr>),
@@ -1641,6 +1643,15 @@ impl Engine {
                 let rank = self.model.real_ext(ty)?.rank();
                 let motivic::Grade { s, t, w } = grade;
                 format!("rmextdim[{s}, {t}, {w}] = {rank}")
+            }
+            StatementForm::RealRhoDimension(grade) => {
+                let ty = self.model.real_rho_ext_type(grade)?;
+                let rank = self.model.real_ext(ty)?.rank();
+                let real_rho::Grade {
+                    exponent,
+                    chain: motivic::Grade { s, t, w },
+                } = grade;
+                format!("rmrhoextdim[{exponent}, {s}, {t}, {w}] = {rank}")
             }
             StatementForm::MExtDimension(grade) => {
                 let ty = self.model.mext_type(grade)?;
@@ -2886,6 +2897,9 @@ impl Engine {
                         rho_localized::concat(&mut self.model, &a, &b)
                     }
                     (BinaryOp::Concat, Value::RMCobar(a), Value::RMCobar(b)) => {
+                        if let Kind::RMRhoCobar(grade) = *self.model.kind(expr.ty) {
+                            return real_rho::concat(&mut self.model, grade, &a, &b);
+                        }
                         let terms = real_motivic::concat_support(&mut self.model, &a, &b)?;
                         real_motivic::persist(&mut self.model, terms)
                     }
@@ -2900,7 +2914,15 @@ impl Engine {
                         odd_ext::yoneda(&mut self.model, left.ty, &a, right.ty, &b, expr.ty)
                     }
                     (BinaryOp::Yoneda, Value::Class(a), Value::Class(b)) => {
-                        if matches!(self.model.kind(expr.ty), Kind::RMExt(..)) {
+                        if let Kind::RMRhoExt(grade) = *self.model.kind(expr.ty) {
+                            real_rho::yoneda(
+                                &mut self.model,
+                                (left.ty, &a),
+                                (right.ty, &b),
+                                expr.ty,
+                                grade,
+                            )
+                        } else if matches!(self.model.kind(expr.ty), Kind::RMExt(..)) {
                             real_ext::yoneda(
                                 &mut self.model,
                                 (left.ty, &a),
@@ -3060,10 +3082,30 @@ impl Engine {
                 _ => unreachable!(),
             },
             TypedForm::RhoShift(power, input) => match self.eval(input)? {
-                Value::RMCobar(terms) => real_motivic::rho_shift(&mut self.model, &terms, *power),
+                Value::RMCobar(terms) => {
+                    if let Kind::RMRhoCobar(grade) = *self.model.kind(input.ty) {
+                        if *power == 0 {
+                            return Ok(Value::RMCobar(terms));
+                        }
+                        let terms =
+                            real_rho::shift(&mut self.model, &terms, grade.exponent, *power)?;
+                        return real_motivic::persist(&mut self.model, terms);
+                    }
+                    real_motivic::rho_shift(&mut self.model, &terms, *power)
+                }
                 Value::RhoMin(terms) => rho_minimal::shift(&mut self.model, &terms, *power),
                 Value::Class(coords) if *power == 0 => Ok(Value::Class(coords)),
                 Value::Class(coords) => {
+                    if let Kind::RMRhoExt(grade) = *self.model.kind(input.ty) {
+                        return real_rho::shift_class(
+                            &mut self.model,
+                            input.ty,
+                            &coords,
+                            expr.ty,
+                            grade.exponent,
+                            *power,
+                        );
+                    }
                     real_ext::shift(&mut self.model, input.ty, &coords, expr.ty, *power)
                 }
                 _ => unreachable!(),
@@ -3096,6 +3138,45 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::RealRhoOperation(op, grade, input) => {
+                let value = self.eval(input)?;
+                if matches!(op, RealRhoOp::Reduce(_)) && expr.ty == input.ty {
+                    return Ok(value);
+                }
+                match (op, value) {
+                    (RealRhoOp::Reduce(e), Value::RMCobar(terms)) => {
+                        real_rho::reduce(&mut self.model, &terms, *e)
+                    }
+                    (RealRhoOp::Reduce(_), Value::Cobar(words)) => {
+                        let terms = real_rho::from_complex(&mut self.model, *grade, &words)?;
+                        real_motivic::persist(&mut self.model, terms)
+                    }
+                    (RealRhoOp::Reduce(_), Value::Class(coords)) if coords.is_empty() => {
+                        Ok(Value::Class(coords))
+                    }
+                    (RealRhoOp::Reduce(e), Value::Class(coords)) => {
+                        if matches!(self.model.kind(input.ty), Kind::MExt(..)) {
+                            let words = self
+                                .model
+                                .adams(input.ty)?
+                                .representative(&mut self.model, &coords)?;
+                            let terms = real_rho::from_complex(&mut self.model, *grade, &words)?;
+                            real_ext::class(&mut self.model, expr.ty, &terms)
+                        } else {
+                            real_rho::reduce_class(&mut self.model, input.ty, &coords, expr.ty, *e)
+                        }
+                    }
+                    (RealRhoOp::Lift, Value::RMCobar(terms)) => Ok(Value::RMCobar(terms)),
+                    (RealRhoOp::Lift, Value::Class(coords)) => {
+                        real_ext::representative(&mut self.model, input.ty, &coords)
+                    }
+                    (
+                        RealRhoOp::Connect | RealRhoOp::ConnectRep | RealRhoOp::Beta,
+                        Value::Class(coords),
+                    ) => real_rho::connecting(&mut self.model, *op, input.ty, &coords, expr.ty),
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::RealBar(op, s, k, index) => {
                 let group = self.model.real_bars(*s, *k)?;
                 let bar = group.get(*index)?;
@@ -3189,6 +3270,9 @@ impl Engine {
                     rho_localized::differential(&mut self.model, &terms)
                 }
                 (CobarOp::Differential, Value::RMCobar(terms)) => {
+                    if let Kind::RMRhoCobar(grade) = *self.model.kind(input.ty) {
+                        return real_rho::differential(&mut self.model, grade, &terms);
+                    }
                     let terms = real_motivic::differential_support(&mut self.model, &terms)?;
                     real_motivic::persist(&mut self.model, terms)
                 }
@@ -3580,7 +3664,10 @@ impl Engine {
                     odd_cobar::persist(&mut self.model, terms)
                 }
                 (CobarOp::Representative, Value::Class(class)) => {
-                    if matches!(self.model.kind(input.ty), Kind::RMExt(..)) {
+                    if matches!(
+                        self.model.kind(input.ty),
+                        Kind::RMExt(..) | Kind::RMRhoExt(..)
+                    ) {
                         return real_ext::representative(&mut self.model, input.ty, &class);
                     }
                     if class.is_empty() {
@@ -5413,6 +5500,8 @@ impl Checker<'_> {
                 self.model.sheaf_hom_type(form, &source, &target, degree)
             }
             TypeForm::RMExt(grade) => self.model.rmext_type(grade),
+            TypeForm::RealRho(true, grade) => self.model.real_rho_ext_type(grade),
+            TypeForm::RealRho(false, grade) => self.model.real_rho_cobar_type(grade),
             TypeForm::RMBar(grade) => self.model.rmbar_type(grade),
             TypeForm::RMTriple(grade) => self.model.rm_triple_type(grade),
             TypeForm::PExt(p, s, t) => {
@@ -5791,7 +5880,7 @@ impl Checker<'_> {
                 let value = match self.model.kind(ty) {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
-                    Kind::RMCobar(..) => real_motivic::zero(),
+                    Kind::RMCobar(..) | Kind::RMRhoCobar(..) => real_motivic::zero(),
                     Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) | Kind::SheafHom(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
                     Kind::SheafPage(..) | Kind::SheafLocal(..) => odd_ext::zero(),
@@ -5799,7 +5888,7 @@ impl Checker<'_> {
                     Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
                         odd_ext::zero(),
-                    Kind::RhoBock(..) | Kind::RMExt(..) | Kind::RMBar(..) => cohomology::zero(),
+                    Kind::RhoBock(..) | Kind::RMExt(..) | Kind::RMBar(..) | Kind::RMRhoExt(..) => cohomology::zero(),
                     Kind::RhoLoc(..) => rho_localized::zero(),
                     Kind::RhoMin(..) => rho_minimal::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
@@ -6016,6 +6105,26 @@ impl Checker<'_> {
                         .rho_min_type(real_motivic::shifted(grade, power)?)?;
                     return Ok((ty, TypedForm::RhoShift(power, Box::new(input))));
                 }
+                let truncated = match *self.model.kind(input.ty) {
+                    Kind::RMRhoExt(grade) => Some((true, grade)),
+                    Kind::RMRhoCobar(grade) => Some((false, grade)),
+                    _ => None,
+                };
+                if let Some((is_class, grade)) = truncated {
+                    let power = usize::try_from(power).map_err(|_| {
+                        Error::plain("rhoShift on a rho truncation requires an unsigned exponent")
+                    })?;
+                    let shifted = real_rho::Grade {
+                        chain: real_motivic::shifted(grade.chain, power)?,
+                        ..grade
+                    };
+                    let ty = if is_class {
+                        self.model.real_rho_ext_type(shifted)?
+                    } else {
+                        self.model.real_rho_cobar_type(shifted)?
+                    };
+                    return Ok((ty, TypedForm::RhoShift(power, Box::new(input))));
+                }
                 let grade = self.real_grade(&input, "rhoShift")?;
                 let power = usize::try_from(power).map_err(|_| {
                     let label = if matches!(self.model.kind(input.ty), Kind::RMExt(..)) {
@@ -6038,15 +6147,22 @@ impl Checker<'_> {
                 let ty = match *self.model.kind(input.ty) {
                     Kind::RMCobar(grade) => self.model.mcobar_type(grade)?,
                     Kind::RMExt(grade) => self.model.mext_type(grade)?,
+                    Kind::RMRhoCobar(grade) => self.model.mcobar_type(grade.chain)?,
+                    Kind::RMRhoExt(grade) => self.model.mext_type(grade.chain)?,
                     _ => {
                         return Err(self.invalid_operand(
                             &input,
                             "realComplex",
-                            "an RMCobar cochain or RMExt class",
+                            "an RMCobar cochain or RMExt class, or a rho truncation of either",
                         ))
                     }
                 };
                 Ok((ty, TypedForm::RealComplex(Box::new(input))))
+            }
+            ExprForm::RealRhoOperation(op, input) => {
+                let input = self.expr(*input)?;
+                let (ty, grade) = self.real_rho_result(op, &input)?;
+                Ok((ty, TypedForm::RealRhoOperation(op, grade, Box::new(input))))
             }
             ExprForm::RhoNull(power, input) => {
                 let input = self.expr(*input)?;
@@ -7068,6 +7184,12 @@ impl Checker<'_> {
             }
             ExprForm::RMExtGenerator(grade, index, at) => {
                 let ty = self.model.rmext_type(grade)?;
+                let rank = self.model.real_ext(ty)?.rank();
+                let value = self.generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RealRhoGenerator(grade, index, at) => {
+                let ty = self.model.real_rho_ext_type(grade)?;
                 let rank = self.model.real_ext(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
@@ -10358,6 +10480,62 @@ impl Checker<'_> {
         })
     }
 
+    fn real_rho_result(
+        &mut self,
+        op: RealRhoOp,
+        input: &TypedExpr,
+    ) -> Result<(TypeId, motivic::Grade)> {
+        let kind = self.model.kind(input.ty);
+        if let RealRhoOp::Reduce(exponent) = op {
+            let (chain,is_class) = match *kind {
+                Kind::RMCobar(grade) => (grade,false),
+                Kind::RMExt(grade) => (grade,true),
+                Kind::RMRhoCobar(grade) | Kind::RMRhoExt(grade) => {
+                    if exponent > grade.exponent {
+                        return Err(Error::plain("rhoReduce cannot increase the truncation exponent"));
+                    }
+                    (grade.chain,matches!(kind,Kind::RMRhoExt(..)))
+                }
+                Kind::MCobar(grade) if exponent == 1 => (grade,false),
+                Kind::MExt(grade) if exponent == 1 => (grade,true),
+                _ => return Err(self.invalid_operand(input,op.name(),"a real-motivic cochain or class, a rho truncation, or a complex-motivic value when reducing to rho^1")),
+            };
+            let grade = real_rho::Grade::new(exponent, chain)?;
+            let ty = if is_class {
+                self.model.real_rho_ext_type(grade)?
+            } else {
+                self.model.real_rho_cobar_type(grade)?
+            };
+            return Ok((ty, chain));
+        }
+        let grade = match *kind {
+            Kind::RMRhoExt(grade) => grade,
+            Kind::RMRhoCobar(grade) if matches!(op, RealRhoOp::Lift) => grade,
+            _ => {
+                return Err(self.invalid_operand(
+                    input,
+                    op.name(),
+                    if matches!(op, RealRhoOp::Lift) {
+                        "an RMRhoCobar cochain or RMRhoExt class"
+                    } else {
+                        "an RMRhoExt class"
+                    },
+                ))
+            }
+        };
+        let ty = match op {
+            RealRhoOp::Lift => self.model.real_cobar_type(grade.chain)?,
+            RealRhoOp::Connect => self.model.rmext_type(grade.connecting()?)?,
+            RealRhoOp::ConnectRep => self.model.real_cobar_type(grade.connecting()?)?,
+            RealRhoOp::Beta => self.model.real_rho_ext_type(real_rho::Grade {
+                chain: grade.connecting()?,
+                ..grade
+            })?,
+            RealRhoOp::Reduce(..) => unreachable!(),
+        };
+        Ok((ty, grade.chain))
+    }
+
     fn rho_min_result(
         &mut self,
         op: RhoMinOp,
@@ -10415,6 +10593,20 @@ impl Checker<'_> {
         if let Kind::RhoLoc(grade) = *self.model.kind(argument.ty) {
             if matches!(op, CobarOp::Differential) {
                 return self.model.rho_loc_type(grade.differential()?);
+            }
+        }
+        if let Kind::RMRhoCobar(grade) = *self.model.kind(argument.ty) {
+            match op {
+                CobarOp::Differential => {
+                    return self.model.real_rho_cobar_type(grade.differential()?)
+                }
+                CobarOp::Class => return self.model.real_rho_ext_type(grade),
+                _ => {}
+            }
+        }
+        if let Kind::RMRhoExt(grade) = *self.model.kind(argument.ty) {
+            if matches!(op, CobarOp::Representative) {
+                return self.model.real_rho_cobar_type(grade);
             }
         }
         if let Kind::RMCobar(grade) = *self.model.kind(argument.ty) {
@@ -10985,6 +11177,7 @@ impl Checker<'_> {
                         | Kind::Cobar(..)
                         | Kind::MCobar(..)
                         | Kind::RMCobar(..)
+                        | Kind::RMRhoCobar(..)
                         | Kind::RhoBock(..)
                         | Kind::RhoLoc(..)
                         | Kind::RhoMin(..)
@@ -10997,6 +11190,7 @@ impl Checker<'_> {
                         | Kind::SheafHom(..)
                         | Kind::SheafPage(..)
                         | Kind::RMExt(..)
+                        | Kind::RMRhoExt(..)
                         | Kind::RMBar(..)
                         | Kind::SheafLocal(..)
                         | Kind::PCobar(..)
@@ -11100,6 +11294,15 @@ impl Checker<'_> {
                 Ok(self.model.named("S").unwrap())
             }
             BinaryOp::Concat => {
+                if let Kind::RMRhoCobar(a) = *self.model.kind(left.ty) {
+                    let Kind::RMRhoCobar(b) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "concat", "an RMRhoCobar cochain"));
+                    };
+                    return self.model.real_rho_cobar_type(a.product(b)?);
+                }
+                if matches!(self.model.kind(right.ty), Kind::RMRhoCobar(..)) {
+                    return Err(self.invalid_operand(left, "concat", "an RMRhoCobar cochain"));
+                }
                 if let Kind::RhoLoc(a) = *self.model.kind(left.ty) {
                     let Kind::RhoLoc(b) = *self.model.kind(right.ty) else {
                         return Err(self.invalid_operand(right, "concat", "a RhoLoc cochain"));
@@ -11150,6 +11353,15 @@ impl Checker<'_> {
                 self.model.profile_cobar_type(profile, length, degree)
             }
             BinaryOp::Yoneda => {
+                if let Kind::RMRhoExt(a) = *self.model.kind(left.ty) {
+                    let Kind::RMRhoExt(b) = *self.model.kind(right.ty) else {
+                        return Err(self.invalid_operand(right, "yoneda", "an RMRhoExt class"));
+                    };
+                    return self.model.real_rho_ext_type(a.product(b)?);
+                }
+                if matches!(self.model.kind(right.ty), Kind::RMRhoExt(..)) {
+                    return Err(self.invalid_operand(left, "yoneda", "an RMRhoExt class"));
+                }
                 if let Kind::RMExt(a) = *self.model.kind(left.ty) {
                     let Kind::RMExt(b) = *self.model.kind(right.ty) else {
                         return Err(self.invalid_operand(right, "yoneda", "an RMExt class"));

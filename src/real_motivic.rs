@@ -461,9 +461,22 @@ pub(crate) fn concat_support(
     left: &[Term],
     right: &[Term],
 ) -> Result<Vec<Term>> {
+    concat_below(model, left, right, u128::MAX)
+}
+
+pub(crate) fn concat_below(
+    model: &mut Model,
+    left: &[Term],
+    right: &[Term],
+    cutoff: u128,
+) -> Result<Vec<Term>> {
     let mut result = Support::new();
     for a in left {
         for b in right {
+            if a.rho as u128 + b.rho as u128 >= cutoff {
+                model.spend(1)?;
+                break;
+            }
             let cells = a.cells() + b.cells();
             cobar::check_storage(cells)?;
             model.spend(cells)?;
@@ -473,7 +486,7 @@ pub(crate) fn concat_support(
                 tau: a.tau,
                 word,
             };
-            for term in transport(model, term, a.word.len(), b.tau, u128::MAX)? {
+            for term in transport(model, term, a.word.len(), b.tau, cutoff)? {
                 toggle(model, &mut result, term)?;
             }
         }

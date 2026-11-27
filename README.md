@@ -380,6 +380,14 @@ Use `rmbarGen[s,k,i]` for the bar's `RMExt` generator and `rmbarRep[s,k,i]` for 
 
 The example gives $[\tau_0][\tau_0^2]$ exact depth one and order one. The two leading classes multiply to zero in filtration zero on the stable page, while their real-motivic product has a nonzero filtration-one class. It also checks depth two for $[\xi_1][\tau_0^4]$ and $[\tau_0^2][\tau_0^4]$. [Real-motivic multiplicative extensions](examples/real-rho-extensions.asl)
 
+### Real-motivic Ext modulo powers of rho
+
+`RMRhoCobar(e,s,t,w)` is the normalized real cobar modulo $\rho^e$ for $e\ge1$. `RMRhoExt(e,s,t,w)` is its cohomology, with dimension `rmrhoextdim[e,s,t,w];` and basis class `rmrhoextgen[e,s,t,w,i]`. `rhoReduce[e]` maps real cochains and classes to these types. It also reduces from a larger or equal truncation to a smaller cutoff. The differential and balanced concatenation in the quotient discard terms at exponent $e$ or above. Use `extClass`, `extRep`, `yoneda`, `add`, `zero`, and `rhoShift` with the quotient types. At $e=1$, `realComplex` identifies these types with `MCobar` and `MExt`. `rhoReduce[1]` on complex-motivic cochains and classes gives the inverse identification.
+
+`rhoTruncLift` reads the normalized real cochain representing a truncated cochain or class. For a class $x$ modulo $\rho^e$, `rhoConnectRep(x)` computes $d\widetilde x/\rho^e$ from that lift. Its class `rhoConnect(x)` is the connecting map $\delta_e$ in `RMExt(s+1,t+e,w+e)`. In the long exact sequence, this map follows reduction and is followed by multiplication by $\rho^e$. For $a\le e$ one has $\delta_a(\operatorname{red}_a x)=\rho^{e-a}\delta_e(x)$. The internal Bockstein `rhoBeta(x)` is `rhoReduce[e](rhoConnect(x))`. It satisfies the Leibniz rule and squares to zero.
+
+The example computes a three-term non-scalar cycle with nonzero $\beta_2$. The scalar $\tau^{32}$ is closed modulo $\rho^e$ for $e\le32$. Its connecting cochain is $\rho^{32-e}[\tau_0^{32}]$, of exact real $\rho$-order $e$. The example computes the typed connecting class at $e=32$ and the nonzero quotient differential of $\tau^{32}$ at $e=33$. [Real-motivic rho quotient example](examples/real-rho-quotient.asl)
+
 ### Real-motivic triple Massey products
 
 Use `rmTriple(a,b,c)` for the affine coset of the ordered triple Massey product. Each input may be an `RMExt` class or a closed `RMCobar` cochain. The adjacent balanced products $ab$ and $bc$ must be boundaries. `rmMasseyNull(a,b)` gives an actual primitive of $ab$ in positive total cobar length. `rmMassey(a,b,c)` gives the corresponding cocycle $uc+av$, where $du=ab$ and $dv=bc$. This raw operation needs only the defining system. For an adjacent product of length zero the product must already vanish and its negative-length primitive contributes zero.

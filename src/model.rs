@@ -44,6 +44,7 @@ use crate::real_ext;
 use crate::real_extensions;
 use crate::real_massey;
 use crate::real_motivic;
+use crate::real_rho;
 use crate::rho_bock;
 use crate::rho_localized;
 use crate::rho_minimal;
@@ -164,6 +165,8 @@ pub(crate) enum Kind {
     Cobar(usize, usize),
     MCobar(motivic::Grade),
     RMCobar(motivic::Grade),
+    RMRhoCobar(real_rho::Grade),
+    RMRhoExt(real_rho::Grade),
     RhoBock(rho_bock::Grade),
     RhoLoc(motivic::Grade),
     RhoMin(motivic::Grade),
@@ -707,12 +710,14 @@ impl Model {
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
             | Kind::RMCobar(..)
+            | Kind::RMRhoCobar(..)
             | Kind::RhoLoc(..)
             | Kind::RhoMin(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMRhoExt(..)
             | Kind::RMBar(..)
             | Kind::RMTriple(..)
             | Kind::RhoBock(..)
@@ -877,6 +882,7 @@ impl Model {
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
                 | Kind::RMCobar(..)
+                | Kind::RMRhoCobar(..)
                 | Kind::RhoLoc(..)
                 | Kind::RhoMin(..)
                 | Kind::PCobar(..)
@@ -894,6 +900,7 @@ impl Model {
                 | Kind::ExtAn(..)
                 | Kind::MExt(..)
                 | Kind::RMExt(..)
+                | Kind::RMRhoExt(..)
                 | Kind::RMBar(..)
                 | Kind::RMTriple(..)
                 | Kind::RhoBock(..)
@@ -1794,6 +1801,14 @@ impl Model {
         self.inhabited_type(Kind::MCobar(grade), 0)
     }
 
+    pub(crate) fn real_rho_cobar_type(&mut self, grade: real_rho::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMRhoCobar(grade), 0)
+    }
+
+    pub(crate) fn real_rho_ext_type(&mut self, grade: real_rho::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMRhoExt(grade), 0)
+    }
+
     pub(crate) fn real_cobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RMCobar(grade), 0)
     }
@@ -1847,10 +1862,13 @@ impl Model {
         if let Some(group) = self.real_ext.get(&ty) {
             return Ok(group.clone());
         }
-        let Kind::RMExt(grade) = *self.kind(ty) else {
-            unreachable!();
-        };
-        let group = Rc::new(real_ext::Group::build(self, grade)?);
+        let group = Rc::new(match *self.kind(ty) {
+            Kind::RMExt(grade) => real_ext::Group::build(self, grade)?,
+            Kind::RMRhoExt(grade) => {
+                real_ext::Group::build_below(self, grade.chain, Some(grade.exponent))?
+            }
+            _ => unreachable!(),
+        });
         self.real_ext.insert(ty, group.clone());
         Ok(group)
     }
@@ -3118,12 +3136,14 @@ impl Model {
             | Kind::CobarAn(..)
             | Kind::MCobar(..)
             | Kind::RMCobar(..)
+            | Kind::RMRhoCobar(..)
             | Kind::RhoLoc(..)
             | Kind::RhoMin(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMRhoExt(..)
             | Kind::RMBar(..)
             | Kind::RMTriple(..)
             | Kind::RhoBock(..)
@@ -3365,6 +3385,14 @@ impl Model {
                 out.push(&format!("RMCobar({s}, {t}, {w})"))
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
+            &Kind::RMRhoCobar(real_rho::Grade {
+                exponent,
+                chain: motivic::Grade { s, t, w },
+            }) => out.push(&format!("RMRhoCobar({exponent}, {s}, {t}, {w})")),
+            &Kind::RMRhoExt(real_rho::Grade {
+                exponent,
+                chain: motivic::Grade { s, t, w },
+            }) => out.push(&format!("RMRhoExt({exponent}, {s}, {t}, {w})")),
             &Kind::RMExt(motivic::Grade { s, t, w }) => out.push(&format!("RMExt({s}, {t}, {w})")),
             &Kind::RMBar(motivic::Grade { s, t, w }) => out.push(&format!("RMBar({s}, {t}, {w})")),
             &Kind::RMTriple(motivic::Grade { s, t, w }) => {
@@ -4163,7 +4191,7 @@ impl Model {
                         Value::Class(support.iter().map(|&i| living[i]).collect())
                     })?
                 }
-                Kind::RMExt(..) => {
+                Kind::RMExt(..) | Kind::RMRhoExt(..) => {
                     let rank = self.real_ext(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
                 }
@@ -4550,6 +4578,12 @@ impl Model {
                     let basis = rho_localized::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
                     self.enumerate_supports(0, basis.len(), |support| {
                         Value::RhoLoc(support.iter().map(|&index| basis[index].clone()).collect())
+                    })?
+                }
+                Kind::RMRhoCobar(grade) => {
+                    let basis = real_rho::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::RMCobar(support.iter().map(|&i| basis[i].clone()).collect())
                     })?
                 }
                 Kind::RMCobar(grade) => {
