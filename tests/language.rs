@@ -27,6 +27,26 @@ fn cli_accepts_the_full_syntax_depth_and_reports_overflow_as_a_diagnostic() {
 }
 
 #[test]
+fn named_unary_parsing_respects_the_full_syntax_depth() {
+    let frobenius = |depth| {
+        format!(
+            "rvunram F[3,1]{{0,1}}; show {}rvUnramElem[F]{{1}}{};",
+            "rvUnramFrob[1](".repeat(depth),
+            ")".repeat(depth)
+        )
+    };
+
+    assert_eq!(stdout(interpret(&frobenius(64))), "RVUnram(F)[1]\n");
+    let result = interpret(&frobenius(65));
+    assert_eq!(result.status.code(), Some(1));
+    let error = diagnostic(result);
+    assert!(
+        error.contains("syntax nesting exceeds 64 levels"),
+        "{error}"
+    );
+}
+
+#[test]
 fn rotation_descends_and_its_finite_homotopy_class_is_rigid() {
     assert_eq!(
         stdout(example("descent")),

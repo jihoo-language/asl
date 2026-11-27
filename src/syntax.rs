@@ -964,7 +964,7 @@ pub(crate) enum ExprForm {
     ),
     JetOperation(JetOp, Box<ParsedExpr>),
     JetGenerator(JetPageSpec, usize, Span),
-    JetTerm(JetTerm),
+    JetTerm(Box<JetTerm>),
     ExtGenerator(usize, usize, usize, Span),
     MExtGenerator(MotivicGrade, usize, Span),
     RMExtGenerator(MotivicGrade, usize, Span),
@@ -982,12 +982,12 @@ pub(crate) enum ExprForm {
     MayLiftTo(usize, usize, Box<ParsedExpr>),
     HigherRestriction(usize, Vec<ParsedExpr>),
     XExtGenerator(ParsedType, usize, usize, usize, Span),
-    MapWord(MapGenerator, MapGenerator, Box<ParsedExpr>),
-    MapExtGenerator(ParsedType, ParsedType, usize, i64, usize, Span),
+    MapWord(Box<[MapGenerator; 2]>, Box<ParsedExpr>),
+    MapExtGenerator(Box<[ParsedType; 2]>, usize, i64, usize, Span),
     MapExtIdentity(ParsedType),
     MapMayGenerator(MapMaySpec, usize, Span),
     QExtGenerator(QSpec, usize, Span),
-    QTerm(QTerm),
+    QTerm(Box<QTerm>),
     QIdentity(ParsedType, Vec<usize>),
     RVGenerator(RankVarietySpec, usize, Span),
     RVIdentity(ParsedType, Vec<usize>, usize, Vec<usize>),
@@ -1198,7 +1198,7 @@ pub(crate) enum ExprForm {
     RvCartier(DiffFamily, Box<ParsedExpr>),
     VShift(i64, Box<ParsedExpr>),
     VRatio(usize, Box<ParsedExpr>),
-    VBarCertificate(BarCertificate, BarFamilySpec, i64, usize, usize),
+    VBarCertificate(BarCertificate, Box<BarFamilySpec>, i64, usize, usize),
     QRestrict(Vec<usize>, Box<ParsedExpr>),
     MayClass(usize, usize, Box<ParsedExpr>),
     MayGenerator(usize, usize, usize, usize, usize, Span),
@@ -1225,9 +1225,9 @@ pub(crate) enum ExprForm {
     Pair(Box<ParsedExpr>, Box<ParsedExpr>),
     Fst(Box<ParsedExpr>),
     Snd(Box<ParsedExpr>),
-    Table(ParsedType, ParsedType, Entries),
+    Table(Box<[ParsedType; 2]>, Entries),
     Restrict(Label, Box<ParsedExpr>),
-    Sew(ParsedType, ParsedType, Entries),
+    Sew(Box<[ParsedType; 2]>, Entries),
 }
 
 pub(crate) struct Statement {
@@ -17034,6 +17034,15 @@ impl<'src> Parser<'src> {
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
             }
+            _ => self.expr_named_atom(span, nest),
+        }
+    }
+
+    // Recursive groups and lambdas use expr_atom's small frame. The large
+    // command dispatch frame is needed only when parsing a named atom.
+    #[inline(never)]
+    fn expr_named_atom(&mut self, span: Span, nest: usize) -> Result<ParsedExpr> {
+        match self.token() {
             Token::Word(name) if crate::set_topology::Operation::detect(name).is_some() => self
                 .set_topology_expression(
                     crate::set_topology::Operation::detect(name).unwrap(),
@@ -17260,9 +17269,9 @@ impl<'src> Parser<'src> {
                     .max()
                     .unwrap_or(0);
                 let kind = if is_table {
-                    ExprForm::Table(*domain, *codomain, entries)
+                    ExprForm::Table(Box::new([*domain, *codomain]), entries)
                 } else {
-                    ExprForm::Sew(*domain, *codomain, entries)
+                    ExprForm::Sew(Box::new([*domain, *codomain]), entries)
                 };
                 expr(span, kind, depth)
             }
@@ -20774,7 +20783,7 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(
                         span,
-                        ExprForm::MapExtGenerator(source, target, s, t, index, at),
+                        ExprForm::MapExtGenerator(Box::new([source, target]), s, t, index, at),
                         0,
                     );
                 }
@@ -20787,7 +20796,7 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     return expr(
                         span,
-                        ExprForm::MapWord(source, target, Box::new(input)),
+                        ExprForm::MapWord(Box::new([source, target]), Box::new(input)),
                         depth,
                     );
                 }
@@ -20807,12 +20816,12 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(
                         span,
-                        ExprForm::JetTerm(JetTerm {
+                        ExprForm::JetTerm(Box::new(JetTerm {
                             source,
                             target,
                             path,
                             power,
-                        }),
+                        })),
                         0,
                     );
                 }
@@ -20872,12 +20881,12 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(
                         span,
-                        ExprForm::QTerm(QTerm {
+                        ExprForm::QTerm(Box::new(QTerm {
                             source,
                             target,
                             selected,
                             powers,
-                        }),
+                        })),
                         0,
                     );
                 }
@@ -22116,7 +22125,7 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(
                         span,
-                        ExprForm::VBarCertificate(kind, spec, degree, exponent, index),
+                        ExprForm::VBarCertificate(kind, Box::new(spec), degree, exponent, index),
                         0,
                     );
                 }

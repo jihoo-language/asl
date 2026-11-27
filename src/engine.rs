@@ -20311,7 +20311,8 @@ impl Checker<'_> {
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
-            ExprForm::MapExtGenerator(source, target, s, t, index, at) => {
+            ExprForm::MapExtGenerator(endpoints, s, t, index, at) => {
+                let [source, target] = *endpoints;
                 let source = self.ty(source)?;
                 let target = self.ty(target)?;
                 let ty = self.model.map_ext_type(source, target, s, t)?;
@@ -20325,7 +20326,8 @@ impl Checker<'_> {
                 let value = map_ext::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
-            ExprForm::MapWord(source, target, input) => {
+            ExprForm::MapWord(endpoints, input) => {
+                let [source, target] = *endpoints;
                 let source_ty = self.ty(source.base)?;
                 let target_ty = self.ty(target.base)?;
                 let input = self.expr(*input)?;
@@ -21609,7 +21611,7 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::VRatio(k, Box::new(input))))
             }
             ExprForm::VBarCertificate(operation, spec, degree, exponent, index) => {
-                let family = self.vbar_family(spec)?;
+                let family = self.vbar_family(*spec)?;
                 let ty = operation.ty(self.model, family, degree, exponent)?;
                 let bars = self.model.v_bars(family)?;
                 let value = bars.certificate(self.model, operation, degree, exponent, index)?;
@@ -21845,7 +21847,8 @@ impl Checker<'_> {
             }
             ExprForm::Fst(pair) => self.projection(*pair, true),
             ExprForm::Snd(pair) => self.projection(*pair, false),
-            ExprForm::Table(domain, range, entries) => {
+            ExprForm::Table(endpoints, entries) => {
+                let [domain, range] = *endpoints;
                 let domain = self.ty(domain)?;
                 let range = self.ty(range)?;
                 let rows = self.table(domain, range, entries, span)?;
@@ -21867,7 +21870,8 @@ impl Checker<'_> {
                 let ty = self.model.arrow(star, range)?;
                 Ok((ty, TypedForm::Restrict(Box::new(base))))
             }
-            ExprForm::Sew(domain, range, entries) => {
+            ExprForm::Sew(endpoints, entries) => {
+                let [domain, range] = *endpoints;
                 let domain = self.ty(domain)?;
                 let range = self.ty(range)?;
                 let charts = self.atlas(domain, range, entries, span)?;
