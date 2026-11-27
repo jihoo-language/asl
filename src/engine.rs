@@ -1,3 +1,4 @@
+use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -871,6 +872,11 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    KoszulTerm(u32, Box<TypedExpr>),
+    KoszulDiff(Box<TypedExpr>),
+    KoszulCast(bool, Box<TypedExpr>),
+    KoszulProduct(bool, Box<[TypedExpr; 2]>),
+    KoszulScale(hodge_wick::Entry, Box<TypedExpr>),
     HodgeTensorCup(Box<[TypedExpr; 2]>),
     HodgeTensorCast(bool, Box<TypedExpr>),
     VerbitskyPrimitive(usize, Box<TypedExpr>),
@@ -2372,6 +2378,9 @@ impl Engine {
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
+            StatementForm::VerbitskyKoszul(command) => {
+                return self.koszul_command(*command).map(Some)
+            }
             StatementForm::HilbertCohomology(report) => {
                 return self.hilbert_cohomology_report(*report).map(Some)
             }
@@ -5983,6 +5992,57 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn koszul_command(&mut self, command: koszul::Command) -> Result<String> {
+        match command {
+            koszul::Command::Betti(name, length, homological, weight) => {
+                let grade = koszul::Grade {
+                    basis: name.text.as_str().into(),
+                    length,
+                    homological,
+                    weight,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                form.validate_koszul(&grade)?;
+                let value = form.tor_betti(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyTorBetti[{}, {length}, {homological}, {weight}] = {value}",
+                    name.text
+                ))
+            }
+            koszul::Command::Table(name, length) => {
+                let grade = koszul::Grade {
+                    basis: name.text.as_str().into(),
+                    length,
+                    homological: 0,
+                    weight: 0,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                form.validate_koszul(&grade)?;
+                let value = form.tor_table(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyTorTable[{}, {length}] = {value}",
+                    name.text
+                ))
+            }
+            koszul::Command::Relation(input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self
+                    .checker()
+                    .koszul_grade(&input, "rvVerbitskyMinimalRelation", true)?
+                    .clone();
+                let Value::VerbitskyKoszul(cycle) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.minimal_relation(&mut self.model, &grade, &cycle)?;
+                Ok(format!(
+                    "rvVerbitskyMinimalRelation[{}] = {value}",
+                    grade.weight
+                ))
             }
         }
     }
@@ -9601,6 +9661,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::HodgeTensor(a), Value::HodgeTensor(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11606,6 +11669,73 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::KoszulTerm(mask, input) => {
+                let Value::HodgeTensor(coefficient) = self.eval(input)? else {
+                    unreachable!()
+                };
+                koszul::Chain::term(&mut self.model, *mask, &coefficient)?.persist(&mut self.model)
+            }
+            TypedForm::KoszulDiff(input) => {
+                let Kind::VerbitskyKoszul(grade) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Value::VerbitskyKoszul(chain) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                form.koszul_diff(&mut self.model, &grade, &chain)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::KoszulCast(project, input) => {
+                let value = self.eval(input)?;
+                if !project {
+                    return Ok(value);
+                }
+                let Value::VerbitskyKoszul(chain) = value else {
+                    unreachable!()
+                };
+                let Kind::VerbitskyTor(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                self.model
+                    .hodge_wick(&grade.basis)?
+                    .tor_project(&mut self.model, &grade, &chain)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::KoszulProduct(tor, input) => {
+                let (Kind::VerbitskyTor(grade) | Kind::VerbitskyKoszul(grade)) =
+                    self.model.kind(expr.ty)
+                else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let form = self.model.hodge_wick(&grade.basis)?;
+                if !form.supports_koszul(&grade) {
+                    return koszul::Chain::default().persist(&mut self.model);
+                }
+                let (Value::VerbitskyKoszul(left), Value::VerbitskyKoszul(right)) =
+                    (self.eval(&input[0])?, self.eval(&input[1])?)
+                else {
+                    unreachable!()
+                };
+                let product = form.koszul_product(&mut self.model, &grade, &left, &right)?;
+                if *tor {
+                    form.tor_project(&mut self.model, &grade, &product)?
+                        .persist(&mut self.model)
+                } else {
+                    product.persist(&mut self.model)
+                }
+            }
+            TypedForm::KoszulScale(amount, input) => {
+                let Value::VerbitskyKoszul(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                input
+                    .scale(&mut self.model, *amount)?
                     .persist(&mut self.model)
             }
             TypedForm::HodgeTensorCup(inputs) => {
@@ -14475,6 +14605,17 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::VerbitskyKoszul(name, length, homological, weight, tor) => {
+                self.model.verbitsky_koszul_type(
+                    koszul::Grade {
+                        basis: name.text.into(),
+                        length,
+                        homological,
+                        weight,
+                    },
+                    tor,
+                )
+            }
             TypeForm::Verbitsky(name, length, degree) => {
                 self.model.verbitsky_type(nakajima::Grade {
                     basis: name.text.into(),
@@ -15584,6 +15725,7 @@ impl Checker<'_> {
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
+                    Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
@@ -17820,6 +17962,7 @@ impl Checker<'_> {
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
+            ExprForm::VerbitskyKoszul(operation) => self.koszul_expression(*operation),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
             }
@@ -18713,6 +18856,13 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..)
+                ) {
+                    return Ok((input.ty, TypedForm::KoszulScale((-1, 1), Box::new(input))));
+                }
+
                 if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
                     return Ok((input.ty, TypedForm::K3LatticeNegate(Box::new(input))));
                 }
@@ -22660,6 +22810,8 @@ impl Checker<'_> {
                         | Kind::HilbertCohomology(..)
                         | Kind::HodgeTensor(..)
                         | Kind::Verbitsky(..)
+                        | Kind::VerbitskyKoszul(..)
+                        | Kind::VerbitskyTor(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
@@ -24355,6 +24507,105 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
                 ))
+            }
+        }
+    }
+
+    fn koszul_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+        tor: bool,
+    ) -> Result<&koszul::Grade> {
+        match (self.model.kind(input.ty), tor) {
+            (Kind::VerbitskyKoszul(grade), false) | (Kind::VerbitskyTor(grade), true) => Ok(grade),
+            _ => Err(self.invalid_operand(
+                input,
+                operation,
+                if tor {
+                    "an RVVerbitskyTor class"
+                } else {
+                    "an RVVerbitskyKoszul chain"
+                },
+            )),
+        }
+    }
+
+    fn koszul_expression(&mut self, expression: koszul::Expression) -> Result<(TypeId, TypedForm)> {
+        use koszul::Expression;
+        match expression {
+            Expression::Term(indices, input) => {
+                let input = self.expr(*input)?;
+                let source = self
+                    .hodge_tensor_grade(&input, "rvVerbitskyKoszulTerm", true)?
+                    .clone();
+                let form = self.model.hodge_wick(&source.basis)?;
+                let (mask, grade) = form.term_grade(&source, &indices)?;
+                let ty = self.model.verbitsky_koszul_type(grade, false)?;
+                Ok((ty, TypedForm::KoszulTerm(mask, Box::new(input))))
+            }
+            Expression::Differential(input) => {
+                let input = self.expr(*input)?;
+                let grade = self
+                    .koszul_grade(&input, "rvVerbitskyKoszulDiff", false)?
+                    .differential()?;
+                let ty = self.model.verbitsky_koszul_type(grade, false)?;
+                Ok((ty, TypedForm::KoszulDiff(Box::new(input))))
+            }
+            Expression::Cast(project, input) => {
+                let input = self.expr(*input)?;
+                let operation = if project {
+                    "rvVerbitskyTorClass"
+                } else {
+                    "rvVerbitskyTorRepresentative"
+                };
+                let grade = self.koszul_grade(&input, operation, !project)?.clone();
+                let ty = self.model.verbitsky_koszul_type(grade, project)?;
+                Ok((ty, TypedForm::KoszulCast(project, Box::new(input))))
+            }
+            Expression::Basis(name, length, homological, weight, index) => {
+                let grade = koszul::Grade {
+                    basis: name.text.into(),
+                    length,
+                    homological,
+                    weight,
+                };
+                let ty = self.model.verbitsky_koszul_type(grade.clone(), true)?;
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form
+                    .tor_basis(self.model, &grade, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Product(tor, inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let name = if tor {
+                    "rvVerbitskyTorCup"
+                } else {
+                    "rvVerbitskyKoszulCup"
+                };
+                let grade = self
+                    .koszul_grade(&left, name, tor)?
+                    .product(self.koszul_grade(&right, name, tor)?)?;
+                let ty = self.model.verbitsky_koszul_type(grade, tor)?;
+                Ok((ty, TypedForm::KoszulProduct(tor, Box::new([left, right]))))
+            }
+            Expression::Scale(tor, scalar, input) => {
+                if scalar.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                let name = if tor {
+                    "rvVerbitskyTorScale"
+                } else {
+                    "rvVerbitskyKoszulScale"
+                };
+                self.koszul_grade(&input, name, tor)?;
+                Ok((input.ty, TypedForm::KoszulScale(scalar, Box::new(input))))
             }
         }
     }

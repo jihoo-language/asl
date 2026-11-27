@@ -153,6 +153,7 @@ pub(crate) enum TypeForm {
     HilbertCohomology(Label, i128, i128),
     HodgeTensor(Label, i128, i128),
     Verbitsky(Label, i128, i128),
+    VerbitskyKoszul(Label, i128, i128, i128, bool),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
@@ -1036,6 +1037,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
+    VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     OG6Clifford(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression>,
@@ -1287,6 +1289,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
+    VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
     KSExterior(
@@ -6359,6 +6362,99 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::HodgeWick(Box::new(command)))
     }
 
+    fn koszul_grade(&mut self) -> Result<(Label, i128, i128, i128)> {
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+        self.expect(Token::Comma)?;
+        let homological =
+            self.signed_wide("a Koszul homological degree", "Koszul homological degree")?;
+        self.expect(Token::Comma)?;
+        let weight = self.signed_wide("a Koszul internal weight", "Koszul internal weight")?;
+        Ok((basis, length, homological, weight))
+    }
+
+    fn koszul_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command;
+        self.advance()?;
+        let command = match name {
+            "rvVerbitskyMinimalRelation" => Command::Relation(Box::new(self.paren_expr(0)?)),
+            "rvVerbitskyTorTable" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+                self.expect(Token::RBracket)?;
+                Command::Table(basis, length)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let (basis, length, p, w) = self.koszul_grade()?;
+                self.expect(Token::RBracket)?;
+                Command::Betti(basis, length, p, w)
+            }
+        };
+        Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
+    }
+
+    fn koszul_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression;
+        let (expression, depth) = match name {
+            "rvVerbitskyKoszulTerm" => {
+                let indices = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Term(indices, Box::new(input)), depth)
+            }
+            "rvVerbitskyTorBasis" => {
+                self.expect(Token::LBracket)?;
+                let (basis, length, p, w) = self.koszul_grade()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(basis, length, p, w, index), 0)
+            }
+            "rvVerbitskyKoszulCup" | "rvVerbitskyTorCup" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (
+                    Expression::Product(name == "rvVerbitskyTorCup", Box::new(pair)),
+                    depth,
+                )
+            }
+            "rvVerbitskyKoszulScale" | "rvVerbitskyTorScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator = self.signed_wide("an integer numerator", "Koszul numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator =
+                    self.signed_wide("a positive denominator", "Koszul denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Scale(
+                        name == "rvVerbitskyTorScale",
+                        (numerator, denominator),
+                        Box::new(input),
+                    ),
+                    depth,
+                )
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let input = Box::new(input);
+                let operation = if name == "rvVerbitskyKoszulDiff" {
+                    Expression::Differential(input)
+                } else {
+                    Expression::Cast(name == "rvVerbitskyTorClass", input)
+                };
+                (operation, depth)
+            }
+        };
+        expr(span, ExprForm::VerbitskyKoszul(Box::new(expression)), depth)
+    }
+
     fn hodge_tensor_expression(
         &mut self,
         name: &str,
@@ -9254,6 +9350,11 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyRelations"
                 | "rvVerbitskySignature"),
             ) => self.hodge_wick_statement(command)?,
+            Token::Word(
+                command @ ("rvVerbitskyTorBetti"
+                | "rvVerbitskyTorTable"
+                | "rvVerbitskyMinimalRelation"),
+            ) => self.koszul_statement(command)?,
             Token::Word(command @ ("rvKummerDivPair" | "rvKummerFujiki")) => {
                 self.kummer_divisor_statement(command)?
             }
@@ -13204,6 +13305,17 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
+        if matches!(name.text.as_str(), "RVVerbitskyKoszul" | "RVVerbitskyTor")
+            && self.eat(Token::LParen)?
+        {
+            let (basis, length, p, w) = self.koszul_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::VerbitskyKoszul(basis, length, p, w, name.text == "RVVerbitskyTor"),
+                0,
+            );
+        }
         if matches!(
             name.text.as_str(),
             "RVNakajima" | "RVHilbCoh" | "RVHodgeTensor" | "RVVerbitsky"
@@ -15037,6 +15149,22 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (name.text == "rvVerbitskyKoszulTerm" && self.token() == Token::LBrace)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyTorBasis" | "rvVerbitskyKoszulScale" | "rvVerbitskyTorScale"
+                    ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyKoszulDiff"
+                            | "rvVerbitskyTorClass"
+                            | "rvVerbitskyTorRepresentative"
+                            | "rvVerbitskyKoszulCup"
+                            | "rvVerbitskyTorCup"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.koszul_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

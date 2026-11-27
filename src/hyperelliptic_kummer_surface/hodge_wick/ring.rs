@@ -10,6 +10,7 @@ use super::moments::Moments;
 use super::rational::{Rational, LIMBS};
 use super::{multiply_powers, storage, work_limit, Form, Grade, Power, Tensor};
 
+pub(crate) mod koszul;
 mod linear;
 use linear::Echelon;
 
