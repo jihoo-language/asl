@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
-use crate::rv_unram::Ring;
+use crate::rv_unram::{ResidueEmbedding, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) enum Command {
@@ -844,6 +844,42 @@ impl Isogeny {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn base_change(
+        &self,
+        model: &mut Model,
+        embedding: &ResidueEmbedding<'_>,
+        source: &Curve,
+        target: &Curve,
+    ) -> Result<Self> {
+        let polynomial = embedding.coefficients(model, &self.kernel.polynomial)?;
+        let kernel = Rc::new(Kernel::from_certified(
+            model,
+            source,
+            self.kernel.ell,
+            polynomial,
+        )?);
+        let map = Self {
+            source: Rc::clone(&self.source),
+            target: Rc::clone(&self.target),
+            kernel,
+            numerator: embedding.coefficients(model, &self.numerator)?,
+            denominator: embedding.coefficients(model, &self.denominator)?,
+            derivative_numerator: embedding.coefficients(model, &self.derivative_numerator)?,
+            derivative_denominator: embedding.coefficients(model, &self.derivative_denominator)?,
+        };
+        // The normalized map is the base change of the original map. Check
+        // its equation using the actual source and target presentations.
+        map.certify(model, source, target)?;
+        model.allocate(
+            12 + source.field().cells()
+                * (map.numerator.len()
+                    + map.denominator.len()
+                    + map.derivative_numerator.len()
+                    + map.derivative_denominator.len()),
+        )?;
+        Ok(map)
     }
 
     pub(crate) fn apply(

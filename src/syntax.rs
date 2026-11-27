@@ -1031,6 +1031,7 @@ pub(crate) enum ExprForm {
     ECEndCanonical(Box<crate::elliptic_end_order::canonical::Expression>),
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Address>),
     ECCMCycle(Box<crate::elliptic_end_order::cycle::Expression>),
+    ECCMAction(Box<crate::elliptic_end_order::realization::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1269,6 +1270,7 @@ pub(crate) enum StatementForm {
     ECEndOrder(Box<crate::elliptic_end_order::Statement>),
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Statement>),
     ECCMCycle(Box<crate::elliptic_end_order::cycle::Statement>),
+    ECCMAction(Box<crate::elliptic_end_order::realization::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3932,6 +3934,31 @@ impl<'src> Parser<'src> {
             ell,
             orientation == 1,
         ))
+    }
+
+    fn ec_cm_action_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::realization::Statement;
+        self.advance()?;
+        let command = if name == "rvECCMActionData" {
+            self.expect(Token::LBracket)?;
+            Statement::Data(self.label()?)
+        } else {
+            let action = self.label()?;
+            self.expect(Token::LBracket)?;
+            let source = self.label()?;
+            if name == "rveccmactionbase" {
+                self.expect(Token::Comma)?;
+                Statement::BaseChange(action, source, self.label()?)
+            } else {
+                let mut cycles = Vec::new();
+                while self.eat(Token::Comma)? {
+                    cycles.push(self.label()?);
+                }
+                Statement::Define(action, source, cycles)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::ECCMAction(Box::new(command)))
     }
 
     fn ec_cm_cycle_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -7769,6 +7796,9 @@ impl<'src> Parser<'src> {
                 name
                 @ ("rveccmcycle" | "rvECCMCycleData" | "rvECCMCycleStep" | "rvECCMCycleVerify"),
             ) => self.ec_cm_cycle_statement(name)?,
+            Token::Word(name @ ("rveccmaction" | "rveccmactionbase" | "rvECCMActionData")) => {
+                self.ec_cm_action_statement(name)?
+            }
             Token::Word(
                 name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
             ) => self.cm_artin_statement(name)?,
@@ -13533,6 +13563,35 @@ impl<'src> Parser<'src> {
                         (Expression::Element(cycle), 0)
                     };
                     return expr(span, ExprForm::ECCMCycle(Box::new(expression)), depth);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvECCMAct" | "rvECCMActionMap" | "rvECCMActionGenerator"
+                ) && self.eat(Token::LBracket)?
+                {
+                    use crate::elliptic_end_order::realization::Expression;
+                    let action = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let (expression, depth) = match name.text.as_str() {
+                        "rvECCMAct" => {
+                            self.expect(Token::LParen)?;
+                            let input = self.exact_arguments(
+                                nest,
+                                span,
+                                &name.text,
+                                "an endomorphism and an elliptic point",
+                            )?;
+                            let depth = input[0].depth.max(input[1].depth) + 1;
+                            (Expression::Apply(action, input), depth)
+                        }
+                        "rvECCMActionMap" => {
+                            let input = self.paren_expr(nest)?;
+                            let depth = input.depth + 1;
+                            (Expression::Expand(action, Box::new(input)), depth)
+                        }
+                        _ => (Expression::Generator(action), 0),
+                    };
+                    return expr(span, ExprForm::ECCMAction(Box::new(expression)), depth);
                 }
                 if (matches!(
                     name.text.as_str(),

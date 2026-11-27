@@ -27,6 +27,7 @@ use crate::elliptic_end_order;
 use crate::elliptic_end_order::canonical as ec_canonical;
 use crate::elliptic_end_order::cycle as ec_cm_cycle;
 use crate::elliptic_end_order::horizontal as ec_horizontal;
+use crate::elliptic_end_order::realization as ec_cm_action;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
 use crate::elliptic_modular;
@@ -784,6 +785,8 @@ enum TypedForm {
     ECEnd(ECEndAction),
     ECEndCanonical(ec_canonical::Lift, ECEndCanonicalAction),
     ECCMCycleApply(Rc<ec_cm_cycle::Cycle>, Box<TypedExpr>),
+    ECCMActionApply(Rc<ec_cm_action::Realization>, Box<[TypedExpr; 2]>),
+    ECCMActionMap(Rc<ec_cm_action::Realization>, Box<TypedExpr>),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -2038,6 +2041,7 @@ impl Engine {
             StatementForm::ECEndOrder(command) => return self.ec_end_order_statement(*command),
             StatementForm::ECHorizontal(command) => return self.ec_horizontal_statement(*command),
             StatementForm::ECCMCycle(command) => return self.ec_cm_cycle_statement(*command),
+            StatementForm::ECCMAction(command) => return self.ec_cm_action_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5171,6 +5175,28 @@ impl Engine {
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
             }
+        }
+    }
+
+    fn ec_cm_action_statement(
+        &mut self,
+        statement: ec_cm_action::Statement,
+    ) -> Result<Option<String>> {
+        use ec_cm_action::Statement;
+        match statement {
+            Statement::Define(name, certificate, cycles) => {
+                self.model.define_ec_cm_action(name, |model| {
+                    ec_cm_action::Realization::new(model, certificate, cycles)
+                })?;
+                Ok(None)
+            }
+            Statement::BaseChange(name, source, target) => {
+                self.model.define_ec_cm_action(name, |model| {
+                    model.ec_cm_action(&source)?.base_change(model, &target)
+                })?;
+                Ok(None)
+            }
+            Statement::Data(name) => self.model.ec_cm_action(&name)?.report(&name).map(Some),
         }
     }
 
@@ -10004,6 +10030,23 @@ impl Engine {
             }
             TypedForm::ECEnd(action) => self.eval_ec_end(action),
             TypedForm::ECEndCanonical(lift, action) => self.eval_ec_end_canonical(lift, action),
+            TypedForm::ECCMActionMap(action, input) => {
+                let Value::ECEndOrder(element) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let map = action.expand(&mut self.model, element)?;
+                ec_morphism::persist(&mut self.model, map)
+            }
+            TypedForm::ECCMActionApply(action, input) => {
+                let Value::ECEndOrder(element) = self.eval(&input[0])? else {
+                    unreachable!()
+                };
+                let Value::ECPoint(point) = self.eval(&input[1])? else {
+                    unreachable!()
+                };
+                let result = action.apply(&mut self.model, element, &point)?;
+                elliptic::persist_point(&mut self.model, result)
+            }
             TypedForm::ECCMCycleApply(cycle, input) => {
                 let Value::ECPoint(point) = self.eval(input)? else {
                     unreachable!()
@@ -15979,6 +16022,39 @@ impl Checker<'_> {
             ExprForm::CMArtin(expression) => self.cm_artin_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
             ExprForm::ECEndCanonical(expression) => self.ec_end_canonical_expression(*expression),
+            ExprForm::ECCMAction(expression) => match *expression {
+                ec_cm_action::Expression::Apply(name, input) => {
+                    let action = self.model.ec_cm_action(&name)?;
+                    let [element, point] = *input;
+                    let element = self.expr(element)?;
+                    let order = self.model.ec_end_order_type(action.certificate_name())?;
+                    self.require_type(order, &element, "CM action endomorphism")?;
+                    let point = self.expr(point)?;
+                    let ty = self
+                        .model
+                        .ec_curve_type(Rc::clone(&action.curve_name), true)?;
+                    self.require_type(ty, &point, "CM action point")?;
+                    Ok((
+                        ty,
+                        TypedForm::ECCMActionApply(action, Box::new([element, point])),
+                    ))
+                }
+                ec_cm_action::Expression::Expand(name, input) => {
+                    let action = self.model.ec_cm_action(&name)?;
+                    let input = self.expr(*input)?;
+                    let order = self.model.ec_end_order_type(action.certificate_name())?;
+                    self.require_type(order, &input, "CM action endomorphism")?;
+                    let curve = Rc::clone(&action.curve_name);
+                    let ty = self.model.ec_map_type(Rc::clone(&curve), curve)?;
+                    Ok((ty, TypedForm::ECCMActionMap(action, Box::new(input))))
+                }
+                ec_cm_action::Expression::Generator(name) => {
+                    let action = self.model.ec_cm_action(&name)?;
+                    let ty = self.model.ec_end_order_type(action.certificate_name())?;
+                    let value = elliptic_end_order::persist(self.model, action.generator())?;
+                    Ok((ty, TypedForm::Constant(value)))
+                }
+            },
             ExprForm::ECCMCycle(expression) => match *expression {
                 ec_cm_cycle::Expression::Apply(name, input) => {
                     let cycle = self.model.ec_cm_cycle(&name)?;

@@ -19,6 +19,40 @@ pub(crate) struct Ring {
     frobenius_images: Vec<Element>,
 }
 
+pub(crate) struct ResidueEmbedding<'a> {
+    source: &'a Ring,
+    target: &'a Ring,
+    root: Option<Element>,
+}
+
+impl ResidueEmbedding<'_> {
+    pub(crate) fn coefficients(
+        &self,
+        model: &mut Model,
+        coefficients: &[Element],
+    ) -> Result<Vec<Element>> {
+        if let Some(root) = &self.root {
+            let algebra = self.target.algebra(self.target.prime());
+            return coefficients
+                .iter()
+                .map(|value| algebra.evaluate(model, &self.source.residue(value), root))
+                .collect();
+        }
+        model.spend(coefficients.len().saturating_mul(self.target.degree()))?;
+        if self.source.degree() == 1 {
+            Ok(coefficients
+                .iter()
+                .map(|value| self.target.scalar(value[0] % self.source.prime()))
+                .collect())
+        } else {
+            Ok(coefficients
+                .iter()
+                .map(|value| self.source.residue(value))
+                .collect())
+        }
+    }
+}
+
 pub(crate) struct ResiduePreimage<'a> {
     base: &'a Ring,
     image: Basis,
@@ -466,6 +500,15 @@ impl Ring {
         target: &Self,
         coefficients: &[Element],
     ) -> Result<Vec<Element>> {
+        self.residue_embedding(model, target)?
+            .coefficients(model, coefficients)
+    }
+
+    pub(crate) fn residue_embedding<'a>(
+        &'a self,
+        model: &mut Model,
+        target: &'a Self,
+    ) -> Result<ResidueEmbedding<'a>> {
         if self.prime() != target.prime()
             || target.precision != 1
             || !target.degree().is_multiple_of(self.degree())
@@ -474,29 +517,18 @@ impl Ring {
                 "residue embedding requires an extension of the coefficient field",
             ));
         }
-        if self.reduces_to(target) {
-            model.spend(coefficients.len().saturating_mul(self.degree()))?;
-            return Ok(coefficients
-                .iter()
-                .map(|value| self.residue(value))
-                .collect());
-        }
-        if self.degree() == 1 {
-            model.spend(coefficients.len().saturating_mul(target.degree()))?;
-            return Ok(coefficients
-                .iter()
-                .map(|value| target.scalar(value[0]))
-                .collect());
-        }
-
-        let mut defining = self.residue(&self.lower);
-        defining.push(1);
-        let root = target.root_in_residue(model, &defining)?;
-        let algebra = target.algebra(target.prime());
-        coefficients
-            .iter()
-            .map(|value| algebra.evaluate(model, &self.residue(value), &root))
-            .collect()
+        let root = if self.reduces_to(target) || self.degree() == 1 {
+            None
+        } else {
+            let mut defining = self.residue(&self.lower);
+            defining.push(1);
+            Some(target.root_in_residue(model, &defining)?)
+        };
+        Ok(ResidueEmbedding {
+            source: self,
+            target,
+            root,
+        })
     }
 
     pub(crate) fn residue_preimage(

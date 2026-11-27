@@ -659,6 +659,7 @@ pub(crate) struct Model {
     elliptic_curves: HashMap<Rc<str>, Rc<EllipticCurve>>,
     elliptic_end_orders: HashMap<String, Rc<crate::elliptic_end_order::Certificate>>,
     ec_cm_cycles: HashMap<String, Rc<crate::elliptic_end_order::cycle::Cycle>>,
+    ec_cm_actions: HashMap<String, Rc<crate::elliptic_end_order::realization::Realization>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
@@ -786,6 +787,7 @@ impl Model {
             elliptic_curves: HashMap::new(),
             elliptic_end_orders: HashMap::new(),
             ec_cm_cycles: HashMap::new(),
+            ec_cm_actions: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
             hyperelliptic: HashMap::new(),
@@ -3475,6 +3477,29 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown cyclic isogeny '{name}'")))
+    }
+
+    pub(crate) fn define_ec_cm_action(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<crate::elliptic_end_order::realization::Realization>,
+    ) -> Result<()> {
+        if self.ec_cm_actions.contains_key(&name.text) {
+            return Err(Error::new(name.span, "CM action is already defined"));
+        }
+        let action = build(self)?;
+        self.ec_cm_actions.insert(name.text, Rc::new(action));
+        Ok(())
+    }
+
+    pub(crate) fn ec_cm_action(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::elliptic_end_order::realization::Realization>> {
+        self.ec_cm_actions
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown CM action '{}'", name.text)))
     }
 
     pub(crate) fn define_ec_cm_cycle(

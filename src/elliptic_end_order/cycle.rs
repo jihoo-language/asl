@@ -11,6 +11,7 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hyperelliptic_kummer_surface::cm_ring::{Order, GROUP_LIMIT};
 use crate::legendre_cm::{Element, Family};
 use crate::model::{Model, MAX_SHOWN_BYTES};
+use crate::rv_unram::ResidueEmbedding;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) enum Statement {
@@ -25,14 +26,32 @@ pub(crate) enum Expression {
     Element(Label),
 }
 
+pub(super) struct PointMap {
+    vertices: Vec<Rc<Curve>>,
+    steps: Vec<Isogeny>,
+    chart: Morphism,
+}
+
+impl PointMap {
+    pub(super) fn apply(&self, model: &mut Model, mut point: Point) -> Result<Point> {
+        for (i, map) in self.steps.iter().enumerate() {
+            point = map.apply(model, &self.vertices[i], &self.vertices[i + 1], &point)?;
+        }
+        self.chart.apply(
+            model,
+            self.vertices.last().expect("cycle endpoint"),
+            &self.vertices[0],
+            &point,
+        )
+    }
+}
+
 pub(crate) struct Cycle {
     pub(crate) certificate_name: Label,
     certificate: Rc<Certificate>,
     pub(crate) curve_name: Rc<str>,
-    vertices: Vec<Rc<Curve>>,
-    steps: Vec<Isogeny>,
+    pub(super) map: Rc<PointMap>,
     j_path: Vec<Scalar>,
-    chart: Morphism,
     scale: Scalar,
     chart_count: usize,
     differential: Scalar,
@@ -116,10 +135,12 @@ impl Cycle {
             certificate_name: address.0,
             certificate,
             curve_name: source_name,
-            vertices,
-            steps,
+            map: Rc::new(PointMap {
+                vertices,
+                steps,
+                chart,
+            }),
             j_path,
-            chart,
             scale,
             chart_count,
             differential,
@@ -131,16 +152,59 @@ impl Cycle {
         Ok(cycle)
     }
 
-    pub(crate) fn apply(&self, model: &mut Model, mut point: Point) -> Result<Point> {
-        for (i, map) in self.steps.iter().enumerate() {
-            point = map.apply(model, &self.vertices[i], &self.vertices[i + 1], &point)?;
+    pub(crate) fn apply(&self, model: &mut Model, point: Point) -> Result<Point> {
+        self.map.apply(model, point)
+    }
+
+    pub(super) fn base_change(
+        &self,
+        model: &mut Model,
+        embedding: &ResidueEmbedding<'_>,
+        target_name: Rc<str>,
+        target: Rc<Curve>,
+    ) -> Result<Rc<PointMap>> {
+        let count = self.map.steps.len();
+        model.allocate(6 + 2 * count)?;
+        let mut vertices = Vec::with_capacity(count + 1);
+        vertices.push(Rc::clone(&target));
+        for original in &self.map.vertices[1..] {
+            let [a, b] = embedding
+                .coefficients(model, &[original.a.clone(), original.b.clone()])?
+                .try_into()
+                .expect("two Weierstrass coefficients");
+            vertices.push(Rc::new(Curve::new(
+                model,
+                Rc::clone(&target.ring_name),
+                Rc::clone(&target.ring),
+                a,
+                b,
+            )?));
         }
-        self.chart.apply(
+        let mut steps = Vec::with_capacity(count);
+        for (i, step) in self.map.steps.iter().enumerate() {
+            let mut step = step.base_change(model, embedding, &vertices[i], &vertices[i + 1])?;
+            if i == 0 {
+                step.source = Rc::clone(&target_name);
+            }
+            steps.push(step);
+        }
+        let [scale] = embedding
+            .coefficients(model, std::slice::from_ref(&self.scale))?
+            .try_into()
+            .expect("one chart scale");
+        let chart = Morphism::chart(
             model,
-            self.vertices.last().expect("cycle endpoint"),
-            &self.vertices[0],
-            &point,
-        )
+            Rc::clone(&self.map.chart.source),
+            target_name,
+            &vertices[count],
+            &target,
+            &scale,
+        )?;
+        Ok(Rc::new(PointMap {
+            vertices,
+            steps,
+            chart,
+        }))
     }
 
     pub(crate) fn report(&self, name: &str) -> Result<String> {
@@ -152,8 +216,8 @@ impl Cycle {
         let output = format!(
             "rvECCMCycleData[{name}] = curve={}, ell={}, orientation={orientation}, length={}, degree={}, trace={}, element=[{constant}, {generator}], chart_scale={:?}, chart_count={}, differential={:?}, j_path={:?}",
             self.curve_name,
-            self.steps[0].kernel.ell,
-            self.steps.len(),
+            self.map.steps[0].kernel.ell,
+            self.map.steps.len(),
             self.degree,
             self.trace,
             self.scale,
@@ -166,32 +230,40 @@ impl Cycle {
 
     pub(crate) fn step(&self, name: &str, index: usize) -> Result<String> {
         let map = self
+            .map
             .steps
             .get(index)
             .ok_or_else(|| Error::plain("CM cycle step index is out of range"))?;
-        let domain = &self.vertices[index];
-        let range = &self.vertices[index + 1];
+        let domain = &self.map.vertices[index];
+        let range = &self.map.vertices[index + 1];
         display(format!(
             "rvECCMCycleStep[{name},{index}] = source_a={:?}, source_b={:?}, target_a={:?}, target_b={:?}, kernel={:?}",
             domain.a, domain.b, range.a, range.b, map.kernel.polynomial,
         ))
     }
 
-    pub(crate) fn verify_expanded(&self, model: &mut Model, name: &str) -> Result<String> {
-        let domain = &self.vertices[0];
+    pub(super) fn expanded(&self, model: &mut Model, view: &PointMap) -> Result<Morphism> {
+        let domain = &view.vertices[0];
         let degree = usize::try_from(self.degree).map_err(|_| norm_limit())?;
         domain
             .field()
             .check_polynomial(degree.checked_add(1).ok_or_else(norm_limit)?)?;
-        let mut map = Morphism::from_velu(model, domain, &self.steps[0])?;
-        for (i, step) in self.steps.iter().enumerate().skip(1) {
-            let outer = Morphism::from_velu(model, &self.vertices[i], step)?;
+        let mut map = Morphism::from_velu(model, domain, &view.steps[0])?;
+        for (i, step) in view.steps.iter().enumerate().skip(1) {
+            let outer = Morphism::from_velu(model, &view.vertices[i], step)?;
             map = outer.compose(model, domain, &map)?;
         }
-        map = self.chart.compose(model, domain, &map)?;
+        map = view.chart.compose(model, domain, &map)?;
         if map.degree() != degree {
             return Err(Error::plain("expanded CM cycle has the wrong degree"));
         }
+        Ok(map)
+    }
+
+    pub(crate) fn verify_expanded(&self, model: &mut Model, name: &str) -> Result<String> {
+        let domain = &self.map.vertices[0];
+        let map = self.expanded(model, &self.map)?;
+        let degree = map.degree();
         let (q, trace) = domain.trace(model)?;
         let family = Family::from_frobenius(
             domain.ring.prime() as usize,
