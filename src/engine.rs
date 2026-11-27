@@ -1752,6 +1752,15 @@ impl Engine {
                 let cover = self.model.rv_as_cover(&name)?;
                 rv_as_derham::word_report(&mut self.model, &cover, &name.text, query, &words)?
             }
+            StatementForm::RvAsTwo(name, prime, terms) => {
+                self.model.register_rv_as_two_cover(name, prime, terms)?;
+                return Ok(None);
+            }
+            StatementForm::RvAsTwoQuery(query, name) => {
+                self.model
+                    .rv_as_two_cover(&name)?
+                    .report(&mut self.model, &name.text, query)?
+            }
             StatementForm::RvAsOdd(name, prime, terms) => {
                 self.model.check_new_rv_as_odd_cover(&name)?;
                 let cover = RvAsOddCover::build(&mut self.model, prime, terms)?;
@@ -7784,6 +7793,12 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::AsOddDiffOperation(operation, cover, Box::new(input)),
                 ))
+            }
+            ExprForm::AsTwoCoefficient(name, character, index) => {
+                let cover = self.model.rv_as_two_cover(&name)?;
+                let ty = self.model.cyclotomic_type(cover.order())?;
+                let value = cover.coefficient(self.model, character, index)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::AsOddCoefficient(name, character, index) => {
                 let cover = self.model.rv_as_odd_cover(&name)?;

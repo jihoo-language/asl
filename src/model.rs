@@ -49,6 +49,7 @@ use crate::rho_localized;
 use crate::rho_minimal;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_as_odd::Cover as RvAsOddCover;
+use crate::rv_as_two::Cover as RvAsTwoCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -458,6 +459,7 @@ pub(crate) struct Model {
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
     rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
+    rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -513,6 +515,7 @@ impl Model {
             rv_as_covers: HashMap::new(),
             rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
+            rv_as_two_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -2443,6 +2446,38 @@ impl Model {
     pub(crate) fn rv_as_odd_diff_type(&mut self, name: &Label) -> Result<TypeId> {
         let cover = self.rv_as_odd_cover(name)?;
         self.inhabited_type(Kind::ASOddDiff(name.text.as_str().into(), cover.prime()), 0)
+    }
+
+    pub(crate) fn rv_as_two_cover(&self, name: &Label) -> Result<Rc<RvAsTwoCover>> {
+        self.rv_as_two_covers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown two-pole Artin–Schreier cover '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn register_rv_as_two_cover(
+        &mut self,
+        name: Label,
+        prime: usize,
+        terms: Vec<(i128, i128)>,
+    ) -> Result<()> {
+        if self.rv_as_two_covers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "two-pole Artin–Schreier cover '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let cover = RvAsTwoCover::build(self, prime, terms).map_err(|error| error.at(name.span))?;
+        self.rv_as_two_covers.insert(name.text, Rc::new(cover));
+        Ok(())
     }
 
     pub(crate) fn rv_as_odd_cover_named(&self, name: &str) -> Option<Rc<RvAsOddCover>> {

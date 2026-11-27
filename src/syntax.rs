@@ -16,12 +16,14 @@ use crate::rho_bock;
 use crate::rho_localized;
 use crate::rho_minimal::Operation as RhoMinOp;
 use crate::rv_arithmetic::Series as RankSeries;
+use crate::rv_as_characters::Query as AsCharacterQuery;
 use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
 use crate::rv_as_odd::Query as AsOddQuery;
 use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
 use crate::rv_as_odd_derham::Operation as AsOddDeRhamOp;
 use crate::rv_as_odd_tate::Operation as AsOddTateOp;
+use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
@@ -816,6 +818,7 @@ pub(crate) enum ExprForm {
     EOOddCover(Label),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
+    AsTwoCoefficient(Label, usize, usize),
     AsOddOmega(Label, usize, usize),
     AsOddDiffOperation(AsOddDiffOp, Box<ParsedExpr>),
     AsOddDeRhamGen(Label, usize),
@@ -996,6 +999,8 @@ pub(crate) enum StatementForm {
     RvAsQuery(AsQuery, Label),
     RvAsOdd(Label, usize, Vec<(usize, i128)>),
     RvAsOddQuery(AsOddQuery, Label),
+    RvAsTwo(Label, usize, Vec<(i128, i128)>),
+    RvAsTwoQuery(AsTwoQuery, Label),
     EOReport(EoReport, ParsedExpr),
     EOWitness(ParsedExpr, ParsedExpr),
     RvCrystal(Label, usize, usize, CrystalEntries),
@@ -2706,6 +2711,71 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RvWittQuery(query, name)
+            }
+            Token::Word("rvastwo") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut terms = Vec::new();
+                while self.token() != Token::RBrace {
+                    self.expect(Token::LParen)?;
+                    let exponent =
+                        self.signed_wide("a signed Laurent exponent", "two-pole Laurent exponent")?;
+                    self.expect(Token::Comma)?;
+                    let coefficient = self.signed_wide(
+                        "a signed coefficient",
+                        "two-pole Artin–Schreier coefficient",
+                    )?;
+                    self.expect(Token::RParen)?;
+                    terms.push((exponent, coefficient));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::RvAsTwo(name, prime, terms)
+            }
+            Token::Word(
+                "rvASTwoReduced"
+                | "rvASTwoGenus"
+                | "rvASTwoPrank"
+                | "rvASTwoCharacterL"
+                | "rvASTwoCharacterNewton"
+                | "rvASTwoLPolynomial"
+                | "rvASTwoNewton"
+                | "rvASTwoPoints",
+            ) => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvASTwoReduced") => AsTwoQuery::Reduced,
+                    Token::Word("rvASTwoGenus") => AsTwoQuery::Genus,
+                    Token::Word("rvASTwoPrank") => AsTwoQuery::PRank,
+                    Token::Word("rvASTwoLPolynomial") => {
+                        AsTwoQuery::Character(AsCharacterQuery::LPolynomial)
+                    }
+                    Token::Word("rvASTwoNewton") => AsTwoQuery::Character(AsCharacterQuery::Newton),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let index = self.number()?.0;
+                        let query = match operation {
+                            Token::Word("rvASTwoCharacterL") => AsCharacterQuery::Character(index),
+                            Token::Word("rvASTwoCharacterNewton") => {
+                                AsCharacterQuery::CharacterNewton(index)
+                            }
+                            Token::Word("rvASTwoPoints") => AsCharacterQuery::Points(index),
+                            _ => unreachable!(),
+                        };
+                        AsTwoQuery::Character(query)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvAsTwoQuery(query, name)
             }
             Token::Word("rvasodd") => {
                 self.advance()?;
@@ -5555,16 +5625,19 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
-                if name.text == "rvASOddCoeff" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvASOddCoeff" | "rvASTwoCoeff")
+                    && self.eat(Token::LBracket)?
+                {
                     let cover = self.label()?;
                     self.expect(Token::Comma)?;
                     let (character, coefficient) = self.bidegree()?;
                     self.expect(Token::RBracket)?;
-                    return expr(
-                        span,
-                        ExprForm::AsOddCoefficient(cover, character, coefficient),
-                        0,
-                    );
+                    let form = if name.text == "rvASOddCoeff" {
+                        ExprForm::AsOddCoefficient(cover, character, coefficient)
+                    } else {
+                        ExprForm::AsTwoCoefficient(cover, character, coefficient)
+                    };
+                    return expr(span, form, 0);
                 }
                 if matches!(name.text.as_str(), "rvASOmega" | "rvWittOmega")
                     && self.eat(Token::LBracket)?
