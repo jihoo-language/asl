@@ -174,6 +174,7 @@ pub(crate) enum TypeForm {
     HeckeSymbol(Label),
     MazurTate(period::mazur_tate::Spec),
     MazurAmice(period::amice::Spec),
+    MazurDisc(Box<period::disc::Spec>, bool),
     MazurOrdinary(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
@@ -1089,6 +1090,7 @@ pub(crate) enum ExprForm {
     HeckeSymbol(period::modular_symbol::Expression),
     MazurTate(period::mazur_tate::Expression),
     MazurAmice(period::amice::Expression),
+    MazurDisc(period::disc::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1350,6 +1352,7 @@ pub(crate) enum StatementForm {
     HeckeEigenperiod(period::eigenperiod::Declare),
     MazurTate(period::mazur_tate::Statement),
     MazurAmice(period::amice::Report, Box<ParsedExpr>),
+    MazurDisc(period::disc::Report, Box<ParsedExpr>),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -5623,6 +5626,55 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::MazurAmice(operation), depth)
     }
 
+    fn mazur_disc_chart(&mut self) -> Result<period::disc::Chart> {
+        let center = self.signed_wide("a signed weight disc center", "weight disc center")?;
+        self.expect(Token::Comma)?;
+        let (depth, _) = self.number()?;
+        Ok(period::disc::Chart(center, depth))
+    }
+
+    fn mazur_disc_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use period::disc::Report;
+        self.advance()?;
+        let report = if name == "rvMazurDiscZeros" {
+            Report::Zeros
+        } else {
+            self.expect(Token::LBracket)?;
+            let (j, _) = self.number()?;
+            self.expect(Token::RBracket)?;
+            Report::Coefficient(j)
+        };
+        Ok(StatementForm::MazurDisc(
+            report,
+            Box::new(self.paren_expr(0)?),
+        ))
+    }
+
+    fn mazur_disc_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use period::disc::Expression;
+        self.expect(Token::LBracket)?;
+        let operation = if name == "rvMazurDiscRoot" {
+            let (residue, _) = self.number()?;
+            self.expect(Token::RBracket)?;
+            Expression::Root(residue, Box::new(self.paren_expr(nest)?))
+        } else {
+            let chart = self.mazur_disc_chart()?;
+            self.expect(Token::RBracket)?;
+            let input = Box::new(self.paren_expr(nest)?);
+            if name == "rvMazurDisc" {
+                Expression::Disc(chart, input)
+            } else {
+                Expression::Restrict(chart, input)
+            }
+        };
+        let depth = match &operation {
+            Expression::Disc(_, input)
+            | Expression::Restrict(_, input)
+            | Expression::Root(_, input) => input.depth + 1,
+        };
+        expr(span, ExprForm::MazurDisc(operation), depth)
+    }
+
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
         use period::mazur_tate::{Embedding, Statement};
         self.advance()?;
@@ -9743,6 +9795,9 @@ impl<'src> Parser<'src> {
             Token::Word(
                 name @ ("rvMazurAmiceCoeff" | "rvMazurAmiceIwasawa" | "rvMazurAmiceCharacter"),
             ) => self.amice_report(name)?,
+            Token::Word(name @ ("rvMazurDiscZeros" | "rvMazurDiscCoeff")) => {
+                self.mazur_disc_statement(name)?
+            }
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -13358,6 +13413,22 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::MazurAmice(spec), 0);
         }
+        if matches!(name.text.as_str(), "RVMazurDisc" | "RVMazurDiscRoot")
+            && self.eat(Token::LParen)?
+        {
+            let source = self.amice_spec()?;
+            self.expect(Token::Comma)?;
+            let chart = self.mazur_disc_chart()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::MazurDisc(
+                    Box::new(period::disc::Spec(source, chart)),
+                    name.text == "RVMazurDiscRoot",
+                ),
+                0,
+            );
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -16029,6 +16100,13 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvMazurDisc" | "rvMazurDiscRestrict" | "rvMazurDiscRoot"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.mazur_disc_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

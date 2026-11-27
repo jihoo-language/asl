@@ -47,8 +47,8 @@ pub(crate) struct Grade {
     pub(crate) level: usize,
     pub(crate) index: usize,
     pub(crate) character: usize,
-    prime: Prime,
-    precision: usize,
+    pub(super) prime: Prime,
+    pub(super) precision: usize,
     modulus: u64,
     length: usize,
 }
@@ -90,7 +90,7 @@ impl Grade {
         ))
     }
 
-    fn principal_level(&self) -> usize {
+    pub(super) fn principal_level(&self) -> usize {
         self.level - base_level(self.prime.get())
     }
 
@@ -461,5 +461,80 @@ mod tests {
         assert_eq!(coefficient_precision(&grade, 2), 1);
         assert_eq!(coefficient_precision(&grade, 3), 1);
         assert_eq!(coefficient_precision(&grade, 4), 0);
+    }
+
+    fn disc_fixture(prime: u32, level: usize, precision: usize) -> Grade {
+        let prime = Prime::validated(prime);
+        Grade {
+            ordinary: "O".into(),
+            level,
+            index: 0,
+            character: 0,
+            prime,
+            precision,
+            modulus: checked(prime_power(prime, precision)),
+            length: checked(prime_power(prime, level - base_level(prime.get()))) as usize,
+        }
+    }
+
+    #[test]
+    fn weight_disc_counts_multiple_and_nonrational_reductions() {
+        use super::super::disc;
+
+        let mut model = Model::new();
+        let source = disc_fixture(5, 3, 3);
+        let grade = checked(disc::Grade::new(source.clone(), disc::Chart(0, 1)));
+        for (row, expected, expected_error) in [
+            (
+                [36, 113, 1], // (T-5)^2 in the group variable 1+T
+                "reduction=[1, 3, 1], residual_roots=[(1, 2)], roots_in_nonrational_residues=0",
+                "has multiplicity 2",
+            ),
+            (
+                [51, 123, 1], // T^2 + 2*5^2
+                "reduction=[2, 0, 1], residual_roots=[], roots_in_nonrational_residues=2",
+                "has no root",
+            ),
+        ] {
+            let mut amplitude = Amice::zero(&source);
+            amplitude.0[..row.len()].copy_from_slice(&row);
+            let disc = checked(disc::Disc::new(&mut model, &grade, Rc::new(amplitude)));
+            let report = checked(disc.report(&mut model, &grade, disc::Report::Zeros));
+            assert!(report.starts_with("rvMazurDiscZeros = precision=3, mu=2, lambda=2"));
+            assert!(report.ends_with(expected), "{report}");
+            let Err(error) = disc.root(&mut model, &grade, 1) else {
+                panic!("residue 1 is not simple");
+            };
+            assert!(error.message.contains(expected_error));
+        }
+    }
+
+    #[test]
+    fn finite_representatives_agree_with_the_dyadic_and_odd_chart_precision() {
+        use super::super::disc;
+
+        let mut model = Model::new();
+        for (p, level, center, depth, precision) in [
+            (2, 5, 2, 2, 4),
+            (2, 5, 0, 1, 4),
+            (3, 3, -9, 2, 4),
+            (5, 2, 0, 3, 4),
+        ] {
+            let source = disc_fixture(p, level, 6);
+            let grade = checked(disc::Grade::new(source.clone(), disc::Chart(center, depth)));
+            let mut relation = vec![0; source.length + 1];
+            relation[0] = source.modulus - 1;
+            relation[source.length] = 1;
+            // Deliberately pass an unreduced representative Z^L - 1.
+            let disc = checked(disc::Disc::new(
+                &mut model,
+                &grade,
+                Rc::new(Amice(relation)),
+            ));
+            assert_eq!(
+                checked(disc.report(&mut model, &grade, disc::Report::Zeros)),
+                format!("rvMazurDiscZeros = precision={precision}, unresolved")
+            );
+        }
     }
 }

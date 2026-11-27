@@ -220,7 +220,7 @@ use crate::vbock;
 use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial, bp_rel};
 use crate::{mixed, mixed_page};
 use crate::{sheaf_serre, sheaf_stalk, sheaf_truncate};
-use period::{amice, mazur_tate};
+use period::{amice, disc, mazur_tate};
 
 pub(crate) struct Engine {
     model: Model,
@@ -966,6 +966,9 @@ enum TypedForm {
     MazurAmiceProject(amice::Grade, Box<TypedExpr>),
     MazurAmiceGroupCoefficient(usize, Box<TypedExpr>),
     MazurAmiceNegate(amice::Grade, Box<TypedExpr>),
+    MazurDisc(Box<TypedExpr>),
+    MazurDiscRestrict(Box<TypedExpr>),
+    MazurDiscRoot(u32, Box<TypedExpr>),
     MazurTateChange(
         mazur_tate::Direction,
         mazur_tate::Grade,
@@ -2459,6 +2462,14 @@ impl Engine {
                     unreachable!()
                 };
                 return transform.report(&mut self.model, &grade, report).map(Some);
+            }
+            StatementForm::MazurDisc(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().mazur_disc_operand(&input, report.name())?;
+                let Value::MazurDisc(disc) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return disc.report(&mut self.model, &grade, report).map(Some);
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -12117,6 +12128,38 @@ impl Engine {
                     .negate(&mut self.model, grade)?
                     .persist(&mut self.model)
             }
+            TypedForm::MazurDisc(input) => {
+                let Value::MazurAmice(source) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::MazurDisc(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                disc::Disc::new(&mut self.model, &grade, source)?.persist(&mut self.model)
+            }
+            TypedForm::MazurDiscRestrict(input) => {
+                let Value::MazurDisc(disc) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::MazurDisc(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                disc.restrict(&mut self.model, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurDiscRoot(residue, input) => {
+                let Value::MazurDisc(disc) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::MazurDiscRoot(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
             TypedForm::MazurOrdinaryNegate(modulus, input) => {
                 let Value::MazurOrdinary(residue) = self.eval(input)? else {
                     unreachable!()
@@ -14769,6 +14812,12 @@ impl Checker<'_> {
             TypeForm::MazurAmice(spec) => {
                 let (grade, _) = amice::Grade::resolve(self.model, spec)?;
                 self.model.mazur_amice_type(grade)
+            }
+            TypeForm::MazurDisc(spec, root) => {
+                let disc::Spec(source, chart) = *spec;
+                let (source, _) = amice::Grade::resolve(self.model, source)?;
+                let grade = Rc::new(disc::Grade::new(source, chart)?);
+                self.model.mazur_disc_type(grade, root)
             }
             TypeForm::MazurOrdinary(name) => self.model.mazur_ordinary_type(&name),
             TypeForm::HeckeSymbol(name) => self.model.hecke_symbol_type(&name),
@@ -18236,6 +18285,7 @@ impl Checker<'_> {
             }
             ExprForm::MazurTate(operation) => self.mazur_tate_expression(operation),
             ExprForm::MazurAmice(operation) => self.amice_expression(operation),
+            ExprForm::MazurDisc(operation) => self.mazur_disc_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -27293,6 +27343,44 @@ impl Checker<'_> {
                 operation,
                 "an RVMazurAmice(O,n,r,i) group-ring element",
             ))
+        }
+    }
+
+    fn mazur_disc_expression(
+        &mut self,
+        expression: disc::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use disc::Expression;
+        match expression {
+            Expression::Disc(chart, input) => {
+                let input = self.expr(*input)?;
+                let source = self.amice_operand(&input, "rvMazurDisc")?;
+                let grade = Rc::new(disc::Grade::new(source, chart)?);
+                let ty = self.model.mazur_disc_type(grade, false)?;
+                Ok((ty, TypedForm::MazurDisc(Box::new(input))))
+            }
+            Expression::Restrict(chart, input) => {
+                let input = self.expr(*input)?;
+                let parent = self.mazur_disc_operand(&input, "rvMazurDiscRestrict")?;
+                let grade = Rc::new(parent.restrict(chart)?);
+                let ty = self.model.mazur_disc_type(grade, false)?;
+                Ok((ty, TypedForm::MazurDiscRestrict(Box::new(input))))
+            }
+            Expression::Root(residue, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.mazur_disc_operand(&input, "rvMazurDiscRoot")?;
+                let residue = grade.checked_residue(residue)?;
+                let ty = self.model.mazur_disc_type(grade, true)?;
+                Ok((ty, TypedForm::MazurDiscRoot(residue, Box::new(input))))
+            }
+        }
+    }
+
+    fn mazur_disc_operand(&self, input: &TypedExpr, operation: &str) -> Result<Rc<disc::Grade>> {
+        if let Kind::MazurDisc(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVMazurDisc(O,n,r,i,a,e) weight disc"))
         }
     }
 

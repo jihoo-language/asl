@@ -316,6 +316,8 @@ pub(crate) enum Kind {
     HeckeSymbol(Box<str>),
     MazurTate(period::mazur_tate::Grade),
     MazurAmice(period::amice::Grade),
+    MazurDisc(Rc<period::disc::Grade>),
+    MazurDiscRoot(Rc<period::disc::Grade>),
     MazurOrdinary(Box<str>, u64),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
@@ -529,6 +531,8 @@ pub(crate) enum Value {
     HeckeSymbol(Rc<period::modular_symbol::Symbol>),
     MazurTate(Rc<period::mazur_tate::Distribution>),
     MazurAmice(Rc<period::amice::Amice>),
+    MazurDisc(Rc<period::disc::Disc>),
+    MazurDiscRoot(Rc<period::disc::Root>),
     MazurOrdinary(u64),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
@@ -1330,6 +1334,7 @@ impl Model {
             Kind::PeriodPolynomial(grade) if grade.is_trivial() => 1,
             Kind::MazurOrdinary(_, modulus) => usize::try_from(modulus).unwrap_or(usize::MAX),
             Kind::MazurAmice(ref grade) => grade.cardinality(),
+            Kind::MazurDiscRoot(ref grade) if !grade.root_possible() => 0,
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -1341,6 +1346,8 @@ impl Model {
             | Kind::HeckeEigen(..)
             | Kind::HeckeSymbol(..)
             | Kind::MazurTate(..)
+            | Kind::MazurDisc(..)
+            | Kind::MazurDiscRoot(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1638,6 +1645,8 @@ impl Model {
                 | Kind::HeckeSymbol(..)
                 | Kind::MazurTate(..)
                 | Kind::MazurAmice(..)
+                | Kind::MazurDisc(..)
+                | Kind::MazurDiscRoot(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -5373,6 +5382,26 @@ impl Model {
         self.inhabited_type(Kind::MazurAmice(grade), 0)
     }
 
+    pub(crate) fn mazur_disc_type(
+        &mut self,
+        grade: Rc<period::disc::Grade>,
+        root: bool,
+    ) -> Result<TypeId> {
+        if !root {
+            return self.inhabited_type(Kind::MazurDisc(grade), 0);
+        }
+        let possible = grade.root_possible();
+        let kind = Kind::MazurDiscRoot(grade);
+        if possible {
+            return self.inhabited_type(kind, 0);
+        }
+        if let Some(&id) = self.type_ids.get(&kind) {
+            return Ok(id);
+        }
+        self.check_type_limit(0)?;
+        Ok(self.insert(kind, None, None, false, 0))
+    }
+
     pub(crate) fn mazur_ordinary_type(&mut self, name: &Label) -> Result<TypeId> {
         let modulus = self.mazur_ordinary(name)?.modulus;
         self.inhabited_type(Kind::MazurOrdinary(name.text.as_str().into(), modulus), 0)
@@ -6744,6 +6773,8 @@ impl Model {
             | Kind::HeckeSymbol(..)
             | Kind::MazurTate(..)
             | Kind::MazurAmice(..)
+            | Kind::MazurDisc(..)
+            | Kind::MazurDiscRoot(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -7324,6 +7355,8 @@ impl Model {
                 "RVMazurAmice({},{},{},{})",
                 grade.ordinary, grade.level, grade.index, grade.character
             )),
+            Kind::MazurDisc(grade) => out.push(&grade.type_name(false)),
+            Kind::MazurDiscRoot(grade) => out.push(&grade.type_name(true)),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
@@ -7689,6 +7722,8 @@ impl Model {
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::MazurTate(a), Value::MazurTate(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::MazurAmice(a), Value::MazurAmice(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::MazurDisc(a), Value::MazurDisc(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::MazurDiscRoot(a), Value::MazurDiscRoot(b)) => Ok(a == b),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
@@ -8062,6 +8097,8 @@ impl Model {
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => a.compare(self, b),
             (Value::MazurTate(a), Value::MazurTate(b)) => a.compare(self, b),
             (Value::MazurAmice(a), Value::MazurAmice(b)) => a.compare(self, b),
+            (Value::MazurDisc(a), Value::MazurDisc(b)) => a.compare(self, b),
+            (Value::MazurDiscRoot(a), Value::MazurDiscRoot(b)) => Ok(a.cmp(b)),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
@@ -8541,6 +8578,12 @@ impl Model {
                 Kind::MazurTate(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an exact Mazur–Tate group ring",
+                    ));
+                }
+                Kind::MazurDiscRoot(ref grade) if !grade.root_possible() => Vec::new(),
+                Kind::MazurDisc(..) | Kind::MazurDiscRoot(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate Amice weight discs or root enclosures",
                     ));
                 }
                 Kind::MazurAmice(..) => {
@@ -10362,6 +10405,17 @@ impl Model {
                     out.push(&coefficient.to_string())?;
                 }
                 out.push("]}")
+            }
+            Value::MazurDisc(disc) => {
+                let Kind::MazurDisc(grade) = self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", disc.data(grade)))
+            }
+            Value::MazurDiscRoot(root) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", root.data()))
             }
             Value::MazurOrdinary(residue) => {
                 self.write_type(out, ty, 0)?;
