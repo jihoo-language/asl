@@ -125,6 +125,7 @@ pub(crate) enum TypeForm {
     RVOre,
     RVWittSpectrum,
     RVSchurCharacter(u128),
+    RVStableSchurCharacter,
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
@@ -1337,6 +1338,7 @@ pub(crate) enum StatementForm {
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
+    StableSchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
@@ -5682,31 +5684,50 @@ impl<'src> Parser<'src> {
     ) -> Result<ParsedExpr> {
         use crate::rv_witt_spectrum::character::Expression;
         let (form, depth) = match name {
-            "rvSchurCharacter" => {
+            "rvSchurCharacter" | "rvStableSchurCharacter" => {
                 self.expect(Token::LBracket)?;
                 let shape = self.witt_schur_shape()?;
                 self.expect(Token::RBracket)?;
-                (Expression::Seed(shape), 0)
+                let form = if name == "rvSchurCharacter" {
+                    Expression::Seed(shape)
+                } else {
+                    Expression::StableSeed(shape)
+                };
+                (form, 0)
             }
-            "rvSchurCharacterScale" => {
+            "rvSchurCharacterScale" | "rvStableSchurCharacterScale" => {
                 self.expect(Token::LBracket)?;
                 let scale = self.signed_wide("a signed Schur coefficient", "Schur coefficient")?;
                 self.expect(Token::RBracket)?;
                 let input = self.paren_expr(nest)?;
                 let depth = input.depth + 1;
-                (Expression::Scale(scale, Box::new(input)), depth)
-            }
-            "rvSchurPlethysm" | "rvSchurCharacterEvaluate" => {
-                let inputs = self.paren_pair(nest)?;
-                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
-                let form = if name == "rvSchurPlethysm" {
-                    Expression::Plethysm(Box::new(inputs))
+                let form = if name == "rvSchurCharacterScale" {
+                    Expression::Scale(scale, Box::new(input))
                 } else {
-                    Expression::Evaluate(Box::new(inputs))
+                    Expression::StableScale(scale, Box::new(input))
                 };
                 (form, depth)
             }
-            _ => unreachable!(),
+            "rvStableSchurSpecialize" => {
+                self.expect(Token::LBracket)?;
+                let rank = self.wide_unsigned("finite symmetric-group rank")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Specialize(rank, Box::new(input)), depth)
+            }
+            _ => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                let inputs = Box::new(inputs);
+                let form = match name {
+                    "rvSchurPlethysm" => Expression::Plethysm(inputs),
+                    "rvSchurCharacterKronecker" => Expression::Kronecker(inputs),
+                    "rvStableSchurKronecker" => Expression::StableProduct(inputs),
+                    _ => Expression::Evaluate(inputs),
+                };
+                (form, depth)
+            }
         };
         expr(span, ExprForm::SchurCharacter(Box::new(form)), depth)
     }
@@ -9199,12 +9220,17 @@ impl<'src> Parser<'src> {
                     input,
                 )
             }
-            Token::Word("rvSchurCharacterCoeff") => {
+            Token::Word(name @ ("rvSchurCharacterCoeff" | "rvStableSchurCharacterCoeff")) => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let shape = self.witt_schur_shape()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::SchurCharacterCoeff(shape, Box::new(self.paren_expr(0)?))
+                let input = Box::new(self.paren_expr(0)?);
+                if name == "rvSchurCharacterCoeff" {
+                    StatementForm::SchurCharacterCoeff(shape, input)
+                } else {
+                    StatementForm::StableSchurCharacterCoeff(shape, input)
+                }
             }
             Token::Word(
                 name @ ("rvWittSchurMajorIndex"
@@ -11818,6 +11844,9 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVStableSchurCharacter" {
+            return ty(span, TypeForm::RVStableSchurCharacter, 0);
         }
         if name.text == "RVSchurCharacter" && self.eat(Token::LParen)? {
             let weight = self.wide_unsigned("Schur character weight")?;
@@ -16282,6 +16311,11 @@ impl<'src> Parser<'src> {
                 if matches!(
                     name.text.as_str(),
                     "rvSchurCharacter"
+                        | "rvStableSchurCharacter"
+                        | "rvStableSchurCharacterScale"
+                        | "rvStableSchurKronecker"
+                        | "rvStableSchurSpecialize"
+                        | "rvSchurCharacterKronecker"
                         | "rvSchurCharacterScale"
                         | "rvSchurPlethysm"
                         | "rvSchurCharacterEvaluate"

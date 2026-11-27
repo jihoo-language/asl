@@ -788,6 +788,10 @@ enum TypedForm {
     SchurCharacterScale(i128, Box<TypedExpr>),
     SchurCharacterPlethysm(Box<[TypedExpr; 2]>),
     SchurCharacterEvaluate(Box<[TypedExpr; 2]>),
+    SchurCharacterKronecker(Box<[TypedExpr; 2]>),
+    StableSchurScale(i128, Box<TypedExpr>),
+    StableSchurProduct(Box<[TypedExpr; 2]>),
+    StableSchurSpecialize(u128, Box<TypedExpr>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -2019,6 +2023,16 @@ impl Engine {
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
             StatementForm::WittSchurBranch(branch) => {
                 return branch.report(&mut self.model).map(Some)
+            }
+            StatementForm::StableSchurCharacterCoeff(shape, input) => {
+                let input = self.checker().expr(*input)?;
+                let ty = self.model.stable_schur_character_type()?;
+                self.checker()
+                    .require_type(ty, &input, "rvStableSchurCharacterCoeff")?;
+                let Value::RVStableSchurCharacter(character) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(Some(character.coefficient(&shape)));
             }
             StatementForm::SchurCharacterCoeff(shape, input) => {
                 let value = self.checker().expr(*input)?;
@@ -8794,6 +8808,11 @@ impl Engine {
                     (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
                         rv_ore::add(&mut self.model, &a, &b)
                     }
+                    (
+                        BinaryOp::Add,
+                        Value::RVStableSchurCharacter(a),
+                        Value::RVStableSchurCharacter(b),
+                    ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
                     (BinaryOp::Add, Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -10766,6 +10785,38 @@ impl Engine {
                 };
                 outer
                     .plethysm(&mut self.model, &inner)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::SchurCharacterKronecker(inputs) => {
+                let (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.kronecker(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::StableSchurScale(coefficient, input) => {
+                let Value::RVStableSchurCharacter(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .scale(&mut self.model, *coefficient)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::StableSchurProduct(inputs) => {
+                let (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.product(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::StableSchurSpecialize(rank, input) => {
+                let Value::RVStableSchurCharacter(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .specialize(&mut self.model, *rank)?
                     .persist(&mut self.model)
             }
             TypedForm::SchurCharacterEvaluate(inputs) => {
@@ -13144,6 +13195,7 @@ impl Checker<'_> {
             TypeForm::RVOre => self.model.ore_type(),
             TypeForm::RVWittSpectrum => self.model.witt_spectrum_type(),
             TypeForm::RVSchurCharacter(weight) => self.model.schur_character_type(weight),
+            TypeForm::RVStableSchurCharacter => self.model.stable_schur_character_type(),
             TypeForm::RVCTState(name, p, s) => {
                 let grade = self.model.rv_ct_state_grade(name, p, s)?;
                 self.model.rv_ct_state_type(grade)
@@ -14207,6 +14259,7 @@ impl Checker<'_> {
                     Kind::RVQGrP(..) => rv_pcurv::zero(),
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
+                    Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVSchurCharacter(weight) => crate::rv_witt_spectrum::character::Character::zero(*weight).persist(self.model)?,
                     Kind::RVCTState(..) => Value::PeriodState([].into()),
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
@@ -17380,6 +17433,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVStableSchurCharacter) {
+                    return Ok((input.ty, TypedForm::StableSchurScale(-1, Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVSchurCharacter(..)) {
                     return Ok((
@@ -21145,6 +21201,7 @@ impl Checker<'_> {
                         | Kind::RVOre
                         | Kind::RVWittSpectrum
                         | Kind::RVSchurCharacter(..)
+                        | Kind::RVStableSchurCharacter
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
@@ -23015,7 +23072,9 @@ impl Checker<'_> {
         &mut self,
         expression: crate::rv_witt_spectrum::character::Expression,
     ) -> Result<(TypeId, TypedForm)> {
-        use crate::rv_witt_spectrum::character::{output_weight, Character, Expression};
+        use crate::rv_witt_spectrum::character::{
+            output_weight, Character, Expression, StableCharacter,
+        };
         match expression {
             Expression::Seed(shape) => {
                 let ty = self.model.schur_character_type(shape.weight())?;
@@ -23041,6 +23100,44 @@ impl Checker<'_> {
                     ty,
                     TypedForm::SchurCharacterPlethysm(Box::new([outer, inner])),
                 ))
+            }
+            Expression::Kronecker(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.schur_weight(&a, "rvSchurCharacterKronecker")?;
+                self.require_type(a.ty, &b, "rvSchurCharacterKronecker")?;
+                Ok((a.ty, TypedForm::SchurCharacterKronecker(Box::new([a, b]))))
+            }
+            Expression::StableSeed(tail) => {
+                let ty = self.model.stable_schur_character_type()?;
+                let value = StableCharacter::seed(tail).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::StableScale(coefficient, input) => {
+                let input = self.expr(*input)?;
+                let ty = self.model.stable_schur_character_type()?;
+                self.require_type(ty, &input, "rvStableSchurCharacterScale")?;
+                Ok((
+                    ty,
+                    TypedForm::StableSchurScale(coefficient, Box::new(input)),
+                ))
+            }
+            Expression::StableProduct(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let ty = self.model.stable_schur_character_type()?;
+                self.require_type(ty, &a, "rvStableSchurKronecker")?;
+                self.require_type(ty, &b, "rvStableSchurKronecker")?;
+                Ok((ty, TypedForm::StableSchurProduct(Box::new([a, b]))))
+            }
+            Expression::Specialize(rank, input) => {
+                let input = self.expr(*input)?;
+                let stable = self.model.stable_schur_character_type()?;
+                self.require_type(stable, &input, "rvStableSchurSpecialize")?;
+                let ty = self.model.schur_character_type(rank)?;
+                Ok((ty, TypedForm::StableSchurSpecialize(rank, Box::new(input))))
             }
             Expression::Evaluate(inputs) => {
                 let [outer, input] = *inputs;

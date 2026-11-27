@@ -261,6 +261,7 @@ pub(crate) enum Kind {
     RVOre,
     RVWittSpectrum,
     RVSchurCharacter(u128),
+    RVStableSchurCharacter,
     RVCTState(PeriodGrade),
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
@@ -458,6 +459,7 @@ pub(crate) enum Value {
     RVOre(rv_ore::Support),
     RVWittSpectrum(Rc<crate::rv_witt_spectrum::Spectrum>),
     RVSchurCharacter(Rc<crate::rv_witt_spectrum::character::Character>),
+    RVStableSchurCharacter(Rc<crate::rv_witt_spectrum::character::StableCharacter>),
     PeriodState(rv_period::State),
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
@@ -1175,7 +1177,8 @@ impl Model {
             | Kind::RVQGrP(..)
             | Kind::RVOre
             | Kind::RVWittSpectrum
-            | Kind::RVSchurCharacter(..) => usize::MAX,
+            | Kind::RVSchurCharacter(..)
+            | Kind::RVStableSchurCharacter => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
             Kind::RVHive(..) => {
@@ -1368,6 +1371,7 @@ impl Model {
                 | Kind::RVOre
                 | Kind::RVWittSpectrum
                 | Kind::RVSchurCharacter(..)
+                | Kind::RVStableSchurCharacter
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
@@ -3356,6 +3360,10 @@ impl Model {
 
     pub(crate) fn schur_character_type(&mut self, weight: u128) -> Result<TypeId> {
         self.inhabited_type(Kind::RVSchurCharacter(weight), 0)
+    }
+
+    pub(crate) fn stable_schur_character_type(&mut self) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVStableSchurCharacter, 0)
     }
 
     pub(crate) fn quantum_mod_type(&mut self, grade: rv_pcurv::ModGrade) -> Result<TypeId> {
@@ -6090,6 +6098,7 @@ impl Model {
             | Kind::RVOre
             | Kind::RVWittSpectrum
             | Kind::RVSchurCharacter(..)
+            | Kind::RVStableSchurCharacter
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
@@ -6706,6 +6715,7 @@ impl Model {
             Kind::RVOre => out.push("RVOre"),
             Kind::RVWittSpectrum => out.push("RVWittSpectrum"),
             Kind::RVSchurCharacter(weight) => out.push(&format!("RVSchurCharacter({weight})")),
+            Kind::RVStableSchurCharacter => out.push("RVStableSchurCharacter"),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
                 grade.prime.get(),
@@ -6976,6 +6986,9 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7374,6 +7387,9 @@ impl Model {
             (Value::RVOre(left), Value::RVOre(right)) => rv_ore::compare(self, left, right),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => a.compare(self, b),
             (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => a.compare(self, b),
+            (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
+                a.compare(self, b)
+            }
             (Value::RVQGrP(left), Value::RVQGrP(right)) => rv_pcurv::compare(self, left, right),
             (Value::RVQGr(left), Value::RVQGr(right)) => rv_qgr::compare(self, left, right),
             (Value::RVSatake(left), Value::RVSatake(right)) => {
@@ -7878,7 +7894,7 @@ impl Model {
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
                 }
-                Kind::RVSchurCharacter(..) => {
+                Kind::RVSchurCharacter(..) | Kind::RVStableSchurCharacter => {
                     return Err(Error::plain("cannot enumerate a Schur character group"))
                 }
                 Kind::RVQGrP(..) => {
@@ -9638,6 +9654,7 @@ impl Model {
             }
             Value::RVWittSpectrum(value) => out.push(&value.render()),
             Value::RVSchurCharacter(value) => out.push(&value.render()),
+            Value::RVStableSchurCharacter(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
                 out.push("RVOre{")?;
                 self.spend(terms.len())?;
