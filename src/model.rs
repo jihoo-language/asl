@@ -207,6 +207,7 @@ pub(crate) enum Kind {
     FiniteGroup(Rc<str>),
     PostnikovCochain(Rc<str>, usize),
     DoubleSector(Rc<str>),
+    DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
     SetNat(Rc<str>, Rc<str>),
@@ -467,6 +468,7 @@ pub(crate) enum Value {
     GroupElement(usize),
     PostnikovCochain(Rc<postnikov::Cochain>),
     DoubleSector(Rc<dd::Sector>),
+    DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
     Pair(Rc<(Value, Value)>),
@@ -1093,6 +1095,30 @@ impl Model {
         self.inhabited_type(Kind::DoubleSector(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn double_braid_type(
+        &mut self,
+        name: &Label,
+        source: dd::braid::Colors,
+        target: dd::braid::Colors,
+    ) -> Result<TypeId> {
+        let double = self.drinfeld_double(name)?;
+        double.check_colors(source)?;
+        double.check_colors(target)?;
+        let (mut a, mut b) = (source, target);
+        a.sort_unstable();
+        b.sort_unstable();
+        if a != b {
+            return Err(Error::new(
+                name.span,
+                "double braid target must permute its source colors",
+            ));
+        }
+        self.inhabited_type(
+            Kind::DoubleBraid(name.text.as_str().into(), source, target),
+            0,
+        )
+    }
+
     pub(crate) fn define_dw(&mut self, name: Label, data: dw::Integral) -> Result<()> {
         if self.dw_integrals.contains_key(name.text.as_str()) {
             return Err(Error::new(
@@ -1494,7 +1520,9 @@ impl Model {
             Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::KSExterior(_, 0..=64) => usize::MAX,
             Kind::KSExterior(..) => 1,
-            Kind::KSNomizu(_, _, 0..=65) | Kind::DoubleSector(..) => usize::MAX,
+            Kind::KSNomizu(_, _, 0..=65) | Kind::DoubleSector(..) | Kind::DoubleBraid(..) => {
+                usize::MAX
+            }
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -1759,6 +1787,7 @@ impl Model {
                 | Kind::FiniteGroup(..)
                 | Kind::PostnikovCochain(..)
                 | Kind::DoubleSector(..)
+                | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
                 | Kind::KSEnd(..)
@@ -7006,6 +7035,7 @@ impl Model {
             | Kind::FiniteGroup(..)
             | Kind::PostnikovCochain(..)
             | Kind::DoubleSector(..)
+            | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
             | Kind::KSEnd(..)
@@ -7181,6 +7211,9 @@ impl Model {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
             Kind::FiniteGroup(name) => out.push(&format!("RVGroup({name})")),
+            Kind::DoubleBraid(name, [a, b, c], [d, e, f]) => {
+                out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
+            }
             Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
             Kind::PostnikovCochain(name, degree) => {
                 out.push(&format!("RVPostnikovCochain({name},{degree})"))
@@ -7785,6 +7818,10 @@ impl Model {
             }
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a == b),
+            (Value::DoubleBraid(a), Value::DoubleBraid(b)) => {
+                self.spend(a.0.len())?;
+                Ok(a == b)
+            }
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a == b)
@@ -8109,6 +8146,10 @@ impl Model {
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a.cmp(b)),
+            (Value::DoubleBraid(a), Value::DoubleBraid(b)) => {
+                self.spend(a.0.len())?;
+                Ok(a.cmp(b))
+            }
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a.cmp(b))
@@ -8970,6 +9011,11 @@ impl Model {
                     ));
                 }
                 Kind::KSExterior(..) => vec![ks_exterior::Form::zero().persist(self)?],
+                Kind::DoubleBraid(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a double braid operator type",
+                    ));
+                }
                 Kind::DoubleSector(..) => {
                     return Err(Error::plain("cannot enumerate a virtual fusion lattice"));
                 }
@@ -9919,6 +9965,18 @@ impl Model {
             Value::PostnikovCell(cell) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", cell.object, cell.coordinate))
+            }
+            Value::DoubleBraid(operator) => {
+                self.spend(operator.0.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, image) in operator.0.iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{}:{}", image.target, image.phase))?;
+                }
+                out.push("}")
             }
             Value::DoubleSector(sector) => {
                 self.spend(sector.0.len())?;

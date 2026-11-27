@@ -128,7 +128,7 @@ pub(super) fn extend(
 
 // Adjoin a generator r to the subgroup already covered. If r^m is the
 // first power back in that subgroup, each character has precisely m lifts.
-struct Extension {
+pub(super) struct Extension {
     powers: Vec<usize>,
     carries: Vec<u32>,
     cosets: Vec<Vec<usize>>,
@@ -137,7 +137,13 @@ struct Extension {
 }
 
 impl Extension {
-    fn new(group: &Quotient, alpha: &[Vec<u32>], known: &[usize], r: usize, p: Prime) -> Self {
+    pub(super) fn new(
+        group: &Quotient,
+        alpha: &[Vec<u32>],
+        known: &[usize],
+        r: usize,
+        p: Prime,
+    ) -> Self {
         let mut powers = vec![0];
         let mut carries = vec![0];
         let mut current = 0;
@@ -164,6 +170,10 @@ impl Extension {
         }
     }
 
+    pub(super) fn subgroup(&self) -> Vec<usize> {
+        self.cosets.iter().flatten().copied().collect()
+    }
+
     fn characters(
         &self,
         alpha: &[Vec<u32>],
@@ -175,30 +185,41 @@ impl Extension {
         let m = self.powers.len();
         let mut result = Vec::with_capacity(m * previous.len());
         for phases in previous {
-            let rhs = (phases[self.return_to].expect("power lies in known subgroup")
-                + exponent * self.total_carry as usize)
-                % conductor;
-            if !conductor.is_multiple_of(m) || !rhs.is_multiple_of(m) {
-                return Err(Error::plain(
-                    "double projective character power has no lift at its conductor",
-                ));
-            }
             for choice in 0..m {
-                let generator_phase = rhs / m + choice * (conductor / m);
-                let mut lifted = phases.clone();
-                for (&x, coset) in known.iter().zip(&self.cosets) {
-                    let phase = phases[x].expect("known subgroup");
-                    for (j, &xy) in coset.iter().enumerate() {
-                        let correction =
-                            exponent * (self.carries[j] + alpha[x][self.powers[j]]) as usize;
-                        lifted[xy] = Some(
-                            (phase + j * generator_phase + conductor * 2 - correction) % conductor,
-                        );
-                    }
-                }
-                result.push(lifted);
+                result.push(self.lift(alpha, known, &phases, exponent, conductor, choice)?);
             }
         }
         Ok(result)
+    }
+
+    pub(super) fn lift(
+        &self,
+        alpha: &[Vec<u32>],
+        known: &[usize],
+        phases: &[Option<usize>],
+        exponent: usize,
+        conductor: usize,
+        choice: usize,
+    ) -> Result<Vec<Option<usize>>> {
+        let m = self.powers.len();
+        let rhs = (phases[self.return_to].expect("power lies in known subgroup")
+            + exponent * self.total_carry as usize)
+            % conductor;
+        if !conductor.is_multiple_of(m) || !rhs.is_multiple_of(m) {
+            return Err(Error::plain(
+                "double projective character power has no lift at its conductor",
+            ));
+        }
+        let generator_phase = rhs / m + choice * (conductor / m);
+        let mut lifted = phases.to_vec();
+        for (&x, coset) in known.iter().zip(&self.cosets) {
+            let phase = phases[x].expect("known subgroup");
+            for (j, &xy) in coset.iter().enumerate() {
+                let correction = exponent * (self.carries[j] + alpha[x][self.powers[j]]) as usize;
+                lifted[xy] =
+                    Some((phase + j * generator_phase + conductor * 2 - correction) % conductor);
+            }
+        }
+        Ok(lifted)
     }
 }

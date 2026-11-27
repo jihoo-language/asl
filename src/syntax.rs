@@ -74,6 +74,7 @@ pub(crate) enum TypeForm {
     FiniteGroup(Label),
     PostnikovCochain(Label, usize),
     DoubleSector(Label),
+    DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
     SetNat(Label, Label),
@@ -738,6 +739,7 @@ pub(crate) enum ExprForm {
     Crossed(Box<crate::rv_crossed::Expression>),
     Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Expression>),
+    DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1199,6 +1201,7 @@ pub(crate) enum StatementForm {
     HomotopyIntegral(Box<crate::rv_crossed::path_integral::Command>),
     DijkgraafWitten(Box<crate::rv_crossed::dijkgraaf_witten::Command>),
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Command>),
+    DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3647,6 +3650,100 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn following_indices<const N: usize>(&mut self) -> Result<[usize; N]> {
+        let mut indices = [0; N];
+        for i in &mut indices {
+            self.expect(Token::Comma)?;
+            *i = self.number()?.0;
+        }
+        Ok(indices)
+    }
+
+    fn double_braid_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::braid::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let command = if operation == "rvDoubleBraidImage" {
+            let i = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Command::Image(i, Box::new(self.paren_expr(0)?))
+        } else {
+            let name = self.label()?;
+            let command = if operation == "rvDoubleRepData" {
+                let [sector] = self.following_indices()?;
+                Command::Representation(name, sector)
+            } else {
+                Command::MatrixColumn(name, self.following_indices()?)
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::DoubleBraid(Box::new(command)))
+    }
+
+    fn double_braid_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::braid::Expression;
+        let (operation, depth) = match operation {
+            "rvDoubleBraidCompose" => {
+                let args = self.paren_pair(nest)?;
+                let depth = 1 + args[0].depth.max(args[1].depth);
+                (Expression::Compose(Box::new(args)), depth)
+            }
+            "rvDoubleBraidInv" | "rvDoubleBraidTrace" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let input = Box::new(input);
+                let operation = if operation == "rvDoubleBraidInv" {
+                    Expression::Inverse(input)
+                } else {
+                    Expression::Trace(input)
+                };
+                (operation, depth)
+            }
+            "rvDoubleBraidEntry" => {
+                self.expect(Token::LBracket)?;
+                let row = self.number()?.0;
+                let [column] = self.following_indices()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Entry([row, column], Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let operation = match operation {
+                    "rvDoubleBraid" => {
+                        let colors = self.following_indices()?;
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        let word = self.signed_list(
+                            Token::RBrace,
+                            "a signed braid generator",
+                            "double braid generator",
+                        )?;
+                        return expr(
+                            span,
+                            ExprForm::DoubleBraid(Box::new(Expression::Word(name, colors, word))),
+                            0,
+                        );
+                    }
+                    "rvDoubleAssociator" => Expression::Associator(name, self.following_indices()?),
+                    "rvDoubleHopf" => Expression::Hopf(name, self.following_indices()?),
+                    _ => Expression::MatrixEntry(name, self.following_indices()?),
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::DoubleBraid(Box::new(operation)), depth)
     }
 
     fn double_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -10430,6 +10527,9 @@ impl<'src> Parser<'src> {
                 op @ ("rvdouble" | "rvDoubleData" | "rvDoubleSector" | "rvDoublePhase"
                 | "rvDoubleCoeff"),
             ) => self.double_statement(op)?,
+            Token::Word(op @ ("rvDoubleRepData" | "rvDoubleRep" | "rvDoubleBraidImage")) => {
+                self.double_braid_statement(op)?
+            }
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -14356,6 +14456,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleBraid" && self.eat(Token::LParen)? {
+            let label = self.label()?;
+            let source = self.following_indices()?;
+            let target = self.following_indices()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleBraid(label, source, target), 0);
+        }
         if name.text == "RVQZ" {
             return ty(span, TypeForm::QZ, 0);
         }
@@ -17033,6 +17140,21 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.double_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvDoubleBraid"
+                        | "rvDoubleBraidEntry"
+                        | "rvDoubleAssociator"
+                        | "rvDoubleHopf"
+                        | "rvDoubleRepEntry"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvDoubleBraidTrace" | "rvDoubleBraidCompose" | "rvDoubleBraidInv"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.double_braid_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

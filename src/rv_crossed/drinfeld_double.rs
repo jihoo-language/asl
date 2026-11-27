@@ -10,7 +10,9 @@ use crate::syntax::{Label, ParsedExpr};
 use super::path_integral::Quotient;
 use super::postnikov::{Cochain, Postnikov};
 
+pub(crate) mod braid;
 mod characters;
+mod representations;
 
 const MAX_SIMPLES: usize = 256;
 
@@ -98,6 +100,8 @@ pub(crate) struct Double {
     pub(crate) conductor: usize,
     group: Quotient,
     simples: Vec<Simple>,
+    representations: Vec<representations::Irrep>,
+    cocycle: Vec<usize>,
     s: Vec<Vec<Monomial>>,
     twists: Vec<usize>,
     duals: Vec<usize>,
@@ -124,6 +128,7 @@ impl Double {
         let conductor = post.prime.get() as usize * exponent;
         rv_cyclotomic::check_order(conductor)?;
         let mut simples = Vec::new();
+        let mut representations = Vec::new();
         let mut flux_offsets = Vec::with_capacity(n + 1);
         for g in 0..n {
             flux_offsets.push(simples.len());
@@ -137,9 +142,20 @@ impl Double {
                     "twisted double exceeds its simple-sector limit of 256",
                 ));
             }
-            simples.extend(characters::extend(
-                model, &group, g, &alpha, &radical, post.prime, exponent,
+            let sectors =
+                characters::extend(model, &group, g, &alpha, &radical, post.prime, exponent)?;
+            representations.extend(representations::induce_all(
+                model, &group, &alpha, &radical, &sectors, post.prime, exponent,
             )?);
+            simples.extend(sectors);
+        }
+        let mut cocycle = Vec::with_capacity(n * n * n);
+        for g in 0..n {
+            for h in 0..n {
+                for j in 0..n {
+                    cocycle.push(exponent * post.coefficient(model, k, &[g, h, j])? as usize);
+                }
+            }
         }
         flux_offsets.push(simples.len());
         let total: usize = simples.iter().map(|s| s.dimension * s.dimension).sum();
@@ -178,6 +194,8 @@ impl Double {
             conductor,
             group,
             simples,
+            representations,
+            cocycle,
             s,
             twists,
             duals: Vec::new(),
@@ -185,7 +203,7 @@ impl Double {
         };
         double.duals = double.certify(model)?;
         let count = double.simples.len();
-        model.allocate(4 * n * n + count * (9 + 2 * n + 3 * count) + 12)?;
+        model.allocate(n * n * n + 4 * n * n + count * (9 + 2 * n + 3 * count) + 12)?;
         Ok(double)
     }
 

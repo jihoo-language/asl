@@ -776,6 +776,13 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+enum DoubleBraidAction {
+    Inverse(usize, Box<TypedExpr>),
+    Compose(usize, Box<[TypedExpr; 2]>),
+    Trace(Rc<dd::Double>, Box<TypedExpr>),
+    Entry(Rc<dd::Double>, [usize; 2], Box<TypedExpr>),
+}
+
 enum DoubleAction {
     Scale(i128, Box<TypedExpr>),
     Dual(Rc<dd::Double>, Box<TypedExpr>),
@@ -794,6 +801,7 @@ enum TypedForm {
     Crossed(CrossedAction),
     Postnikov(PostnikovAction),
     Double(DoubleAction),
+    DoubleBraid(DoubleBraidAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2451,6 +2459,7 @@ impl Engine {
             StatementForm::Flat(command) => return self.flat_command(*command),
             StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
+            StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::HomotopyIntegral(command) => {
                 return self.homotopy_integral_command(*command)
             }
@@ -7940,6 +7949,68 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn double_braid_command(&mut self, command: dd::braid::Command) -> Result<Option<String>> {
+        use dd::braid::Command;
+        let report = match command {
+            Command::Representation(name, sector) => self
+                .model
+                .drinfeld_double(&name)?
+                .representation(&name.text, sector)?,
+            Command::MatrixColumn(name, key @ [sector, element, column]) => {
+                let image = self.model.drinfeld_double(&name)?.matrix_column(key)?;
+                format!(
+                    "rvDoubleRep[{},{sector},{element},{column}] = target={}, phase={}",
+                    name.text, image.target, image.phase
+                )
+            }
+            Command::Image(column, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .double_braid_operand(&input, "rvDoubleBraidImage")?;
+                let image = self.eval_braid_operator(&input)?.image(column)?;
+                format!(
+                    "rvDoubleBraidImage[{column}] = target={}, phase={}",
+                    image.target, image.phase
+                )
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_braid_operator(&mut self, input: &TypedExpr) -> Result<Rc<dd::braid::Operator>> {
+        let Value::DoubleBraid(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn eval_double_braid(&mut self, action: &DoubleBraidAction) -> Result<Value> {
+        match action {
+            DoubleBraidAction::Inverse(conductor, input) => {
+                let value = self.eval_braid_operator(input)?;
+                value
+                    .inverse(&mut self.model, *conductor)?
+                    .persist(&mut self.model)
+            }
+            DoubleBraidAction::Compose(conductor, args) => {
+                let (a, b) = (
+                    self.eval_braid_operator(&args[0])?,
+                    self.eval_braid_operator(&args[1])?,
+                );
+                a.compose(&mut self.model, &b, *conductor)?
+                    .persist(&mut self.model)
+            }
+            DoubleBraidAction::Trace(double, input) => {
+                let value = self.eval_braid_operator(input)?;
+                value.trace(&mut self.model, double)
+            }
+            DoubleBraidAction::Entry(double, [row, column], input) => {
+                let value = self.eval_braid_operator(input)?;
+                value.entry(&mut self.model, double, *row, *column)
+            }
+        }
+    }
+
     fn double_command(&mut self, command: dd::Command) -> Result<Option<String>> {
         use dd::Command;
         let report = match command {
@@ -12358,6 +12429,7 @@ impl Engine {
             TypedForm::Crossed(action) => self.eval_crossed(action),
             TypedForm::Postnikov(action) => self.eval_postnikov(action),
             TypedForm::Double(action) => self.eval_double(action),
+            TypedForm::DoubleBraid(action) => self.eval_double_braid(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -15738,6 +15810,9 @@ impl Checker<'_> {
             TypeForm::FlatCochain(name, degree) => self.model.flat_cochain_type(&name, degree),
             TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
             TypeForm::DoubleSector(name) => self.model.double_sector_type(&name),
+            TypeForm::DoubleBraid(name, source, target) => {
+                self.model.double_braid_type(&name, source, target)
+            }
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::QZ => self.model.qz_type(),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
@@ -16570,6 +16645,7 @@ impl Checker<'_> {
             }
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
+            ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
@@ -27789,6 +27865,109 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Flat(action)))
+    }
+
+    fn double_braid_operand(
+        &self,
+        input: &TypedExpr,
+        op: &str,
+    ) -> Result<(Label, dd::braid::Colors, dd::braid::Colors)> {
+        let Kind::DoubleBraid(name, source, target) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, op, "a colored double braid operator"));
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            *source,
+            *target,
+        ))
+    }
+
+    fn double_braid_expression(
+        &mut self,
+        expression: dd::braid::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::braid::Expression;
+        let (ty, action) = match expression {
+            Expression::Word(name, source, word) => {
+                let double = self.model.drinfeld_double(&name)?;
+                let (target, operator) = double.braid(self.model, source, &word)?;
+                let ty = self.model.double_braid_type(&name, source, target)?;
+                return Ok((ty, TypedForm::Constant(operator.persist(self.model)?)));
+            }
+            Expression::Inverse(input) => {
+                let input = self.expr(*input)?;
+                let (name, source, target) =
+                    self.double_braid_operand(&input, "rvDoubleBraidInv")?;
+                let double = self.model.drinfeld_double(&name)?;
+                let ty = self.model.double_braid_type(&name, target, source)?;
+                (
+                    ty,
+                    DoubleBraidAction::Inverse(double.conductor, Box::new(input)),
+                )
+            }
+            Expression::Compose(args) => {
+                let [a, b] = *args;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let (name, source, middle) =
+                    self.double_braid_operand(&a, "rvDoubleBraidCompose")?;
+                let (other, next, target) =
+                    self.double_braid_operand(&b, "rvDoubleBraidCompose")?;
+                if name.text != other.text || middle != next {
+                    return Err(Error::new(
+                        b.span,
+                        "double braid composition requires identical middle color types",
+                    ));
+                }
+                let double = self.model.drinfeld_double(&name)?;
+                let ty = self.model.double_braid_type(&name, source, target)?;
+                (
+                    ty,
+                    DoubleBraidAction::Compose(double.conductor, Box::new([a, b])),
+                )
+            }
+            Expression::Trace(input) => {
+                let input = self.expr(*input)?;
+                let (name, source, target) =
+                    self.double_braid_operand(&input, "rvDoubleBraidTrace")?;
+                if source != target {
+                    return Err(Error::new(
+                        input.span,
+                        "double braid trace requires matching source and target colors",
+                    ));
+                }
+                let double = self.model.drinfeld_double(&name)?;
+                let ty = self.model.cyclotomic_rational_type(double.conductor)?;
+                (ty, DoubleBraidAction::Trace(double, Box::new(input)))
+            }
+            Expression::Entry(key, input) => {
+                let input = self.expr(*input)?;
+                let (name, _, _) = self.double_braid_operand(&input, "rvDoubleBraidEntry")?;
+                let double = self.model.drinfeld_double(&name)?;
+                let ty = self.model.cyclotomic_rational_type(double.conductor)?;
+                (ty, DoubleBraidAction::Entry(double, key, Box::new(input)))
+            }
+            other => {
+                let name = match &other {
+                    Expression::Associator(name, _)
+                    | Expression::Hopf(name, _)
+                    | Expression::MatrixEntry(name, _) => name,
+                    _ => unreachable!(),
+                };
+                let double = self.model.drinfeld_double(name)?;
+                let ty = self.model.cyclotomic_rational_type(double.conductor)?;
+                let value = match other {
+                    Expression::Associator(_, colors) => double.associator(self.model, colors)?,
+                    Expression::Hopf(_, pair) => double.hopf(self.model, pair)?,
+                    Expression::MatrixEntry(_, key) => double.matrix_entry(self.model, key)?,
+                    _ => unreachable!(),
+                };
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+        };
+        Ok((ty, TypedForm::DoubleBraid(action)))
     }
 
     fn double_operand(&self, input: &TypedExpr, op: &str) -> Result<Rc<dd::Double>> {
