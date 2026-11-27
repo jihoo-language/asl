@@ -1532,6 +1532,26 @@ The graded recurrence uses the Göttsche–Nakajima cohomology decomposition. A 
 
 `rvPartitionEntry[N,[upper],[lower]](x);` gives a matrix entry on $(\mathbb Z^N)^{\otimes r}$ at $t=N$ using indices from $0$ through $N-1$. Each diagram contributes its coefficient exactly when all coordinates in each block agree. `rvPartitionOrbit[r]{labels}` sums the coarsenings of that partition with partition-lattice Möbius coefficients. Its specialization indicates the exact equality pattern and vanishes precisely when there are more than $N$ blocks. `rvPartitionDimensions[r,N];` reports the generic Bell number $B_{2r}$ and the finite centralizer dimension $\sum_{b\le N}{2r\brace b}$. At rank at most 8, `rvPartitionCentralizerCheck[r,N];` also specializes the $r$-th reduced Kronecker power of the sum of the empty tail and the one-box tail. The sum of squared irreducible multiplicities is checked against the finite dimension. [Benkart and Halverson on the orbit basis and its specialization](https://arxiv.org/abs/1709.07751) · [Partition algebra example](examples/deligne-partition-algebra.asl)
 
+#### Localized Deligne diagrams and Karoubi retracts
+
+`rvPartitionLocal(x)` embeds integral diagrams into `RVPartitionLocal(r)` over $\mathbb Z[t,1/2,1/t,1/(t-1),1/(t-2)]$. `rvPartitionLocalDivide[a,b,c,d](x)` divides by $2^a t^b(t-1)^c(t-2)^d$. Composition, juxtaposition, reflection, scaling, and addition retain the localized type. Each value stores a common denominator and cancels every factor shared by all numerator polynomials, which gives canonical equality. The numerator has $t$-degree at most 128 and the denominator has at most 64 factors. `rvPartitionEntry[N,[upper],[lower]](x);` reports a reduced rational entry. Finite matrix specialization requires all normalized diagram coefficients to be regular at $N$. `rvPartitionTraceAt[N](x);` evaluates the separately reduced trace, which can have a removable pole even when some diagram coefficients have poles. `rvPartitionZeroAt[N](x);` tests the whole specialized matrix through its equality patterns at ranks up to four.
+
+`rvkaroubi A(e);` declares the nominal retract with idempotent $e$, checked by exact diagram composition. `rvKaroubiMap[A,B](f)` has type `RVKaroubiMap(A,B)` and checks $f=e_B f e_A$ for two retracts of the same partition rank. `rvKaroubiIdentity[A]` is $e_A$, and `rvKaroubiCompose(g,f)` requires matching intermediate names. Maps with the same endpoints support addition, negation, and zero. `rvKaroubiTrace(f);` traces an endomorphism and `rvKaroubiDimension[A];` traces the identity. `rvKaroubiUnderlying(f)` exposes the localized diagram for further queries.
+
+`rvDeligneSquareProjector[i]`, for $0\le i<7$, gives one certified primitive projector in the twofold permutation tensor power. In the table, $J$ is the all-ones rank-one diagram, $U=J/t$, $W=I-U$, $P=W\otimes W$, and $S$ swaps the factors. Write $E$ for the all-equal diagram and $C$ for the diagram whose two blocks are the upper and lower pairs. The residual projectors are $G=PCP/(t-1)$, $H=tP(E-C/t)P/(t-2)$, $K=P(I+S)/2-G-H$, and $L=P(I-S)/2$.
+
+| Index | Projector | Generic dimension |
+|---:|---|---:|
+| 0 | $U\otimes U$ | $1$ |
+| 1 | $U\otimes W$ | $t-1$ |
+| 2 | $W\otimes U$ | $t-1$ |
+| 3 | $G$ | $1$ |
+| 4 | $H$ | $t-1$ |
+| 5 | $K$ | $t(t-3)/2$ |
+| 6 | $L$ | $(t-1)(t-2)/2$ |
+
+`rvDeligneSquareUnit[i,j]` maps the $j$-th retract into the $i$-th. The sets $\{0,3\}$, $\{1,2,4\}$, $\{5\}$, and $\{6\}$ give blocks of sizes $2,3,1,1$. Exact orthogonal idempotence, completeness, and inverse corner identities certify the matrix units. The fifteen units span the generic rank-two partition algebra over $\mathbb Q(t)$. The generic projector $K$ is nonzero and specializes to the zero matrix at $N=3$. [Halverson and Ram on the partition algebra and its centralizers](https://arxiv.org/abs/math/0401314) · [Karoubi square example](examples/deligne-karoubi-square.asl)
+
 #### Crystalline Newton polygons
 
 `rvKummerHilbNewton[C,n,i];`, `rvJacHilbNewton[C,n,i];`, and `rvGenKummerNewton[C,n,i];` list the normalized crystalline slopes with multiplicity in degree $i$ of the resolved Kummer K3 Hilbert scheme, the Jacobian Hilbert scheme, and the generalized Kummer variety. The first two accept length zero. The last requires $n\ge1$ prime to the residue characteristic so the summation fiber is smooth. Degrees outside the cohomological range give an empty polygon. `rvKummerK3Height[C];` reports the formal Brauer height, which is 1, 2, or infinite for these Kummer surfaces.

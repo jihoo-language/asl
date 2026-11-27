@@ -13,6 +13,9 @@ use crate::wide_integer::Natural;
 
 mod diagram;
 mod dimension;
+pub(crate) mod karoubi;
+pub(crate) mod local;
+pub(crate) mod square;
 use diagram::Diagram;
 pub(crate) use dimension::Report;
 
@@ -27,6 +30,9 @@ pub(crate) enum Expression {
     Identity(usize),
     Unary(Unary, Box<ParsedExpr>),
     Binary(Binary, Box<[ParsedExpr; 2]>),
+    Localize(Box<ParsedExpr>),
+    Divide(local::Denominator, Box<ParsedExpr>),
+    SquareUnit(usize, usize),
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +51,8 @@ pub(crate) enum Query {
     Coefficient(Vec<u128>, u128),
     Entry(u128, Vec<u128>, Vec<u128>),
     Trace,
+    TraceAt(u128),
+    ZeroAt(u128),
 }
 
 pub(crate) fn require_rank(rank: u128) -> Result<usize> {
@@ -73,7 +81,7 @@ impl Binary {
     }
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Algebra {
     rank: usize,
     terms: BTreeMap<Monomial, i128>,
@@ -216,37 +224,23 @@ impl Algebra {
                 ))
             }
             Query::Trace => {
-                let mut polynomial = Polynomial::new();
-                for ((diagram, degree), &value) in &self.terms {
-                    model.spend(1 + 3 * self.rank)?;
-                    let degree =
-                        add_degrees(*degree, diagram.closure_components(self.rank) as u128)?;
-                    accumulate(&mut polynomial, degree, Integer::from_i128(value))?;
-                }
-                let terms: Vec<_> = polynomial
-                    .into_iter()
-                    .map(|(degree, value)| format!("({degree},{})", decimal(value)))
-                    .collect();
-                Ok(format!("rvPartitionTrace = [{}]", terms.join(", ")))
+                let polynomial = self.trace_polynomial(model)?;
+                Ok(format!(
+                    "rvPartitionTrace = {}",
+                    polynomial_report(polynomial)
+                ))
             }
-            Query::Entry(dimension, mut upper, lower) => {
-                if upper.len() != self.rank || lower.len() != self.rank {
-                    return Err(Error::plain(
-                        "partition matrix index has the wrong tensor rank",
-                    ));
-                }
-                upper.extend(lower);
-                if upper.iter().any(|&index| index >= dimension) {
-                    return Err(Error::plain("partition matrix index lies outside 0..N"));
-                }
-                let mut polynomial = Polynomial::new();
-                for ((diagram, degree), &value) in &self.terms {
-                    model.spend(1 + 2 * self.rank)?;
-                    if diagram.supports(&upper) {
-                        accumulate(&mut polynomial, *degree, Integer::from_i128(value))?;
-                    }
-                }
-                let value = evaluate_polynomial(model, polynomial, dimension)?;
+            Query::TraceAt(n) => {
+                let polynomial = self.trace_polynomial(model)?;
+                let value = evaluate_polynomial(model, polynomial, n)?;
+                Ok(format!("rvPartitionTraceAt[{n}] = {}", decimal(value)))
+            }
+            Query::ZeroAt(n) => Ok(format!(
+                "rvPartitionZeroAt[{n}] = {}",
+                self.zero_at(model, n)?
+            )),
+            Query::Entry(dimension, upper, lower) => {
+                let value = self.entry(model, dimension, upper, lower)?;
                 Ok(format!(
                     "rvPartitionEntry[{dimension}] = {}",
                     decimal(value)
@@ -254,6 +248,66 @@ impl Algebra {
             }
         }
     }
+
+    fn trace_polynomial(&self, model: &mut Model) -> Result<Polynomial> {
+        let mut polynomial = Polynomial::new();
+        for ((diagram, degree), &value) in &self.terms {
+            model.spend(1 + 3 * self.rank)?;
+            let degree = add_degrees(*degree, diagram.closure_components(self.rank) as u128)?;
+            accumulate(&mut polynomial, degree, Integer::from_i128(value))?;
+        }
+        Ok(polynomial)
+    }
+
+    fn entry(
+        &self,
+        model: &mut Model,
+        n: u128,
+        mut upper: Vec<u128>,
+        lower: Vec<u128>,
+    ) -> Result<Integer> {
+        if upper.len() != self.rank || lower.len() != self.rank {
+            return Err(Error::plain(
+                "partition matrix index has the wrong tensor rank",
+            ));
+        }
+        upper.extend(lower);
+        if upper.iter().any(|&index| index >= n) {
+            return Err(Error::plain("partition matrix index lies outside 0..N"));
+        }
+        self.evaluate_entry(model, n, &upper)
+    }
+
+    fn evaluate_entry(&self, model: &mut Model, n: u128, indices: &[u128]) -> Result<Integer> {
+        let mut polynomial = Polynomial::new();
+        for ((diagram, degree), &value) in &self.terms {
+            model.spend(1 + 2 * self.rank)?;
+            if diagram.supports(indices) {
+                accumulate(&mut polynomial, *degree, Integer::from_i128(value))?;
+            }
+        }
+        evaluate_polynomial(model, polynomial, n)
+    }
+
+    fn zero_at(&self, model: &mut Model, n: u128) -> Result<bool> {
+        if self.terms.is_empty() || (n == 0 && self.rank != 0) {
+            return Ok(true);
+        }
+        if self.rank > 4 {
+            return Err(Error::plain("partition matrix-zero test exceeds rank 4"));
+        }
+        diagram::all_patterns(model, 2 * self.rank, n, &mut |model, indices| {
+            Ok(self.evaluate_entry(model, n, indices)?.is_zero())
+        })
+    }
+}
+
+fn polynomial_report(polynomial: Polynomial) -> String {
+    let terms: Vec<_> = polynomial
+        .into_iter()
+        .map(|(degree, value)| format!("({degree},{})", decimal(value)))
+        .collect();
+    format!("[{}]", terms.join(", "))
 }
 
 fn evaluate_polynomial(

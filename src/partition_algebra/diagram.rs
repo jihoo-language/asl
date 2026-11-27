@@ -221,3 +221,42 @@ impl Connectivity {
         }
     }
 }
+
+// S_N-orbits of pairs of tensors are the realizable restricted growth
+// words. Short-circuit as soon as one orbit has a nonzero entry.
+pub(super) fn all_patterns(
+    model: &mut Model,
+    vertices: usize,
+    dimension: u128,
+    test: &mut impl FnMut(&mut Model, &[u128]) -> Result<bool>,
+) -> Result<bool> {
+    fn visit(
+        model: &mut Model,
+        vertices: usize,
+        dimension: u128,
+        used: u128,
+        labels: &mut Vec<u128>,
+        test: &mut impl FnMut(&mut Model, &[u128]) -> Result<bool>,
+    ) -> Result<bool> {
+        if labels.len() == vertices {
+            return test(model, labels);
+        }
+        for label in 0..(used + 1).min(dimension) {
+            model.spend(1)?;
+            labels.push(label);
+            if !visit(
+                model,
+                vertices,
+                dimension,
+                used.max(label + 1),
+                labels,
+                test,
+            )? {
+                return Ok(false);
+            }
+            labels.pop();
+        }
+        Ok(true)
+    }
+    visit(model, vertices, dimension, 0, &mut Vec::new(), test)
+}

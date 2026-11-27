@@ -127,6 +127,8 @@ pub(crate) enum TypeForm {
     RVSchurCharacter(u128),
     RVStableSchurCharacter,
     RVPartitionAlgebra(usize),
+    RVPartitionLocal(usize),
+    RVKaroubiMap([Label; 2]),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
@@ -848,6 +850,7 @@ pub(crate) enum ExprForm {
     WittSpectrum(Box<crate::rv_witt_spectrum::Expression>),
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
+    Karoubi(Box<crate::partition_algebra::karoubi::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
@@ -1356,6 +1359,7 @@ pub(crate) enum StatementForm {
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
     PartitionQuery(crate::partition_algebra::Query, Box<ParsedExpr>),
     PartitionReport(crate::partition_algebra::Report),
+    Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     StableSchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -6159,9 +6163,86 @@ impl<'src> Parser<'src> {
         Ok(labels)
     }
 
+    fn deligne_projector_index(&mut self) -> Result<usize> {
+        let span = self.span();
+        let result = self.wide_unsigned("Deligne square projector index")?;
+        if result >= crate::partition_algebra::square::PROJECTORS as u128 {
+            return Err(Error::new(
+                span,
+                "Deligne square projector index must be in 0..7",
+            ));
+        }
+        Ok(result as usize)
+    }
+
+    fn karoubi_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::partition_algebra::karoubi::Expression;
+        let (form, depth) = match name {
+            "rvKaroubiMap" => {
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Map([source, target], Box::new(input)), depth)
+            }
+            "rvKaroubiIdentity" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Identity(name), 0)
+            }
+            "rvKaroubiUnderlying" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Underlying(Box::new(input)), depth)
+            }
+            _ => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Compose(Box::new(inputs)), depth)
+            }
+        };
+        expr(span, ExprForm::Karoubi(Box::new(form)), depth)
+    }
+
     fn partition_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::partition_algebra::{Binary, Expression, Unary};
         let (expression, depth) = match name {
+            "rvDeligneSquareProjector" | "rvDeligneSquareUnit" => {
+                self.expect(Token::LBracket)?;
+                let i = self.deligne_projector_index()?;
+                let j = if name == "rvDeligneSquareUnit" {
+                    self.expect(Token::Comma)?;
+                    self.deligne_projector_index()?
+                } else {
+                    i
+                };
+                self.expect(Token::RBracket)?;
+                (Expression::SquareUnit(i, j), 0)
+            }
+            "rvPartitionLocal" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Localize(Box::new(input)), depth)
+            }
+            "rvPartitionLocalDivide" => {
+                self.expect(Token::LBracket)?;
+                let mut powers = [0; 4];
+                for (i, exponent) in powers.iter_mut().enumerate() {
+                    if i != 0 {
+                        self.expect(Token::Comma)?;
+                    }
+                    *exponent = self.wide_unsigned("partition denominator exponent")?;
+                }
+                self.expect(Token::RBracket)?;
+                let den = crate::partition_algebra::local::Denominator::new(powers)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Divide(den, Box::new(input)), depth)
+            }
             "rvPartitionDiagram" | "rvPartitionOrbit" | "rvPartitionIdentity" => {
                 self.expect(Token::LBracket)?;
                 let rank = self.partition_rank()?;
@@ -9898,6 +9979,21 @@ impl<'src> Parser<'src> {
                     input,
                 )
             }
+            Token::Word(name @ ("rvkaroubi" | "rvKaroubiTrace" | "rvKaroubiDimension")) => {
+                use crate::partition_algebra::karoubi::Statement;
+                self.advance()?;
+                let statement = match name {
+                    "rvkaroubi" => Statement::Declare(self.label()?, Box::new(self.paren_expr(0)?)),
+                    "rvKaroubiTrace" => Statement::Trace(Box::new(self.paren_expr(0)?)),
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let object = self.label()?;
+                        self.expect(Token::RBracket)?;
+                        Statement::Dimension(object)
+                    }
+                };
+                StatementForm::Karoubi(Box::new(statement))
+            }
             Token::Word(name @ ("rvPartitionDimensions" | "rvPartitionCentralizerCheck")) => {
                 use crate::partition_algebra::Report;
                 self.advance()?;
@@ -9913,7 +10009,11 @@ impl<'src> Parser<'src> {
                 })
             }
             Token::Word(
-                name @ ("rvPartitionTrace" | "rvPartitionEntry" | "rvPartitionCoefficient"),
+                name @ ("rvPartitionTrace"
+                | "rvPartitionEntry"
+                | "rvPartitionCoefficient"
+                | "rvPartitionTraceAt"
+                | "rvPartitionZeroAt"),
             ) => {
                 use crate::partition_algebra::Query;
                 self.advance()?;
@@ -9921,7 +10021,14 @@ impl<'src> Parser<'src> {
                     Query::Trace
                 } else {
                     self.expect(Token::LBracket)?;
-                    let query = if name == "rvPartitionEntry" {
+                    let query = if matches!(name, "rvPartitionTraceAt" | "rvPartitionZeroAt") {
+                        let n = self.wide_unsigned("finite permutation dimension")?;
+                        if name == "rvPartitionTraceAt" {
+                            Query::TraceAt(n)
+                        } else {
+                            Query::ZeroAt(n)
+                        }
+                    } else if name == "rvPartitionEntry" {
                         let dimension = self.wide_unsigned("finite permutation dimension")?;
                         self.expect(Token::Comma)?;
                         let upper = self.partition_labels(true)?;
@@ -12592,6 +12699,18 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVKaroubiMap" && self.eat(Token::LParen)? {
+            let source = self.label()?;
+            self.expect(Token::Comma)?;
+            let target = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionLocal" && self.eat(Token::LParen)? {
+            let rank = self.partition_rank()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionLocal(rank), 0);
         }
         if name.text == "RVPartitionAlgebra" && self.eat(Token::LParen)? {
             let rank = self.partition_rank()?;
@@ -17118,6 +17237,10 @@ impl<'src> Parser<'src> {
                 if matches!(
                     name.text.as_str(),
                     "rvPartitionDiagram"
+                        | "rvPartitionLocal"
+                        | "rvPartitionLocalDivide"
+                        | "rvDeligneSquareProjector"
+                        | "rvDeligneSquareUnit"
                         | "rvPartitionOrbit"
                         | "rvPartitionIdentity"
                         | "rvPartitionReflect"
@@ -17126,6 +17249,15 @@ impl<'src> Parser<'src> {
                         | "rvPartitionTensor"
                 ) {
                     return self.partition_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvKaroubiMap"
+                        | "rvKaroubiIdentity"
+                        | "rvKaroubiUnderlying"
+                        | "rvKaroubiCompose"
+                ) {
+                    return self.karoubi_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

@@ -264,6 +264,8 @@ pub(crate) enum Kind {
     RVSchurCharacter(u128),
     RVStableSchurCharacter,
     RVPartitionAlgebra(usize),
+    RVPartitionLocal(usize),
+    RVKaroubiMap(Rc<str>, Rc<str>),
     RVCTState(PeriodGrade),
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
@@ -468,6 +470,8 @@ pub(crate) enum Value {
     RVSchurCharacter(Rc<crate::rv_witt_spectrum::character::Character>),
     RVStableSchurCharacter(Rc<crate::rv_witt_spectrum::character::StableCharacter>),
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
+    RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
+    RVKaroubiMap(Rc<crate::partition_algebra::karoubi::Map>),
     PeriodState(rv_period::State),
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
@@ -701,6 +705,8 @@ pub(crate) struct Model {
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     cm_ring_orders: HashMap<String, cm_ring::Order>,
+    karoubi_objects: HashMap<String, Rc<crate::partition_algebra::local::LocalAlgebra>>,
+    deligne_square: Option<Rc<crate::partition_algebra::square::Square>>,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
     cm_class_polynomials: HashMap<String, Rc<crate::cm_class_poly::Polynomial>>,
@@ -836,6 +842,8 @@ impl Model {
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
             cm_ring_orders: HashMap::new(),
+            karoubi_objects: HashMap::new(),
+            deligne_square: None,
             hilbert_strata: HashMap::new(),
             specht_strata: HashMap::new(),
             cm_class_polynomials: HashMap::new(),
@@ -1207,7 +1215,9 @@ impl Model {
             | Kind::RVWittSpectrum
             | Kind::RVSchurCharacter(..)
             | Kind::RVStableSchurCharacter
-            | Kind::RVPartitionAlgebra(..) => usize::MAX,
+            | Kind::RVPartitionAlgebra(..)
+            | Kind::RVPartitionLocal(..)
+            | Kind::RVKaroubiMap(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
             Kind::RVHive(..) => {
@@ -1403,6 +1413,8 @@ impl Model {
                 | Kind::RVSchurCharacter(..)
                 | Kind::RVStableSchurCharacter
                 | Kind::RVPartitionAlgebra(..)
+                | Kind::RVPartitionLocal(..)
+                | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
@@ -3405,6 +3417,25 @@ impl Model {
         self.inhabited_type(Kind::RVPartitionAlgebra(rank), 0)
     }
 
+    pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn karoubi_map_type(&mut self, source: &Label, target: &Label) -> Result<TypeId> {
+        let a = self.karoubi_object(source)?;
+        let b = self.karoubi_object(target)?;
+        if a.rank() != b.rank() {
+            return Err(Error::new(
+                target.span,
+                "Karoubi maps require retracts of the same partition rank",
+            ));
+        }
+        self.inhabited_type(
+            Kind::RVKaroubiMap(source.text.as_str().into(), target.text.as_str().into()),
+            0,
+        )
+    }
+
     pub(crate) fn quantum_mod_type(&mut self, grade: rv_pcurv::ModGrade) -> Result<TypeId> {
         self.inhabited_type(Kind::RVQGrP(grade), 0)
     }
@@ -3998,6 +4029,45 @@ impl Model {
                     format!("unknown K3 automorphism word '{}'", name.text),
                 )
             })
+    }
+
+    pub(crate) fn define_karoubi_object(
+        &mut self,
+        name: Label,
+        projector: Rc<crate::partition_algebra::local::LocalAlgebra>,
+    ) -> Result<()> {
+        if self.karoubi_objects.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Karoubi object '{}' is already defined", name.text),
+            ));
+        }
+        crate::partition_algebra::karoubi::certify_object(self, &projector)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(4 + name.text.len())?;
+        self.karoubi_objects.insert(name.text, projector);
+        Ok(())
+    }
+
+    pub(crate) fn karoubi_object(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::partition_algebra::local::LocalAlgebra>> {
+        self.karoubi_objects
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Karoubi object '{}'", name.text)))
+    }
+
+    pub(crate) fn deligne_square(
+        &mut self,
+    ) -> Result<Rc<crate::partition_algebra::square::Square>> {
+        if let Some(square) = &self.deligne_square {
+            return Ok(square.clone());
+        }
+        let square = Rc::new(crate::partition_algebra::square::Square::new(self)?);
+        self.deligne_square = Some(square.clone());
+        Ok(square)
     }
 
     pub(crate) fn define_hilbert_stratum(
@@ -6308,6 +6378,8 @@ impl Model {
             | Kind::RVSchurCharacter(..)
             | Kind::RVStableSchurCharacter
             | Kind::RVPartitionAlgebra(..)
+            | Kind::RVPartitionLocal(..)
+            | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
@@ -6946,6 +7018,8 @@ impl Model {
             Kind::RVSchurCharacter(weight) => out.push(&format!("RVSchurCharacter({weight})")),
             Kind::RVStableSchurCharacter => out.push("RVStableSchurCharacter"),
             Kind::RVPartitionAlgebra(rank) => out.push(&format!("RVPartitionAlgebra({rank})")),
+            Kind::RVPartitionLocal(rank) => out.push(&format!("RVPartitionLocal({rank})")),
+            Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
                 grade.prime.get(),
@@ -7216,6 +7290,10 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
+            (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7631,6 +7709,8 @@ impl Model {
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => a.compare(self, b),
             (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => a.compare(self, b),
             (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => a.compare(self, b),
+            (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a.compare(self, b),
+            (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
                 a.compare(self, b)
             }
@@ -8178,8 +8258,12 @@ impl Model {
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
                 }
-                Kind::RVPartitionAlgebra(..) => {
-                    return Err(Error::plain("cannot enumerate a partition diagram algebra"))
+                Kind::RVPartitionAlgebra(..)
+                | Kind::RVPartitionLocal(..)
+                | Kind::RVKaroubiMap(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a partition algebra or its Karoubi maps",
+                    ))
                 }
                 Kind::RVSchurCharacter(..) | Kind::RVStableSchurCharacter => {
                     return Err(Error::plain("cannot enumerate a Schur character group"))
@@ -9984,6 +10068,8 @@ impl Model {
             Value::RVSchurCharacter(value) => out.push(&value.render()),
             Value::RVStableSchurCharacter(value) => out.push(&value.render()),
             Value::RVPartitionAlgebra(value) => out.push(&value.render()),
+            Value::RVPartitionLocal(value) => out.push(&value.render()),
+            Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
                 out.push("RVOre{")?;
                 self.spend(terms.len())?;

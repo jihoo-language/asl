@@ -826,6 +826,12 @@ enum TypedForm {
     StableSchurSpecialize(u128, Box<TypedExpr>),
     PartitionUnary(crate::partition_algebra::Unary, Box<TypedExpr>),
     PartitionBinary(crate::partition_algebra::Binary, Box<[TypedExpr; 2]>),
+    PartitionLocalize(Box<TypedExpr>),
+    PartitionDivide(crate::partition_algebra::local::Denominator, Box<TypedExpr>),
+    KaroubiCorner(Box<[Label; 2]>, Box<TypedExpr>),
+    KaroubiCompose(Box<[TypedExpr; 2]>),
+    KaroubiUnderlying(Box<TypedExpr>),
+    KaroubiNegate(Box<TypedExpr>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -2106,10 +2112,49 @@ impl Engine {
                 let input = self.checker().expr(*input)?;
                 self.checker()
                     .partition_operand(&input, "partition diagram query")?;
-                let Value::RVPartitionAlgebra(value) = self.eval(&input)? else {
-                    unreachable!()
+                return match self.eval(&input)? {
+                    Value::RVPartitionAlgebra(value) => value.query(&mut self.model, query),
+                    Value::RVPartitionLocal(value) => value.query(&mut self.model, query),
+                    _ => unreachable!(),
+                }
+                .map(Some);
+            }
+            StatementForm::Karoubi(statement) => {
+                use crate::partition_algebra::karoubi::Statement;
+                return match *statement {
+                    Statement::Declare(name, input) => {
+                        let input = self.checker().expr(*input)?;
+                        let (_, local) = self.checker().partition_operand(&input, "rvkaroubi")?;
+                        if !local {
+                            return Err(Error::new(
+                                input.span,
+                                "rvkaroubi requires an RVPartitionLocal value",
+                            ));
+                        }
+                        let Value::RVPartitionLocal(value) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        self.model.define_karoubi_object(name, value)?;
+                        Ok(None)
+                    }
+                    Statement::Dimension(name) => {
+                        let value = self.model.karoubi_object(&name)?;
+                        value
+                            .trace_report(
+                                &mut self.model,
+                                &format!("rvKaroubiDimension[{}]", name.text),
+                            )
+                            .map(Some)
+                    }
+                    Statement::Trace(input) => {
+                        let input = self.checker().expr(*input)?;
+                        self.checker().karoubi_endpoints(&input, "rvKaroubiTrace")?;
+                        let Value::RVKaroubiMap(value) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        value.trace(&mut self.model).map(Some)
+                    }
                 };
-                return value.query(&mut self.model, query).map(Some);
             }
             StatementForm::StableSchurCharacterCoeff(shape, input) => {
                 let input = self.checker().expr(*input)?;
@@ -9304,6 +9349,12 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11408,22 +11459,67 @@ impl Engine {
                     .specialize(&mut self.model, *rank)?
                     .persist(&mut self.model)
             }
-            TypedForm::PartitionUnary(operation, input) => {
+            TypedForm::PartitionUnary(operation, input) => match self.eval(input)? {
+                Value::RVPartitionAlgebra(value) => value
+                    .unary(&mut self.model, *operation)?
+                    .persist(&mut self.model),
+                Value::RVPartitionLocal(value) => value
+                    .unary(&mut self.model, *operation)?
+                    .persist(&mut self.model),
+                _ => unreachable!(),
+            },
+            TypedForm::PartitionBinary(operation, inputs) => {
+                match (self.eval(&inputs[0])?, self.eval(&inputs[1])?) {
+                    (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => a
+                        .binary(&mut self.model, *operation, &b)?
+                        .persist(&mut self.model),
+                    (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a
+                        .binary(&mut self.model, *operation, &b)?
+                        .persist(&mut self.model),
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::PartitionLocalize(input) => {
                 let Value::RVPartitionAlgebra(value) = self.eval(input)? else {
                     unreachable!()
                 };
-                value
-                    .unary(&mut self.model, *operation)?
+                crate::partition_algebra::local::LocalAlgebra::embed((*value).clone())?
                     .persist(&mut self.model)
             }
-            TypedForm::PartitionBinary(operation, inputs) => {
-                let (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) =
+            TypedForm::PartitionDivide(denominator, input) => {
+                let Value::RVPartitionLocal(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .divide(&mut self.model, *denominator)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::KaroubiCorner(names, input) => {
+                let Value::RVPartitionLocal(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                crate::partition_algebra::karoubi::Map::corner(&mut self.model, names, value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::KaroubiCompose(inputs) => {
+                let (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) =
                     (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
                 else {
                     unreachable!()
                 };
-                a.binary(&mut self.model, *operation, &b)?
-                    .persist(&mut self.model)
+                a.compose(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::KaroubiUnderlying(input) => {
+                let Value::RVKaroubiMap(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.underlying().clone().persist(&mut self.model)
+            }
+            TypedForm::KaroubiNegate(input) => {
+                let Value::RVKaroubiMap(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.negate(&mut self.model)?.persist(&mut self.model)
             }
             TypedForm::SchurCharacterEvaluate(inputs) => {
                 let (Value::RVSchurCharacter(outer), Value::RVWittSpectrum(input)) =
@@ -13817,6 +13913,10 @@ impl Checker<'_> {
             TypeForm::RVSchurCharacter(weight) => self.model.schur_character_type(weight),
             TypeForm::RVStableSchurCharacter => self.model.stable_schur_character_type(),
             TypeForm::RVPartitionAlgebra(rank) => self.model.partition_algebra_type(rank),
+            TypeForm::RVPartitionLocal(rank) => self.model.partition_local_type(rank),
+            TypeForm::RVKaroubiMap([source, target]) => {
+                self.model.karoubi_map_type(&source, &target)
+            }
             TypeForm::RVCTState(name, p, s) => {
                 let grade = self.model.rv_ct_state_grade(name, p, s)?;
                 self.model.rv_ct_state_type(grade)
@@ -14893,6 +14993,12 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionLocal(rank) => crate::partition_algebra::local::LocalAlgebra::zero(*rank).persist(self.model)?,
+                    Kind::RVKaroubiMap(source,target) => {
+                        let rank = self.model.karoubi_object(&Label { text:source.to_string(),span })?.rank();
+                        crate::partition_algebra::karoubi::Map::zero(source.clone(),target.clone(),rank).persist(self.model)?
+                    }
+
                     Kind::RVSchurCharacter(weight) => crate::rv_witt_spectrum::character::Character::zero(*weight).persist(self.model)?,
                     Kind::RVCTState(..) => Value::PeriodState([].into()),
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
@@ -17046,6 +17152,7 @@ impl Checker<'_> {
             ExprForm::WittSpectrum(expression) => self.witt_spectrum_expression(*expression),
             ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
             ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
+            ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::HilbertCohomology(expression) => {
@@ -18106,7 +18213,13 @@ impl Checker<'_> {
                         TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::RVPartitionAlgebra(..)) {
+                if matches!(self.model.kind(input.ty), Kind::RVKaroubiMap(..)) {
+                    return Ok((input.ty, TypedForm::KaroubiNegate(Box::new(input))));
+                }
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::RVPartitionAlgebra(..) | Kind::RVPartitionLocal(..)
+                ) {
                     return Ok((
                         input.ty,
                         TypedForm::PartitionUnary(
@@ -21889,6 +22002,8 @@ impl Checker<'_> {
                         | Kind::RVSchurCharacter(..)
                         | Kind::RVStableSchurCharacter
                         | Kind::RVPartitionAlgebra(..)
+                        | Kind::RVPartitionLocal(..)
+                        | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
@@ -23852,22 +23967,126 @@ impl Checker<'_> {
                 let [a, b] = *inputs;
                 let a = self.expr(a)?;
                 let b = self.expr(b)?;
-                let a_rank = self.partition_operand(&a, operation.name())?;
-                let b_rank = self.partition_operand(&b, operation.name())?;
+                let (a_rank, a_local) = self.partition_operand(&a, operation.name())?;
+                let (b_rank, b_local) = self.partition_operand(&b, operation.name())?;
+                if a_local != b_local {
+                    return Err(Error::new(
+                        b.span,
+                        "mixed partition algebras require explicit rvPartitionLocal embedding",
+                    ));
+                }
                 let rank = operation.rank(a_rank, b_rank)?;
-                let ty = self.model.partition_algebra_type(rank)?;
+                let ty = if a_local {
+                    self.model.partition_local_type(rank)?
+                } else {
+                    self.model.partition_algebra_type(rank)?
+                };
                 Ok((ty, TypedForm::PartitionBinary(operation, Box::new([a, b]))))
+            }
+            Expression::Localize(input) => {
+                let input = self.expr(*input)?;
+                let (rank, local) = self.partition_operand(&input, "rvPartitionLocal")?;
+                if local {
+                    return Err(Error::new(
+                        input.span,
+                        "rvPartitionLocal requires an integral RVPartitionAlgebra",
+                    ));
+                }
+                let ty = self.model.partition_local_type(rank)?;
+                Ok((ty, TypedForm::PartitionLocalize(Box::new(input))))
+            }
+            Expression::Divide(denominator, input) => {
+                let input = self.expr(*input)?;
+                let (_, local) = self.partition_operand(&input, "rvPartitionLocalDivide")?;
+                if !local {
+                    return Err(Error::new(
+                        input.span,
+                        "rvPartitionLocalDivide requires an RVPartitionLocal value",
+                    ));
+                }
+                Ok((
+                    input.ty,
+                    TypedForm::PartitionDivide(denominator, Box::new(input)),
+                ))
+            }
+            Expression::SquareUnit(i, j) => {
+                let ty = self.model.partition_local_type(2)?;
+                let square = self.model.deligne_square()?;
+                let unit = square.unit(self.model, i, j)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(unit)))
             }
         }
     }
 
-    fn partition_operand(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
-        if let Kind::RVPartitionAlgebra(rank) = *self.model.kind(input.ty) {
-            Ok(rank)
+    fn partition_operand(&self, input: &TypedExpr, operation: &str) -> Result<(usize, bool)> {
+        match *self.model.kind(input.ty) {
+            Kind::RVPartitionAlgebra(rank) => Ok((rank, false)),
+            Kind::RVPartitionLocal(rank) => Ok((rank, true)),
+            _ => Err(Error::new(
+                input.span,
+                format!("{operation} requires an RVPartitionAlgebra or RVPartitionLocal value"),
+            )),
+        }
+    }
+
+    fn karoubi_expression(
+        &mut self,
+        expression: crate::partition_algebra::karoubi::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::karoubi::{Expression, Map};
+        match expression {
+            Expression::Map(names, input) => {
+                let ty = self.model.karoubi_map_type(&names[0], &names[1])?;
+                let rank = self.model.karoubi_object(&names[0])?.rank();
+                let input = self.expr(*input)?;
+                let diagram = self.model.partition_local_type(rank)?;
+                self.require_type(diagram, &input, "rvKaroubiMap")?;
+                Ok((
+                    ty,
+                    TypedForm::KaroubiCorner(Box::new(names), Box::new(input)),
+                ))
+            }
+            Expression::Identity(name) => {
+                let ty = self.model.karoubi_map_type(&name, &name)?;
+                let projector = self.model.karoubi_object(&name)?;
+                let value = Map::identity(&name, projector).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Compose(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let [middle, target] = self.karoubi_endpoints(&a, "rvKaroubiCompose")?;
+                let [source, other] = self.karoubi_endpoints(&b, "rvKaroubiCompose")?;
+                if middle.text != other.text {
+                    return Err(Error::new(
+                        b.span,
+                        "Karoubi composition requires the same intermediate object",
+                    ));
+                }
+                let ty = self.model.karoubi_map_type(&source, &target)?;
+                Ok((ty, TypedForm::KaroubiCompose(Box::new([a, b]))))
+            }
+            Expression::Underlying(input) => {
+                let input = self.expr(*input)?;
+                let [source, _] = self.karoubi_endpoints(&input, "rvKaroubiUnderlying")?;
+                let rank = self.model.karoubi_object(&source)?.rank();
+                let ty = self.model.partition_local_type(rank)?;
+                Ok((ty, TypedForm::KaroubiUnderlying(Box::new(input))))
+            }
+        }
+    }
+
+    fn karoubi_endpoints(&self, input: &TypedExpr, operation: &str) -> Result<[Label; 2]> {
+        if let Kind::RVKaroubiMap(source, target) = self.model.kind(input.ty) {
+            Ok([source, target].map(|name| Label {
+                text: name.to_string(),
+                span: input.span,
+            }))
         } else {
             Err(Error::new(
                 input.span,
-                format!("{operation} requires an RVPartitionAlgebra value"),
+                format!("{operation} requires an RVKaroubiMap value"),
             ))
         }
     }
