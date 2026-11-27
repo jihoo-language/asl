@@ -57,7 +57,7 @@ fn type_values_from_curves_and_classification_of_small_genus() {
 }
 
 #[test]
-fn impossible_orderings_and_unfinished_search_have_distinct_results() {
+fn impossible_orderings_and_invalid_types_have_distinct_results() {
     let setup = r"
         let a = eoType{0,0,1,2,2,2,2,2,2};
         let b = eoType{1,1,1,1,2,2,2,2,2};
@@ -65,12 +65,11 @@ fn impossible_orderings_and_unfinished_search_have_distinct_results() {
     ";
     assert_eq!(
         stdout(interpret(&format!(
-            "{setup} show eoBruhat(a,b); show eoClosure(a,ord); show eoClosure(ord,a);"
+            "{setup} show eoBruhat(a,b); show eoClosure(a,ord); show eoClosure(ord,a); show eoClosure(a,b);"
         ))),
-        "S.lo\nS.hi\nS.lo\n"
+        "S.lo\nS.hi\nS.lo\nS.lo\n"
     );
     for (expression, reason) in [
-        ("eoClosure(a,b)", "Levi search supports genus at most 8"),
         (
             "eoClosure(eoType{0},eoType{0,1})",
             "expected type EOType(1)",
@@ -86,4 +85,38 @@ fn impossible_orderings_and_unfinished_search_have_distinct_results() {
         let error = diagnostic(interpret(&format!("{setup} show {expression};")));
         assert!(error.contains(reason), "{expression}\n{error}");
     }
+}
+
+#[test]
+fn genus_twelve_small_codimension_interval_search() {
+    assert_eq!(
+        stdout(example("rank-eo-interval")),
+        concat!(
+            "eoDim = 29\n",
+            "eoDim = 30\n",
+            "S.lo\n",
+            "S.lo\n",
+            "eoClosureWitness = none\n",
+            "eoDim = 68\n",
+            "eoDim = 69\n",
+            "S.lo\n",
+            "S.hi\n",
+            "eoClosureWitness = [2, 1, 3, 4, 6, 7, 8, 9, 10, 11, 12, 5]\n",
+        )
+    );
+}
+
+#[test]
+fn exhausted_frontier_reports_resource_limit() {
+    let lower = vec!["1"; 40].join(",");
+    let upper = (0..40)
+        .map(|entry| entry.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = format!("show eoClosure(eoType{{{lower}}},eoType{{{upper}}});");
+    let error = diagnostic(interpret(&source));
+    assert!(
+        error.contains("EO closure interval exceeds the storage limit"),
+        "{error}"
+    );
 }

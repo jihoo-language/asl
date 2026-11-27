@@ -1,12 +1,13 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use crate::binary_linear::check_storage;
+use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 
-// The twisted comparison can inspect all g! Levi permutations.
-const MAX_LEVI_SEARCH_GENUS: usize = 8;
+// Preserve the lexicographically first Levi witness in small genus.
+const DIRECT_LEVI_GENUS: usize = 8;
 
 pub(crate) fn persist(model: &mut Model, sequence: Vec<usize>) -> Result<Value> {
     let mut previous = 0;
@@ -78,18 +79,29 @@ pub(crate) fn closure_witness(
     if bruhat(model, lower, upper)? {
         return Ok(Some((0..g).collect()));
     }
-    if dimension(model, lower)? >= dimension(model, upper)? {
+    let low_length = dimension(model, lower)?;
+    let high_length = dimension(model, upper)?;
+    if low_length >= high_length {
         return Ok(None);
     }
-    if g > MAX_LEVI_SEARCH_GENUS {
-        return Err(Error::plain(format!(
-            "EO closure Levi search supports genus at most {MAX_LEVI_SEARCH_GENUS}"
-        )));
-    }
-    let n = 2 * g;
+    let scratch = g.saturating_mul(32);
+    check_interval_storage(scratch)?;
     let lower = weyl(model, lower)?;
     let upper = weyl(model, upper)?;
-    let prefixes = prefixes(&upper);
+    if g > DIRECT_LEVI_GENUS {
+        return interval_witness(model, &lower, upper, high_length - low_length, scratch);
+    }
+    direct_witness(model, &lower, &upper)
+}
+
+fn direct_witness(
+    model: &mut Model,
+    lower: &[usize],
+    upper: &[usize],
+) -> Result<Option<Vec<usize>>> {
+    let n = lower.len();
+    let g = n / 2;
+    let prefixes = prefixes(upper);
     let mut u: Vec<_> = (0..g).collect();
     let mut inverse = vec![0; n];
     let mut twist = vec![0; n];
@@ -255,4 +267,203 @@ fn gcd(mut a: usize, mut b: usize) -> usize {
         (a, b) = (b, a % b);
     }
     a
+}
+
+fn interval_witness(
+    model: &mut Model,
+    lower: &[usize],
+    upper: Vec<usize>,
+    gap: usize,
+    scratch: usize,
+) -> Result<Option<Vec<usize>>> {
+    // Minimality of lower in its left Levi coset gives
+    // l(u^-1 lower) = l(u) + l(lower). Since delta preserves length,
+    // l(u^-1 lower delta(u)) >= l(lower). The only possible targets
+    // lie in the downward Bruhat interval truncated at that length.
+    let source = signed_cycles(model, lower)?;
+    let state_cells = upper.len() + 8;
+    check_interval_storage(scratch + state_cells)?;
+    let mut frontier = BTreeSet::from([upper]);
+    for depth in 0..=gap {
+        let mut next = BTreeSet::new();
+        while let Some(mut target) = frontier.pop_first() {
+            let cycles = signed_cycles(model, &target)?;
+            if let Some(witness) = match_cycles(model, &source, &cycles)? {
+                return Ok(Some(witness));
+            }
+            if depth < gap {
+                let used = scratch + (1 + frontier.len()) * state_cells;
+                lower_covers(model, &mut target, &mut next, used, state_cells)?;
+            }
+        }
+        if next.is_empty() {
+            return Ok(None);
+        }
+        frontier = next;
+    }
+    Ok(None)
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct SignedCycle {
+    signs: Vec<bool>,
+    points: Vec<usize>,
+}
+
+fn signed_cycles(model: &mut Model, permutation: &[usize]) -> Result<Vec<SignedCycle>> {
+    let n = permutation.len();
+    let g = n / 2;
+    model.spend(g)?;
+    let mut seen = vec![false; g];
+    let mut cycles = Vec::new();
+    for start in 0..g {
+        if seen[start] {
+            continue;
+        }
+        let mut points = Vec::new();
+        let mut signs = Vec::new();
+        let mut vertex = start;
+        while !seen[vertex] {
+            seen[vertex] = true;
+            points.push(vertex);
+            // This is the signed permutation w*r, for the longest
+            // unsigned Levi element r. The second half represents
+            // the oppositely signed members of the same g pairs.
+            let image = permutation[g - 1 - vertex];
+            let sign = image >= g;
+            signs.push(sign);
+            vertex = if sign { n - 1 - image } else { image };
+        }
+        let rotation = first_rotation(model, &signs)?;
+        signs.rotate_left(rotation);
+        points.rotate_left(rotation);
+        cycles.push(SignedCycle { signs, points });
+    }
+    model.spend(g * (1 + cycles.len().max(1).ilog2() as usize))?;
+    cycles.sort_unstable();
+    Ok(cycles)
+}
+
+// Two candidate starts for the lexicographically least cyclic rotation.
+// A first unequal symbol excludes all starts skipped by that candidate.
+fn first_rotation(model: &mut Model, signs: &[bool]) -> Result<usize> {
+    let n = signs.len();
+    let (mut left, mut right, mut matched) = (0, 1, 0);
+    while left < n && right < n && matched < n {
+        model.spend(1)?;
+        let a = signs[(left + matched) % n];
+        let b = signs[(right + matched) % n];
+        if a == b {
+            matched += 1;
+        } else {
+            let (loser, winner) = if a {
+                (&mut left, right)
+            } else {
+                (&mut right, left)
+            };
+            *loser += matched + 1;
+            if *loser == winner {
+                *loser += 1;
+            }
+            matched = 0;
+        }
+    }
+    Ok(left.min(right))
+}
+
+fn match_cycles(
+    model: &mut Model,
+    source: &[SignedCycle],
+    target: &[SignedCycle],
+) -> Result<Option<Vec<usize>>> {
+    // x = u^-1 lower (r*u*r) iff x*r = u^-1 (lower*r) u.
+    // An unsigned conjugacy preserves the outgoing signs of every
+    // directed cycle. Rotating or permuting matching cycles produces u.
+    if source.len() != target.len() {
+        return Ok(None);
+    }
+    let g: usize = source.iter().map(|cycle| cycle.points.len()).sum();
+    model.spend(1 + g)?;
+    if !source.iter().zip(target).all(|(a, b)| a.signs == b.signs) {
+        return Ok(None);
+    }
+    let mut witness = vec![0; g];
+    for (a, b) in source.iter().zip(target) {
+        for (&x, &y) in a.points.iter().zip(&b.points) {
+            witness[y] = x;
+        }
+    }
+    Ok(Some(witness))
+}
+
+fn lower_covers(
+    model: &mut Model,
+    permutation: &mut [usize],
+    next: &mut BTreeSet<Vec<usize>>,
+    used: usize,
+    state_cells: usize,
+) -> Result<()> {
+    let n = permutation.len();
+    for i in 0..n / 2 {
+        for j in i + 1..n - i {
+            // The type-C reflections are mirrored transpositions of
+            // positions, or a single swap of a complementary pair.
+            let mirror_i = n - 1 - j;
+            let mirror_j = n - 1 - i;
+            let mut difference = swap_length_change(model, permutation, i, j)?;
+            if i != mirror_i {
+                difference += swap_length_change(model, permutation, mirror_i, mirror_j)?;
+            }
+            if difference == -2 {
+                let search = 1 + next.len().max(1).ilog2() as usize;
+                model.spend(n * search)?;
+                if !next.contains(permutation) {
+                    check_interval_storage(used + (next.len() + 1) * state_cells)?;
+                    model.spend(n * (1 + search))?;
+                    next.insert(permutation.to_vec());
+                }
+            }
+            permutation.swap(i, j);
+            if i != mirror_i {
+                permutation.swap(mirror_i, mirror_j);
+            }
+        }
+    }
+    Ok(())
+}
+
+// In the balanced permutation, twice the type-C length is the
+// inversion count plus the number of negative images in the first half.
+// Compute their change for one swap without scanning the full matrix.
+fn swap_length_change(
+    model: &mut Model,
+    permutation: &mut [usize],
+    i: usize,
+    j: usize,
+) -> Result<isize> {
+    model.spend(j - i)?;
+    let (a, b) = (permutation[i], permutation[j]);
+    let between = permutation[i + 1..j]
+        .iter()
+        .filter(|&&x| a.min(b) < x && x < a.max(b))
+        .count();
+    let gain = (1 + 2 * between) as isize;
+    let inversions = if a < b { gain } else { -gain };
+    let half = permutation.len() / 2;
+    let signs = if i < half && j >= half {
+        (b >= half) as isize - (a >= half) as isize
+    } else {
+        0
+    };
+    permutation.swap(i, j);
+    Ok(inversions + signs)
+}
+
+fn check_interval_storage(cells: usize) -> Result<()> {
+    if cells > MAX_PIVOT_CELLS {
+        return Err(Error::plain(
+            "EO closure interval exceeds the storage limit",
+        ));
+    }
+    Ok(())
 }
