@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::{btree_map::Entry, BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::complex::MAX_PIVOT_CELLS;
@@ -112,16 +112,13 @@ pub(crate) struct Sheaf {
     base: TypeId,
     pub(crate) poset: Rc<Poset>,
     dims: Vec<usize>,
-    maps: Vec<Option<Rc<Matrix>>>,
-    lower: Vec<Vec<usize>>,
-    covers: Vec<Vec<usize>>,
-    longest: Vec<usize>,
-    topological: Vec<usize>,
+    maps: Restrictions,
+    order: Rc<PosetData>,
     pub(crate) height: usize,
     pub(crate) cohomology: Cohomology,
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Hash)]
 pub(crate) struct Matrix(Vec<(usize, Box<[Coordinate]>)>);
 
 impl Matrix {
@@ -299,11 +296,11 @@ impl Sheaf {
             })
             .collect::<Result<_>>()?;
 
-        let mut table = CoverTable::new(model, poset.clone())?;
+        let mut table = CoverTable::new(model, base)?;
         for map in presentation.maps {
             let source = model.point(base, &map.source)?;
             let target = model.point(base, &map.target)?;
-            if table.order.covers[source].binary_search(&target).is_err() {
+            let Ok(edge) = table.order.covers[source].binary_search(&target) else {
                 return Err(Error::new(
                     map.source.span,
                     format!(
@@ -311,8 +308,8 @@ impl Sheaf {
                         map.source.text, map.target.text
                     ),
                 ));
-            }
-            if table.given[source * size + target].is_some() {
+            };
+            if table.given[source][edge].is_some() {
                 return Err(Error::new(
                     map.source.span,
                     format!(
@@ -334,11 +331,11 @@ impl Sheaf {
                 )));
             }
             let matrix = Matrix::literal(model, prime, dims[source], map.entries)?;
-            table.insert(source, target, Rc::new(matrix))?;
+            table.insert(model, source, edge, Rc::new(matrix))?;
         }
         for (source, targets) in table.order.covers.iter().enumerate() {
-            for &target in targets {
-                if table.given[source * size + target].is_none() {
+            for (edge, &target) in targets.iter().enumerate() {
+                if table.given[source][edge].is_none() {
                     return Err(Error::plain(format!(
                         "missing restriction on cover '{}<{}'",
                         poset.names[source], poset.names[target]
@@ -357,14 +354,13 @@ impl Sheaf {
         dims: Vec<usize>,
         mut make: impl FnMut(&mut Model, usize, usize) -> Result<Rc<Matrix>>,
     ) -> Result<Self> {
-        let poset = model.poset(base).expect("named base poset");
-        let mut table = CoverTable::new(model, poset)?;
+        let mut table = CoverTable::new(model, base)?;
         debug_assert_eq!(dims.len(), table.poset.names.len());
         for source in 0..table.order.covers.len() {
             for edge in 0..table.order.covers[source].len() {
                 let target = table.order.covers[source][edge];
                 let matrix = make(model, source, target)?;
-                table.insert(source, target, matrix)?;
+                table.insert(model, source, edge, matrix)?;
             }
         }
         Self::assemble(model, base, prime, dims, table)
@@ -381,10 +377,9 @@ impl Sheaf {
             poset,
             order,
             given,
-            empty,
-            mut cells,
+            pool,
         } = table;
-        let maps = compose_paths(model, prime, &poset, &order, &given, &empty, &mut cells)?;
+        let maps = Restrictions::build(model, prime, &poset, &order, &given, pool)?;
         let size = poset.names.len();
         let height = dims
             .iter()
@@ -392,27 +387,14 @@ impl Sheaf {
             .filter_map(|(&dimension, &length)| (dimension != 0).then_some(length))
             .max()
             .unwrap_or(0);
-        model.allocate(
-            5 * size
-                + maps.len()
-                + cells
-                + order
-                    .lower
-                    .iter()
-                    .chain(&order.covers)
-                    .map(Vec::len)
-                    .sum::<usize>(),
-        )?;
+        model.allocate(size + 4)?;
         Ok(Self {
             prime,
             base,
             poset,
             dims,
             maps,
-            lower: order.lower,
-            covers: order.covers,
-            longest: order.longest,
-            topological: order.order,
+            order,
             height,
             cohomology: Cohomology::default(),
         })
@@ -474,27 +456,28 @@ impl Sheaf {
     }
 
     pub(crate) fn lower(&self, point: usize) -> &[usize] {
-        &self.lower[point]
+        &self.order.lower[point]
     }
 
     pub(crate) fn topological(&self) -> &[usize] {
-        &self.topological
+        &self.order.topological
     }
 
     pub(crate) fn covers(&self) -> &[Vec<usize>] {
-        &self.covers
+        &self.order.covers
     }
 
     pub(crate) fn restriction(&self, source: usize, target: usize) -> &Matrix {
-        self.maps[source * self.dims.len() + target]
-            .as_deref()
-            .expect("comparable map")
+        debug_assert!(self.poset.strict_less(source, target));
+        self.maps
+            .at(self.order.position[source], self.order.position[target])
+            .as_ref()
     }
 
     pub(crate) fn restriction_rc(&self, source: usize, target: usize) -> Rc<Matrix> {
-        self.maps[source * self.dims.len() + target]
-            .as_ref()
-            .expect("comparable map")
+        debug_assert!(self.poset.strict_less(source, target));
+        self.maps
+            .at(self.order.position[source], self.order.position[target])
             .clone()
     }
 
@@ -522,8 +505,8 @@ impl Sheaf {
                 bounds.limit,
             );
         }
-        model.spend(1 + self.lower[point].len())?;
-        for &lower in &self.lower[point] {
+        model.spend(1 + self.order.lower[point].len())?;
+        for &lower in &self.order.lower[point] {
             if bounds.longest[lower] >= remaining {
                 reversed.push(lower);
                 self.chains(model, remaining - 1, dimension, reversed, output, bounds)?;
@@ -577,9 +560,7 @@ impl Cochains for Sheaf {
                     )?;
                 } else {
                     let source = chain[slot - 1];
-                    let map = self.maps[source * size + point]
-                        .as_ref()
-                        .expect("comparable map");
+                    let map = self.restriction(source, point);
                     let column = map.column(generator.index);
                     if column.is_empty() {
                         continue;
@@ -607,7 +588,7 @@ impl Cochains for Sheaf {
             model,
             degree,
             Bounds {
-                longest: &self.longest,
+                longest: &self.order.longest,
                 limit,
             },
             self.height,
@@ -659,10 +640,10 @@ impl<'a> Open<'a> {
             .map(|&included| usize::from(included))
             .collect();
         model.spend(longest.len())?;
-        for &point in &sheaf.topological {
+        for &point in &sheaf.order.topological {
             if longest[point] != 0 {
-                model.spend(sheaf.covers[point].len())?;
-                for &next in &sheaf.covers[point] {
+                model.spend(sheaf.covers()[point].len())?;
+                for &next in &sheaf.covers()[point] {
                     // Inverse images of principal opens are upward closed.
                     debug_assert!(included[next]);
                     longest[next] = longest[next].max(longest[point] + 1);
@@ -811,47 +792,84 @@ pub(crate) trait Cochains {
 
 struct CoverTable {
     poset: Rc<Poset>,
-    order: PosetData,
-    given: Vec<Option<Rc<Matrix>>>,
-    empty: Rc<Matrix>,
-    cells: usize,
+    order: Rc<PosetData>,
+    given: Vec<Vec<Option<usize>>>,
+    pool: MatrixPool,
 }
 
 impl CoverTable {
-    fn new(model: &mut Model, poset: Rc<Poset>) -> Result<Self> {
-        let order = PosetData::build(model, &poset)?;
-        let size = poset.names.len();
+    fn new(model: &mut Model, base: TypeId) -> Result<Self> {
+        let poset = model.poset(base).expect("named base poset");
+        let order = model.sheaf_site_data(base)?;
+        let given = order
+            .covers
+            .iter()
+            .map(|row| vec![None; row.len()])
+            .collect();
         Ok(Self {
             poset,
             order,
-            given: vec![None; size * size],
-            empty: Rc::new(Matrix::default()),
-            cells: 1,
+            given,
+            pool: MatrixPool::new(),
         })
     }
 
-    fn insert(&mut self, source: usize, target: usize, matrix: Rc<Matrix>) -> Result<()> {
-        let slot = &mut self.given[source * self.poset.names.len() + target];
-        if matrix.is_zero() {
-            *slot = Some(self.empty.clone());
-        } else {
-            self.cells += matrix.cells();
-            check_cells(self.cells)?;
-            *slot = Some(matrix);
-        }
+    fn insert(
+        &mut self,
+        model: &mut Model,
+        source: usize,
+        edge: usize,
+        matrix: Rc<Matrix>,
+    ) -> Result<()> {
+        self.given[source][edge] = Some(self.pool.intern(model, matrix)?);
         Ok(())
     }
 }
 
-struct PosetData {
-    order: Vec<usize>,
+struct MatrixPool {
+    values: Vec<Rc<Matrix>>,
+    lookup: HashMap<Rc<Matrix>, usize>,
+    cells: usize,
+}
+
+impl MatrixPool {
+    fn new() -> Self {
+        let zero = Rc::new(Matrix::default());
+        Self {
+            lookup: HashMap::new(),
+            values: vec![zero],
+            cells: 4,
+        }
+    }
+
+    fn intern(&mut self, model: &mut Model, matrix: Rc<Matrix>) -> Result<usize> {
+        if matrix.is_zero() {
+            return Ok(0);
+        }
+        let cells = matrix.cells();
+        model.spend(cells)?;
+        if let Some(&index) = self.lookup.get(matrix.as_ref()) {
+            return Ok(index);
+        }
+        self.cells += 3 + cells;
+        check_cells(self.cells)?;
+        let index = self.values.len();
+        self.lookup.insert(matrix.clone(), index);
+        self.values.push(matrix);
+        Ok(index)
+    }
+}
+
+pub(crate) struct PosetData {
+    topological: Vec<usize>,
+    position: Vec<usize>,
     covers: Vec<Vec<usize>>,
     lower: Vec<Vec<usize>>,
     longest: Vec<usize>,
 }
 
 impl PosetData {
-    fn build(model: &mut Model, poset: &Poset) -> Result<Self> {
+    pub(crate) fn build(model: &mut Model, poset: &Poset) -> Result<Self> {
         let n = poset.names.len();
         let words = n.div_ceil(u64::BITS as usize);
         let mut upper_masks = vec![vec![0u64; words]; n];
@@ -880,16 +898,23 @@ impl PosetData {
                 }
             }
         }
-        let mut order: Vec<_> = (0..n).collect();
-        order.sort_unstable_by_key(|&point| (lower[point].len(), point));
+        model.spend(sort_work(n))?;
+        let mut topological: Vec<_> = (0..n).collect();
+        topological.sort_unstable_by_key(|&point| (lower[point].len(), point));
+        let mut position = vec![0; n];
         let mut longest = vec![1; n];
-        for &x in &order {
+        for (index, &x) in topological.iter().enumerate() {
+            position[x] = index;
             for &y in &covers[x] {
                 longest[y] = longest[y].max(1 + longest[x]);
             }
         }
+        let cells = 9 * n + lower.iter().chain(&covers).map(Vec::len).sum::<usize>();
+        check_cells(cells)?;
+        model.allocate(cells)?;
         Ok(Self {
-            order,
+            topological,
+            position,
             covers,
             lower,
             longest,
@@ -897,55 +922,105 @@ impl PosetData {
     }
 }
 
-fn compose_paths(
-    model: &mut Model,
-    prime: Prime,
-    poset: &Poset,
-    order: &PosetData,
-    given: &[Option<Rc<Matrix>>],
-    empty: &Rc<Matrix>,
-    cells: &mut usize,
-) -> Result<Vec<Option<Rc<Matrix>>>> {
-    let size = order.order.len();
-    let mut maps: Vec<Option<Rc<Matrix>>> = vec![None; size * size];
-    for &source in &order.order {
-        model.spend(size)?;
-        let row = &mut maps[source * size..(source + 1) * size];
-        for &mid in &order.order {
-            let previous = row[mid].clone();
-            if mid != source && previous.is_none() {
-                continue;
-            }
-            for &target in &order.covers[mid] {
-                model.spend(1)?;
-                let edge = given[mid * size + target]
-                    .as_ref()
-                    .expect("validated cover map");
-                if let Some(previous) = previous.as_ref() {
-                    let inferred = Matrix::compose(model, prime, edge, previous)?;
-                    if let Some(existing) = &row[target] {
-                        model.spend(existing.cells() + inferred.cells())?;
-                        if **existing != inferred {
-                            return Err(Error::plain(format!(
-                                "restriction paths from '{}' to '{}' do not commute",
-                                poset.names[source], poset.names[target]
-                            )));
+struct Restrictions {
+    rows: Vec<Box<[TransportRun]>>,
+    matrices: Vec<Rc<Matrix>>,
+}
+
+struct TransportRun {
+    start: usize,
+    end: usize,
+    matrix: usize,
+}
+
+impl Restrictions {
+    fn build(
+        model: &mut Model,
+        prime: Prime,
+        poset: &Poset,
+        order: &PosetData,
+        given: &[Vec<Option<usize>>],
+        mut pool: MatrixPool,
+    ) -> Result<Self> {
+        let size = order.topological.len();
+        let mut rows = Vec::with_capacity(size);
+        let mut storage = 3 * size;
+        let mut row: Vec<Option<usize>> = vec![None; size];
+        for (position, &source) in order.topological.iter().enumerate() {
+            model.spend(3 * size - position)?;
+            row.fill(None);
+            for &mid in &order.topological[position..] {
+                let previous = row[mid];
+                if mid != source && previous.is_none() {
+                    continue;
+                }
+                for (&target, &edge) in order.covers[mid].iter().zip(&given[mid]) {
+                    model.spend(1)?;
+                    let edge = edge.expect("validated cover map");
+                    if let Some(previous) = previous {
+                        let inferred = Matrix::compose(
+                            model,
+                            prime,
+                            pool.values[edge].as_ref(),
+                            pool.values[previous].as_ref(),
+                        )?;
+                        // Reached zero maps also certify paths; only unreached points have None.
+                        if let Some(existing) = row[target] {
+                            let existing = pool.values[existing].as_ref();
+                            model.spend(existing.cells() + inferred.cells())?;
+                            if *existing != inferred {
+                                return Err(Error::plain(format!(
+                                    "restriction paths from '{}' to '{}' do not commute",
+                                    poset.names[source], poset.names[target]
+                                )));
+                            }
+                        } else {
+                            row[target] = Some(pool.intern(model, Rc::new(inferred))?);
                         }
-                    } else if inferred.0.is_empty() {
-                        row[target] = Some(empty.clone());
                     } else {
-                        *cells += inferred.cells();
-                        check_cells(*cells)?;
-                        row[target] = Some(Rc::new(inferred));
+                        // The identity is implicit at the source. Covers have no indirect path.
+                        row[target] = Some(edge);
                     }
-                } else {
-                    // The identity at the source stays implicit.
-                    row[target] = Some(edge.clone());
                 }
             }
+            let mut runs: Vec<TransportRun> = Vec::new();
+            for (index, &target) in order.topological.iter().enumerate() {
+                if let Some(matrix) = row[target].filter(|&matrix| matrix != 0) {
+                    if let Some(last) = runs
+                        .last_mut()
+                        .filter(|last| last.matrix == matrix && last.end == index)
+                    {
+                        last.end += 1;
+                    } else {
+                        storage += 3;
+                        check_cells(storage + pool.cells)?;
+                        runs.push(TransportRun {
+                            start: index,
+                            end: index + 1,
+                            matrix,
+                        });
+                    }
+                }
+            }
+            rows.push(runs.into());
         }
+        check_cells(storage + pool.cells)?;
+        model.allocate(storage + pool.cells)?;
+        Ok(Self {
+            rows,
+            matrices: pool.values,
+        })
     }
-    Ok(maps)
+
+    fn at(&self, source: usize, target: usize) -> &Rc<Matrix> {
+        let row = &self.rows[source];
+        let next = row.partition_point(|run| run.end <= target);
+        let matrix = row
+            .get(next)
+            .filter(|run| run.start <= target)
+            .map_or(0, |run| run.matrix);
+        &self.matrices[matrix]
+    }
 }
 
 #[derive(Default)]

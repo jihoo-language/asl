@@ -107,7 +107,7 @@ The double-cover example has a local section on each vertex star of the triangle
 
 ## Sheaf cohomology on a finite poset
 
-`sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix.
+`sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.
 
 `ShC(F,k)` is the normalized Roos cochain space in degree $k$. The factor for a strict chain $x_0<\cdots<x_k$ is the terminal stalk $F(x_k)$. Use `shTerm[F,[x0,...,xk],i]` for its basis coordinate $i$, numbered from zero, or add a signed coefficient as the fourth argument. `shD(c)` takes the alternating sum over faces. When a face drops the terminal point, the contribution uses the restriction from its old terminal stalk to the new one. In particular, on a two-point chain the differential of a section is $c(b)-r_{ab}c(a)$.
 
@@ -153,10 +153,10 @@ awk -v r=6 -v prime=3 -f examples/sheaf-transgression.awk | cargo run --quiet --
 
 Use `ShTot`, `ShHyper`, `ShE` and their usual operations with the name `C`. `shTotEmbed` and `shTotPart` use the chain coordinates of ordinary Roos cochains. Comparing the two projective resolutions of the constant sheaf gives the same hypercohomology and identifies the spectral sequences from $E_2^{a,q}=H^a(X;H^q(K))$ onward. [Cellular cochain example](examples/sheaf-cellular.asl)
 
-With `cellular=1`, the transgression generator certifies a resolution with two generators in each degree. The twisted $\mathbb F_3$ example has rank-one $d_{20}$ from $(0,19)$ to $(20,0)$, and both groups vanish on page 21. With `untwisted=1` the differential is zero and both groups survive. [Transgression generator](examples/sheaf-transgression.awk)
+With `cellular=1`, the transgression generator certifies a resolution with two generators in each degree. Over $\mathbb F_3$ and $\mathbb F_5$, the twisted example has rank-one $d_{64}$ from $(0,63)$ to $(64,0)$, and both groups vanish on page 65. With `untwisted=1` the differential is zero and both groups survive. Both versions run under the default limits. [Transgression generator](examples/sheaf-transgression.awk)
 
 ```sh
-awk -v r=20 -v prime=3 -v cellular=1 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
+awk -v r=64 -v prime=3 -v cellular=1 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
 ```
 
 ### The Leray complex of a finite map

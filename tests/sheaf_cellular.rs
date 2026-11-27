@@ -267,3 +267,27 @@ fn empty_site_and_missing_coordinates_remain_checked() {
         assert!(error.contains(reason), "{statement}\n{error}");
     }
 }
+
+#[test]
+fn shared_site_and_transport_keep_high_pages_within_the_default_storage() {
+    for (r, p) in [(32, 3), (32, 5), (64, 3), (64, 5)] {
+        for split in [false, true] {
+            let output = stdout(interpret(&generated(r, p, split, true)));
+            let coefficient = if split {
+                "0".into()
+            } else {
+                format!("{}*g0", p - 1)
+            };
+            assert_eq!(
+                output,
+                format!(
+                    "shedim[K, 2, 0, {q}] = 1\nShE(K, {r}, {r}, 0){{{coefficient}}}\n\
+                     shedim[K, {next}, 0, {q}] = {rank}\nshedim[K, {next}, {r}, 0] = {rank}\n",
+                    q = r - 1,
+                    next = r + 1,
+                    rank = usize::from(split),
+                ),
+            );
+        }
+    }
+}

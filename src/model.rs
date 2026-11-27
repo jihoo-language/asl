@@ -417,6 +417,7 @@ pub(crate) struct Model {
     mixed_bars: HashMap<mixed::Id, Rc<mixed_bars::Bars>>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
+    sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Total>,
@@ -465,6 +466,7 @@ impl Model {
             mixed_bars: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
+            sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
@@ -894,6 +896,16 @@ impl Model {
                 | Kind::Bar(..)
                 | Kind::CyclicH2(..)
         )
+    }
+
+    pub(crate) fn sheaf_site_data(&mut self, base: TypeId) -> Result<Rc<sheaf::PosetData>> {
+        if let Some(data) = self.sheaf_sites.get(&base) {
+            return Ok(data.clone());
+        }
+        let poset = self.poset(base).expect("named sheaf base poset");
+        let data = Rc::new(sheaf::PosetData::build(self, &poset)?);
+        self.sheaf_sites.insert(base, data.clone());
+        Ok(data)
     }
 
     pub(crate) fn check_new_sheaf(&self, name: &Label) -> Result<()> {

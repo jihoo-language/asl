@@ -186,3 +186,44 @@ fn commuting_paths_are_verified_without_listing_the_exponentially_many_chains() 
     );
     assert_eq!(stdout(interpret(&program)), "shdim[F, 600] = 0\n");
 }
+
+#[test]
+fn sparse_transport_checks_zero_paths_and_preserves_nonconstant_matrix_entries() {
+    let declaration = r"
+        space Flag {end,right,dead,top,a,left,
+            a<left,a<right,left<top,right<top,left<dead,right<dead,top<end,dead<end};
+        sheaf F[Flag,5] {a:2,left:2,right:2,dead:2,top:2,end:2} {
+            a<left:[1,1,0,1],a<right:[1,0,1,1],left<top:[3,2,0,4],right<top:[3,0,1,4],
+            left<dead:[0,0,0,0],right<dead:[0,0,0,0],top<end:[0,0,0,0],dead<end:[0,0,0,0]
+        };
+    ";
+    let source = format!(
+        "{declaration}{}",
+        r"
+        let x = shTerm[F,[a],0];
+        assert shD(x) == add(shTerm[F,[a,left],0,-1],
+            add(shTerm[F,[a,right],0,-1],
+            add(shTerm[F,[a,right],1,-1],shTerm[F,[a,top],0,-3])));
+        let y = shTerm[F,[a],1];
+        assert shD(y) == add(shTerm[F,[a,left],0,-1],
+            add(shTerm[F,[a,left],1,-1],
+            add(shTerm[F,[a,right],1,-1],shTerm[F,[a,top],1,-4])));
+        assert shD(shD(x)) == zero[ShC(F,2)];
+        shdim[F,0];
+        shdim[F,1];
+        ",
+    );
+    assert_eq!(
+        stdout(interpret(&source)),
+        "shdim[F, 0] = 2\nshdim[F, 1] = 0\n"
+    );
+    for (edge, diagnostic_text) in [
+        ("right<dead", "paths from 'a' to 'dead' do not commute"),
+        ("top<end", "paths from 'a' to 'end' do not commute"),
+    ] {
+        let invalid =
+            declaration.replace(&format!("{edge}:[0,0,0,0]"), &format!("{edge}:[1,0,0,1]"));
+        let error = diagnostic(interpret(&invalid));
+        assert!(error.contains(diagnostic_text), "{error}");
+    }
+}
