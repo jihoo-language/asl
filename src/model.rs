@@ -269,6 +269,7 @@ pub(crate) enum Kind {
     Mukai(Rc<str>),
     MukaiQuotient(Rc<str>),
     HilbertSquare(Rc<str>, i128),
+    SiegelWeight,
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -445,6 +446,7 @@ pub(crate) enum Value {
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     MukaiQuotient(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
+    SiegelWeight(crate::siegel::Weight),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -1018,7 +1020,10 @@ impl Model {
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::KummerWeil(..) => usize::MAX,
-            Kind::K3Lattice(..) | Kind::Mukai(..) | Kind::MukaiQuotient(..) => usize::MAX,
+            Kind::K3Lattice(..)
+            | Kind::Mukai(..)
+            | Kind::MukaiQuotient(..)
+            | Kind::SiegelWeight => usize::MAX,
             Kind::Nakajima(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
@@ -1253,6 +1258,7 @@ impl Model {
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
                 | Kind::HilbertSquare(..)
+                | Kind::SiegelWeight
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -4063,6 +4069,10 @@ impl Model {
         Ok(form)
     }
 
+    pub(crate) fn siegel_weight_type(&mut self) -> Result<TypeId> {
+        self.inhabited_type(Kind::SiegelWeight, 0)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -5194,6 +5204,7 @@ impl Model {
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
             | Kind::HilbertSquare(..)
+            | Kind::SiegelWeight
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5710,6 +5721,7 @@ impl Model {
             Kind::HilbertSquare(name, degree) => {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
             }
+            Kind::SiegelWeight => out.push("RVSiegelWeight"),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -6000,6 +6012,7 @@ impl Model {
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a == b),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6336,6 +6349,7 @@ impl Model {
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
+            (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a.cmp(b)),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6683,6 +6697,9 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a rational Hilbert-square component",
                     ));
+                }
+                Kind::SiegelWeight => {
+                    return Err(Error::plain("cannot enumerate the Siegel weight lattice"))
                 }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
@@ -8221,6 +8238,10 @@ impl Model {
                     out.push("]")?;
                 }
                 out.push("}")
+            }
+            Value::SiegelWeight(weight) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{weight}}}"))
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

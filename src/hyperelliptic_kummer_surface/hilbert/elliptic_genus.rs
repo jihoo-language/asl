@@ -5,6 +5,7 @@ use std::mem::size_of;
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::Model;
+use crate::siegel::Weight as SiegelWeight;
 use crate::syntax::Label;
 
 use super::Integer;
@@ -26,6 +27,7 @@ pub(crate) enum Query {
     EllipticGenus(Index),
     Generalized(Index),
     Igusa(Index),
+    Delta5(SiegelWeight),
     Symplectic(usize, Index),
     Translate(Label, usize, Index),
     Enriques(Label, Label, usize, Index),
@@ -48,6 +50,7 @@ enum Expansion {
     HalfDmvv,
     Cyclic(usize),
     Igusa,
+    Delta5,
 }
 
 impl Query {
@@ -62,6 +65,7 @@ impl Query {
                 generalized::coefficient(model, length, degree, r)?,
             ),
             Self::Igusa(index) => (format!("rvIgusaPhi10[{index}]"), igusa(model, index)?),
+            Self::Delta5(weight) => return delta5_report(model, weight),
             Self::Symplectic(order, index) => {
                 let expansion = if order == 1 {
                     Expansion::Dmvv
@@ -158,6 +162,43 @@ fn igusa(model: &mut Model, Index(m, n, r): Index) -> Result<Integer> {
     Ok(answer)
 }
 
+fn delta5(model: &mut Model, SiegelWeight([a, b, r]): SiegelWeight) -> Result<Integer> {
+    if a < 1 || b < 1 || [a, b, r].iter().any(|coordinate| coordinate % 2 == 0) {
+        return Ok(Integer::from_i128(0));
+    }
+    // Every product root apart from the isolated axis factor in the
+    // prefactor satisfies |r| ≤ a+b in ordinary coordinates.
+    if r.unsigned_abs() >= (a as u128) + (b as u128) {
+        return Ok(Integer::from_i128(0));
+    }
+    let cutoff = Cutoff::new(model, (a / 2) as u128, (b / 2) as u128)?;
+    let product = series(model, cutoff, Expansion::Delta5)?;
+    // Multiply by (Pq)^(1/2) (y^(1/2) - y^(-1/2)).
+    let r = r.div_euclid(2);
+    let upper = coefficient(&product, (cutoff.p, cutoff.q, r));
+    let lower = coefficient(&product, (cutoff.p, cutoff.q, r + 1));
+    upper.add(lower.negate()).map_err(|_| overflow())
+}
+
+pub(crate) fn delta5_report(model: &mut Model, weight: SiegelWeight) -> Result<String> {
+    Ok(format!(
+        "rvSiegelDelta5[{weight}] = {}",
+        decimal(delta5(model, weight)?)
+    ))
+}
+
+pub(crate) fn half_k3_coefficient(model: &mut Model, degree: u128, r: i128) -> Result<Integer> {
+    let cutoff = Cutoff::new(model, degree, 1)?;
+    let mut seed = Seed::new();
+    add_theta(model, &mut seed, cutoff.p, false)?;
+    add_theta(model, &mut seed, cutoff.p, true)?;
+    let coefficient = seed
+        .get(&(cutoff.p, r))
+        .copied()
+        .unwrap_or(Integer::from_i128(0));
+    half(model, coefficient)
+}
+
 #[derive(Clone, Copy)]
 struct Cutoff {
     p: usize,
@@ -207,10 +248,10 @@ fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Pro
         Seed::new()
     };
     add_theta(model, &mut positive, primitive_degree, true)?;
-    if matches!(expansion, Expansion::HalfDmvv) {
+    if matches!(expansion, Expansion::HalfDmvv | Expansion::Delta5) {
         halve_seed(model, &mut positive)?;
     }
-    let reciprocal = !matches!(expansion, Expansion::Igusa);
+    let reciprocal = !matches!(expansion, Expansion::Igusa | Expansion::Delta5);
     let mut product = Product::from([((0, 0, 0), Integer::from_i128(1))]);
     for p in usize::from(reciprocal)..=cutoff.p {
         for q in 0..=cutoff.q {
@@ -240,15 +281,22 @@ fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Pro
 
 fn halve_seed(model: &mut Model, seed: &mut Seed) -> Result<()> {
     for coefficient in seed.values_mut() {
-        let (magnitude, remainder) = coefficient.magnitude.divide(model, 2)?;
-        if remainder != 0 {
-            return Err(Error::plain(
-                "twined elliptic genus eigenspace multiplicity is not integral",
-            ));
-        }
-        coefficient.magnitude = magnitude;
+        *coefficient = half(model, *coefficient)?;
     }
     Ok(())
+}
+
+fn half(model: &mut Model, coefficient: Integer) -> Result<Integer> {
+    let (magnitude, remainder) = coefficient.magnitude.divide(model, 2)?;
+    if remainder != 0 {
+        return Err(Error::plain(
+            "K3 elliptic genus coefficient does not halve exactly",
+        ));
+    }
+    Ok(Integer {
+        magnitude,
+        ..coefficient
+    })
 }
 
 fn add_theta(model: &mut Model, seed: &mut Seed, degree: usize, shifted: bool) -> Result<()> {
@@ -409,7 +457,7 @@ fn multiply(model: &mut Model, a: Integer, b: Integer) -> Result<Integer> {
     a.multiply_wide(b).map_err(|_| overflow())
 }
 
-fn decimal(value: Integer) -> String {
+pub(crate) fn decimal(value: Integer) -> String {
     if let Some(small) = value.signed() {
         return small.to_string();
     }

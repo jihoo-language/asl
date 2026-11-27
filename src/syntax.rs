@@ -136,6 +136,7 @@ pub(crate) enum TypeForm {
     Mukai(Label),
     MukaiQuotient(Label),
     HilbertSquare(Label, i128),
+    SiegelWeight,
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -991,6 +992,8 @@ pub(crate) enum ExprForm {
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
     K3AutoPoint(Box<crate::hyperelliptic_kummer_surface::dynamics::PointExpression>),
+    SiegelWeight(crate::siegel::Weight),
+    SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1190,6 +1193,9 @@ pub(crate) enum StatementForm {
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquareNakajimaDen(Box<ParsedExpr>),
+    SiegelPair(Box<[ParsedExpr; 2]>),
+    SiegelRoot(Box<ParsedExpr>),
+    SiegelDelta5At(Box<ParsedExpr>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -3407,6 +3413,18 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::HilbertSquare(Box::new(expression)), depth)
     }
 
+    fn siegel_weight_coordinates(&mut self) -> Result<crate::siegel::Weight> {
+        let mut coordinates = [0; 3];
+        for (index, coordinate) in coordinates.iter_mut().enumerate() {
+            if index != 0 {
+                self.expect(Token::Comma)?;
+            }
+            *coordinate = self.signed_wide("a signed doubled coordinate", "Siegel weight")?;
+        }
+        self.expect(Token::RBracket)?;
+        Ok(crate::siegel::Weight(coordinates))
+    }
+
     fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
         let (expression, depth) = match name {
@@ -5195,6 +5213,29 @@ impl<'src> Parser<'src> {
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word("rvSiegelPair") => {
+                self.advance()?;
+                StatementForm::SiegelPair(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word("rvSiegelRoot") => {
+                self.advance()?;
+                StatementForm::SiegelRoot(Box::new(self.paren_expr(0)?))
+            }
+            Token::Word("rvSiegelDelta5At") => {
+                self.advance()?;
+                StatementForm::SiegelDelta5At(Box::new(self.paren_expr(0)?))
+            }
+            Token::Word("rvSiegelDelta5") => {
+                use crate::hyperelliptic_kummer_surface::hilbert::{
+                    elliptic_genus::Query, Command,
+                };
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let weight = self.siegel_weight_coordinates()?;
+                StatementForm::KummerHilbert(Box::new(Command::EllipticGenus(Query::Delta5(
+                    weight,
+                ))))
             }
             Token::Word(
                 name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"
@@ -8484,6 +8525,9 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
+        if name.text == "RVSiegelWeight" {
+            return ty(span, TypeForm::SiegelWeight, 0);
+        }
         if matches!(
             name.text.as_str(),
             "RVJac"
@@ -10656,6 +10700,23 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if name.text == "rvSiegelWeight" && self.eat(Token::LBracket)? {
+                    let weight = self.siegel_weight_coordinates()?;
+                    return expr(span, ExprForm::SiegelWeight(weight), 0);
+                }
+                if name.text == "rvSiegelReflect" && self.eat(Token::LBracket)? {
+                    let (index, at) = self.number()?;
+                    if index >= 3 {
+                        return Err(Error::new(
+                            at,
+                            "Siegel reflection index must be between 0 and 2",
+                        ));
+                    }
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::SiegelReflect(index, Box::new(input)), depth);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

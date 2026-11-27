@@ -197,6 +197,7 @@ mod sheaf_serre;
 mod sheaf_stalk;
 mod sheaf_support;
 mod sheaf_truncate;
+mod siegel;
 mod stable_marks;
 mod steenrod;
 mod syntax;

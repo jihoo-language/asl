@@ -679,6 +679,8 @@ enum TypedForm {
     HilbertSquareToNakajima(i128, Box<TypedExpr>),
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
+    SiegelReflect(usize, Box<TypedExpr>),
+    SiegelNegate(Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1716,6 +1718,24 @@ impl Engine {
             }
             StatementForm::K3AutoPeriod(expression) => {
                 return self.k3_auto_period(*expression).map(Some)
+            }
+            StatementForm::SiegelPair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.siegel_weight(left, "rvSiegelPair")?;
+                let right = self.siegel_weight(right, "rvSiegelPair")?;
+                return left.pair_report(right).map(Some);
+            }
+            StatementForm::SiegelRoot(input) => {
+                let weight = self.siegel_weight(*input, "rvSiegelRoot")?;
+                return weight.root_report(&mut self.model).map(Some);
+            }
+            StatementForm::SiegelDelta5At(input) => {
+                let weight = self.siegel_weight(*input, "rvSiegelDelta5At")?;
+                return kummer_surface::hilbert::elliptic_genus::delta5_report(
+                    &mut self.model,
+                    weight,
+                )
+                .map(Some);
             }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
@@ -4868,6 +4888,19 @@ impl Engine {
         Ok(format!("rvNakajimaPair = {pair}"))
     }
 
+    fn siegel_weight(
+        &mut self,
+        input: ParsedExpr,
+        operation: &str,
+    ) -> Result<crate::siegel::Weight> {
+        let input = self.checker().expr(input)?;
+        self.checker().siegel_weight_operand(&input, operation)?;
+        let Value::SiegelWeight(weight) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok(weight)
+    }
+
     fn jacobian_command(
         &mut self,
         command: hyperelliptic_jacobian::Command,
@@ -6511,6 +6544,9 @@ impl Engine {
                     (BinaryOp::Add, Value::HilbertSquare(a), Value::HilbertSquare(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::SiegelWeight(a), Value::SiegelWeight(b)) => {
+                        a.add(b).map(Value::SiegelWeight)
+                    }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
                         let p = match *self.model.kind(expr.ty) {
                             Kind::PExt(p, ..)
@@ -8125,6 +8161,18 @@ impl Engine {
                     unreachable!()
                 };
                 word.iterate(&mut self.model, point, *power)
+            }
+            TypedForm::SiegelReflect(index, input) => {
+                let Value::SiegelWeight(weight) = self.eval(input)? else {
+                    unreachable!()
+                };
+                weight.reflect(*index).map(Value::SiegelWeight)
+            }
+            TypedForm::SiegelNegate(input) => {
+                let Value::SiegelWeight(weight) = self.eval(input)? else {
+                    unreachable!()
+                };
+                weight.negate().map(Value::SiegelWeight)
             }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
@@ -10467,6 +10515,7 @@ impl Checker<'_> {
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::SiegelWeight => self.model.siegel_weight_type(),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -11513,6 +11562,7 @@ impl Checker<'_> {
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::SiegelWeight => Value::SiegelWeight(crate::siegel::Weight::ZERO),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -13687,6 +13737,15 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::SiegelWeight(weight) => Ok((
+                self.model.siegel_weight_type()?,
+                TypedForm::Constant(Value::SiegelWeight(weight)),
+            )),
+            ExprForm::SiegelReflect(index, input) => {
+                let input = self.expr(*input)?;
+                self.siegel_weight_operand(&input, "rvSiegelReflect")?;
+                Ok((input.ty, TypedForm::SiegelReflect(index, Box::new(input))))
+            }
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -14402,6 +14461,9 @@ impl Checker<'_> {
                             Box::new(input),
                         ),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::SiegelWeight) {
+                    return Ok((input.ty, TypedForm::SiegelNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
                     return Ok((input.ty, input.kind));
@@ -18139,6 +18201,7 @@ impl Checker<'_> {
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
                         | Kind::HilbertSquare(..)
+                        | Kind::SiegelWeight
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -20230,6 +20293,14 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn siegel_weight_operand(&self, input: &TypedExpr, operation: &str) -> Result<()> {
+        if matches!(self.model.kind(input.ty), Kind::SiegelWeight) {
+            Ok(())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVSiegelWeight"))
+        }
     }
 
     fn kummer_disc_expression(
