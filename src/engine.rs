@@ -1555,6 +1555,9 @@ impl Engine {
             StatementForm::KummerNodeLattice(command) => {
                 return command.execute(&mut self.model).map(Some)
             }
+            StatementForm::GeneralizedKummer(command) => {
+                return self.generalized_kummer_command(*command).map(Some);
+            }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
@@ -4689,6 +4692,69 @@ impl Engine {
             }
         };
         Ok(Some(report))
+    }
+
+    fn generalized_kummer_command(
+        &mut self,
+        command: crate::generalized_kummer::Command,
+    ) -> Result<String> {
+        use crate::generalized_kummer::{self as kummer, Command};
+        let curve_for = |model: &Model, name: &Label| {
+            let curve = model
+                .jacobian_curve(&name.text)
+                .map_err(|error| error.at(name.span))?;
+            kummer::require_curve(&curve).map_err(|error| error.at(name.span))?;
+            Ok(curve)
+        };
+        let fiber_kind = |curve: &hw_closed::Curve, length: u128| {
+            if length.is_multiple_of(u128::from(curve.ring.prime())) {
+                "summation fiber"
+            } else {
+                "smooth generalized Kummer fiber"
+            }
+        };
+        match command {
+            Command::Hilbert(name, length, degree) => {
+                let curve = curve_for(&self.model, &name)?;
+                let count = kummer::hilbert(&mut self.model, &curve, length, degree)?;
+                Ok(format!(
+                    "rvJacHilbPoints[{}, {length}, {degree}] = {count}",
+                    name.text
+                ))
+            }
+            Command::Zero(name, length) => {
+                let curve = curve_for(&self.model, &name)?;
+                let count = kummer::fiber(&mut self.model, &curve, length, None)?;
+                let kind = fiber_kind(&curve, length);
+                Ok(format!(
+                    "rvGenKummerPoints[{}, {length}] = {count}, {kind}",
+                    name.text
+                ))
+            }
+            Command::Fiber(name, length, input) => {
+                let curve = curve_for(&self.model, &name)?;
+                let expected = self.model.jacobian_type(name.text.as_str().into())?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_type(expected, &input, "rvGenKummerFiber input")?;
+                let Value::Jacobian(divisor) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let count = kummer::fiber(&mut self.model, &curve, length, Some(&divisor))?;
+                let kind = fiber_kind(&curve, length);
+                Ok(format!(
+                    "rvGenKummerFiber[{}, {length}] = {count}, {kind}",
+                    name.text
+                ))
+            }
+            Command::Level(name, base, degree) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let (count, torsion) = kummer::level(&mut self.model, &basis, &curve, degree)?;
+                let length = basis.prime.get();
+                Ok(format!("rvGenKummerLevel[{}, {}, {degree}] = {count}, smooth generalized Kummer fiber, length={length}, rational torsion order={torsion}", name.text, base.text))
+            }
+        }
     }
 
     fn jacobian_level_command(

@@ -34,6 +34,7 @@ mod engine;
 mod eo;
 mod error;
 mod finite_field_factor;
+mod generalized_kummer;
 mod hw_algebra;
 mod hw_closed;
 mod hyperelliptic;

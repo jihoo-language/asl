@@ -50,7 +50,7 @@ impl Command {
     }
 }
 
-pub(super) fn node_orbits(model: &mut Model, curve: &Curve, q: u64) -> Result<Vec<usize>> {
+pub(crate) fn node_orbits(model: &mut Model, curve: &Curve, q: u64) -> Result<Vec<usize>> {
     let field = Field { ring: &curve.ring };
     let polynomial = curve.polynomial();
     model.spend(polynomial.len() * field.cells())?;
@@ -167,7 +167,7 @@ fn exterior_trace(model: &mut Model, weil: &[i128], degree: usize) -> Result<i12
     Ok(powered_weil_coefficients(model, weil, degree, point_overflow)?.1)
 }
 
-fn powered_weil_coefficients(
+pub(crate) fn powered_weil_coefficients(
     model: &mut Model,
     weil: &[i128],
     degree: usize,

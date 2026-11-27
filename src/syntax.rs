@@ -1142,6 +1142,7 @@ pub(crate) enum StatementForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
+    GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     Richelot(Box<crate::richelot::Command>),
@@ -2943,6 +2944,49 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::KummerDisc(Box::new(expression)), depth)
     }
 
+    fn generalized_kummer_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::generalized_kummer::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let first = self.label()?;
+        self.expect(Token::Comma)?;
+        let positive_degree = |parser: &mut Self| {
+            let span = parser.span();
+            let degree = parser.wide_unsigned("Jacobian Hilbert-scheme extension degree")?;
+            if degree == 0 {
+                return Err(Error::new(span, "extension degree must be positive"));
+            }
+            Ok(degree)
+        };
+        let command = if name == "rvGenKummerLevel" {
+            let base = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = positive_degree(self)?;
+            self.expect(Token::RBracket)?;
+            Command::Level(first, base, degree)
+        } else {
+            let span = self.span();
+            let length = self.wide_unsigned("Jacobian Hilbert-scheme length")?;
+            if name == "rvJacHilbPoints" {
+                self.expect(Token::Comma)?;
+                let degree = positive_degree(self)?;
+                self.expect(Token::RBracket)?;
+                Command::Hilbert(first, length, degree)
+            } else {
+                if length == 0 {
+                    return Err(Error::new(span, "summation fiber length must be positive"));
+                }
+                self.expect(Token::RBracket)?;
+                if name == "rvGenKummerFiber" {
+                    Command::Fiber(first, length, Box::new(self.paren_expr(0)?))
+                } else {
+                    Command::Zero(first, length)
+                }
+            }
+        };
+        Ok(StatementForm::GeneralizedKummer(Box::new(command)))
+    }
+
     fn kummer_k3_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::k3::{Command, Query};
         self.advance()?;
@@ -3876,6 +3920,10 @@ impl<'src> Parser<'src> {
                 command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word(
+                command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
+                | "rvGenKummerLevel"),
+            ) => self.generalized_kummer_statement(command)?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,

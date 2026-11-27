@@ -547,13 +547,13 @@ fn digits(ring: &Ring, q: usize, length: usize, mut index: usize) -> Polynomial 
         .collect()
 }
 
-fn enumerate(
+pub(crate) fn enumerate(
     model: &mut Model,
     curve: &Curve,
-    mut visit: impl FnMut(Divisor) -> Result<()>,
+    mut visit: impl FnMut(&mut Model, Divisor) -> Result<()>,
 ) -> Result<()> {
     let field = field(curve);
-    visit(Divisor::zero(curve))?;
+    visit(model, Divisor::zero(curve))?;
     if curve.grade.genus == 0 {
         return Ok(());
     }
@@ -574,7 +574,7 @@ fn enumerate(
                 let v = poly::trim(digits(&curve.ring, q, degree, value));
                 if poly::multiply_mod(model, field, &v, &v, &u)? == f {
                     model.spend(u.len() * field.cells())?;
-                    visit(Divisor { u: u.clone(), v })?;
+                    visit(model, Divisor { u: u.clone(), v })?;
                 }
             }
         }
@@ -584,7 +584,7 @@ fn enumerate(
 
 pub(crate) fn count_pairs(model: &mut Model, curve: &Curve) -> Result<usize> {
     let mut count = 0;
-    enumerate(model, curve, |_| {
+    enumerate(model, curve, |_, _| {
         count += 1;
         Ok(())
     })?;
@@ -593,7 +593,7 @@ pub(crate) fn count_pairs(model: &mut Model, curve: &Curve) -> Result<usize> {
 
 pub(crate) fn elements(model: &mut Model, curve: &Curve, limit: usize) -> Result<Vec<Value>> {
     let mut output = Vec::new();
-    enumerate(model, curve, |divisor| {
+    enumerate(model, curve, |_, divisor| {
         if output.len() == limit {
             return Err(Error::plain("Jacobian exceeds the finite element limit"));
         }
