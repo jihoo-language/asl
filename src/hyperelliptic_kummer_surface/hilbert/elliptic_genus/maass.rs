@@ -8,8 +8,8 @@ use crate::syntax::Label;
 
 use super::super::Magnitude;
 use super::{
-    add, coefficient, decimal, jacobi_minus_two, jacobi_zero, multiply, overflow, storage, Cutoff,
-    Index, Integer, INTEGER_WORDS, MAX_PIVOT_CELLS,
+    add, coefficient, decimal, eta_product, jacobi_minus_two, jacobi_zero, multiply, overflow,
+    storage, Cutoff, Index, Integer, INTEGER_WORDS, MAX_PIVOT_CELLS,
 };
 
 const ZERO: Integer = Integer {
@@ -189,7 +189,7 @@ impl Form {
         } else {
             Vec::new()
         };
-        let delta = delta_unit(model, max)?;
+        let delta = eta_product(model, max, 24)?;
         let mut result = vec![[ZERO; 2]; degree + 1];
         for family in [Family::MinusTwo, Family::Zero] {
             let mut selected = terms
@@ -264,33 +264,6 @@ fn eisenstein(model: &mut Model, bound: usize, power: u32, scale: i128) -> Resul
             model.spend(1)?;
             series[n] = series[n].add(term).map_err(|_| overflow())?;
         }
-    }
-    Ok(series)
-}
-
-fn delta_unit(model: &mut Model, bound: usize) -> Result<Series> {
-    // Logarithmic derivative of Δ/q = ∏ (1-qʲ)^24.
-    let mut sigma = vec![0i128; bound + 1];
-    for d in 1..=bound {
-        for n in (d..=bound).step_by(d) {
-            model.spend(1)?;
-            sigma[n] += d as i128;
-        }
-    }
-    let mut series = vec![Integer::from_i128(1)];
-    for n in 1..=bound {
-        let mut total = ZERO;
-        for (coefficient, &scale) in series.iter().rev().zip(&sigma[1..=n]) {
-            let term = multiply(model, *coefficient, Integer::from_i128(-24 * scale))?;
-            total = total.add(term).map_err(|_| overflow())?;
-        }
-        let (magnitude, remainder) = total.magnitude.divide(model, n as u128)?;
-        if remainder != 0 {
-            return Err(Error::plain(
-                "Delta product coefficient division is inexact",
-            ));
-        }
-        series.push(Integer { magnitude, ..total });
     }
     Ok(series)
 }

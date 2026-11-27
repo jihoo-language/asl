@@ -3608,6 +3608,48 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::SiegelMaass(Box::new(command)))
     }
 
+    fn igusa_inverse_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hilbert::{
+            elliptic_genus::{
+                inverse::{Chamber, Query},
+                Query as EllipticQuery,
+            },
+            Command,
+        };
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let m = self.signed_wide("a signed P exponent", "P exponent")?;
+        self.expect(Token::Comma)?;
+        let n = self.signed_wide("a signed q exponent", "q exponent")?;
+        let query = if name == "rvIgusaResidue" {
+            Query::Residue(m, n)
+        } else {
+            self.expect(Token::Comma)?;
+            let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+            if name == "rvIgusaWallJump" {
+                Query::WallJump(m, n, r)
+            } else {
+                self.expect(Token::Comma)?;
+                let side = self.label()?;
+                let chamber = match side.text.as_str() {
+                    "inside" => Chamber::Inside,
+                    "outside" => Chamber::Outside,
+                    _ => {
+                        return Err(Error::new(
+                            side.span,
+                            "Igusa reciprocal chamber must be inside or outside",
+                        ))
+                    }
+                };
+                Query::Coefficient(m, n, r, chamber)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KummerHilbert(Box::new(
+            Command::EllipticGenus(EllipticQuery::IgusaInverse(query)),
+        )))
+    }
+
     fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
         let (expression, depth) = match name {
@@ -5639,6 +5681,9 @@ impl<'src> Parser<'src> {
                 | "rvSiegelMaassCoeff"
                 | "rvIgusaChi12"),
             ) => self.siegel_maass_statement(name)?,
+            Token::Word(name @ ("rvIgusaInverse" | "rvIgusaWallJump" | "rvIgusaResidue")) => {
+                self.igusa_inverse_statement(name)?
+            }
             Token::Word("rvSiegelDelta5") => {
                 use crate::hyperelliptic_kummer_surface::hilbert::{
                     elliptic_genus::Query, Command,

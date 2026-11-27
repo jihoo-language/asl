@@ -12,6 +12,7 @@ use super::Integer;
 use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
 
 mod cyclic;
+pub(crate) mod inverse;
 pub(crate) mod maass;
 
 mod generalized;
@@ -28,6 +29,7 @@ pub(crate) enum Query {
     EllipticGenus(Index),
     Generalized(Index),
     Igusa(Index),
+    IgusaInverse(inverse::Query),
     Delta5(SiegelWeight),
     Symplectic(usize, Index),
     Translate(Label, usize, Index),
@@ -51,6 +53,7 @@ enum Expansion {
     HalfDmvv,
     Cyclic(usize),
     Igusa,
+    IgusaInverse,
     Delta5,
 }
 
@@ -66,6 +69,7 @@ impl Query {
                 generalized::coefficient(model, length, degree, r)?,
             ),
             Self::Igusa(index) => (format!("rvIgusaPhi10[{index}]"), igusa(model, index)?),
+            Self::IgusaInverse(query) => return query.report(model),
             Self::Delta5(weight) => return delta5_report(model, weight),
             Self::Symplectic(order, index) => {
                 let expansion = if order == 1 {
@@ -281,7 +285,8 @@ fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Pro
     }
     let reciprocal = !matches!(expansion, Expansion::Igusa | Expansion::Delta5);
     let mut product = Product::from([((0, 0, 0), Integer::from_i128(1))]);
-    for p in usize::from(reciprocal)..=cutoff.p {
+    let first_p = usize::from(reciprocal && !matches!(expansion, Expansion::IgusaInverse));
+    for p in first_p..=cutoff.p {
         for q in 0..=cutoff.q {
             if p == 0 && q == 0 {
                 continue;
@@ -305,6 +310,32 @@ fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Pro
         }
     }
     Ok(product)
+}
+
+fn eta_product(model: &mut Model, bound: usize, exponent: i128) -> Result<Vec<Integer>> {
+    // Logarithmic derivative of ∏ (1-qʲ)^exponent.
+    let mut sigma = vec![0i128; bound + 1];
+    for d in 1..=bound {
+        for n in (d..=bound).step_by(d) {
+            model.spend(1)?;
+            sigma[n] += d as i128;
+        }
+    }
+    let mut series = Vec::with_capacity(bound + 1);
+    series.push(Integer::from_i128(1));
+    for n in 1..=bound {
+        let mut total = Integer::from_i128(0);
+        for (&coefficient, &scale) in series.iter().rev().zip(&sigma[1..=n]) {
+            let term = multiply(model, coefficient, Integer::from_i128(-exponent * scale))?;
+            total = total.add(term).map_err(|_| overflow())?;
+        }
+        let (magnitude, remainder) = total.magnitude.divide(model, n as u128)?;
+        if remainder != 0 {
+            return Err(Error::plain("eta product coefficient division is inexact"));
+        }
+        series.push(Integer { magnitude, ..total });
+    }
+    Ok(series)
 }
 
 fn halve_seed(model: &mut Model, seed: &mut Seed) -> Result<()> {

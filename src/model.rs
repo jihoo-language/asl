@@ -30,7 +30,7 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::maass;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{inverse, maass};
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
@@ -640,6 +640,7 @@ pub(crate) struct Model {
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
+    pub(crate) igusa_inverse_cache: inverse::Cache,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -746,6 +747,7 @@ impl Model {
             bielliptic_quotients: HashMap::new(),
             elliptic_gluings: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
+            igusa_inverse_cache: inverse::Cache::default(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
