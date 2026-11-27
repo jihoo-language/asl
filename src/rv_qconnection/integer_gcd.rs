@@ -1,8 +1,7 @@
-use std::cmp::Ordering;
-
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
+use crate::wide_integer::Natural;
 
 use super::{arithmetic, checked_divide, gcd, storage, Division, Polynomial, Result};
 
@@ -14,123 +13,7 @@ pub(crate) use translated::{translated_gcd, translated_quotient};
 // needs a modulus above 2^255 and one last prime of up to 32 bits.
 const LIMBS: usize = 9;
 
-#[derive(Clone, Copy, Default)]
-struct Integer([u32; LIMBS]);
-
-impl Integer {
-    fn from_small(mut n: u128) -> Self {
-        let mut value = Self::default();
-        for digit in &mut value.0[..4] {
-            *digit = n as u32;
-            n >>= 32;
-        }
-        value
-    }
-
-    fn small(self) -> Option<u128> {
-        if self.0[4..].iter().any(|&digit| digit != 0) {
-            return None;
-        }
-        Some(
-            self.0[..4]
-                .iter()
-                .rev()
-                .fold(0, |acc, &digit| (acc << 32) | u128::from(digit)),
-        )
-    }
-
-    fn signed(self, negative: bool) -> Option<i128> {
-        let value = self.small()?;
-        if negative && value == 1u128 << 127 {
-            return Some(i128::MIN);
-        }
-        let value = i128::try_from(value).ok()?;
-        Some(if negative { -value } else { value })
-    }
-
-    fn product(left: i128, right: i128) -> Self {
-        let left = Self::from_small(left.unsigned_abs());
-        let right = Self::from_small(right.unsigned_abs());
-        let mut result = Self::default();
-        for (i, &a) in left.0[..4].iter().enumerate() {
-            let mut carry = 0;
-            for (j, &b) in right.0[..4].iter().enumerate() {
-                let digit = &mut result.0[i + j];
-                carry += u64::from(*digit) + u64::from(a) * u64::from(b);
-                *digit = carry as u32;
-                carry >>= 32;
-            }
-            result.0[i + 4] = carry as u32;
-        }
-        result
-    }
-
-    fn bits(self) -> usize {
-        self.0
-            .iter()
-            .rposition(|&digit| digit != 0)
-            .map_or(0, |i| 32 * i + (32 - self.0[i].leading_zeros()) as usize)
-    }
-
-    fn cmp(self, other: Self) -> Ordering {
-        self.0.iter().rev().cmp(other.0.iter().rev())
-    }
-
-    fn add_multiple(&mut self, other: Self, multiplier: u32) -> Result<()> {
-        let mut carry = 0;
-        for (digit, other) in self.0.iter_mut().zip(other.0) {
-            carry += u64::from(*digit) + u64::from(other) * u64::from(multiplier);
-            *digit = carry as u32;
-            carry >>= 32;
-        }
-        if carry != 0 {
-            return Err(arithmetic());
-        }
-        Ok(())
-    }
-
-    fn difference(mut self, other: Self) -> Self {
-        let mut borrow = 0i64;
-        for (digit, other) in self.0.iter_mut().zip(other.0) {
-            let remaining = i64::from(*digit) - i64::from(other) - borrow;
-            *digit = remaining as u32;
-            borrow = i64::from(remaining < 0);
-        }
-        debug_assert_eq!(borrow, 0);
-        self
-    }
-
-    fn residue(self, p: u32) -> u32 {
-        self.0.iter().rev().fold(0, |r, &digit| {
-            ((u64::from(r) << 32 | u64::from(digit)) % u64::from(p)) as u32
-        })
-    }
-
-    fn divide(self, model: &mut Model, divisor: u128) -> Result<(Self, u128)> {
-        model.spend(LIMBS)?;
-        if let Some(value) = self.small() {
-            return Ok((Self::from_small(value / divisor), value % divisor));
-        }
-        if divisor == 1 {
-            return Ok((self, 0));
-        }
-        // The divisor is at most 2^127. Doubling a remainder and
-        // appending a bit therefore fits in u128.
-        let width = self.bits();
-        model.spend(width)?;
-        let mut quotient = Self::default();
-        let mut remainder = 0;
-        for bit in (0..width).rev() {
-            let (i, j) = (bit / 32, bit % 32);
-            remainder = (remainder << 1) | u128::from((self.0[i] >> j) & 1);
-            if remainder >= divisor {
-                remainder -= divisor;
-                quotient.0[i] |= 1 << j;
-            }
-        }
-        Ok((quotient, remainder))
-    }
-}
+type Integer = Natural<LIMBS>;
 
 // A coefficient of a product is a sum of at most the storage limit
 // (300,000) of products of two i128 values, so 288 bits also suffice
@@ -161,7 +44,7 @@ pub(super) fn wide_divide(model: &mut Model, input: &[i128], divisor: &[i128]) -
             let term = Integer::product(a, b);
             let subtract_negative = (a < 0) == (b < 0);
             if negative == subtract_negative {
-                magnitude.add_multiple(term, 1)?;
+                magnitude.add_multiple(term, 1).ok_or_else(arithmetic)?;
             } else if magnitude.cmp(term).is_lt() {
                 magnitude = term.difference(magnitude);
                 negative = subtract_negative;
@@ -206,10 +89,14 @@ impl Reconstruction {
             model.spend(2 * LIMBS)?;
             let v = p.mul(coefficient, scale);
             let delta = p.add(v, p.negate(current.residue(p.get())));
-            current.add_multiple(self.modulus, p.mul(delta, inverse))?;
+            current
+                .add_multiple(self.modulus, p.mul(delta, inverse))
+                .ok_or_else(arithmetic)?;
         }
         let mut modulus = Integer::default();
-        modulus.add_multiple(self.modulus, p.get())?;
+        modulus
+            .add_multiple(self.modulus, p.get())
+            .ok_or_else(arithmetic)?;
         self.modulus = modulus;
         Ok(())
     }
@@ -219,7 +106,7 @@ impl Reconstruction {
         // content is the gcd of that coefficient and all other entries.
         let leading = Integer::from_small(lead);
         let mut twice_lead = leading;
-        twice_lead.add_multiple(leading, 1)?;
+        twice_lead.add_multiple(leading, 1).ok_or_else(arithmetic)?;
         if self.modulus.cmp(twice_lead).is_le() {
             return Ok(None);
         }

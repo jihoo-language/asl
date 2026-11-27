@@ -172,6 +172,7 @@ mod tropical_matroid;
 mod v_bars;
 mod v_koszul;
 mod vbock;
+mod wide_integer;
 
 use std::env;
 use std::ffi::OsString;

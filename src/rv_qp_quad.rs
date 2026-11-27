@@ -3,6 +3,7 @@ use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
 use crate::rv_ore::gcd;
+use crate::wide_integer::Natural;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Element {
@@ -152,15 +153,29 @@ impl Field {
             return x.rational_inverse(model);
         }
         model.spend(1)?;
-        let norm = self.numerator_norm(x.a, x.b)?;
-        let cross = gcd(x.c as u128, norm.unsigned_abs()) as i128;
-        let mut unit = x.c / cross;
-        let mut denominator = norm / cross;
-        if denominator < 0 {
-            denominator = negate(denominator)?;
-            unit = -unit;
+        let norm = self.numerator_norm(model, x.a, x.b)?;
+        if let Some(n) = norm.signed() {
+            let small = || -> Option<_> {
+                let cross = gcd(x.c as u128, n.unsigned_abs()) as i128;
+                let mut unit = x.c / cross;
+                let mut denominator = n / cross;
+                if denominator < 0 {
+                    denominator = denominator.checked_neg()?;
+                    unit = -unit;
+                }
+                Some((x.a.checked_mul(unit)?, x.b.checked_mul(-unit)?, denominator))
+            };
+            if let Some((a, b, c)) = small() {
+                return Element::new(a, b, c);
+            }
         }
-        Element::new(multiply(x.a, unit)?, multiply(x.b, -unit)?, denominator)
+        model.spend(2 * 16)?;
+        normalize_wide(
+            model,
+            Wide::product(x.a, x.c),
+            Wide::product(x.b, x.c).negate(),
+            norm,
+        )
     }
 
     pub(crate) fn power(
@@ -182,8 +197,16 @@ impl Field {
         Ok(value)
     }
 
-    fn numerator_norm(self, a: i128, b: i128) -> Result<i128> {
-        subtract(multiply(a, a)?, multiply(self.d, multiply(b, b)?)?)
+    fn numerator_norm(self, model: &mut Model, a: i128, b: i128) -> Result<Wide> {
+        let small = || -> Option<i128> {
+            a.checked_mul(a)?
+                .checked_sub(self.d.checked_mul(b.checked_mul(b)?)?)
+        };
+        if let Some(norm) = small() {
+            return Ok(Wide::from_i128(norm));
+        }
+        model.spend(2 * 16 + 4 * 8 + 2 * QUADRATIC_LIMBS)?;
+        Wide::product(a, a).add(Wide::product(b, b).multiply(self.d)?.negate())
     }
 
     pub(crate) fn valuation(self, model: &mut Model, x: Element) -> Result<Option<i64>> {
@@ -196,7 +219,9 @@ impl Field {
         let norm_order = if chosen == 0 {
             // One of these residues is a unit after common powers were
             // stripped, so the norm gives the full chosen branch order.
-            valuation(model, self.numerator_norm(a, b)?.unsigned_abs(), p)?
+            self.numerator_norm(model, a, b)?
+                .prime_part(model, self.prime)?
+                .0
         } else {
             0
         };
@@ -220,22 +245,50 @@ impl Field {
             return Err(Error::plain("quadratic residue precision must be positive"));
         }
         let p = u128::from(self.prime.get());
-        let denom_order = valuation(model, x.c as u128, p)? as usize;
-        let root_precision = precision
-            .checked_add(denom_order)
-            .ok_or_else(modulus_error)?;
         let modulus = prime_power(p, precision)?;
-        let enlarged = prime_power(p, root_precision)?;
-        let divisor = enlarged / modulus;
-        let reduced = self.numerator_residue(model, x, root_precision, enlarged)?;
-        if !reduced.is_multiple_of(divisor) {
-            return Err(Error::plain(
-                "quadratic residue requires an integral element at the chosen prime",
-            ));
+        if x.is_zero() {
+            return Ok(0);
         }
-        let denominator_unit = x.c as u128 / divisor;
-        let inverse = self.lift_inverse(model, denominator_unit, precision)?;
-        mul_mod(model, reduced / divisor, inverse, modulus)
+        let (a, b, common) = strip_numerator(model, x, p as i128)?;
+        let denominator_order = valuation(model, x.c as u128, p)?;
+        let primitive = Element { a, b, c: 1 };
+        let (chosen, _) = self.local_numerator(a, b);
+        let (norm_order, norm_unit) = if chosen == 0 {
+            let (order, unit) = self
+                .numerator_norm(model, a, b)?
+                .peel_prime(model, self.prime)?;
+            (order, Some(unit))
+        } else {
+            (0, None)
+        };
+        let value_order =
+            usize::try_from(common + norm_order - denominator_order).map_err(|_| {
+                Error::plain("quadratic residue requires an integral element at the chosen prime")
+            })?;
+        if value_order >= precision {
+            return Ok(0);
+        }
+        let unit_precision = precision - value_order;
+        let unit_modulus = prime_power(p, unit_precision)?;
+        let denominator = x.c as u128 / prime_power(p, denominator_order as usize)?;
+        let (unit_numerator, unit_denominator) = if let Some(norm) = norm_unit {
+            // The primitive numerator is N divided by its unit conjugate.
+            // After removing the norm's p-power, only the output unit
+            // precision is needed in the conjugate and denominator.
+            let conjugate =
+                self.numerator_residue(model, primitive, unit_precision, unit_modulus, true)?;
+            (
+                norm.modulus(model, unit_modulus)?,
+                mul_mod(model, denominator % unit_modulus, conjugate, unit_modulus)?,
+            )
+        } else {
+            (
+                self.numerator_residue(model, primitive, unit_precision, unit_modulus, false)?,
+                denominator % unit_modulus,
+            )
+        };
+        let inverse = self.lift_inverse(model, unit_denominator, unit_precision)?;
+        Ok((modulus / unit_modulus) * mul_mod(model, unit_numerator, inverse, unit_modulus)?)
     }
 
     pub(crate) fn angular_component(
@@ -251,17 +304,19 @@ impl Field {
         let (a, b, common) = strip_numerator(model, x, p as i128)?;
         let (chosen, conjugate) = self.local_numerator(a, b);
         let denominator_order = valuation(model, x.c as u128, p)?;
-        let coefficient = if chosen == 0 {
-            let norm = self.numerator_norm(a, b)?;
-            let norm_order =
-                usize::try_from(order + denominator_order - common).map_err(|_| arithmetic())?;
-            let unit = norm / (prime_power(p, norm_order)? as i128);
+        let (norm_order, coefficient) = if chosen == 0 {
+            let norm = self.numerator_norm(model, a, b)?;
+            let (norm_order, unit) = norm.prime_part(model, self.prime)?;
             let inverse_conjugate = invert(model, self.prime, conjugate)?;
-            self.prime
-                .mul(unit.rem_euclid(p as i128) as u32, inverse_conjugate)
+            (norm_order, self.prime.mul(unit, inverse_conjugate))
         } else {
-            chosen
+            (0, chosen)
         };
+        if common + norm_order - denominator_order != order {
+            return Err(Error::plain(
+                "quadratic angular component needs the valuation of its input",
+            ));
+        }
         let denominator_unit = x.c as u128 / prime_power(p, denominator_order as usize)?;
         let inverse = invert(model, self.prime, (denominator_unit % p) as u32)?;
         Ok(self.prime.mul(coefficient, inverse))
@@ -273,6 +328,7 @@ impl Field {
         x: Element,
         precision: usize,
         modulus: u128,
+        conjugate: bool,
     ) -> Result<u128> {
         let a = reduce(x.a, modulus);
         if x.b == 0 {
@@ -280,7 +336,12 @@ impl Field {
         }
         let b = reduce(x.b, modulus);
         let root = self.lift_root(model, precision)?;
-        Ok((a + mul_mod(model, b, root, modulus)?) % modulus)
+        let term = mul_mod(model, b, root, modulus)?;
+        Ok(if conjugate {
+            subtract_mod(a, term, modulus)
+        } else {
+            (a + term) % modulus
+        })
     }
 
     fn lift_root(self, model: &mut Model, precision: usize) -> Result<u128> {
@@ -356,21 +417,190 @@ fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element
     let g = gcd(gcd(x.a.unsigned_abs(), x.b.unsigned_abs()), y.c as u128) as i128;
     let h = gcd(gcd(y.a.unsigned_abs(), y.b.unsigned_abs()), x.c as u128) as i128;
     let (a, b, e, f) = (x.a / g, x.b / g, y.a / h, y.b / h);
-    let real = add(multiply(a, e)?, multiply(d, multiply(b, f)?)?)?;
-    let imaginary = add(multiply(a, f)?, multiply(b, e)?)?;
-    Element::new(real, imaginary, multiply(x.c / h, y.c / g)?)
+    let small = || -> Option<_> {
+        let real = a
+            .checked_mul(e)?
+            .checked_add(d.checked_mul(b.checked_mul(f)?)?)?;
+        let imaginary = a.checked_mul(f)?.checked_add(b.checked_mul(e)?)?;
+        Some((real, imaginary, (x.c / h).checked_mul(y.c / g)?))
+    };
+    if let Some((a, b, c)) = small() {
+        return Element::new(a, b, c);
+    }
+    model.spend(5 * 16 + 4 * 8 + 4 * QUADRATIC_LIMBS)?;
+    normalize_wide(
+        model,
+        Wide::product(a, e).add(Wide::product(b, f).multiply(d)?)?,
+        Wide::product(a, f).add(Wide::product(b, e))?,
+        Wide::product(x.c / h, y.c / g),
+    )
 }
 
 fn affine_combination(model: &mut Model, x: Element, y: Element, minus: bool) -> Result<Element> {
     model.spend(1)?;
     let common = gcd(x.c as u128, y.c as u128) as i128;
     let (sx, sy) = (y.c / common, x.c / common);
-    let sign = if minus { subtract } else { add };
-    Element::new(
-        sign(multiply(x.a, sx)?, multiply(y.a, sy)?)?,
-        sign(multiply(x.b, sx)?, multiply(y.b, sy)?)?,
-        multiply(x.c, sx)?,
+    let small = || -> Option<_> {
+        let combine = if minus {
+            i128::checked_sub
+        } else {
+            i128::checked_add
+        };
+        Some((
+            combine(x.a.checked_mul(sx)?, y.a.checked_mul(sy)?)?,
+            combine(x.b.checked_mul(sx)?, y.b.checked_mul(sy)?)?,
+            x.c.checked_mul(sx)?,
+        ))
+    };
+    if let Some((a, b, c)) = small() {
+        return Element::new(a, b, c);
+    }
+    model.spend(5 * 16 + 4 * QUADRATIC_LIMBS)?;
+    let combine = |a, b| {
+        let right = Wide::product(b, sy);
+        Wide::product(a, sx).add(if minus { right.negate() } else { right })
+    };
+    normalize_wide(
+        model,
+        combine(x.a, y.a)?,
+        combine(x.b, y.b)?,
+        Wide::product(x.c, sx),
     )
+}
+
+// Three i128 factors have magnitude at most 2^381. The signed sum
+// defining a norm or real product coordinate uses at most 382 bits.
+const QUADRATIC_LIMBS: usize = 12;
+type Magnitude = Natural<QUADRATIC_LIMBS>;
+
+#[derive(Clone, Copy)]
+struct Wide {
+    magnitude: Magnitude,
+    negative: bool,
+}
+
+impl Wide {
+    fn from_i128(value: i128) -> Self {
+        Self {
+            magnitude: Magnitude::from_small(value.unsigned_abs()),
+            negative: value < 0,
+        }
+    }
+
+    fn product(a: i128, b: i128) -> Self {
+        Self {
+            magnitude: Magnitude::product(a, b),
+            negative: (a < 0) != (b < 0),
+        }
+    }
+
+    fn multiply(self, coefficient: i128) -> Result<Self> {
+        let magnitude = self
+            .magnitude
+            .multiply_u128(coefficient.unsigned_abs())
+            .ok_or_else(arithmetic)?;
+        Ok(Self {
+            magnitude,
+            negative: self.negative != (coefficient < 0),
+        })
+    }
+
+    fn negate(self) -> Self {
+        Self {
+            negative: !self.negative,
+            ..self
+        }
+    }
+
+    fn add(mut self, mut other: Self) -> Result<Self> {
+        if self.negative == other.negative {
+            self.magnitude
+                .add_multiple(other.magnitude, 1)
+                .ok_or_else(arithmetic)?;
+        } else {
+            if self.magnitude.cmp(other.magnitude).is_lt() {
+                (self, other) = (other, self);
+            }
+            self.magnitude = self.magnitude.difference(other.magnitude);
+        }
+        Ok(self)
+    }
+
+    fn signed(self) -> Option<i128> {
+        self.magnitude.signed(self.negative)
+    }
+
+    fn prime_part(self, model: &mut Model, p: Prime) -> Result<(i64, u32)> {
+        let (order, unit) = self.peel_prime(model, p)?;
+        let residue = unit.magnitude.residue(p.get());
+        Ok((
+            order,
+            if unit.negative {
+                p.negate(residue)
+            } else {
+                residue
+            },
+        ))
+    }
+
+    fn peel_prime(mut self, model: &mut Model, p: Prime) -> Result<(i64, Self)> {
+        if self.magnitude.is_zero() {
+            return Err(Error::plain("nonzero quadratic numerator has zero norm"));
+        }
+        let mut v = 0;
+        if let Some(mut small) = self.magnitude.small() {
+            let p = u128::from(p.get());
+            while small.is_multiple_of(p) {
+                model.spend(1)?;
+                small /= p;
+                v += 1;
+            }
+            self.magnitude = Magnitude::from_small(small);
+            return Ok((v, self));
+        }
+        loop {
+            model.spend(QUADRATIC_LIMBS)?;
+            let (quotient, residue) = self.magnitude.divide_u32(p.get());
+            if residue != 0 {
+                return Ok((v, self));
+            }
+            self.magnitude = quotient;
+            v += 1;
+        }
+    }
+
+    fn modulus(self, model: &mut Model, modulus: u128) -> Result<u128> {
+        let (_, residue) = self.magnitude.divide(model, modulus)?;
+        Ok(if self.negative && residue != 0 {
+            modulus - residue
+        } else {
+            residue
+        })
+    }
+}
+
+fn normalize_wide(model: &mut Model, a: Wide, b: Wide, c: Wide) -> Result<Element> {
+    if c.magnitude.is_zero() {
+        return Err(Error::plain("quadratic field denominator must be nonzero"));
+    }
+    let common = a
+        .magnitude
+        .gcd(model, b.magnitude)?
+        .gcd(model, c.magnitude)?;
+    let mut coefficient = |x: Wide, negative| {
+        x.magnitude
+            .divide_exact(model, common)?
+            .and_then(|magnitude| magnitude.signed(negative))
+            .ok_or_else(arithmetic)
+    };
+    let real = coefficient(a, a.negative != c.negative)?;
+    let imaginary = coefficient(b, b.negative != c.negative)?;
+    let denominator = coefficient(c, false)?;
+    Ok(Element {
+        a: real,
+        b: imaginary,
+        c: denominator,
+    })
 }
 
 fn strip_numerator(model: &mut Model, x: Element, p: i128) -> Result<(i128, i128, i64)> {
@@ -434,18 +664,6 @@ fn mul_mod(model: &mut Model, mut a: u128, mut b: u128, modulus: u128) -> Result
         b /= 2;
     }
     Ok(result)
-}
-
-fn add(a: i128, b: i128) -> Result<i128> {
-    a.checked_add(b).ok_or_else(arithmetic)
-}
-
-fn subtract(a: i128, b: i128) -> Result<i128> {
-    a.checked_sub(b).ok_or_else(arithmetic)
-}
-
-fn multiply(a: i128, b: i128) -> Result<i128> {
-    a.checked_mul(b).ok_or_else(arithmetic)
 }
 
 fn negate(a: i128) -> Result<i128> {
