@@ -1,12 +1,16 @@
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 use std::mem::size_of;
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::Model;
+use crate::syntax::Label;
 
 use super::Integer;
+use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
+
+mod cyclic;
 
 mod generalized;
 
@@ -19,35 +23,94 @@ const TERM_WORDS: usize = size_of::<(Weight, Integer)>().div_ceil(size_of::<usiz
 const TERM_LIMIT: usize = MAX_PIVOT_CELLS / TERM_WORDS;
 
 pub(crate) enum Query {
-    EllipticGenus(u128, u128, i128),
-    Generalized(u128, u128, i128),
-    Igusa(u128, u128, i128),
+    EllipticGenus(Index),
+    Generalized(Index),
+    Igusa(Index),
+    Symplectic(usize, Index),
+    Translate(Label, usize, Index),
+    Enriques(Label, Label, usize, Index),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Index(pub(crate) u128, pub(crate) u128, pub(crate) i128);
+
+impl fmt::Display for Index {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self(p, q, r) = *self;
+        write!(output, "{p}, {q}, {r}")
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Expansion {
+    Dmvv,
+    Symplectic,
+    HalfDmvv,
+    Cyclic(usize),
+    Igusa,
 }
 
 impl Query {
     pub(super) fn report(self, model: &mut Model) -> Result<String> {
-        let (name, p, q, r, coefficient) = match self {
-            Self::EllipticGenus(length, degree, r) => (
-                "rvK3EllipticGenus",
-                length,
-                degree,
-                r,
-                dmvv(model, length, degree, r)?,
+        let (name, coefficient) = match self {
+            Self::EllipticGenus(index) => (
+                format!("rvK3EllipticGenus[{index}]"),
+                dmvv(model, index, Expansion::Dmvv)?,
             ),
-            Self::Generalized(length, degree, r) => (
-                "rvGenKummerElliptic",
-                length,
-                degree,
-                r,
+            Self::Generalized(index @ Index(length, degree, r)) => (
+                format!("rvGenKummerElliptic[{index}]"),
                 generalized::coefficient(model, length, degree, r)?,
             ),
-            Self::Igusa(m, n, r) => ("rvIgusaPhi10", m, n, r, igusa(model, m, n, r)?),
+            Self::Igusa(index) => (format!("rvIgusaPhi10[{index}]"), igusa(model, index)?),
+            Self::Symplectic(order, index) => {
+                let expansion = if order == 1 {
+                    Expansion::Dmvv
+                } else {
+                    Expansion::Cyclic(order)
+                };
+                (
+                    format!("rvK3SymplecticElliptic[{order}, {index}]"),
+                    dmvv(model, index, expansion)?,
+                )
+            }
+            Self::Translate(basis, mask, index) => {
+                basis_for(
+                    model,
+                    &basis,
+                    "Kummer translation elliptic genera require a certified genus-two level-2 basis",
+                )?;
+                let expansion = if mask == 0 {
+                    Expansion::Dmvv
+                } else {
+                    Expansion::Symplectic
+                };
+                let value = dmvv(model, index, expansion)?;
+                (
+                    format!("rvKummerTranslateElliptic[{}, {mask}, {index}]", basis.text),
+                    value,
+                )
+            }
+            Self::Enriques(basis, base, mask, index) => {
+                enriques::Action::resolve(model, &basis, &base, mask)?;
+                let value = free_involution(model, index)?;
+                (
+                    format!(
+                        "rvKummerEnriquesElliptic[{}, {}, {mask}, {index}]",
+                        basis.text, base.text
+                    ),
+                    value,
+                )
+            }
         };
-        Ok(format!("{name}[{p}, {q}, {r}] = {}", decimal(coefficient)))
+        Ok(format!("{name} = {}", decimal(coefficient)))
     }
 }
 
-fn dmvv(model: &mut Model, length: u128, degree: u128, r: i128) -> Result<Integer> {
+fn dmvv(
+    model: &mut Model,
+    Index(length, degree, r): Index,
+    expansion: Expansion,
+) -> Result<Integer> {
     if length == 0 {
         return Ok(Integer::from_i128(i128::from(degree == 0 && r == 0)));
     }
@@ -59,16 +122,29 @@ fn dmvv(model: &mut Model, length: u128, degree: u128, r: i128) -> Result<Intege
         return Ok(Integer::from_i128(0));
     }
     let cutoff = Cutoff::new(model, length, degree)?;
-    let product = series(model, cutoff, true)?;
+    let product = series(model, cutoff, expansion)?;
     Ok(coefficient(&product, (cutoff.p, cutoff.q, r)))
 }
 
-fn igusa(model: &mut Model, m: u128, n: u128, r: i128) -> Result<Integer> {
+fn free_involution(model: &mut Model, Index(length, degree, r): Index) -> Result<Integer> {
+    // The primitive trace vanishes. Both eigenspaces have multiplicity c/2,
+    // so the two factors combine as (1 - X²)^(-c/2).
+    if !length.is_multiple_of(2) || !degree.is_multiple_of(2) || r % 2 != 0 {
+        return Ok(Integer::from_i128(0));
+    }
+    dmvv(
+        model,
+        Index(length / 2, degree / 2, r / 2),
+        Expansion::HalfDmvv,
+    )
+}
+
+fn igusa(model: &mut Model, Index(m, n, r): Index) -> Result<Integer> {
     if m == 0 || n == 0 {
         return Ok(Integer::from_i128(0));
     }
     let cutoff = Cutoff::new(model, m - 1, n - 1)?;
-    let product = series(model, cutoff, false)?;
+    let product = series(model, cutoff, Expansion::Igusa)?;
     // Multiply by the Weyl factor P q (y - 2 + y⁻¹).
     let mut answer = Integer::from_i128(0);
     for (shift, scale) in [(-1, 1), (0, -2), (1, 1)] {
@@ -114,11 +190,27 @@ impl Cutoff {
     }
 }
 
-fn series(model: &mut Model, cutoff: Cutoff, reciprocal: bool) -> Result<Product> {
-    let mut seed = Seed::new();
+fn series(model: &mut Model, cutoff: Cutoff, expansion: Expansion) -> Result<Product> {
+    if let Expansion::Cyclic(order) = expansion {
+        return cyclic::series(model, cutoff, order);
+    }
+    let mut positive = Seed::new();
     let primitive_degree = cutoff.p * cutoff.q;
-    add_theta(model, &mut seed, primitive_degree, false)?;
-    add_theta(model, &mut seed, primitive_degree, true)?;
+    add_theta(model, &mut positive, primitive_degree, false)?;
+    let negative = if matches!(expansion, Expansion::Symplectic) {
+        // The θ₂ component is c_g. Thus c_-=(c-c_g)/2 is half
+        // of the unshifted part and c_+=c_-+c_g adds θ₂.
+        halve_seed(model, &mut positive)?;
+        model.spend(positive.len() * INTEGER_WORDS)?;
+        positive.clone()
+    } else {
+        Seed::new()
+    };
+    add_theta(model, &mut positive, primitive_degree, true)?;
+    if matches!(expansion, Expansion::HalfDmvv) {
+        halve_seed(model, &mut positive)?;
+    }
+    let reciprocal = !matches!(expansion, Expansion::Igusa);
     let mut product = Product::from([((0, 0, 0), Integer::from_i128(1))]);
     for p in usize::from(reciprocal)..=cutoff.p {
         for q in 0..=cutoff.q {
@@ -128,13 +220,35 @@ fn series(model: &mut Model, cutoff: Cutoff, reciprocal: bool) -> Result<Product
             // The Jacobi bound r² ≤ 4pq+1 follows directly from the two
             // theta numerators. Retain every resulting Laurent exponent.
             let degree = p * q;
-            for (&(_, r), &c) in seed.range((degree, i128::MIN)..=(degree, i128::MAX)) {
-                let exponent = if reciprocal { c.negate() } else { c };
-                multiply_factor(model, &mut product, cutoff, (p, q, r), exponent)?;
+            for (negative_eigenvalue, seed) in [(false, &positive), (true, &negative)] {
+                for (&(_, r), &c) in seed.range((degree, i128::MIN)..=(degree, i128::MAX)) {
+                    let exponent = if reciprocal { c.negate() } else { c };
+                    multiply_factor(
+                        model,
+                        &mut product,
+                        cutoff,
+                        (p, q, r),
+                        exponent,
+                        negative_eigenvalue,
+                    )?;
+                }
             }
         }
     }
     Ok(product)
+}
+
+fn halve_seed(model: &mut Model, seed: &mut Seed) -> Result<()> {
+    for coefficient in seed.values_mut() {
+        let (magnitude, remainder) = coefficient.magnitude.divide(model, 2)?;
+        if remainder != 0 {
+            return Err(Error::plain(
+                "twined elliptic genus eigenspace multiplicity is not integral",
+            ));
+        }
+        coefficient.magnitude = magnitude;
+    }
+    Ok(())
 }
 
 fn add_theta(model: &mut Model, seed: &mut Seed, degree: usize, shifted: bool) -> Result<()> {
@@ -206,8 +320,10 @@ fn multiply_factor(
     cutoff: Cutoff,
     (p, q, r): Weight,
     exponent: Integer,
+    negative_eigenvalue: bool,
 ) -> Result<()> {
-    // Generalized binomial recurrence for (1 - X)^e.
+    // Generalized binomial recurrence for (1 - X)^e. For eigenvalue
+    // −1 replace X by −X, which negates each odd-degree coefficient.
     let mut binomial = Integer::from_i128(1);
     let mut factors = Vec::new();
     for index in 1..=cutoff.order((p, q, r)) {
@@ -223,7 +339,11 @@ fn multiply_factor(
             return Err(Error::plain("elliptic genus binomial division is inexact"));
         }
         binomial = Integer { magnitude, ..term };
-        factors.push(binomial);
+        factors.push(if negative_eigenvalue && !index.is_multiple_of(2) {
+            binomial.negate()
+        } else {
+            binomial
+        });
     }
     // Snapshot only terms that can contribute. A positive P or q degree
     // ensures successive choices from a factor are all finite.

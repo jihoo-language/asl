@@ -83,7 +83,7 @@ impl Quotient {
         }
         require_extension(model, &base_curve, &cover_curve)
             .map_err(|error| error.at(cover.span))?;
-        let basis = model.jacobian_level(basis)?;
+        let basis = Action::basis(model, basis)?;
         let action = Action::validate(model, &basis, &base_curve, mask)?;
         let count = point_count(
             base_curve.ring.size_of_residue_field()?,

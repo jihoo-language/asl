@@ -82,6 +82,7 @@ fn jacobi_seed(model: &mut Model, cutoff: Cutoff) -> Result<Product> {
                 cutoff,
                 (0, j, r),
                 Integer::from_i128(exponent),
+                false,
             )?;
         }
     }

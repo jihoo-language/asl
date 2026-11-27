@@ -1,10 +1,15 @@
+use std::rc::Rc;
+
 use crate::error::{Error, Result};
 use crate::hw_closed::Curve;
 use crate::jacobian_level::Basis;
 use crate::model::Model;
 use crate::syntax::Label;
 
-use super::{k3, nikulin::NodePermutation};
+use super::{
+    k3,
+    nikulin::{basis_for, NodePermutation},
+};
 
 pub(crate) mod points;
 
@@ -27,11 +32,7 @@ pub(crate) struct Command(
 impl Command {
     pub(crate) fn execute(self, model: &mut Model) -> Result<String> {
         let Self(name, base, mask, query) = self;
-        let basis = model.jacobian_level(&name)?;
-        let curve = model
-            .kummer_curve(&base.text)
-            .map_err(|error| error.at(base.span))?;
-        let action = Action::validate(model, &basis, &curve, mask)?;
+        let (curve, action) = Action::resolve(model, &name, &base, mask)?;
         let q = curve.ring.size_of_residue_field()?;
         let name = name.text;
         let base = base.text;
@@ -63,18 +64,35 @@ impl Command {
     }
 }
 
-struct Action {
+pub(super) struct Action {
     frobenius: NodePermutation,
     twice_switch: [[i8; DIVISORS]; DIVISORS],
 }
 
 impl Action {
+    fn basis(model: &Model, name: &Label) -> Result<Rc<Basis>> {
+        basis_for(
+            model,
+            name,
+            "Enriques quotients require a certified genus-two level-2 basis",
+        )
+    }
+
+    pub(super) fn resolve(
+        model: &mut Model,
+        name: &Label,
+        base: &Label,
+        mask: usize,
+    ) -> Result<(Rc<Curve>, Self)> {
+        let basis = Self::basis(model, name)?;
+        let curve = model
+            .kummer_curve(&base.text)
+            .map_err(|error| error.at(base.span))?;
+        let action = Self::validate(model, &basis, &curve, mask)?;
+        Ok((curve, action))
+    }
+
     fn validate(model: &mut Model, basis: &Basis, curve: &Curve, mask: usize) -> Result<Self> {
-        if basis.prime.get() != 2 || basis.len() != 4 {
-            return Err(Error::plain(
-                "Enriques quotients require a certified genus-two level-2 basis",
-            ));
-        }
         let frobenius = NodePermutation::new(model, basis, curve, 1)?;
         let mut odd = 0u16;
         for node in 0..NODES {

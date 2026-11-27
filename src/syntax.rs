@@ -3813,17 +3813,47 @@ impl<'src> Parser<'src> {
             } else {
                 "P exponent"
             };
-            let p = self.wide_unsigned(first)?;
-            self.expect(Token::Comma)?;
-            let q = self.wide_unsigned("q exponent")?;
-            self.expect(Token::Comma)?;
-            let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+            let index = self.elliptic_genus_index(first)?;
             let query = match name {
-                "rvK3EllipticGenus" => Query::EllipticGenus(p, q, r),
-                "rvGenKummerElliptic" => Query::Generalized(p, q, r),
-                _ => Query::Igusa(p, q, r),
+                "rvK3EllipticGenus" => Query::EllipticGenus(index),
+                "rvGenKummerElliptic" => Query::Generalized(index),
+                _ => Query::Igusa(index),
             };
             Command::EllipticGenus(query)
+        } else if name == "rvK3SymplecticElliptic" {
+            let (order, span) = self.number()?;
+            if !(1..=8).contains(&order) {
+                return Err(Error::new(
+                    span,
+                    "symplectic K3 order must be between 1 and 8",
+                ));
+            }
+            self.expect(Token::Comma)?;
+            Command::EllipticGenus(Query::Symplectic(
+                order,
+                self.elliptic_genus_index("P exponent")?,
+            ))
+        } else if name == "rvKummerTranslateElliptic" {
+            let basis = self.label()?;
+            let mask = self.kummer_theta_index("Kummer translation mask", 15)?;
+            self.expect(Token::Comma)?;
+            Command::EllipticGenus(Query::Translate(
+                basis,
+                mask,
+                self.elliptic_genus_index("P exponent")?,
+            ))
+        } else if name == "rvKummerEnriquesElliptic" {
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let base = self.label()?;
+            let mask = self.kummer_theta_index("Enriques switch mask", 15)?;
+            self.expect(Token::Comma)?;
+            Command::EllipticGenus(Query::Enriques(
+                basis,
+                base,
+                mask,
+                self.elliptic_genus_index("P exponent")?,
+            ))
         } else if name == "rvKummerHilbBetti" {
             let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
             self.expect(Token::Comma)?;
@@ -3852,6 +3882,19 @@ impl<'src> Parser<'src> {
         };
         self.expect(Token::RBracket)?;
         Ok(StatementForm::KummerHilbert(Box::new(command)))
+    }
+
+    fn elliptic_genus_index(
+        &mut self,
+        first: &str,
+    ) -> Result<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::Index> {
+        use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::Index;
+        let p = self.wide_unsigned(first)?;
+        self.expect(Token::Comma)?;
+        let q = self.wide_unsigned("q exponent")?;
+        self.expect(Token::Comma)?;
+        let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+        Ok(Index(p, q, r))
     }
 
     fn kummer_divisor_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -4955,7 +4998,10 @@ impl<'src> Parser<'src> {
                 | "rvKummerHilbChar"
                 | "rvK3EllipticGenus"
                 | "rvGenKummerElliptic"
-                | "rvIgusaPhi10"),
+                | "rvIgusaPhi10"
+                | "rvK3SymplecticElliptic"
+                | "rvKummerTranslateElliptic"
+                | "rvKummerEnriquesElliptic"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word(
                 command @ ("rvKummerK3Height" | "rvKummerHilbNewton" | "rvJacHilbNewton"
