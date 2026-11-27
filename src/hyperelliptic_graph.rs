@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
-use crate::integer_smith::{self, Matrix, Track};
+use crate::integer_smith;
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::stable_marks::{self, Tree};
 
 pub(crate) mod arith;
+mod quotient;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) struct Grade {
@@ -354,33 +355,17 @@ impl Cover {
 
     fn component_group(&self, model: &mut Model, multiplier: usize) -> Result<String> {
         let pairing = self.monodromy(model, multiplier)?;
-        let rank = pairing.len();
-        let mut matrix = Matrix::new(model, rank, rank)?;
-        for (i, row) in pairing.into_iter().enumerate() {
-            for (j, value) in row.into_iter().enumerate().filter(|&(_, x)| x != 0) {
-                matrix.write(model, i, j, value)?;
-            }
-        }
-        let smith = integer_smith::reduce(model, matrix, Track::None, Track::None)?;
-        if smith.factors.len() != rank {
-            return Err(Error::plain(
-                "integral hyperelliptic monodromy pairing is degenerate",
-            ));
-        }
-        let exponent = smith.factors.last().copied().unwrap_or(1);
+        let factors = quotient::factors(model, &pairing)?;
+        let exponent = factors.last().copied().unwrap_or(1);
         let mut order = 1i128;
-        let mut elementary_divisors = Vec::new();
-        for value in smith.factors {
+        for &value in &factors {
             model.spend(1)?;
             order = order.checked_mul(value).ok_or_else(|| {
                 Error::plain("hyperelliptic component-group order exceeds signed i128")
             })?;
-            if value > 1 {
-                elementary_divisors.push(value);
-            }
         }
         Ok(format!(
-            "rvHyperComponent = factors={elementary_divisors:?}, exponent={exponent}, order={order}",
+            "rvHyperComponent = factors={factors:?}, exponent={exponent}, order={order}",
         ))
     }
 

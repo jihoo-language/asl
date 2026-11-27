@@ -211,15 +211,17 @@ impl<const N: usize> Natural<N> {
     }
 
     pub(crate) fn divide_exact(self, model: &mut Model, divisor: Self) -> Result<Option<Self>> {
+        let (quotient, residue) = self.div_rem(model, divisor)?;
+        Ok(residue.is_zero().then_some(quotient))
+    }
+
+    pub(crate) fn div_rem(self, model: &mut Model, divisor: Self) -> Result<(Self, Self)> {
         if let Some(divisor) = divisor.small() {
-            let (quotient, remainder) = self.divide(model, divisor)?;
-            return Ok((remainder == 0).then_some(quotient));
-        }
-        if self.is_zero() {
-            return Ok(Some(self));
+            let (quotient, residue) = self.divide(model, divisor)?;
+            return Ok((quotient, Self::from_small(residue)));
         }
         let Some(offset) = self.bits().checked_sub(divisor.bits()) else {
-            return Ok(None);
+            return Ok((Self::default(), self));
         };
         model.spend((offset + 1) * 3 * N)?;
         let mut remainder = self;
@@ -232,7 +234,7 @@ impl<const N: usize> Natural<N> {
             }
             shifted = shifted.shift_right(1);
         }
-        Ok(remainder.is_zero().then_some(quotient))
+        Ok((quotient, remainder))
     }
 
     fn trailing_zeros(self) -> usize {

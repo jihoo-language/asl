@@ -128,9 +128,61 @@ fn branch_inputs_and_metric_integrality_are_checked() {
         ("rvHyperMetric[0](rvHyperCover(rvStableLine[7]{[0,1],[1,1],[2,1],[3,1]}));", "ramification multiplier must be positive"),
         ("rvHyperComponent(rvHyperCover(rvStableLine[7]{[0,1],[7,1],[14,1],[1,1],[2,1],[3,1]}));", "edge 0 has half-integral length at multiplier 1"),
         ("rvHyperMonodromy[3](rvHyperCover(rvStableLine[7]{[0,1],[7,1],[14,1],[1,1],[2,1],[3,1]}));", "edge 0 has half-integral length at multiplier 3"),
-        ("rvHyperComponent[18446744073709551615](rvHyperCover(rvStableLine[7]{[0,1],[49,1],[1,1],[344,1],[2,1],[16809,1]}));", "exceeds"),
+        ("rvHyperComponent[18446744073709551615](rvHyperCover(rvStableLine[7]{[0,1],[49,1],[1,1],[344,1],[2,1],[16809,1]}));", "component-group order exceeds signed i128"),
     ] {
         let output = diagnostic(interpret(source));
         assert!(output.contains(expected), "{source}\n{output}");
     }
+}
+
+#[test]
+fn geometric_period_factors_survive_large_smith_transformations() {
+    // Nine pairs with unequal depths give a rank-eight period pairing.
+    let roots = [
+        0i128,
+        1792160394037,
+        1,
+        112455406951957393130,
+        2,
+        62748519,
+        3,
+        3937376385699292,
+        4,
+        247064529073450392704417,
+        5,
+        137858491854,
+        6,
+        8650415919381337939,
+        7,
+        4826816,
+        8,
+        302875106592261,
+    ];
+    let doublet = |r: i128| format!("[{r},1]");
+    let marks = roots.into_iter().map(doublet).collect::<Vec<_>>().join(",");
+    let output = stdout(interpret(&format!(
+        "rvHyperComponent(rvHyperCover(rvStableLine[13]{{{marks}}}));"
+    )));
+    assert_eq!(output,
+        "rvHyperComponent = factors=[2, 2, 2, 2, 2, 4, 84, 104305992], exponent=104305992, order=1121498025984
+");
+
+    // Even a rank-eleven pairing with entries at most ten exercises the same bound.
+    let depths = [3u32, 2, 1, 3, 1, 2, 3, 2, 3, 2, 1, 2];
+    let marks = depths
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, d)| {
+            [i as i128, i as i128 + 13i128.pow(d)]
+                .into_iter()
+                .map(doublet)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let output = stdout(interpret(&format!(
+        "rvHyperComponent(rvHyperCover(rvStableLine[13]{{{marks}}}));"
+    )));
+    assert_eq!(output,
+        "rvHyperComponent = factors=[2, 2, 2, 2, 2, 2, 2, 4, 12, 12, 492], exponent=492, order=36274176
+");
 }

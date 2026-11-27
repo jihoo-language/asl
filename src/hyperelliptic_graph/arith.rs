@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
-use crate::integer_smith::{self, arithmetic, Matrix, Track, Vector};
+use crate::integer_smith::{self, arithmetic, Vector};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
-use crate::rv_qp_quad::{gauge::Coefficients, Element};
+use crate::rv_ore::gcd;
+use crate::rv_qp_quad::{gauge::Coefficients, Element, Wide};
 use crate::stable_marks::Tree;
 
 use super::{period_inner, Cover, Cycle, Grade};
@@ -499,106 +500,85 @@ impl Arithmetic {
         ))
     }
 
-    fn fixed_lattice(&self, model: &mut Model) -> Result<Vec<Vector>> {
-        let n = self.frobenius.len();
-        let mut matrix = Matrix::new(model, n, 2 * n)?;
-        for i in 0..n {
-            for j in 0..n {
-                let x = self.frobenius[i].get(&j).copied().unwrap_or(0) - i128::from(i == j);
-                matrix.write(model, i, j, x)?;
-                matrix.write(model, i, n + j, -self.periods[i][j])?;
-            }
-        }
-        // Since Q is nonsingular, projecting ker[F^T-I|-Q] to
-        // the first n coordinates identifies it with the fixed lattice.
-        let smith = integer_smith::reduce(model, matrix, Track::None, Track::Basis)?;
-        if smith.factors.len() != n {
-            return Err(Error::plain(
-                "arithmetic fixed-lattice equation lacks full rank",
-            ));
-        }
-        let mut columns = Vec::with_capacity(n);
-        for j in n..2 * n {
-            let kernel = smith.columns.basis(j);
-            model.spend(1 + kernel.len())?;
-            columns.push(kernel.range(..n).map(|(&i, &v)| (i, v)).collect());
-        }
-        Ok(columns)
-    }
-
     fn fixed_text(&self, model: &mut Model) -> Result<String> {
         let n = self.frobenius.len();
-        let columns = self.fixed_lattice(model)?;
-        let fixed = reduce_fixed(model, &self.periods, &columns)?;
-        let mut factors = Vec::new();
+        // The symmetric period pairing identifies the fixed group with
+        // characters of Z^n/(Q Z^n + (F^T-I) Z^n).
+        let quotient = super::quotient::characters(model, &self.periods, &self.frobenius)?;
         let mut generators = Vec::new();
         let mut order = 1i128;
-        for (i, &d) in fixed.factors.iter().enumerate() {
-            if d > 1 {
-                order = order.checked_mul(d).ok_or_else(arithmetic)?;
-                factors.push(d);
-                let mut representative = Vector::new();
-                for (&j, &c) in fixed.rows.basis(i) {
-                    integer_smith::add_scaled(model, &mut representative, &columns[j], c)?;
-                }
-                let mut entries = vec![0i128; n];
-                for (j, c) in representative {
-                    entries[j] = c;
-                }
-                integer_smith::storage((3 + 2 * n) * (generators.len() + 1))?;
-                generators.push(entries);
+        for (&d, character) in quotient.factors.iter().zip(quotient.characters) {
+            order = order.checked_mul(d).ok_or_else(|| {
+                Error::plain("rational hyperelliptic component-group order exceeds signed i128")
+            })?;
+            model.spend(character.len())?;
+            let divisor = character.iter().fold(d as u128, |g, x| gcd(g, *x as u128));
+            if divisor != 1 {
+                return Err(Error::plain(
+                    "a fixed character has smaller order than its Smith factor",
+                ));
             }
+            generators.push(self.fixed_representative(model, d, &character)?);
+            integer_smith::storage((3 + 2 * n) * generators.len())?;
         }
+        let factors = quotient.factors;
         Ok(format!(
             "rvHyperFixed = factors={factors:?}, order={order}, representatives={generators:?}"
         ))
     }
-}
 
-fn reduce_fixed(
-    model: &mut Model,
-    periods: &[Vec<i128>],
-    columns: &[Vector],
-) -> Result<integer_smith::Smith> {
-    let n = periods.len();
-    let mut matrix = Matrix::new(model, n, n)?;
-    for (j, column) in columns.iter().enumerate() {
-        for (&i, &x) in column {
-            matrix.write(model, i, j, x)?;
-        }
-    }
-    let frame = integer_smith::reduce(model, matrix, Track::Both, Track::Basis)?;
-    if frame.factors.len() != n {
-        return Err(Error::plain("arithmetic fixed lattice lacks full rank"));
-    }
-    let mut inclusion = Matrix::new(model, n, n)?;
-    // Q is symmetric, so each row also lists a monodromy relation.
-    for (j, relation) in periods.iter().enumerate() {
-        let mut column = Vector::new();
-        for (i, &d) in frame.factors.iter().enumerate() {
-            let row = frame.rows.coordinate(i);
-            model.spend(1 + row.len())?;
-            let mut image = 0i128;
-            for (&k, &x) in row {
-                let component = x.checked_mul(relation[k]).ok_or_else(arithmetic)?;
-                image = image.checked_add(component).ok_or_else(arithmetic)?;
-            }
-            if image % d != 0 {
+    fn fixed_representative(
+        &self,
+        model: &mut Model,
+        d: i128,
+        character: &[i128],
+    ) -> Result<Vec<i128>> {
+        let n = self.frobenius.len();
+        let mut output = Vec::with_capacity(n);
+        for i in 0..n {
+            let row = self.periods[i].iter().copied();
+            let coordinate = wide_inner(model, row, character, d)?;
+            let Some(coordinate) = coordinate else {
                 return Err(Error::plain(
-                    "monodromy relation is outside the arithmetic fixed lattice",
+                    "a fixed character does not annihilate the monodromy lattice",
+                ));
+            };
+            let row = self
+                .frobenius
+                .iter()
+                .enumerate()
+                .map(|(j, col)| col.get(&i).copied().unwrap_or(0) - i128::from(i == j));
+            if wide_inner(model, row, character, d)?.is_none() {
+                return Err(Error::plain(
+                    "a fixed character does not annihilate the Frobenius relation",
                 ));
             }
-            integer_smith::add_scaled(model, &mut column, frame.columns.basis(i), image / d)?;
+            output.push(coordinate);
         }
-        for (i, x) in column {
-            inclusion.write(model, i, j, x)?;
+        Ok(output)
+    }
+}
+
+fn wide_inner(
+    model: &mut Model,
+    row: impl Iterator<Item = i128>,
+    coefficients: &[i128],
+    divisor: i128,
+) -> Result<Option<i128>> {
+    // Each summand uses two signed 128-bit factors, and the capped
+    // number of coordinates fits in the remaining limbs.
+    type Integer = Wide<12>;
+    let mut sum = Integer::from_i128(0);
+    for (a, &b) in row.zip(coefficients) {
+        model.spend(1)?;
+        if a != 0 && b != 0 {
+            model.spend(16 + 12)?;
+            sum = sum.add(Integer::product(a, b))?;
         }
     }
-    let result = integer_smith::reduce(model, inclusion, Track::Basis, Track::None)?;
-    if result.factors.len() != n {
-        return Err(Error::plain("arithmetic component group is not finite"));
-    }
-    Ok(result)
+    sum.divide_exact(model, Integer::from_i128(divisor))?
+        .map(|entry| entry.signed().ok_or_else(arithmetic))
+        .transpose()
 }
 
 pub(crate) enum Query {
