@@ -1308,6 +1308,14 @@ On two colored strands, channel $h$ has crossing eigenvalue $(-1)^{(2m-h)/2}A^{(
 
 For signed self-writhe $w_i$, target framing $f_i$, and color $a_i$, the evaluator multiplies the quantum trace by $\prod_i\theta_{a_i}^{f_i-w_i}$ in the signed Temperley–Lieb convention above. A zero-framed unknot of color $a$ gives $d_a$, and the empty closure gives one. `rvTLLinking[n,[word],[framings]];` reports the integer matrix with these target framings on its diagonal and half the signed intercomponent crossing sums off the diagonal. The example checks the multicolor Hopf link by its two fusion channels and verifies positive and negative Markov stabilization. [Framed closure example](examples/rv-tl-framed.asl)
 
+#### SU(2) Kirby surgery
+
+`rvTLSurgery[k,n,[word],[framings]]` evaluates integral surgery on a framed braid closure with nonsingular linking matrix. The result is an exact cyclotomic value with $S^3$ normalized to one. It sums the framed trace over all integrable component colors, weighted by $\prod_i d_{a_i}$, to obtain the Kirby sum $F(\Omega)$. For linking inertia $(b_+,b_-)$ it divides by $p_+^{b_+}p_-^{b_-}$, with $p_\pm=\sum_a d_a^2\theta_a^{\pm1}$ and $p_+p_-=\mathcal D^2=\sum_a d_a^2$. An integral symmetric elimination computes inertia and includes a two-by-two pivot for hyperbolic blocks.
+
+`rvTLSurgeryTV[k,n,[word],[framings]]` also accepts singular linking matrices. For $\ell$ closure components it returns $F(\Omega)\overline{F(\Omega)}/(\mathcal D^2)^{\ell+1}$, so $S^3$ has value $1/\mathcal D^2$ and $S^1\times S^2$ has value one. The signed Temperley–Lieb twist differs from the unitary WZW twist by $(-1)^a$. The Galois substitution $A\mapsto -A$ removes that sign and fixes $d_a^2$, giving the comparison with `rvLensTV` for one-component lens surgeries. Untouched components contribute separate unknot Gauss sums, and the evaluator checks the number of remaining colorings and elementary crossing bound before expansion.
+
+The example checks both blowups, the zero-framed Hopf presentation of $S^3$, a nonzero handle slide from framings $(2,3)$ to $(5,3)$, and the distinction between $+1$ surgery on the trefoil and the unknot. [Kirby surgery example](examples/rv-tl-surgery.asl)
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is

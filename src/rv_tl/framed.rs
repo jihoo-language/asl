@@ -8,6 +8,9 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::rv_lens::{self, Rational};
 
+mod surgery;
+pub(crate) use surgery::{evaluate as surgery_value, Surgery};
+
 struct Link {
     braid: Vec<Generator>,
     component_of: Vec<usize>,
@@ -87,18 +90,25 @@ impl Link {
         Ok(())
     }
 
-    fn matrix(&self, model: &mut Model, framings: &[i128]) -> Result<Vec<Vec<i128>>> {
-        let components = self.components();
-        let cells = components.saturating_mul(components + 1);
+    fn matrix(
+        &self,
+        model: &mut Model,
+        framings: &[i128],
+        selected: &[usize],
+    ) -> Result<Vec<Vec<i128>>> {
+        let count = selected.len();
+        let cells = count.saturating_mul(count + 1);
         storage(cells)?;
-        model.spend(cells + self.links.len())?;
-        let mut matrix = vec![vec![0; components]; components];
-        for (i, &framing) in framings.iter().enumerate() {
-            matrix[i][i] = framing;
+        model.spend(cells + self.links.len() * (1 + count.max(1).ilog2() as usize))?;
+        let mut matrix = vec![vec![0; count]; count];
+        for (i, &component) in selected.iter().enumerate() {
+            matrix[i][i] = framings[component];
         }
         for (&(i, j), &count) in &self.links {
-            matrix[i][j] = count;
-            matrix[j][i] = count;
+            if let (Ok(i), Ok(j)) = (selected.binary_search(&i), selected.binary_search(&j)) {
+                matrix[i][j] = count;
+                matrix[j][i] = count;
+            }
         }
         Ok(matrix)
     }
@@ -242,5 +252,6 @@ pub(crate) fn linking(
 ) -> Result<Vec<Vec<i128>>> {
     let link = Link::new(model, strands, word)?;
     link.check_framings(framings)?;
-    link.matrix(model, framings)
+    let selected: Vec<_> = (0..link.components()).collect();
+    link.matrix(model, framings, &selected)
 }

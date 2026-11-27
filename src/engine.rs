@@ -6517,6 +6517,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::TlJones(..)
             | ExprForm::TlColoredJones(..)
             | ExprForm::TlFramed(..)
+            | ExprForm::TlSurgery(..)
             | ExprForm::WzwCoordinate(..)
             | ExprForm::CycloEmbed(..)
             | ExprForm::CycloGalois(..)
@@ -10205,6 +10206,12 @@ impl Checker<'_> {
                 let grade = rv_tl::Grade::framed(level, strands)?;
                 let ty = self.model.cyclotomic_rational_type(grade.order)?;
                 let value = rv_tl::framed(self.model, grade, &word, &colors, &framings)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlSurgery(kind, level, strands, word, framings) => {
+                let grade = rv_tl::Grade::framed(level, strands)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_tl::surgery_value(self.model, grade, &word, &framings, kind)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::TlOperation(operation, input) => {

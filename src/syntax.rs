@@ -795,6 +795,7 @@ pub(crate) enum ExprForm {
     TlJones(usize, usize, Vec<i128>),
     TlColoredJones(usize, usize, usize, Vec<i128>),
     TlFramed(usize, usize, Vec<i128>, Vec<usize>, Vec<i128>),
+    TlSurgery(crate::rv_tl::Surgery, usize, usize, Vec<i128>, Vec<i128>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -8252,6 +8253,28 @@ impl<'src> Parser<'src> {
                     let path = self.exponents()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::TlPath(level, path), 0);
+                }
+                if matches!(name.text.as_str(), "rvTLSurgery" | "rvTLSurgeryTV")
+                    && self.eat(Token::LBracket)?
+                {
+                    let kind = if name.text == "rvTLSurgery" {
+                        crate::rv_tl::Surgery::Wrt
+                    } else {
+                        crate::rv_tl::Surgery::Doubled
+                    };
+                    let (level, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (strands, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let word = self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                    self.expect(Token::Comma)?;
+                    let framings = self.signed_tuple("a signed framing", "framing")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::TlSurgery(kind, level, strands, word, framings),
+                        0,
+                    );
                 }
                 if name.text == "rvTLFramed" && self.eat(Token::LBracket)? {
                     let (level, _) = self.number()?;

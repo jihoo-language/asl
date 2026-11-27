@@ -8,7 +8,7 @@ use crate::rv_cyclotomic;
 use crate::rv_lens::{self, Rational};
 
 mod framed;
-pub(crate) use framed::{framed, linking};
+pub(crate) use framed::{framed, linking, surgery_value, Surgery};
 
 const MAX_CELLS: usize = 300_000;
 const MAX_WORD: usize = 4096;
