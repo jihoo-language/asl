@@ -86,6 +86,15 @@ fn overflow() -> Error {
 
 pub(crate) fn frobenius(model: &mut Model, name: Rc<str>, curve: &Curve) -> Result<Morphism> {
     let q = curve.ring.size_of_residue_field()?;
+    frobenius_over(model, name, curve, q)
+}
+
+pub(crate) fn frobenius_over(
+    model: &mut Model,
+    name: Rc<str>,
+    curve: &Curve,
+    q: u64,
+) -> Result<Morphism> {
     let x_bound = usize::try_from(q)
         .ok()
         .and_then(|q| q.checked_add(1))
