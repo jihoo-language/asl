@@ -102,6 +102,7 @@ pub(crate) enum TypeForm {
     CurveDiff(DiffFamily, Label, usize),
     ASDeRham(Label, usize),
     BinaryScalar(usize),
+    EOType(usize),
     RVComplex(RvGradeSpec, bool),
     BP(BpSpec, Option<usize>),
     BPThick(BpSpec, usize, usize),
@@ -423,6 +424,8 @@ pub(crate) enum BinaryOp {
     RvBCMul,
     RvBarPair,
     AsDeRhamPair,
+    EOBruhat,
+    EOClosure,
     RvPathCup,
     RvKoszulProduct,
     RvTorProduct,
@@ -451,6 +454,8 @@ impl BinaryOp {
             "rvBCMul" => Some(Self::RvBCMul),
             "rvBarPair" => Some(Self::RvBarPair),
             "rvASDeRhamPair" => Some(Self::AsDeRhamPair),
+            "eoBruhat" => Some(Self::EOBruhat),
+            "eoClosure" => Some(Self::EOClosure),
             "rvPathCup" => Some(Self::RvPathCup),
             "rvkProd" => Some(Self::RvKoszulProduct),
             "rvTorProd" => Some(Self::RvTorProduct),
@@ -701,6 +706,8 @@ pub(crate) enum ExprForm {
     RvFrobeniusWronskian(Label, usize),
     AsDeRhamGen(Label, usize, usize, Span),
     BinaryScalar(usize, usize),
+    EOType(Vec<usize>),
+    EOCover(Label),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     RvOmega(DiffFamily, Label, usize, usize),
     RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
@@ -838,6 +845,8 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
+    EOReport(bool, ParsedExpr),
+    EOWitness(ParsedExpr, ParsedExpr),
     RvAsWordQuery(AsWordQuery, Label, Vec<Vec<AsOperator>>),
     RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvWittQuery(WittQuery, Label),
@@ -2100,6 +2109,20 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvAsCover(name, variables, self.rv_generators()?)
             }
+            Token::Word("eoDim" | "eoWeyl") => {
+                let weyl = self.token() == Token::Word("eoWeyl");
+                self.advance()?;
+                StatementForm::EOReport(weyl, self.paren_expr(0)?)
+            }
+            Token::Word("eoClosureWitness") => {
+                self.advance()?;
+                self.expect(Token::LParen)?;
+                let lower = self.expr(0)?;
+                self.expect(Token::Comma)?;
+                let upper = self.expr(0)?;
+                self.expect(Token::RParen)?;
+                StatementForm::EOWitness(lower, upper)
+            }
             Token::Word("rvASWordRank" | "rvASCommonKer" | "rvASSumImages") => {
                 let query = match self.token() {
                     Token::Word("rvASWordRank") => AsWordQuery::Rank,
@@ -3213,6 +3236,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ASDeRham(cover, modulus), 0);
         }
+        if name.text == "EOType" && self.eat(Token::LParen)? {
+            let genus = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::EOType(genus), 0);
+        }
         if name.text == "BinaryScalar" && self.eat(Token::LParen)? {
             let modulus = self.number()?.0;
             self.expect(Token::RParen)?;
@@ -4325,6 +4353,15 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "eoType" && self.eat(Token::LBrace)? {
+                    let sequence = self.unsigned_list(Token::RBrace)?;
+                    return expr(span, ExprForm::EOType(sequence), 0);
+                }
+                if name.text == "rvASEOType" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::EOCover(cover), 0);
                 }
                 if name.text == "rvASDeRhamGen" && self.eat(Token::LBracket)? {
                     let cover = self.label()?;

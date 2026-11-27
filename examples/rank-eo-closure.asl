@@ -1,0 +1,11 @@
+let lower = eoType{0,0,1,2,2};
+let upper = eoType{1,1,1,1,2};
+show lower;
+show upper;
+eoDim(lower);
+eoDim(upper);
+show eoBruhat(lower,upper);
+show eoClosure(lower,upper);
+eoClosureWitness(lower,upper);
+eoWeyl(lower);
+eoWeyl(upper);

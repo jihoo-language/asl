@@ -17,6 +17,7 @@ use crate::cobar_squares;
 use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
+use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::jet_hom;
 use crate::jet_page;
@@ -1273,6 +1274,44 @@ impl Engine {
                 self.model.define_rv_as_cover(name.text, cover);
                 return Ok(None);
             }
+            StatementForm::EOReport(weyl, expression) => {
+                let expression = self.checker().expr(expression)?;
+                let operation = if weyl { "eoWeyl" } else { "eoDim" };
+                self.checker().require_eo(&expression, operation)?;
+                let Value::EOType(sequence) = self.eval(&expression)? else {
+                    unreachable!()
+                };
+                if weyl {
+                    let mut permutation = eo::weyl(&mut self.model, &sequence)?;
+                    for image in &mut permutation {
+                        *image += 1;
+                    }
+                    format!("eoWeyl = {permutation:?}")
+                } else {
+                    format!("eoDim = {}", eo::dimension(&mut self.model, &sequence)?)
+                }
+            }
+            StatementForm::EOWitness(lower, upper) => {
+                let lower = self.checker().expr(lower)?;
+                let upper = self.checker().expr(upper)?;
+                self.checker().require_eo(&lower, "eoClosureWitness")?;
+                self.checker()
+                    .require_type(lower.ty, &upper, "eoClosureWitness")?;
+                let (Value::EOType(lower), Value::EOType(upper)) =
+                    (self.eval(&lower)?, self.eval(&upper)?)
+                else {
+                    unreachable!()
+                };
+                if let Some(mut permutation) = eo::closure_witness(&mut self.model, &lower, &upper)?
+                {
+                    for image in &mut permutation {
+                        *image += 1;
+                    }
+                    format!("eoClosureWitness = {permutation:?}")
+                } else {
+                    "eoClosureWitness = none".to_owned()
+                }
+            }
             StatementForm::RvAsWordQuery(query, name, words) => {
                 let cover = self.model.rv_as_cover(&name)?;
                 rv_as_derham::word_report(&mut self.model, &cover, &name.text, query, &words)?
@@ -2186,6 +2225,13 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::RVLaurent(a), Value::RVLaurent(b)) => {
                         rv_laurent::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::EOBruhat, Value::EOType(a), Value::EOType(b)) => Ok(Value::Point(
+                        usize::from(eo::bruhat(&mut self.model, &a, &b)?),
+                    )),
+                    (BinaryOp::EOClosure, Value::EOType(a), Value::EOType(b)) => {
+                        let contained = eo::closure_witness(&mut self.model, &a, &b)?.is_some();
+                        Ok(Value::Point(usize::from(contained)))
                     }
                     (BinaryOp::AsDeRhamPair, Value::ASDeRham(a), Value::ASDeRham(b)) => {
                         let Kind::ASDeRham(name, field) = self.model.kind(left.ty) else {
@@ -4381,6 +4427,7 @@ impl Checker<'_> {
                 self.model.rv_complex_type(grade, homology)
             }
             TypeForm::ASDeRham(cover, modulus) => self.model.rv_as_derham_type(&cover, modulus),
+            TypeForm::EOType(genus) => self.model.eo_type(genus),
             TypeForm::BinaryScalar(modulus) => {
                 let field = BinaryField::new(self.model, modulus)?;
                 self.model.binary_scalar_type(field)
@@ -6603,6 +6650,18 @@ impl Checker<'_> {
                 };
                 Ok((ty, TypedForm::RvIdeal(op, ideal, Box::new(input))))
             }
+            ExprForm::EOType(sequence) => {
+                let ty = self.model.eo_type(sequence.len())?;
+                let value = eo::persist(self.model, sequence).map_err(|error| error.at(span))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::EOCover(name) => {
+                let cover = self.model.rv_as_cover(&name)?;
+                let sequence = rv_as_derham::final_type(self.model, &cover)?;
+                let ty = self.model.eo_type(cover.genus())?;
+                let value = eo::persist(self.model, sequence)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::BinaryScalar(modulus, coefficient) => {
                 let field = BinaryField::new(self.model, modulus)?;
                 field.check_element(coefficient)?;
@@ -8674,6 +8733,16 @@ impl Checker<'_> {
                 let degree = checked_degree(t, v, "xaction", span)?;
                 self.model.xext_type(base, length, degree)
             }
+            BinaryOp::EOBruhat | BinaryOp::EOClosure => {
+                let operation = if matches!(op, BinaryOp::EOBruhat) {
+                    "eoBruhat"
+                } else {
+                    "eoClosure"
+                };
+                self.require_eo(left, operation)?;
+                self.require_type(left.ty, right, operation)?;
+                Ok(self.model.named("S").unwrap())
+            }
             BinaryOp::AsDeRhamPair => {
                 let op = "rvASDeRhamPair";
                 let Kind::ASDeRham(_, field) = *self.model.kind(left.ty) else {
@@ -9030,6 +9099,13 @@ impl Checker<'_> {
         } else {
             Ok((right, TypedForm::Snd(Box::new(pair))))
         }
+    }
+
+    fn require_eo(&self, input: &TypedExpr, operation: &str) -> Result<()> {
+        if !matches!(self.model.kind(input.ty), Kind::EOType(..)) {
+            return Err(self.invalid_operand(input, operation, "an EO final type"));
+        }
+        Ok(())
     }
 
     fn require_type(&self, expected: TypeId, actual: &TypedExpr, context: &str) -> Result<()> {

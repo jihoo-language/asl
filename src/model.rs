@@ -164,6 +164,7 @@ pub(crate) enum Kind {
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
     ASDeRham(Rc<str>, BinaryField),
     BinaryScalar(BinaryField),
+    EOType(usize),
     RVLaurent(rv_hom::Grade),
     RVIwHecke(usize),
     RVSphHecke(usize),
@@ -293,6 +294,7 @@ pub(crate) enum Value {
     CurveDiff(Rc<[binary_linear::Entry]>),
     ASDeRham(Rc<[binary_linear::Entry]>),
     BinaryScalar(usize),
+    EOType(Rc<[usize]>),
     RVLaurent(rv_laurent::Support),
     RVIwHecke(rv_iwhecke::Support),
     RVSphHecke(rv_sphhecke::Support),
@@ -684,6 +686,7 @@ impl Model {
                     .saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
             }
             Kind::BinaryScalar(field) => field.order(),
+            Kind::EOType(genus) => support_space_size(genus),
             Kind::CurveDiff(family, ref name, field) => {
                 let genus = self.curve_genus(family, name);
                 field
@@ -795,6 +798,7 @@ impl Model {
                 | Kind::CurveDiff(..)
                 | Kind::ASDeRham(..)
                 | Kind::BinaryScalar(..)
+                | Kind::EOType(..)
                 | Kind::RVLaurent(..)
                 | Kind::RVIwHecke(..)
                 | Kind::RVSphHecke(..)
@@ -1878,6 +1882,10 @@ impl Model {
         }
     }
 
+    pub(crate) fn eo_type(&mut self, genus: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::EOType(genus), 0)
+    }
+
     pub(crate) fn binary_scalar_type(&mut self, field: BinaryField) -> Result<TypeId> {
         self.inhabited_type(Kind::BinaryScalar(field), 0)
     }
@@ -2499,6 +2507,7 @@ impl Model {
             | Kind::CurveDiff(..)
             | Kind::ASDeRham(..)
             | Kind::BinaryScalar(..)
+            | Kind::EOType(..)
             | Kind::RVLaurent(..)
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
@@ -2800,6 +2809,7 @@ impl Model {
                 out.push(&format!("ASDeRham({name}, {})", field.modulus()))
             }
             Kind::BinaryScalar(field) => out.push(&format!("BinaryScalar({})", field.modulus())),
+            Kind::EOType(genus) => out.push(&format!("EOType({genus})")),
             Kind::CurveDiff(family, name, field) => out.push(&format!(
                 "{}({name}, {})",
                 family.type_name(),
@@ -2949,6 +2959,10 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left == right),
+            (Value::EOType(left), Value::EOType(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left == right)
+            }
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
@@ -3099,6 +3113,10 @@ impl Model {
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
             (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left.cmp(right)),
+            (Value::EOType(left), Value::EOType(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.cmp(right))
+            }
             (Value::Class(left), Value::Class(right)) | (Value::Bar(left), Value::Bar(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -3443,6 +3461,25 @@ impl Model {
                 Kind::ASDeRham(ref name, field) => {
                     let dimension = 2 * self.rv_as_covers[name.as_ref()].genus();
                     binary_linear::elements(self, field, dimension, MAX_ELEMENTS, Value::ASDeRham)?
+                }
+                Kind::EOType(genus) => {
+                    let size = support_space_size(genus);
+                    self.check_element_limit(size)?;
+                    self.spend(size * (genus + 1))?;
+                    self.allocate(size * (genus + 1))?;
+                    (0..size)
+                        .map(|mask| {
+                            let mut rank = 0;
+                            let sequence = (0..genus)
+                                .rev()
+                                .map(|position| {
+                                    rank += (mask >> position) & 1;
+                                    rank
+                                })
+                                .collect();
+                            Value::EOType(sequence)
+                        })
+                        .collect()
                 }
                 Kind::BinaryScalar(field) => {
                     let size = field.order();
@@ -4520,6 +4557,18 @@ impl Model {
                     } else {
                         out.push(&format!("eta{}", coordinate - genus + 1))?;
                     }
+                }
+                out.push("}")
+            }
+            Value::EOType(sequence) => {
+                self.spend(sequence.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (position, entry) in sequence.iter().enumerate() {
+                    if position != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&entry.to_string())?;
                 }
                 out.push("}")
             }

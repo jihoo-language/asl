@@ -23,6 +23,7 @@ mod comodule;
 mod complex;
 mod cyclic;
 mod engine;
+mod eo;
 mod error;
 mod jet_hom;
 mod jet_page;

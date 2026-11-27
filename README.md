@@ -1002,6 +1002,14 @@ The genus-five curves $y^2+y=x^9+x^5+x^{-1}$ and $y^2+y=x^5+x+x^{-1}+x^{-3}+x^{-
 
 The stable ranks of powers of either operator give the $p$-rank, and $\dim(\ker F\cap\ker V)$ is the $a$-number. For the two genus-five covers with the same zeta numerator, the ranks of $F^3$ are two and one and the dimensions of $\ker F^2\cap\ker V$ are three and four. [Geometric Frobenius and Verschiebung example](examples/rank-as-words.asl)
 
+#### Ekedahl–Oort final types and stratum closures
+
+`EOType(g)` is the finite type of legal final sequences of length `g`. A literal `eoType{nu1,...,nug}` starts at `nu0 = 0` and increases by zero or one at each position. `rvASEOType[C]` gives the sequence of a declared Artin–Schreier cover as a value. `eoDim(x);` gives the dimension $\sum_i\nu_i$ of the corresponding stratum in the moduli space $\mathcal A_g$ of principally polarized abelian varieties. `eoWeyl(x);` gives its balanced Weyl permutation, with positions and images numbered from one. [Viehmann and Wedhorn, Appendix A](https://arxiv.org/abs/1011.3230)
+
+`eoBruhat(lower,upper)` compares the sequences coordinatewise. `eoClosure(lower,upper)` tests containment of the lower stratum in the Zariski closure of the upper stratum in $\mathcal A_g$. The closure test searches for a Levi permutation $u$ such that $u^{-1}w_{\mathrm{lower}}\delta(u)\le w_{\mathrm{upper}}$ in the type-C Bruhat order, with $\delta$ conjugation by the longest Levi element. `eoClosureWitness(lower,upper);` prints that permutation or `none` when containment fails. The nontrivial Levi search supports genus at most eight. Coordinatewise containments and dimension obstructions can be decided at larger genus, and other larger-genus queries report the search limit. [Wedhorn, Specialization of F-Zips](https://arxiv.org/abs/math/0507175)
+
+The genus-five final types $(0,0,1,2,2)$ and $(1,1,1,1,2)$ have stratum dimensions five and six. The permutation $(1\;2)$ certifies specialization from the latter to the former even though the two types are incomparable in the coordinatewise order. [Ekedahl–Oort closure example](examples/rank-eo-closure.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.
