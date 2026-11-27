@@ -2192,6 +2192,10 @@ impl Engine {
             }
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
+            StatementForm::HeckeEigenperiod(declaration) => {
+                self.model.register_hecke_eigenperiod(declaration)?;
+                return Ok(None);
+            }
             StatementForm::PeriodPolynomial(report) => return self.period_statement(report),
             StatementForm::HeckeQuadratic(query) => return self.hecke_quadratic_statement(query),
             StatementForm::HeckeResidual(command) => return self.hecke_residual_statement(command),
@@ -16571,6 +16575,16 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
+            }
+            ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
+                use period::eigenperiod::Query;
+                let eigenperiod = self.model.hecke_eigenperiod(&name)?;
+                let ty = self.model.hecke_eigen_type(&eigenperiod.source)?;
+                let value = match query {
+                    Query::Coefficient(index) => eigenperiod.coefficient(self.model, index)?,
+                    Query::Ratio(s, t) => eigenperiod.critical_ratio(self.model, s, t)?,
+                };
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::PeriodPolynomial(operation) => self.period_expression(operation),
             ExprForm::HeckeResidual(operation) => self.hecke_residual_expression(operation),

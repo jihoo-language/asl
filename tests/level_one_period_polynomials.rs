@@ -484,3 +484,204 @@ fn haberland_types_and_integral_basis_indices_are_checked() {
         assert!(error.contains(expected), "{source}: {error}");
     }
 }
+
+#[test]
+fn delta_eigenperiod_restores_the_boundary_and_gives_classical_l_ratios() {
+    let demo = stdout(example("hecke-critical-periods"));
+    let lines: Vec<_> = demo.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "RVHeckeEigen(Delta){[-36]/691}",
+            "RVHeckeEigen(Delta){[36]/691}",
+            "RVHeckeEigen(Delta){[1620]/691}",
+            "RVHeckeEigen(Delta){[48]/25}",
+            "RVHeckeEigen(E){[88512955080, -31295]/7563650912}",
+            "RVHeckeEigen(E){[1422384, -1]/133705}",
+        ]
+    );
+
+    // This operator acts by -6900 on both the cusp and the Eisenstein
+    // boundary. Its full plus eigenline needs a different Hecke operator.
+    let mut program = String::from(
+        "let a = add(rvHeckeScale[256](rvHeckeT[12,2]),rvHeckeScale[-3](rvHeckeT[12,3]));
+         rvheckepacket E(a);
+         rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[E,minus,1];",
+    );
+    for (j, (n, d)) in [
+        (-36, 691),
+        (0, 1),
+        (1, 1),
+        (0, 1),
+        (-3, 1),
+        (0, 1),
+        (3, 1),
+        (0, 1),
+        (-1, 1),
+        (0, 1),
+        (36, 691),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        writeln!(
+            program,
+            "assert rvHeckePeriodCoeff[P,{j}] == rvHeckeEigenScalar[E,{n},{d}];"
+        )
+        .unwrap();
+    }
+    program.push_str(
+        "assert rvHeckeCriticalRatio[P,1,11] == rvHeckeEigenScalar[E,1,1];
+         assert rvHeckeCriticalRatio[Q,2,10] == rvHeckeEigenScalar[E,1,1];
+         assert rvHeckeCriticalRatio[P,1,3] == rvHeckeEigenScalar[E,1620,691];
+         assert rvHeckeCriticalRatio[Q,2,4] == rvHeckeEigenScalar[E,48,25];",
+    );
+    assert_eq!(stdout(interpret(&program)), "");
+}
+
+fn field_coordinates(line: &str) -> (Vec<i128>, i128) {
+    let (_, body) = line.split_once("{[").unwrap();
+    let (numerators, denominator) = body.strip_suffix('}').unwrap().split_once("]/").unwrap();
+    (
+        numerators
+            .split(',')
+            .map(|n| n.trim().parse().unwrap())
+            .collect(),
+        denominator.parse().unwrap(),
+    )
+}
+
+#[test]
+fn quadratic_eigenperiods_are_simultaneous_for_t2_and_t3_in_both_signs() {
+    for (sign, pivot) in [("plus", 2), ("minus", 1)] {
+        let mut program =
+            format!("rvheckepacket E(rvHeckeT[24,2]); rvheckeeigenperiod P[E,{sign},{pivot}];");
+        for j in 0..=22 {
+            writeln!(program, "show rvHeckePeriodCoeff[P,{j}];").unwrap();
+        }
+        let report = stdout(interpret(&program));
+        let coefficients: Vec<_> = report.lines().map(field_coordinates).collect();
+        assert_eq!(coefficients.len(), 23);
+        assert_eq!(coefficients[pivot], (vec![1, 0], 1));
+        let denominator = coefficients.iter().fold(1, |q, &(_, d)| q / gcd(q, d) * d);
+        let (constant, theta): (Vec<_>, Vec<_>) = coefficients
+            .into_iter()
+            .map(|(v, d)| (v[0] * (denominator / d), v[1] * (denominator / d)))
+            .unzip();
+        if sign == "plus" {
+            assert!(constant[22] != 0 || theta[22] != 0);
+        }
+        assert!(theta.iter().any(|&b| b != 0));
+
+        for polynomial in [&constant, &theta] {
+            let s = direct_substitution(polynomial, [0, -1, 1, 0]);
+            let u = direct_substitution(polynomial, [0, -1, 1, 1]);
+            let u2 = direct_substitution(polynomial, [-1, -1, 1, 0]);
+            assert!(polynomial.iter().zip(s).all(|(&a, b)| a + b == 0));
+            assert!(polynomial
+                .iter()
+                .zip(u)
+                .zip(u2)
+                .all(|((&a, b), c)| a + b + c == 0));
+        }
+
+        // Independent q-expansion matrices give T_2 = theta and
+        // T_3 = 195660 - 48 theta on S_24. Check each full Manin coefficient
+        // by a direct determinant sieve and binomial substitution.
+        for (n, a, b) in [(2, 0, 1), (3, 195660, -48)] {
+            let actual_constant = direct_hecke(&constant, n);
+            let actual_theta = direct_hecke(&theta, n);
+            for j in 0..=22 {
+                assert_eq!(
+                    actual_constant[j],
+                    a * constant[j] + 20468736 * b * theta[j]
+                );
+                assert_eq!(actual_theta[j], b * constant[j] + (a + 1080 * b) * theta[j]);
+            }
+        }
+    }
+}
+
+#[test]
+fn quadratic_critical_ratios_survive_changing_generator_and_normalization() {
+    let report = stdout(interpret(
+        "let a = rvHeckeT[24,2];
+         rvheckepacket E(a);
+         rvheckepacket F(add(rvHeckeScale[5](a),rvHeckeScale[7](rvHeckeUnit[24])));
+         rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[E,plus,4];
+         rvheckeeigenperiod R[F,plus,2];
+         assert rvHeckeEigenMul(rvHeckePeriodCoeff[Q,10],rvHeckePeriodCoeff[P,4]) ==
+            rvHeckePeriodCoeff[P,10];
+         assert rvHeckeCriticalRatio[P,1,3] == rvHeckeCriticalRatio[Q,1,3];
+         assert rvHeckeCriticalRatio[P,1,23] == rvHeckeEigenScalar[E,1,1];
+         show rvHeckeCriticalRatio[P,1,3]; show rvHeckeCriticalRatio[R,1,3];
+         show rvHeckePeriodCoeff[P,22]; show rvHeckePeriodCoeff[R,22];",
+    ));
+    let lines: Vec<_> = report.lines().map(field_coordinates).collect();
+    assert_eq!(lines.len(), 4);
+    for pair in lines.chunks_exact(2) {
+        let ((p, p_d), (r, r_d)) = (&pair[0], &pair[1]);
+        assert_ne!(p[1], 0);
+        assert_eq!(p[0] * r_d, (r[0] + 7 * r[1]) * p_d);
+        assert_eq!(p[1] * r_d, 5 * r[1] * p_d);
+    }
+}
+
+#[test]
+fn critical_values_respect_the_negative_functional_equation_and_critical_zero() {
+    let program = "
+        rvheckepacket E(rvHeckeT[18,2]);
+        rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[E,minus,1];
+        assert rvHeckePeriodCoeff[P,8] == rvHeckeEigenScalar[E,0,1];
+        assert rvHeckeCriticalRatio[P,9,1] == rvHeckeEigenScalar[E,0,1];
+        assert rvHeckeCriticalRatio[P,1,17] == rvHeckeEigenScalar[E,-1,1];
+        assert rvHeckeCriticalRatio[Q,2,16] == rvHeckeEigenScalar[E,-1,1];";
+    assert_eq!(stdout(interpret(program)), "");
+}
+
+#[test]
+fn eigenperiod_rejects_invalid_charts_coefficients_and_ratios() {
+    for (source, expected) in [
+        (
+            "rvheckepacket E(rvHeckeT[36,2]); rvheckeeigenperiod P[E,plus,2];",
+            "requires a rational or irreducible quadratic packet",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeeigenperiod P[E,plus,3];",
+            "coefficient has the wrong parity",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeeigenperiod P[E,plus,12];",
+            "outside the homogeneous degree",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[18,2]); rvheckeeigenperiod P[E,plus,8];",
+            "normalization coefficient vanishes",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[18,2]); rvheckeeigenperiod P[E,plus,2]; show rvHeckeCriticalRatio[P,1,9];",
+            "denominator critical L-value vanishes",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeeigenperiod P[E,plus,2]; show rvHeckeCriticalRatio[P,1,2];",
+            "across parities require both transcendental normalizations",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeeigenperiod P[E,plus,2]; show rvHeckeCriticalRatio[P,2,4];",
+            "do not match the eigenperiod sign",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckeeigenperiod P[E,plus,2]; show rvHeckeCriticalRatio[P,1,12];",
+            "must be between 1 and k−1",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvheckepacket F(rvHeckeT[12,2]);
+             rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[F,plus,2];
+             show add(rvHeckePeriodCoeff[P,2],rvHeckePeriodCoeff[Q,2]);",
+            "RVHeckeEigen(E)",
+        ),
+    ] {
+        let error = diagnostic(interpret(source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}

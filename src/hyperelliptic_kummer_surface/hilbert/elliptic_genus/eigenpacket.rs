@@ -90,6 +90,10 @@ impl Packet {
         })
     }
 
+    pub(super) fn generator(&self) -> &Operator {
+        &self.generator
+    }
+
     pub(super) fn polynomial(&self) -> &[Integer] {
         &self.polynomial
     }
@@ -155,21 +159,25 @@ impl Packet {
     }
 
     pub(crate) fn scalar(&self, model: &mut Model, n: i128, d: u128) -> Result<Value> {
-        self.constant(model, integer(n), Magnitude::from_small(d))
+        self.scalar_element(model, n, d)?.persist(model)
     }
 
-    fn constant(
-        &self,
-        model: &mut Model,
-        numerator: Integer,
-        denominator: Magnitude,
-    ) -> Result<Value> {
+    pub(super) fn scalar_element(&self, model: &mut Model, n: i128, d: u128) -> Result<Element> {
         let mut value = Element::zero(self.degree());
-        value.numerator[0] = numerator;
-        Element::new(model, value.numerator, denominator)?.persist(model)
+        value.numerator[0] = integer(n);
+        Element::new(model, value.numerator, Magnitude::from_small(d))
     }
 
     pub(crate) fn multiply(&self, model: &mut Model, a: &Element, b: &Element) -> Result<Value> {
+        self.multiply_elements(model, a, b)?.persist(model)
+    }
+
+    pub(super) fn multiply_elements(
+        &self,
+        model: &mut Model,
+        a: &Element,
+        b: &Element,
+    ) -> Result<Element> {
         let degree = self.degree();
         let mut coefficients = vec![integer(0); 2 * degree - 1];
         for (i, &left) in a.numerator.iter().enumerate() {
@@ -187,7 +195,40 @@ impl Packet {
         coefficients.truncate(degree);
         let denominator =
             product(model, positive(a.denominator), positive(b.denominator))?.magnitude;
-        Element::new(model, coefficients, denominator)?.persist(model)
+        Element::new(model, coefficients, denominator)
+    }
+
+    pub(super) fn inverse_element(&self, model: &mut Model, value: &Element) -> Result<Element> {
+        let (mut adjugate, norm) = match *value.numerator.as_slice() {
+            [a] => (vec![integer(1)], a),
+            [a, b] => {
+                // For theta²−t theta+n=0 the conjugate of a+b theta is
+                // (a+b t)−b theta, with norm a(a+b t)+b² n.
+                let constant = add_product(model, a, b, self.polynomial[1].negate())?;
+                let constant_product = product(model, a, constant)?;
+                let square = product(model, b, b)?;
+                let norm = add_product(model, constant_product, square, self.polynomial[2])?;
+                (vec![constant, b.negate()], norm)
+            }
+            _ => {
+                return Err(Error::plain(
+                    "exact eigenperiod division requires packet degree one or two",
+                ))
+            }
+        };
+        if norm.is_zero() {
+            return Err(Error::plain(
+                "division by a noninvertible Hecke eigenperiod value",
+            ));
+        }
+        let scale = Integer {
+            magnitude: value.denominator,
+            negative: norm.negative,
+        };
+        for coefficient in &mut adjugate {
+            *coefficient = product(model, *coefficient, scale)?;
+        }
+        Element::new(model, adjugate, norm.magnitude)
     }
 
     pub(crate) fn report(
@@ -346,6 +387,10 @@ impl Element {
             .map(|(&a, &b)| compare_integers(a, b))
             .find(|order| !order.is_eq())
             .unwrap_or(Ordering::Equal))
+    }
+
+    pub(super) fn is_zero(&self) -> bool {
+        self.numerator.iter().all(|value| value.is_zero())
     }
 
     pub(super) fn fraction_parts(&self) -> (&[Integer], Magnitude) {

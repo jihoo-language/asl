@@ -707,6 +707,7 @@ pub(crate) struct Model {
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     hecke_eigenpackets: HashMap<String, Rc<eigenpacket::Packet>>,
     hecke_residuals: HashMap<String, Rc<residual_hecke::Specialization>>,
+    hecke_eigenperiods: HashMap<String, Rc<period::eigenperiod::Eigenperiod>>,
     period_bases: HashMap<period::Grade, Rc<period::Basis>>,
     integral_period_bases: HashMap<period::Grade, Rc<period::haberland::IntegralBasis>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
@@ -835,6 +836,7 @@ impl Model {
             elliptic_gluings: HashMap::new(),
             hecke_eigenpackets: HashMap::new(),
             hecke_residuals: HashMap::new(),
+            hecke_eigenperiods: HashMap::new(),
             period_bases: HashMap::new(),
             integral_period_bases: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
@@ -4817,6 +4819,42 @@ impl Model {
                 Error::new(
                     name.span,
                     format!("unknown residual Hecke specialization '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn register_hecke_eigenperiod(
+        &mut self,
+        declaration: period::eigenperiod::Declare,
+    ) -> Result<()> {
+        let period::eigenperiod::Declare(name, source, sign, pivot) = declaration;
+        if self.hecke_eigenperiods.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Hecke eigenperiod '{}' is already defined", name.text),
+            ));
+        }
+        let packet = self.hecke_eigenpacket(&source)?;
+        let cells = name.text.len() + source.text.len() + 8;
+        let eigenperiod = period::eigenperiod::Eigenperiod::new(self, source, packet, sign, pivot)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(cells)?;
+        self.hecke_eigenperiods
+            .insert(name.text, Rc::new(eigenperiod));
+        Ok(())
+    }
+
+    pub(crate) fn hecke_eigenperiod(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<period::eigenperiod::Eigenperiod>> {
+        self.hecke_eigenperiods
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Hecke eigenperiod '{}'", name.text),
                 )
             })
     }

@@ -1059,6 +1059,7 @@ pub(crate) enum ExprForm {
     HeckeEigen(eigenpacket::Expression),
     HeckeResidual(residual_hecke::Expression),
     PeriodPolynomial(period::Expression),
+    HeckeEigenperiod(period::eigenperiod::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1308,6 +1309,7 @@ pub(crate) enum StatementForm {
     HeckeResidual(residual_hecke::Statement),
     HeckeQuadratic(quadratic_hecke::Query),
     PeriodPolynomial(period::Report),
+    HeckeEigenperiod(period::eigenperiod::Declare),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -4858,21 +4860,60 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::SiegelMaass(Box::new(command)))
     }
 
+    fn period_sign(&mut self) -> Result<period::Sign> {
+        let name = self.label()?;
+        match name.text.as_str() {
+            "plus" => Ok(period::Sign::Plus),
+            "minus" => Ok(period::Sign::Minus),
+            _ => Err(Error::new(
+                name.span,
+                "period-polynomial sign must be plus or minus",
+            )),
+        }
+    }
+
     fn period_grade(&mut self) -> Result<period::Grade> {
         let weight = self.wide_unsigned("period-polynomial weight")?;
         self.expect(Token::Comma)?;
+        let span = self.span();
+        let sign = self.period_sign()?;
+        period::Grade::new(weight, sign).map_err(|error| error.at(span))
+    }
+
+    fn hecke_eigenperiod_statement(&mut self) -> Result<StatementForm> {
+        self.advance()?;
         let name = self.label()?;
-        let sign = match name.text.as_str() {
-            "plus" => period::Sign::Plus,
-            "minus" => period::Sign::Minus,
-            _ => {
-                return Err(Error::new(
-                    name.span,
-                    "period-polynomial sign must be plus or minus",
-                ))
-            }
+        self.expect(Token::LBracket)?;
+        let source = self.label()?;
+        self.expect(Token::Comma)?;
+        let sign = self.period_sign()?;
+        self.expect(Token::Comma)?;
+        let (pivot, _) = self.number()?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::HeckeEigenperiod(
+            period::eigenperiod::Declare(name, source, sign, pivot),
+        ))
+    }
+
+    fn hecke_eigenperiod_expression(&mut self, name: &str, span: Span) -> Result<ParsedExpr> {
+        use period::eigenperiod::{Expression, Query};
+        self.expect(Token::LBracket)?;
+        let period = self.label()?;
+        self.expect(Token::Comma)?;
+        let (index, _) = self.number()?;
+        let query = if name == "rvHeckePeriodCoeff" {
+            Query::Coefficient(index)
+        } else {
+            self.expect(Token::Comma)?;
+            let (denominator, _) = self.number()?;
+            Query::Ratio(index, denominator)
         };
-        period::Grade::new(weight, sign).map_err(|error| error.at(name.span))
+        self.expect(Token::RBracket)?;
+        expr(
+            span,
+            ExprForm::HeckeEigenperiod(Expression(period, query)),
+            0,
+        )
     }
 
     fn period_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -8195,6 +8236,7 @@ impl<'src> Parser<'src> {
                 name @ ("rvheckepacket" | "rvHeckeEigenData" | "rvHeckeEigenTrace"
                 | "rvHeckeEigenNorm" | "rvHeckeEigenCoord"),
             ) => self.hecke_eigen_statement(name)?,
+            Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
             }
@@ -14169,6 +14211,13 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvHeckePeriodCoeff" | "rvHeckeCriticalRatio"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.hecke_eigenperiod_expression(&name.text, span);
                 }
                 if (matches!(
                     name.text.as_str(),

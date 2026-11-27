@@ -9,6 +9,7 @@ use crate::syntax::ParsedExpr;
 
 use super::hecke::{self, Operator};
 
+pub(crate) mod eigenperiod;
 pub(crate) mod haberland;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -242,6 +243,12 @@ impl Polynomial {
         grade: Grade,
         operator: &Operator,
     ) -> Result<Self> {
+        let mut result = self.hecke_full(model, grade, operator)?;
+        result.normalize(grade)?;
+        Ok(result)
+    }
+
+    fn hecke_full(&self, model: &mut Model, grade: Grade, operator: &Operator) -> Result<Self> {
         let mut result = Self::zero(grade);
         if self.0.iter().all(|r| r.numerator == 0) {
             return Ok(result);
@@ -268,7 +275,6 @@ impl Polynomial {
             result = result.add(model, &scaled)?;
         }
         result.check(model, grade)?;
-        result.normalize(grade)?;
         Ok(result)
     }
 
