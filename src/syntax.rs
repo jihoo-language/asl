@@ -1191,6 +1191,7 @@ pub(crate) enum StatementForm {
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
+    HilbertStratum(Box<crate::hyperelliptic_kummer_surface::stratum::Command>),
     CrystallineNewton(crate::hyperelliptic_kummer_surface::newton::Command),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     Hodge(crate::generalized_kummer::hodge::Command),
@@ -4086,6 +4087,13 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::LBracket)?;
         let (expression, depth) = match name {
+            "rvNakajimaStratum" => {
+                let shape = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Stratum(shape, Box::new(input)), depth)
+            }
             "rvNakajimaPrimaryGen" => {
                 let (basis, length, degree) = self.nakajima_grade_args()?;
                 self.expect(Token::Comma)?;
@@ -4132,6 +4140,54 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::Nakajima(Box::new(expression)), depth)
+    }
+
+    fn hilbert_stratum_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::{hilbert::SurfaceKind, stratum::Command};
+        self.advance()?;
+        let command = if operation == "rvhilbstratum" {
+            let name = self.label()?;
+            let parts = self.set_named_rows(|parser| {
+                parser.expect(Token::LParen)?;
+                let size = parser.wide_unsigned("Hilbert–Chow part size")?;
+                parser.expect(Token::Comma)?;
+                let count = parser.wide_unsigned("Hilbert–Chow multiplicity")?;
+                parser.expect(Token::RParen)?;
+                Ok((size, count))
+            })?;
+            Command::Declare(name, parts)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            let command = if operation == "rvHilbStratumData" {
+                Command::Data(name)
+            } else {
+                self.expect(Token::Comma)?;
+                let order = if operation == "rvGenKummerStratumHodge" {
+                    let order = self.wide_unsigned("translation order")?;
+                    self.expect(Token::Comma)?;
+                    Some(order)
+                } else {
+                    None
+                };
+                let p = self.wide_unsigned("first Hodge index")?;
+                self.expect(Token::Comma)?;
+                let q = self.wide_unsigned("second Hodge index")?;
+                if let Some(order) = order {
+                    Command::GeneralizedHodge(name, order, p, q)
+                } else {
+                    let surface = if operation == "rvK3StratumHodge" {
+                        SurfaceKind::K3
+                    } else {
+                        SurfaceKind::Abelian
+                    };
+                    Command::SurfaceHodge(name, surface, p, q)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::HilbertStratum(Box::new(command)))
     }
 
     fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
@@ -4296,7 +4352,17 @@ impl<'src> Parser<'src> {
             }
             Ok(degree)
         };
-        let command = if matches!(
+        let command = if name == "rvGenKummerStratumFrob" {
+            let base = self.label()?;
+            self.expect(Token::Comma)?;
+            let shape = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = positive_degree(self)?;
+            self.expect(Token::Comma)?;
+            let i = self.wide_unsigned("cohomological degree")?;
+            self.expect(Token::RBracket)?;
+            Command::StratumFrob(first, base, shape, degree, i, Box::new(self.paren_expr(0)?))
+        } else if matches!(
             name,
             "rvGenKummerLevel"
                 | "rvGenKummerTrace"
@@ -5909,6 +5975,13 @@ impl<'src> Parser<'src> {
                 | "rvOG10RR" | "rvOG10Wall" | "rvOG10Walls"),
             ) => self.og10_statement(operation)?,
             Token::Word(
+                operation @ ("rvhilbstratum"
+                | "rvHilbStratumData"
+                | "rvK3StratumHodge"
+                | "rvJacStratumHodge"
+                | "rvGenKummerStratumHodge"),
+            ) => self.hilbert_stratum_statement(operation)?,
+            Token::Word(
                 operation @ ("rvmukaimoduli"
                 | "rvMukaiModuliLattice"
                 | "rvMukaiModuliDiv"
@@ -6022,6 +6095,7 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerInversionEuler"
                 | "rvGenKummerInversionFrob"
                 | "rvGenKummerInversionPoints"
+                | "rvGenKummerStratumFrob"
                 | "rvJacHilbBetti"
                 | "rvJacHilbTrace"),
             ) => self.generalized_kummer_statement(command)?,
@@ -11439,6 +11513,7 @@ impl<'src> Parser<'src> {
                     "rvNakajimaVac"
                         | "rvNakajimaMonomial"
                         | "rvNakajimaPrimaryGen"
+                        | "rvNakajimaStratum"
                         | "rvNakajimaCreate"
                         | "rvNakajimaAnn"
                         | "rvNakajimaScale"

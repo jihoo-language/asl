@@ -30,6 +30,7 @@ pub(crate) enum Command {
     InversionEuler(u128, u128),
     InversionFrob(Label, Label, u128, u128, Box<ParsedExpr>),
     InversionPoints(Label, Label, u128, Box<ParsedExpr>),
+    StratumFrob(Label, Label, Label, u128, u128, Box<ParsedExpr>),
 }
 
 pub(crate) fn require_curve(curve: &Curve) -> Result<()> {

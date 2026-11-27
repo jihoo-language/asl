@@ -684,6 +684,7 @@ enum TypedForm {
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
     K3LatticeNegate(Box<TypedExpr>),
     Nakajima(nakajima::Operation, Box<TypedExpr>),
+    NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
@@ -1773,6 +1774,7 @@ impl Engine {
             StatementForm::KummerHilbert(command) => {
                 return command.execute(&mut self.model).map(Some)
             }
+            StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
             StatementForm::KummerNodeLattice(command) => {
                 return command.execute(&mut self.model).map(Some)
             }
@@ -5413,6 +5415,18 @@ impl Engine {
                     name.text, base.text
                 ))
             }
+            Command::StratumFrob(name, base, shape_name, r, i, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let shape = self.model.hilbert_stratum(&shape_name)?;
+                let t = translation_input(self, &basis, *input)?;
+                let trace =
+                    cohomology::stratum_trace(&mut self.model, &basis, &curve, &shape, r, i, &t)?;
+                Ok(format!(
+                    "rvGenKummerStratumFrob[{}, {}, {}, {r}, {i}] = {trace}",
+                    name.text, base.text, shape_name.text
+                ))
+            }
             Command::HilbertBetti(n, i) => {
                 let value = cohomology::hilbert_betti(&mut self.model, n, i)?;
                 Ok(format!("rvJacHilbBetti[{n}, {i}] = {value}"))
@@ -8864,6 +8878,14 @@ impl Engine {
                     }
                 };
                 output.persist(&mut self.model)
+            }
+            TypedForm::NakajimaStratum(shape, input) => {
+                let Value::Nakajima(state) = self.eval(input)? else {
+                    unreachable!();
+                };
+                state
+                    .stratum(&mut self.model, shape)?
+                    .persist(&mut self.model)
             }
             TypedForm::K3AutoPoint(word, power, input) => {
                 let Value::KummerK3(point) = self.eval(input)? else {
@@ -20821,6 +20843,12 @@ impl Checker<'_> {
                     ty,
                     TypedForm::HilbertTautologicalChern(length, j, scale, Box::new(input)),
                 ))
+            }
+            Expression::Stratum(name, input) => {
+                let shape = self.model.hilbert_stratum(&name)?;
+                let input = self.expr(*input)?;
+                self.nakajima_grade(&input, "rvNakajimaStratum")?;
+                Ok((input.ty, TypedForm::NakajimaStratum(shape, Box::new(input))))
             }
             Expression::Cup(inputs) => {
                 let [left, right] = *inputs;

@@ -161,7 +161,7 @@ pub(crate) fn coefficients(
     arithmetic: Option<(&Curve, u128)>,
     kind: SurfaceKind,
 ) -> Result<Vec<Vec<Integer>>> {
-    coefficients_with_action(model, length, degree, arithmetic, kind, false)
+    coefficients_with_options(model, length, degree, arithmetic, kind, false, usize::MAX)
 }
 
 pub(crate) fn inversion_lefschetz(
@@ -170,30 +170,56 @@ pub(crate) fn inversion_lefschetz(
     arithmetic: Option<(&Curve, u128)>,
 ) -> Result<Vec<Vec<Integer>>> {
     let inversion = arithmetic.is_none_or(|(_, r)| !r.is_multiple_of(2));
-    coefficients_with_action(
+    coefficients_with_options(
         model,
         length,
         None,
         arithmetic,
         SurfaceKind::Abelian,
         inversion,
+        usize::MAX,
     )
 }
 
-fn coefficients_with_action(
+pub(crate) fn abelian_symmetric_coefficients(
+    model: &mut Model,
+    length: u128,
+    degree: u128,
+    curve: &Curve,
+    r: u128,
+) -> Result<Vec<Vec<Integer>>> {
+    coefficients_with_options(
+        model,
+        length,
+        Some(degree),
+        Some((curve, r)),
+        SurfaceKind::Abelian,
+        false,
+        1,
+    )
+}
+
+fn coefficients_with_options(
     model: &mut Model,
     length: u128,
     degree: Option<u128>,
     arithmetic: Option<(&Curve, u128)>,
     kind: SurfaceKind,
     inversion: bool,
+    last_mode: usize,
 ) -> Result<Vec<Vec<Integer>>> {
-    coefficients_from_surface(model, length, degree, kind, inversion, |model, limit| {
-        match arithmetic {
+    coefficients_from_surface(
+        model,
+        length,
+        degree,
+        kind,
+        inversion,
+        last_mode,
+        |model, limit| match arithmetic {
             None => Ok(Surface::Betti(kind)),
             Some((curve, r)) => Surface::arithmetic(model, curve, r, limit, kind),
-        }
-    })
+        },
+    )
 }
 
 pub(super) fn semilinear_coefficient(
@@ -210,6 +236,7 @@ pub(super) fn semilinear_coefficient(
         degree,
         SurfaceKind::K3,
         false,
+        usize::MAX,
         |model, limit| {
             let q = curve.ring.size_of_residue_field()?;
             let powers = field_powers(model, q, r, limit)?;
@@ -230,6 +257,7 @@ fn coefficients_from_surface(
     degree: Option<u128>,
     kind: SurfaceKind,
     inversion: bool,
+    last_mode: usize,
     prepare: impl FnOnce(&mut Model, usize) -> Result<Surface>,
 ) -> Result<Vec<Vec<Integer>>> {
     let length = usize::try_from(length).map_err(|_| storage_limit())?;
@@ -238,10 +266,10 @@ fn coefficients_from_surface(
         .transpose()
         .map_err(|_| storage_limit())?;
     let top = degree.unwrap_or(0);
-    check_storage(model, length, top, 1 + 4 / kind.grading_unit())?;
+    check_storage(model, length, top, 1 + 4 / kind.grading_unit(), last_mode)?;
     let limit = length.min(degree.unwrap_or(length));
     let surface = prepare(model, limit)?;
-    let weights = log_coefficients(model, length, degree, &surface, kind, inversion)?;
+    let weights = log_coefficients(model, length, degree, &surface, kind, inversion, last_mode)?;
     let zero = Integer::from_i128(0);
     let mut first = vec![zero; top + 1];
     first[0] = Integer::from_i128(1);
@@ -286,10 +314,11 @@ fn log_coefficients(
     surface: &Surface,
     kind: SurfaceKind,
     inversion: bool,
+    last_mode: usize,
 ) -> Result<Vec<Vec<Term>>> {
     let mut result = vec![Vec::new(); length + 1];
     let unit = kind.grading_unit();
-    for m in 1..=length {
+    for m in 1..=length.min(last_mode) {
         for l in 1..=length / m {
             let j = m * l;
             let twist = j - l;
@@ -467,7 +496,13 @@ pub(crate) fn power(model: &mut Model, q: u64, mut exponent: u128) -> Result<Mag
     Ok(result)
 }
 
-fn check_storage(model: &mut Model, length: usize, degree: usize, atoms: usize) -> Result<()> {
+fn check_storage(
+    model: &mut Model,
+    length: usize,
+    degree: usize,
+    atoms: usize,
+    last_mode: usize,
+) -> Result<()> {
     let entries = length
         .saturating_add(1)
         .saturating_mul(degree.saturating_add(1));
@@ -478,7 +513,7 @@ fn check_storage(model: &mut Model, length: usize, degree: usize, atoms: usize) 
         return Err(storage_limit());
     }
     model.spend(length)?;
-    let terms: usize = (1..=length).map(|m| length / m).sum();
+    let terms: usize = (1..=length.min(last_mode)).map(|m| length / m).sum();
     let words = size_of::<Term>().div_ceil(size_of::<usize>());
     let cells = cells + atoms * terms * words;
     if cells > MAX_PIVOT_CELLS {

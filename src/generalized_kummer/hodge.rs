@@ -3,8 +3,9 @@ use std::mem::size_of;
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::hyperelliptic_kummer_surface::hilbert::{
-    checked_product, intermediate_overflow, unsigned, Integer, SurfaceKind,
+    checked_product, intermediate_overflow, unsigned, Integer, Magnitude, SurfaceKind,
 };
+use crate::hyperelliptic_kummer_surface::stratum::Partition;
 use crate::model::Model;
 
 use super::cohomology::{exact_order_sums, torsion_characters, torsion_divisors};
@@ -72,6 +73,54 @@ impl Command {
 
 const ABELIAN: [[usize; 3]; 3] = [[1, 2, 1], [2, 4, 2], [1, 2, 1]];
 const K3: [[usize; 3]; 3] = [[1, 0, 1], [0, 20, 0], [1, 0, 1]];
+
+pub(crate) fn stratum(
+    model: &mut Model,
+    shape: &Partition,
+    kind: SurfaceKind,
+    translation_order: Option<u128>,
+    p: u128,
+    q: u128,
+) -> Result<u128> {
+    let generalized = translation_order.is_some();
+    if let Some(order) = translation_order {
+        require_translation_order(shape.weight, order)?;
+        if !(shape.weight / shape.gcd).is_multiple_of(order) {
+            return Ok(0);
+        }
+    }
+    let shift = shape.shift();
+    let (Some(p), Some(q)) = (p.checked_sub(shift), q.checked_sub(shift)) else {
+        return Ok(0);
+    };
+    let length = shape.length - u128::from(generalized);
+    let Some((p, q)) = hodge_indices(length, p, q) else {
+        return Ok(0);
+    };
+    let mut value = if p == 0 && q == 0 {
+        Integer::from_i128(1)
+    } else {
+        let surface = match kind {
+            SurfaceKind::K3 if odd(p, q) => return Ok(0),
+            SurfaceKind::K3 => &K3,
+            SurfaceKind::Abelian => &ABELIAN,
+        };
+        let maximum = shape.parts().iter().map(|&(_, c)| c).max().unwrap_or(0);
+        let table = Fock::with_modes(model, maximum, p, q, surface, 1)?;
+        let value = table.stratum_coefficient(model, shape, generalized)?;
+        remove_parity_sign(value, p, q)
+    };
+    if generalized && shape.gcd != 1 && !value.is_zero() {
+        let factor = Integer {
+            magnitude: Magnitude::from_small(shape.gcd),
+            negative: false,
+        };
+        for _ in 0..4 {
+            value = checked_product(model, factor, value)?;
+        }
+    }
+    hodge_dimension(value)
+}
 
 fn hilbert_hodge(model: &mut Model, kind: SurfaceKind, n: u128, p: u128, q: u128) -> Result<u128> {
     let Some((p, q)) = hodge_indices(n, p, q) else {
@@ -142,6 +191,17 @@ impl Fock {
         q: u128,
         surface: &[[usize; 3]; 3],
     ) -> Result<Self> {
+        Self::with_modes(model, n, p, q, surface, usize::MAX)
+    }
+
+    fn with_modes(
+        model: &mut Model,
+        n: u128,
+        p: u128,
+        q: u128,
+        surface: &[[usize; 3]; 3],
+        last_mode: usize,
+    ) -> Result<Self> {
         // Apart from the length-one (0,0) class, every generator has
         // total Hodge degree at least its length.
         let length = usize::try_from(n.min(p.saturating_add(q))).map_err(|_| storage_limit())?;
@@ -162,7 +222,7 @@ impl Fock {
             coefficients: vec![Integer::from_i128(0); cells],
         };
         table.coefficients[0] = Integer::from_i128(1);
-        for m in 1..=length.min(p.min(q) + 1) {
+        for m in 1..=last_mode.min(length).min(p.min(q) + 1) {
             let shift = m - 1;
             for (a, row) in surface.iter().enumerate() {
                 for (b, &dimension) in row.iter().enumerate() {
@@ -217,21 +277,80 @@ impl Fock {
     }
 
     fn divided(&self, model: &mut Model, n: u128, p: usize, q: usize) -> Result<Integer> {
-        // The inverse of E(A)=(1-x)^2(1-y)^2 has coefficient (p+1)(q+1).
-        model.spend((p + 1) * (q + 1))?;
-        let mut result = Integer::from_i128(0);
-        for a in 0..=p {
-            for b in 0..=q {
-                let source = self.at(n, a, b);
-                if !source.is_zero() {
-                    let factor = ((p + 1 - a) * (q + 1 - b)) as i128;
-                    let term = checked_product(model, source, Integer::from_i128(factor))?;
-                    add(&mut result, term)?;
+        divided_coefficient(model, p, q, |a, b| self.at(n, a, b))
+    }
+
+    fn stratum_coefficient(
+        &self,
+        model: &mut Model,
+        shape: &Partition,
+        generalized: bool,
+    ) -> Result<Integer> {
+        if let [(_, count)] = shape.parts() {
+            return if generalized {
+                self.divided(model, *count, self.p, self.q)
+            } else {
+                Ok(self.at(*count, self.p, self.q))
+            };
+        }
+        let words = size_of::<Integer>().div_ceil(size_of::<usize>());
+        if (self.coefficients.len() + 2 * self.stride) * words > MAX_PIVOT_CELLS {
+            return Err(storage_limit());
+        }
+        let width = self.q + 1;
+        let mut product = vec![Integer::from_i128(0); self.stride];
+        product[0] = Integer::from_i128(1);
+        for &(_, count) in shape.parts() {
+            model.spend(self.stride)?;
+            let mut next = vec![Integer::from_i128(0); self.stride];
+            for p in 0..=self.p {
+                for q in 0..=self.q {
+                    let left = product[p * width + q];
+                    if left.is_zero() {
+                        continue;
+                    }
+                    model.spend((self.p + 1 - p) * (self.q + 1 - q))?;
+                    for a in 0..=self.p - p {
+                        for b in 0..=self.q - q {
+                            let right = self.at(count, a, b);
+                            if !right.is_zero() {
+                                let term = checked_product(model, left, right)?;
+                                add(&mut next[(p + a) * width + q + b], term)?;
+                            }
+                        }
+                    }
                 }
             }
+            product = next;
         }
-        Ok(result)
+        if generalized {
+            divided_coefficient(model, self.p, self.q, |a, b| product[a * width + b])
+        } else {
+            Ok(product[self.stride - 1])
+        }
     }
+}
+
+fn divided_coefficient(
+    model: &mut Model,
+    p: usize,
+    q: usize,
+    read: impl Fn(usize, usize) -> Integer,
+) -> Result<Integer> {
+    // The inverse of E(A)=(1-x)^2(1-y)^2 has coefficient (p+1)(q+1).
+    model.spend((p + 1) * (q + 1))?;
+    let mut result = Integer::from_i128(0);
+    for a in 0..=p {
+        for b in 0..=q {
+            let source = read(a, b);
+            if !source.is_zero() {
+                let factor = ((p + 1 - a) * (q + 1 - b)) as i128;
+                let term = checked_product(model, source, Integer::from_i128(factor))?;
+                add(&mut result, term)?;
+            }
+        }
+    }
+    Ok(result)
 }
 
 struct Character {

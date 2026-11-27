@@ -2,9 +2,10 @@ use crate::error::{Error, Result};
 use crate::hw_closed::Curve;
 use crate::hyperelliptic_jacobian::Divisor;
 use crate::hyperelliptic_kummer_surface::hilbert::{
-    checked_product, coefficients, intermediate_overflow, power, unsigned, Integer, Magnitude,
-    SurfaceKind,
+    abelian_symmetric_coefficients, checked_product, coefficients, intermediate_overflow, power,
+    unsigned, Integer, Magnitude, SurfaceKind,
 };
+use crate::hyperelliptic_kummer_surface::stratum::Partition;
 use crate::jacobian_level::Basis;
 use crate::model::Model;
 
@@ -269,6 +270,73 @@ pub(super) fn torsion_correction(
         nonnegative(fixed - 1)
     };
     tate(model, curve, r, n - 1, factor)
+}
+
+pub(crate) fn stratum_trace(
+    model: &mut Model,
+    basis: &Basis,
+    curve: &Curve,
+    shape: &Partition,
+    r: u128,
+    i: u128,
+    translation: &Divisor,
+) -> Result<i128> {
+    require_level_basis(basis)?;
+    if shape.weight != u128::from(basis.prime.get()) {
+        return Err(Error::plain(
+            "Hilbert–Chow partition weight must equal the prime level",
+        ));
+    }
+    basis.require_base_extension(model, curve)?;
+    let coordinate = basis.translation_coordinates(model, translation)?;
+    let shift = shape.shift();
+    let Some(unshifted) = i.checked_sub(2 * shift) else {
+        return Ok(0);
+    };
+    let Some((degree, twist)) = dual_degree(shape.length - 1, unshifted) else {
+        return Ok(0);
+    };
+    let value = if shape.gcd != 1 {
+        // At prime length the only nonsingleton component set is the
+        // full diagonal, indexed by the entire level torsion.
+        let step = usize::try_from(r).map_err(|_| intermediate_overflow())?;
+        nonnegative(torsion_fixed(model, basis, curve, step, Some(&coordinate))?)
+    } else if degree == 0 {
+        Integer::from_i128(1)
+    } else {
+        let length = shape
+            .parts()
+            .iter()
+            .map(|&(_, c)| c)
+            .max()
+            .unwrap_or(1)
+            .min(degree);
+        let rows = abelian_symmetric_coefficients(model, length, degree, curve, r)?;
+        let top = degree as usize;
+        let mut product = vec![Integer::from_i128(0); top + 1];
+        product[0] = Integer::from_i128(1);
+        for &(_, count) in shape.parts() {
+            let row = &rows[count.min(length) as usize];
+            let mut next = vec![Integer::from_i128(0); top + 1];
+            model.spend(top + 1)?;
+            for (j, &left) in product
+                .iter()
+                .enumerate()
+                .filter(|(_, value)| !value.is_zero())
+            {
+                model.spend(top + 1 - j)?;
+                for (target, &right) in next[j..].iter_mut().zip(row) {
+                    if !right.is_zero() {
+                        let term = checked_product(model, left, right)?;
+                        *target = target.add(term).map_err(|_| intermediate_overflow())?;
+                    }
+                }
+            }
+            product = next;
+        }
+        quotient(model, product, &rows[1])?
+    };
+    trace_value(model, curve, r, degree, shift + twist, value)
 }
 
 // The space has dimension 2*length. Mirror high degrees by duality while

@@ -640,6 +640,7 @@ pub(crate) struct Model {
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     cm_ring_orders: HashMap<String, cm_ring::Order>,
+    hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     og6_lattices: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>>,
@@ -749,6 +750,7 @@ impl Model {
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
             cm_ring_orders: HashMap::new(),
+            hilbert_strata: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
@@ -3711,6 +3713,34 @@ impl Model {
                     format!("unknown K3 automorphism word '{}'", name.text),
                 )
             })
+    }
+
+    pub(crate) fn define_hilbert_stratum(
+        &mut self,
+        name: Label,
+        partition: hyperelliptic_kummer_surface::stratum::Partition,
+    ) -> Result<()> {
+        if self.hilbert_strata.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Hilbert–Chow stratum '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(8 + name.text.len() + 4 * partition.parts().len())?;
+        self.hilbert_strata.insert(name.text, Rc::new(partition));
+        Ok(())
+    }
+
+    pub(crate) fn hilbert_stratum(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::stratum::Partition>> {
+        self.hilbert_strata.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Hilbert–Chow stratum '{}'", name.text),
+            )
+        })
     }
 
     pub(crate) fn show_jacobian_level_frobenius(

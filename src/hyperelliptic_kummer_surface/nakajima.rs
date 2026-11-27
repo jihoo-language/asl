@@ -8,7 +8,7 @@ use crate::model::{Model, Value};
 use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
-use super::unimodular;
+use super::{stratum::Partition, unimodular};
 
 mod boundary;
 pub(crate) mod cohomology;
@@ -90,6 +90,7 @@ pub(crate) enum Expression {
     Cup(Box<[ParsedExpr; 2]>),
     PrimaryGenerator(Label, i128, i128, usize),
     TautologicalChern(u128, u128, i128, Box<ParsedExpr>),
+    Stratum(Label, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
 }
 
@@ -235,6 +236,34 @@ impl State {
         self.terms
             .iter()
             .map(|(key, &coefficient)| (key.as_slice(), coefficient))
+    }
+
+    pub(crate) fn stratum(&self, model: &mut Model, shape: &Partition) -> Result<Self> {
+        let mut output = Self::zero();
+        for (monomial, &coefficient) in &self.terms {
+            model.spend(1 + monomial.len() + shape.parts().len())?;
+            let mut groups = monomial.chunk_by(|a, b| a.mode.length == b.mode.length);
+            let mut matches = true;
+            for &(size, count) in shape.parts() {
+                let Some(group) = groups.next() else {
+                    matches = false;
+                    break;
+                };
+                let length = group[0].mode.length as u128;
+                let multiplicity = group.iter().try_fold(0u128, |sum, factor| {
+                    sum.checked_add(factor.exponent).ok_or_else(grade_range)
+                })?;
+                if length != size || multiplicity != count {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches && groups.next().is_none() {
+                model.spend(1 + output.terms.len().max(1).ilog2() as usize)?;
+                output.terms.insert(monomial.clone(), coefficient);
+            }
+        }
+        Ok(output)
     }
 
     pub(crate) fn compare(&self, model: &mut Model, rhs: &Self) -> Result<Ordering> {
