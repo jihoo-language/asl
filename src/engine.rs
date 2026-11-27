@@ -32,7 +32,9 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
-use crate::hyperelliptic_kummer_surface::{self as kummer_surface, nikulin, Point as KummerPoint};
+use crate::hyperelliptic_kummer_surface::{
+    self as kummer_surface, nikulin, polarized as kummer_div, Point as KummerPoint,
+};
 use crate::jacobian_level;
 use crate::jet_hom;
 use crate::jet_page;
@@ -524,6 +526,16 @@ enum KummerAction {
     ),
 }
 
+enum KummerDivAction {
+    Scale(i128, Box<TypedExpr>),
+    Frobenius(
+        Rc<jacobian_level::Basis>,
+        Rc<hw_closed::Curve>,
+        usize,
+        Box<TypedExpr>,
+    ),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -599,6 +611,7 @@ enum TypedForm {
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
+    KummerDiv(KummerDivAction),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1571,6 +1584,9 @@ impl Engine {
             }
             StatementForm::GeneralizedKummer(command) => {
                 return self.generalized_kummer_command(*command).map(Some);
+            }
+            StatementForm::KummerDiv(command) => {
+                return self.kummer_divisor_command(*command).map(Some)
             }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
@@ -5099,6 +5115,59 @@ impl Engine {
         Ok([x, y])
     }
 
+    fn kummer_divisor_command(&mut self, command: kummer_div::Command) -> Result<String> {
+        let (inputs, spec) = match command {
+            kummer_div::Command::Pair(inputs) => (inputs, None),
+            kummer_div::Command::Fujiki(spec, inputs) => (inputs, Some(spec)),
+        };
+        let operation = if spec.is_some() {
+            "rvKummerFujiki"
+        } else {
+            "rvKummerDivPair"
+        };
+        let [left, right] = *inputs;
+        let checker = &mut self.checker();
+        let left = checker.expr(left)?;
+        let right = checker.expr(right)?;
+        if !matches!(checker.model.kind(left.ty), Kind::KummerDiv(..)) {
+            return Err(checker.invalid_operand(&left, operation, "an RVKummerDiv class"));
+        }
+        checker.require_type(left.ty, &right, operation)?;
+        let (Value::KummerDiv(left), Value::KummerDiv(right)) =
+            (self.eval(&left)?, self.eval(&right)?)
+        else {
+            unreachable!()
+        };
+        if let Some(spec) = spec {
+            let result = spec.evaluate(&mut self.model, &left, &right)?;
+            Ok(format!(
+                "{operation}[{}, {}, {}, {}] = {result}",
+                spec.dimension, spec.right_exponent, spec.left_shift, spec.right_shift
+            ))
+        } else {
+            Ok(format!(
+                "{operation} = {}",
+                left.pair(&mut self.model, &right)?
+            ))
+        }
+    }
+
+    fn eval_kummer_divisor(&mut self, action: &KummerDivAction) -> Result<Value> {
+        let input = match action {
+            KummerDivAction::Scale(_, input) | KummerDivAction::Frobenius(_, _, _, input) => input,
+        };
+        let Value::KummerDiv(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        match action {
+            KummerDivAction::Scale(n, _) => value.scale(&mut self.model, *n)?,
+            KummerDivAction::Frobenius(basis, base, power, _) => {
+                value.frobenius(&mut self.model, basis, base, *power)?
+            }
+        }
+        .persist(&mut self.model)
+    }
+
     fn eval_kummer(&mut self, action: &KummerAction) -> Result<Value> {
         use kummer_surface::{BaseOperation, Operation};
         match action {
@@ -5830,6 +5899,9 @@ impl Engine {
                             .kh_braid(name)?
                             .group(&mut self.model, grade, k)?;
                         Ok(Value::KhClass(group.add(&mut self.model, &a, &b)?))
+                    }
+                    (BinaryOp::Add, Value::KummerDiv(a), Value::KummerDiv(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
                         rv_tl::add(&mut self.model, &a, &b)
@@ -7184,6 +7256,7 @@ impl Engine {
                 };
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
+            TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -9513,6 +9586,7 @@ impl Checker<'_> {
             TypeForm::Kummer(name) => self.model.kummer_type(name.text.into()),
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
+            TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -10584,6 +10658,7 @@ impl Checker<'_> {
                         let curve = self.model.kummer_curve(name)?;
                         KummerPoint::identity(&curve).persist(self.model)?
                     }
+                    Kind::KummerDiv(..) => kummer_div::Divisor::zero().persist(self.model)?,
                     Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
                     Kind::ECMap(source,target)=>{
                         ec_morphism::persist(self.model,Morphism::zero(source.clone(),target.clone()))?
@@ -12680,6 +12755,7 @@ impl Checker<'_> {
             }
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
+            ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -13417,6 +13493,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KummerDiv(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KummerDiv(KummerDivAction::Scale(-1, Box::new(input))),
                     ));
                 }
                 if let Kind::Jacobian(name) = self.model.kind(input.ty) {
@@ -17086,6 +17168,7 @@ impl Checker<'_> {
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::Jacobian(..)
+                        | Kind::KummerDiv(..)
                         | Kind::ECPoint(..)
                         | Kind::HWMatrix(..)
                         | Kind::HWWMatrix(..)
@@ -18569,6 +18652,72 @@ impl Checker<'_> {
             return Err(self.invalid_operand(input, operation, "an RVKummerDisc element"));
         };
         Ok(name)
+    }
+
+    fn kummer_divisor_expression(
+        &mut self,
+        expression: kummer_div::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use kummer_div::Expression;
+        match expression {
+            Expression::Generator(name, generator) => {
+                let basis = kummer_div::basis(self.model, &name)?;
+                let ty = self.model.kummer_divisor_type(&name)?;
+                let divisor = kummer_div::Divisor::generator(self.model, &basis, generator)?;
+                Ok((ty, TypedForm::Constant(divisor.persist(self.model)?)))
+            }
+            Expression::Literal(name, coefficients) => {
+                let basis = kummer_div::basis(self.model, &name)?;
+                let ty = self.model.kummer_divisor_type(&name)?;
+                let divisor = kummer_div::Divisor::literal(self.model, &basis, *coefficients)
+                    .map_err(|error| error.at(name.span))?;
+                Ok((ty, TypedForm::Constant(divisor.persist(self.model)?)))
+            }
+            Expression::Scale(n, input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::KummerDiv(..)) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvKummerDivScale",
+                        "an RVKummerDiv class",
+                    ));
+                }
+                Ok((
+                    input.ty,
+                    TypedForm::KummerDiv(KummerDivAction::Scale(n, Box::new(input))),
+                ))
+            }
+            Expression::Frobenius(base, power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::KummerDiv(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvKummerDivFrob",
+                        "an RVKummerDiv class",
+                    ));
+                };
+                let basis = kummer_div::basis(
+                    self.model,
+                    &Label {
+                        text: name.to_string(),
+                        span: input.span,
+                    },
+                )?;
+                let curve = self
+                    .model
+                    .jacobian_curve(&base.text)
+                    .map_err(|error| error.at(base.span))?;
+                Ok((
+                    input.ty,
+                    TypedForm::KummerDiv(KummerDivAction::Frobenius(
+                        basis,
+                        curve,
+                        power,
+                        Box::new(input),
+                    )),
+                ))
+            }
+        }
     }
 
     fn kummer_expression(

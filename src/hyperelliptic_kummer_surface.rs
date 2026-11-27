@@ -14,6 +14,7 @@ pub(crate) mod arithmetic;
 pub(crate) mod hilbert;
 pub(crate) mod k3;
 pub(crate) mod nikulin;
+pub(crate) mod polarized;
 pub(crate) mod resolution;
 pub(crate) mod theta;
 

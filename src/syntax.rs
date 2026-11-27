@@ -126,6 +126,7 @@ pub(crate) enum TypeForm {
     Kummer(Label),
     KummerK3(Label),
     KummerDisc(Label),
+    KummerDiv(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -967,6 +968,7 @@ pub(crate) enum ExprForm {
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
+    KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1143,6 +1145,7 @@ pub(crate) enum StatementForm {
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
+    KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     Richelot(Box<crate::richelot::Command>),
@@ -3048,6 +3051,102 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::KummerHilbert(Box::new(command)))
     }
 
+    fn kummer_divisor_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::polarized::{Command, Fujiki};
+        self.advance()?;
+        let command = if name == "rvKummerFujiki" {
+            self.expect(Token::LBracket)?;
+            let dimension = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let right_exponent = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let left_shift = self.signed_wide("an integer shift", "Kummer Fujiki shift")?;
+            self.expect(Token::Comma)?;
+            let right_shift = self.signed_wide("an integer shift", "Kummer Fujiki shift")?;
+            self.expect(Token::RBracket)?;
+            Command::Fujiki(
+                Fujiki {
+                    dimension,
+                    right_exponent,
+                    left_shift,
+                    right_shift,
+                },
+                Box::new(self.paren_pair(0)?),
+            )
+        } else {
+            Command::Pair(Box::new(self.paren_pair(0)?))
+        };
+        Ok(StatementForm::KummerDiv(Box::new(command)))
+    }
+
+    fn kummer_divisor_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::polarized::{Expression, Generator, COEFFICIENTS};
+        self.expect(Token::LBracket)?;
+        let (expression, depth) = match name {
+            "rvKummerDivScale" => {
+                let n = self.signed_wide("an integer multiple", "Kummer divisor scalar")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(n, Box::new(input)), depth)
+            }
+            "rvKummerDivFrob" => {
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let power = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Frobenius(base, power, Box::new(input)), depth)
+            }
+            "rvKummerDiv" => {
+                let basis = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut coefficients = [0; COEFFICIENTS];
+                for (i, coefficient) in coefficients.iter_mut().enumerate() {
+                    if i != 0 {
+                        self.expect(Token::Comma)?;
+                    }
+                    *coefficient = self.signed_wide(
+                        "a signed Kummer divisor coefficient",
+                        "Kummer divisor coefficient",
+                    )?;
+                }
+                self.expect(Token::RBrace)?;
+                (Expression::Literal(basis, Box::new(coefficients)), 0)
+            }
+            _ => {
+                let basis = self.label()?;
+                let generator = if name == "rvKummerHyperplane" {
+                    Generator::Hyperplane
+                } else {
+                    self.expect(Token::Comma)?;
+                    let (index, span) = self.number()?;
+                    if index >= COEFFICIENTS - 1 {
+                        return Err(Error::new(
+                            span,
+                            "marked Kummer node or trope index must be between 0 and 15",
+                        ));
+                    }
+                    if name == "rvKummerNodeDiv" {
+                        Generator::Node(index)
+                    } else {
+                        Generator::Trope(index)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                (Expression::Generator(basis, generator), 0)
+            }
+        };
+        expr(span, ExprForm::KummerDiv(Box::new(expression)), depth)
+    }
+
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::{
             BaseOperation, Expression, Operation, ResolvedTheta,
@@ -4000,6 +4099,9 @@ impl<'src> Parser<'src> {
                 | "rvKummerK3Picard"
                 | "rvKummerK3ArtinTate"),
             ) => self.kummer_k3_statement(command)?,
+            Token::Word(command @ ("rvKummerDivPair" | "rvKummerFujiki")) => {
+                self.kummer_divisor_statement(command)?
+            }
             Token::Word(
                 command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"),
             ) => self.kummer_hilbert_statement(command)?,
@@ -7263,7 +7365,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc"
+            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc" | "RVKummerDiv"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -7272,6 +7374,7 @@ impl<'src> Parser<'src> {
                 "RVJac" => TypeForm::Jacobian(endpoint),
                 "RVKummer" => TypeForm::Kummer(endpoint),
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
+                "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 _ => TypeForm::KummerDisc(endpoint),
             };
             return ty(span, form, 0);
@@ -9238,6 +9341,18 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_disc_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvKummerDiv"
+                        | "rvKummerHyperplane"
+                        | "rvKummerNodeDiv"
+                        | "rvKummerTropeDiv"
+                        | "rvKummerDivScale"
+                        | "rvKummerDivFrob"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.kummer_divisor_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

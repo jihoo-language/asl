@@ -255,6 +255,7 @@ pub(crate) enum Kind {
     Kummer(Rc<str>),
     KummerK3(Rc<str>),
     KummerDisc(Rc<str>),
+    KummerDiv(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -421,6 +422,7 @@ pub(crate) enum Value {
     Kummer(Rc<KummerPoint>),
     KummerK3(Rc<KummerK3Point>),
     KummerDisc(u8),
+    KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -974,7 +976,9 @@ impl Model {
                     usize::MAX
                 }
             }
-            Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) => usize::MAX,
+            Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
+                usize::MAX
+            }
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
@@ -1190,6 +1194,7 @@ impl Model {
                 | Kind::Kummer(..)
                 | Kind::KummerK3(..)
                 | Kind::KummerDisc(..)
+                | Kind::KummerDiv(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3544,6 +3549,11 @@ impl Model {
             })
     }
 
+    pub(crate) fn kummer_divisor_type(&mut self, basis: &Label) -> Result<TypeId> {
+        crate::hyperelliptic_kummer_surface::polarized::basis(self, basis)?;
+        self.inhabited_type(Kind::KummerDiv(basis.text.as_str().into()), 0)
+    }
+
     pub(crate) fn show_jacobian_level_frobenius(
         &mut self,
         basis: &str,
@@ -4893,6 +4903,7 @@ impl Model {
             | Kind::Kummer(..)
             | Kind::KummerK3(..)
             | Kind::KummerDisc(..)
+            | Kind::KummerDiv(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5394,6 +5405,7 @@ impl Model {
             Kind::Kummer(name) => out.push(&format!("RVKummer({name})")),
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
+            Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5674,6 +5686,7 @@ impl Model {
             (Value::Kummer(a), Value::Kummer(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
+            (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6000,6 +6013,7 @@ impl Model {
             (Value::Kummer(a), Value::Kummer(b)) => a.compare(self, b),
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
+            (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6311,6 +6325,11 @@ impl Model {
                     self.spend(count)?;
                     self.allocate(count)?;
                     (0..nikulin::ORDER).map(Value::KummerDisc).collect()
+                }
+                Kind::KummerDiv(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an integral marked Kummer divisor lattice",
+                    ));
                 }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
@@ -7734,6 +7753,18 @@ impl Model {
             Value::KummerDisc(mask) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{mask}}}"))
+            }
+            Value::KummerDiv(divisor) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, coefficient) in divisor.coefficients().iter().enumerate() {
+                    self.spend(1)?;
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push("}")
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

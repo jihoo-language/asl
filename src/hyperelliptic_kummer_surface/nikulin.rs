@@ -32,12 +32,21 @@ pub(crate) enum Expression {
 pub(crate) struct Command(pub(crate) Label, pub(crate) Label, pub(crate) usize);
 
 pub(crate) fn basis(model: &Model, name: &Label) -> Result<Rc<Basis>> {
+    basis_for(
+        model,
+        name,
+        "Kummer discriminants require a certified genus-two level-2 basis",
+    )
+}
+
+pub(crate) fn basis_for(
+    model: &Model,
+    name: &Label,
+    diagnostic: &'static str,
+) -> Result<Rc<Basis>> {
     let basis = model.jacobian_level(name)?;
     if basis.prime.get() != 2 || basis.len() != 4 {
-        return Err(Error::new(
-            name.span,
-            "Kummer discriminants require a certified genus-two level-2 basis",
-        ));
+        return Err(Error::new(name.span, diagnostic));
     }
     Ok(basis)
 }
