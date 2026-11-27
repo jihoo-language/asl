@@ -10,6 +10,8 @@ use crate::hyperelliptic_kummer_surface::rational_sparse::{
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+mod smith;
+
 pub(crate) enum Expression {
     Basis(Label, u64),
     Embed(Box<ParsedExpr>),
@@ -22,6 +24,7 @@ pub(crate) enum Expression {
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     Power(usize),
+    Divided(usize),
     Exp(i128),
 }
 
@@ -29,6 +32,7 @@ impl Operation {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Power(_) => "rvKSExteriorPower",
+            Self::Divided(_) => "rvKSExteriorDivided",
             Self::Exp(_) => "rvKSExteriorExp",
         }
     }
@@ -36,6 +40,7 @@ impl Operation {
 
 pub(crate) enum Command {
     Data(Label, usize),
+    Smith(Label, usize, usize),
     Coefficient(u64, Box<ParsedExpr>),
 }
 
@@ -137,8 +142,10 @@ impl Algebra {
         let degree = mask.count_ones() as usize;
         let bound = degree.min(EVEN_RANK - degree);
         match operation {
-            Operation::Power(j) if j > bound => Ok(Form::zero()),
-            Operation::Power(0) | Operation::Exp(0) => input.signed_map(model, |_| false),
+            Operation::Power(j) | Operation::Divided(j) if j > bound => Ok(Form::zero()),
+            Operation::Power(0) | Operation::Divided(0) | Operation::Exp(0) => {
+                input.signed_map(model, |_| false)
+            }
             Operation::Exp(_) if bound == 0 => input.signed_map(model, |_| false),
             Operation::Power(j) => {
                 let action = self.action(model, limit)?;
@@ -150,6 +157,10 @@ impl Algebra {
                     }
                 }
                 Form::integral(model, &terms)
+            }
+            Operation::Divided(j) => {
+                self.action(model, limit)?
+                    .exterior_divided(model, j, input, degree > EVEN_RANK / 2)
             }
             Operation::Exp(m) => {
                 self.action(model, limit)?
@@ -222,12 +233,15 @@ impl Action {
         Ok(terms)
     }
 
-    fn exterior_exp(&self, model: &mut Model, m: i128, input: &Form, dual: bool) -> Result<Form> {
+    fn exterior_columns(
+        &self,
+        model: &mut Model,
+        m: i128,
+        dual: bool,
+    ) -> Result<super::RegularColumns> {
         // The complementary wedge pairing identifies Λ^k(A) with
         // Λ^(64−k)(A^−transpose) for det(A)=1. Here A=1+mS and S²=0.
-        let mut linear = (0..EVEN_RANK)
-            .map(|i| vec![(i, Integer::from_i128(1))])
-            .collect::<Vec<_>>();
+        let mut linear = (0..EVEN_RANK).map(|_| Vec::new()).collect::<Vec<_>>();
         for (source, column) in self.columns.iter().enumerate() {
             model.spend((1 + column.len()) * WORK_LIMBS)?;
             for &(target, entry) in column {
@@ -237,54 +251,124 @@ impl Action {
                 } else {
                     (source, target, scaled)
                 };
-                if i == j {
-                    linear[i][0].1 = linear[i][0].1.add(value)?;
-                } else {
-                    linear[i].push((j, value));
-                }
+                linear[i].push((j, value));
             }
         }
-        for column in &mut linear {
+        Ok(linear)
+    }
+
+    fn exterior_exp(&self, model: &mut Model, m: i128, input: &Form, dual: bool) -> Result<Form> {
+        let mut linear = self.exterior_columns(model, m, dual)?;
+        let one = Integer::from_i128(1);
+        for (i, column) in linear.iter_mut().enumerate() {
+            if let Some((_, entry)) = column.iter_mut().find(|(j, _)| *j == i) {
+                *entry = entry.add(one)?;
+            } else {
+                column.push((i, one));
+            }
             column.retain(|(_, coefficient)| !coefficient.is_zero());
         }
-        let mut output = Terms::new();
-        for &(mask, coefficient) in input.terms() {
-            let coefficient: Integer = coefficient.resize()?;
-            let (mask, coefficient) = if dual {
-                (!mask, complement_coefficient(mask, coefficient))
-            } else {
-                (mask, coefficient)
-            };
+        exterior_transform(model, input, dual, |model, mask, coefficient| {
             let mut partial = Terms::from([(0, coefficient)]);
             for source in bits(mask) {
-                let column = &linear[source];
-                model.spend((1 + column.len()) * (1 + partial.len()) * WORK_LIMBS)?;
                 let mut next = Terms::new();
-                for (subset, coefficient) in partial {
-                    for &(target, entry) in column {
-                        let bit = 1 << target;
-                        if subset & bit == 0 {
-                            let mut value = coefficient.multiply_wide(entry)?;
-                            if wedge_negative(subset, bit) {
-                                value = value.negate();
-                            }
-                            Form::accumulate(&mut next, subset | bit, value)?;
-                        }
-                    }
-                }
+                wedge_column(model, &mut next, &partial, &linear[source])?;
                 partial = next;
             }
-            for (key, value) in partial {
-                let (key, value) = if dual {
-                    (!key, complement_coefficient(!key, value))
-                } else {
-                    (key, value)
-                };
-                Form::accumulate(&mut output, key, value)?;
+            Ok(partial)
+        })
+    }
+
+    fn exterior_divided(
+        &self,
+        model: &mut Model,
+        order: usize,
+        input: &Form,
+        dual: bool,
+    ) -> Result<Form> {
+        let linear = self.exterior_columns(model, 1, dual)?;
+        exterior_transform(model, input, dual, |model, mask, coefficient| {
+            let mut possible = bits(mask).filter(|&i| !linear[i].is_empty()).count();
+            if possible < order {
+                return Ok(Terms::new());
+            }
+            let mut powers = vec![Terms::new(); order + 1];
+            powers[0].insert(0, coefficient);
+            for (step, source) in bits(mask).enumerate() {
+                let mut next = vec![Terms::new(); order + 1];
+                possible -= usize::from(!linear[source].is_empty());
+                let minimum = order.saturating_sub(possible);
+                let identity = [(source, Integer::from_i128(1))];
+                for (j, partial) in powers.iter().enumerate().take(step.min(order) + 1) {
+                    if j >= minimum {
+                        wedge_column(model, &mut next[j], partial, &identity)?;
+                    }
+                    if j < order && j + 1 >= minimum {
+                        wedge_column(model, &mut next[j + 1], partial, &linear[source])?;
+                    }
+                }
+                let entries = next.iter().map(Terms::len).sum::<usize>();
+                if entries * (WORK_LIMBS + 3) > crate::complex::MAX_PIVOT_CELLS {
+                    return Err(Form::work_limit());
+                }
+                powers = next;
+            }
+            Ok(powers
+                .pop()
+                .expect("the requested divided power is present"))
+        })
+    }
+}
+
+fn exterior_transform(
+    model: &mut Model,
+    input: &Form,
+    dual: bool,
+    blade: impl Fn(&mut Model, u64, Integer) -> Result<Terms>,
+) -> Result<Form> {
+    let mut output = Terms::new();
+    for &(mask, coefficient) in input.terms() {
+        let coefficient: Integer = coefficient.resize()?;
+        let (mask, coefficient) = if dual {
+            (!mask, complement_coefficient(mask, coefficient))
+        } else {
+            (mask, coefficient)
+        };
+        for (key, value) in blade(model, mask, coefficient)? {
+            let (key, value) = if dual {
+                (!key, complement_coefficient(!key, value))
+            } else {
+                (key, value)
+            };
+            Form::accumulate(&mut output, key, value)?;
+        }
+    }
+    Form::integral(model, &output)
+}
+
+fn wedge_column(
+    model: &mut Model,
+    result: &mut Terms,
+    partial: &Terms,
+    column: &[(usize, Integer)],
+) -> Result<()> {
+    if partial.is_empty() || column.is_empty() {
+        return Ok(());
+    }
+    model.spend((1 + column.len()) * (1 + partial.len()) * WORK_LIMBS)?;
+    for (&subset, &coefficient) in partial {
+        for &(target, entry) in column {
+            let bit = 1 << target;
+            if subset & bit == 0 {
+                let mut value = coefficient.multiply_wide(entry)?;
+                if wedge_negative(subset, bit) {
+                    value = value.negate();
+                }
+                Form::accumulate(result, subset | bit, value)?;
             }
         }
-        Form::integral(model, &output)
     }
+    Ok(())
 }
 
 fn complement_coefficient(mask: u64, coefficient: Integer) -> Integer {

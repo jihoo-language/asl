@@ -6502,6 +6502,12 @@ impl Engine {
                 let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
                 algebra.exterior_report(&mut self.model, &name.text, &limit, degree)
             }
+            ks_exterior::Command::Smith(name, degree, order) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let lattice = self.og6_spin_lattice(&limit.cusp, name.span)?;
+                let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.exterior_smith_report(&mut self.model, &name.text, &limit, degree, order)
+            }
             ks_exterior::Command::Coefficient(mask, input) => {
                 let input = self.checker().expr(*input)?;
                 self.checker()

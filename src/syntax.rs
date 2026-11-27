@@ -3176,12 +3176,18 @@ impl<'src> Parser<'src> {
         use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Command;
         self.advance()?;
         self.expect(Token::LBracket)?;
-        let command = if operation == "rvKSExteriorData" {
+        let command = if matches!(operation, "rvKSExteriorData" | "rvKSExteriorSmith") {
             let name = self.label()?;
             self.expect(Token::Comma)?;
             let degree = self.number()?.0;
+            let command = if operation == "rvKSExteriorSmith" {
+                self.expect(Token::Comma)?;
+                Command::Smith(name, degree, self.number()?.0)
+            } else {
+                Command::Data(name, degree)
+            };
             self.expect(Token::RBracket)?;
-            Command::Data(name, degree)
+            command
         } else {
             let mask = self.ks_exterior_mask()?;
             self.expect(Token::RBracket)?;
@@ -3235,12 +3241,12 @@ impl<'src> Parser<'src> {
                 self.expect(Token::LBracket)?;
                 let name = self.label()?;
                 self.expect(Token::Comma)?;
-                let action = if operation == "rvKSExteriorPower" {
-                    Operation::Power(self.number()?.0)
-                } else {
-                    Operation::Exp(
+                let action = match operation {
+                    "rvKSExteriorPower" => Operation::Power(self.number()?.0),
+                    "rvKSExteriorDivided" => Operation::Divided(self.number()?.0),
+                    _ => Operation::Exp(
                         self.signed_wide("a signed integer", "Kuga–Satake exterior exponent")?,
-                    )
+                    ),
                 };
                 self.expect(Token::RBracket)?;
                 let input = self.paren_expr(nest)?;
@@ -7480,9 +7486,9 @@ impl<'src> Parser<'src> {
             Token::Word(operation @ ("rvOG6SpinData" | "rvOG6CliffordCoeff")) => {
                 self.og6_spin_statement(operation, span)?
             }
-            Token::Word(operation @ ("rvKSExteriorData" | "rvKSExteriorCoeff")) => {
-                self.ks_exterior_statement(operation)?
-            }
+            Token::Word(
+                operation @ ("rvKSExteriorData" | "rvKSExteriorSmith" | "rvKSExteriorCoeff"),
+            ) => self.ks_exterior_statement(operation)?,
             Token::Word(
                 operation @ ("rvKSVolumeSquare" | "rvKSEndCoeff" | "rvKSEndTrace"
                 | "rvKSEndTracePair"),
@@ -13308,6 +13314,7 @@ impl<'src> Parser<'src> {
                     "rvKSExteriorBasis"
                         | "rvKSExteriorScale"
                         | "rvKSExteriorPower"
+                        | "rvKSExteriorDivided"
                         | "rvKSExteriorExp"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
