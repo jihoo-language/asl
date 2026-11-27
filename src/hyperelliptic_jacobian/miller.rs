@@ -29,7 +29,8 @@ pub(crate) fn tate(
     if remainder != 0 {
         return Err(Error::plain("rvJacTate order must divide q−1"));
     }
-    let value = leading_value(model, curve, order, torsion, divisor)?;
+    let value = leading_value(model, curve, order, torsion, divisor)?
+        .ok_or_else(|| torsion_error("first", order))?;
     let one = field.one();
     let mut result = one.clone();
     if value != one {
@@ -46,29 +47,89 @@ pub(crate) fn tate(
     Ok(result)
 }
 
+pub(crate) fn weil(
+    model: &mut Model,
+    curve: &Curve,
+    order: u64,
+    left: &Divisor,
+    right: &Divisor,
+) -> Result<Scalar> {
+    if order < 2 {
+        return Err(Error::plain("rvJacWeil requires an order of at least 2"));
+    }
+    let field = field(curve);
+    if order.is_multiple_of(field.ring.prime()) {
+        return Err(Error::plain(
+            "rvJacWeil order must be coprime to the residue characteristic",
+        ));
+    }
+    let forward = leading_value(model, curve, order, left, right)?
+        .ok_or_else(|| torsion_error("first", order))?;
+    let reverse = leading_value(model, curve, order, right, left)?
+        .ok_or_else(|| torsion_error("second", order))?;
+    let value = divide(model, field, forward, &reverse)?;
+    // Tame reciprocity corrects the ratio by (−1) raised to n times the
+    // intersection number of the two degree-zero divisors.
+    if !order.is_multiple_of(2) && odd_intersection(model, field, left, right)? {
+        field.ring.negate(model, &value)
+    } else {
+        Ok(value)
+    }
+}
+
+fn torsion_error(argument: &str, order: u64) -> Error {
+    Error::plain(format!(
+        "{argument} argument must have order dividing {order}"
+    ))
+}
+
+fn odd_intersection(
+    model: &mut Model,
+    field: Field<'_>,
+    left: &Divisor,
+    right: &Divisor,
+) -> Result<bool> {
+    // Both representatives contain infinity with coefficient −deg(u).
+    let mut odd = left.u.len().is_multiple_of(2) && right.u.len().is_multiple_of(2);
+    let difference = poly::sum(model, field, &left.v, &right.v, true)?;
+    model.spend(right.u.len() * field.cells())?;
+    let (equal_ordinates, _) = partition(model, field, right.u.clone(), &difference)?;
+    visit_leading_terms(
+        model,
+        field,
+        equal_ordinates,
+        &left.u,
+        |_, order, places, _| {
+            // The Hasse order is the multiplicity in the left divisor. The
+            // degree of places weights residue degree by right multiplicity.
+            odd ^= !order.is_multiple_of(2) && places.len().is_multiple_of(2);
+            Ok(())
+        },
+    )?;
+    Ok(odd)
+}
+
 /// Evaluate the leading unit of a function with divisor `order * torsion` on
 /// the degree-zero divisor represented by `divisor`. The uniformizers are
 /// x−α at ordinary points, y at branch points, and x^g/y at infinity.
+/// Return `None` when `order` does not kill `torsion`.
 pub(crate) fn leading_value(
     model: &mut Model,
     curve: &Curve,
     order: u64,
     torsion: &Divisor,
     divisor: &Divisor,
-) -> Result<Scalar> {
+) -> Result<Option<Scalar>> {
     if order == 0 {
         return Err(Error::plain("Miller order must be positive"));
     }
-    let torsion_error = || Error::plain(format!("first argument must have order dividing {order}"));
     let field = field(curve);
     if torsion.is_zero() {
-        return Ok(field.one());
+        return Ok(Some(field.one()));
     }
     if divisor.is_zero() {
-        if !torsion.scale(model, curve, i128::from(order))?.is_zero() {
-            return Err(torsion_error());
-        }
-        return Ok(field.one());
+        let multiple = torsion.scale(model, curve, i128::from(order))?;
+        return Ok(multiple.is_zero().then(|| field.one()));
     }
     let support = Support::new(model, curve, divisor)?;
     model.spend(torsion.cells(curve))?;
@@ -81,10 +142,7 @@ pub(crate) fn leading_value(
             multiple = support.add(model, curve, &multiple, torsion, &mut value)?;
         }
     }
-    if !multiple.is_zero() {
-        return Err(torsion_error());
-    }
-    Ok(value)
+    Ok(multiple.is_zero().then_some(value))
 }
 
 struct Support<'a> {
@@ -244,14 +302,44 @@ fn norm_on(
 fn finite_polynomial_unit(
     model: &mut Model,
     field: Field<'_>,
-    mut pending: Polynomial,
+    pending: Polynomial,
     polynomial: &[Scalar],
     branch_derivative: Option<&[Scalar]>,
 ) -> Result<Scalar> {
-    if pending.len() == 1 {
-        return Ok(field.one());
-    }
     let mut result = field.one();
+    visit_leading_terms(
+        model,
+        field,
+        pending,
+        polynomial,
+        |model, order, places, coefficient| {
+            let denominator = if let Some(derivative) = branch_derivative.filter(|_| order > 0) {
+                // In parameter y, (x−α)/y² has leading unit 1/f′(α).
+                model.spend(places.len() * field.cells())?;
+                let norm = norm_on(model, field, places.clone(), derivative)?;
+                field.ring.power(model, &norm, order as u64)?
+            } else {
+                field.one()
+            };
+            let unit = norm_on(model, field, places, coefficient)?;
+            let unit = divide(model, field, unit, &denominator)?;
+            result = field.multiply(model, &result, &unit)?;
+            Ok(())
+        },
+    )?;
+    Ok(result)
+}
+
+fn visit_leading_terms(
+    model: &mut Model,
+    field: Field<'_>,
+    mut pending: Polynomial,
+    polynomial: &[Scalar],
+    mut visit: impl FnMut(&mut Model, usize, Polynomial, &[Scalar]) -> Result<()>,
+) -> Result<()> {
+    if pending.len() == 1 {
+        return Ok(());
+    }
     let mut binomial = Vec::new();
     for order in 0..polynomial.len() {
         let hasse;
@@ -282,18 +370,10 @@ fn finite_polynomial_unit(
         };
         let (vanishing, nonvanishing) = partition(model, field, pending, coefficient)?;
         if nonvanishing.len() > 1 {
-            if let Some(derivative) = branch_derivative.filter(|_| order > 0) {
-                // In parameter y, (x−α)/y² has leading unit 1/f′(α).
-                model.spend(nonvanishing.len() * field.cells())?;
-                let norm = norm_on(model, field, nonvanishing.clone(), derivative)?;
-                let denominator = field.ring.power(model, &norm, order as u64)?;
-                result = divide(model, field, result, &denominator)?;
-            }
-            let unit = norm_on(model, field, nonvanishing, coefficient)?;
-            result = field.multiply(model, &result, &unit)?;
+            visit(model, order, nonvanishing, coefficient)?;
         }
         if vanishing.len() == 1 {
-            return Ok(result);
+            return Ok(());
         }
         pending = vanishing;
     }

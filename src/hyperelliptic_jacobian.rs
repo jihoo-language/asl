@@ -40,6 +40,7 @@ pub(crate) enum Pairing {
     Weil,
     Tate,
     MillerTate(u64),
+    MillerWeil(u64),
 }
 
 impl Pairing {
@@ -48,6 +49,7 @@ impl Pairing {
             Self::Weil => "rvJacWeil2",
             Self::Tate => "rvJacTate2",
             Self::MillerTate(_) => "rvJacTate",
+            Self::MillerWeil(_) => "rvJacWeil",
         }
     }
 
@@ -58,8 +60,10 @@ impl Pairing {
         left: &Divisor,
         right: &Divisor,
     ) -> Result<Scalar> {
-        if let Self::MillerTate(n) = self {
-            return miller::tate(model, curve, n, left, right);
+        match self {
+            Self::MillerTate(n) => return miller::tate(model, curve, n, left, right),
+            Self::MillerWeil(n) => return miller::weil(model, curve, n, left, right),
+            _ => {}
         }
         // In reduced Mumford form, negation fixes u and sends v to −v.
         if !left.v.is_empty() {
@@ -90,7 +94,7 @@ impl Pairing {
                 })
             }
             Self::Tate => left.tate_pairing(model, curve, right, common),
-            Self::MillerTate(_) => unreachable!(),
+            Self::MillerTate(_) | Self::MillerWeil(_) => unreachable!(),
         }
     }
 }

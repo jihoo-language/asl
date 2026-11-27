@@ -2909,18 +2909,21 @@ impl<'src> Parser<'src> {
         };
         self.expect(Token::LBracket)?;
         let (expression, depth) = match name {
-            "rvJacTate" => {
+            "rvJacTate" | "rvJacWeil" => {
                 let degree_span = self.span();
-                let degree = self.wide_unsigned("rvJacTate order")?;
+                let description = format!("{name} order");
+                let degree = self.wide_unsigned(&description)?;
                 let degree = u64::try_from(degree)
-                    .map_err(|_| Error::new(degree_span, "rvJacTate order exceeds u64"))?;
+                    .map_err(|_| Error::new(degree_span, format!("{description} exceeds u64")))?;
                 self.expect(Token::RBracket)?;
                 let inputs = self.paren_pair(nest)?;
                 let depth = 1 + inputs[0].depth.max(inputs[1].depth);
-                (
-                    Expression::Pair(Pairing::MillerTate(degree), Box::new(inputs)),
-                    depth,
-                )
+                let pairing = if name == "rvJacTate" {
+                    Pairing::MillerTate(degree)
+                } else {
+                    Pairing::MillerWeil(degree)
+                };
+                (Expression::Pair(pairing, Box::new(inputs)), depth)
             }
             "rvjac" => {
                 let curve = self.label()?;
@@ -8571,6 +8574,7 @@ impl<'src> Parser<'src> {
                         | "rvJacFrob"
                         | "rvJacWeilApply"
                         | "rvJacTate"
+                        | "rvJacWeil"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
