@@ -50,6 +50,7 @@ pub(crate) enum TypeForm {
     MixedChain(Label, i64, bool),
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
+    SheafHom(SheafForm, Label, Label, usize),
     SheafComplex(SheafForm, Label, usize),
     SheafPage(Label, SheafPageGrade),
     Operations(usize),
@@ -572,6 +573,11 @@ pub(crate) enum ExprForm {
     SheafPageOperation(SheafPageOp, Box<ParsedExpr>),
     SheafPageLift(SheafPageLift, usize, usize, Box<ParsedExpr>),
     SheafOperation(SheafOp, Box<ParsedExpr>),
+    SheafHomTerm(Label, Label, Vec<Label>, usize, usize, i64),
+    SheafExtGenerator(Label, Label, usize, usize),
+    SheafHomMap(Label),
+    SheafHomIdentity(Label),
+    SheafCompose(Box<[ParsedExpr; 2]>),
     PScale(usize, Box<ParsedExpr>),
     RVScale(usize, Box<ParsedExpr>),
     RVLaurentMonomial(i64, Box<ParsedExpr>),
@@ -767,6 +773,7 @@ pub(crate) enum StatementForm {
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
+    SheafExtDimension(Label, Label, usize),
     SheafComplex(Label, Vec<Label>),
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
@@ -1329,6 +1336,28 @@ impl<'src> Parser<'src> {
         Ok(SheafPageGrade { r, p, q })
     }
 
+    fn sheaf_hom_grade(&mut self) -> Result<(Label, Label, usize)> {
+        let source = self.label()?;
+        self.expect(Token::Comma)?;
+        let target = self.label()?;
+        self.expect(Token::Comma)?;
+        let (degree, _) = self.number()?;
+        Ok((source, target, degree))
+    }
+
+    fn sheaf_chain(&mut self) -> Result<Vec<Label>> {
+        self.expect(Token::LBracket)?;
+        let mut chain = Vec::new();
+        while self.token() != Token::RBracket {
+            chain.push(self.label()?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(chain)
+    }
+
     fn sheaf_matrix(&mut self) -> Result<Vec<i64>> {
         self.expect(Token::LBracket)?;
         let mut entries = Vec::new();
@@ -1618,6 +1647,13 @@ impl<'src> Parser<'src> {
                 let degree = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafHyperDimension(name, degree)
+            }
+            Token::Word("shExtDim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (source, target, degree) = self.sheaf_hom_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafExtDimension(source, target, degree)
             }
             Token::Word("shdim") => {
                 self.advance()?;
@@ -3236,6 +3272,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::SheafComplex(form, name, degree), 0);
         }
+        if matches!(name.text.as_str(), "ShHomC" | "ShExt") && self.eat(Token::LParen)? {
+            let form = if name.text == "ShHomC" {
+                SheafForm::Cochain
+            } else {
+                SheafForm::Class
+            };
+            let (source, target, degree) = self.sheaf_hom_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SheafHom(form, source, target, degree), 0);
+        }
         if matches!(name.text.as_str(), "ShC" | "ShH") && self.eat(Token::LParen)? {
             let form = if name.text == "ShC" {
                 SheafForm::Cochain
@@ -4689,18 +4735,60 @@ impl<'src> Parser<'src> {
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::RVScale(scalar, Box::new(value)), depth);
                 }
+                if name.text == "shHomTerm" && self.eat(Token::LBracket)? {
+                    let source = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let chain = self.sheaf_chain()?;
+                    self.expect(Token::Comma)?;
+                    let (column, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (row, _) = self.number()?;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.signed_number("signed sheaf coefficient")?
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafHomTerm(source, target, chain, column, row, coefficient),
+                        0,
+                    );
+                }
+                if name.text == "shExtCompose" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::SheafCompose(Box::new(arguments)), depth);
+                }
+                if name.text == "shExtGen" && self.eat(Token::LBracket)? {
+                    let (source, target, degree) = self.sheaf_hom_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafExtGenerator(source, target, degree, index),
+                        0,
+                    );
+                }
+                if matches!(name.text.as_str(), "shMapC" | "shHomId")
+                    && self.eat(Token::LBracket)?
+                {
+                    let operand = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let form = if name.text == "shMapC" {
+                        ExprForm::SheafHomMap(operand)
+                    } else {
+                        ExprForm::SheafHomIdentity(operand)
+                    };
+                    return expr(span, form, 0);
+                }
                 if name.text == "shTerm" && self.eat(Token::LBracket)? {
                     let sheaf = self.label()?;
                     self.expect(Token::Comma)?;
-                    self.expect(Token::LBracket)?;
-                    let mut chain = Vec::new();
-                    while self.token() != Token::RBracket {
-                        chain.push(self.label()?);
-                        if !self.eat(Token::Comma)? {
-                            break;
-                        }
-                    }
-                    self.expect(Token::RBracket)?;
+                    let chain = self.sheaf_chain()?;
                     self.expect(Token::Comma)?;
                     let index = self.number()?.0;
                     let coefficient = if self.eat(Token::Comma)? {

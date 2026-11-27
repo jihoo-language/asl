@@ -66,6 +66,7 @@ use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
+use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
 use crate::sheaf_leray::Leray;
 use crate::sheaf_page;
@@ -132,6 +133,7 @@ pub(crate) enum Kind {
     MixedPage(mixed_page::Grade),
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
+    SheafHom(SheafForm, SheafEnds, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
@@ -395,6 +397,7 @@ pub(crate) struct Model {
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
     leray_complexes: HashMap<String, Rc<Leray>>,
     type_ids: HashMap<Kind, TypeId>,
@@ -436,6 +439,7 @@ impl Model {
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
             leray_complexes: HashMap::new(),
             type_ids: HashMap::new(),
@@ -528,7 +532,10 @@ impl Model {
             {
                 1
             }
-            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) => usize::MAX,
+            Kind::SheafHom(_, ref ends, k) if k >= self.sheaf_homs[ends].height => 1,
+            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) | Kind::SheafHom(..) => {
+                usize::MAX
+            }
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -765,6 +772,7 @@ impl Model {
                 | Kind::MixedPage(..)
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
+                | Kind::SheafHom(..)
                 | Kind::SheafPage(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
@@ -991,6 +999,41 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::Sheaf(form, name, degree), 0)
+    }
+
+    pub(crate) fn sheaf_hom_type(
+        &mut self,
+        form: SheafForm,
+        source: &Label,
+        target: &Label,
+        degree: usize,
+    ) -> Result<TypeId> {
+        self.sheaf(source)?;
+        self.sheaf(target)?;
+        let ends = SheafEnds {
+            source: source.text.as_str().into(),
+            target: target.text.as_str().into(),
+        };
+        self.known_sheaf_hom_type(form, ends, degree)
+    }
+
+    pub(crate) fn known_sheaf_hom_type(
+        &mut self,
+        form: SheafForm,
+        ends: SheafEnds,
+        degree: usize,
+    ) -> Result<TypeId> {
+        if !self.sheaf_homs.contains_key(&ends) {
+            let source = self.sheaf_named(&ends.source).expect("registered sheaf");
+            let target = self.sheaf_named(&ends.target).expect("registered sheaf");
+            let data = SheafHom::build(self, source, target)?;
+            self.sheaf_homs.insert(ends.clone(), Rc::new(data));
+        }
+        self.inhabited_type(Kind::SheafHom(form, ends, degree), 0)
+    }
+
+    pub(crate) fn sheaf_hom(&self, ends: &SheafEnds) -> Rc<SheafHom> {
+        self.sheaf_homs[ends].clone()
     }
 
     pub(crate) fn check_new_sheaf_map(&self, name: &Label) -> Result<()> {
@@ -2482,6 +2525,7 @@ impl Model {
             | Kind::MixedPage(..)
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
+            | Kind::SheafHom(..)
             | Kind::SheafPage(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
@@ -2667,6 +2711,16 @@ impl Model {
             )),
             Kind::Sheaf(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.name()))
+            }
+            Kind::SheafHom(form, ends, degree) => {
+                let name = match form {
+                    SheafForm::Cochain => "ShHomC",
+                    SheafForm::Class => "ShExt",
+                };
+                out.push(&format!(
+                    "{name}({}, {}, {degree})",
+                    ends.source, ends.target
+                ))
             }
             Kind::SheafComplex(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.total_name()))
@@ -3698,6 +3752,16 @@ impl Model {
                         }
                     }
                 }
+                Kind::SheafHom(form, ref ends, degree) => {
+                    let data = self.sheaf_hom(ends);
+                    match form {
+                        SheafForm::Cochain => data.elements(self, degree, MAX_ELEMENTS)?,
+                        SheafForm::Class => {
+                            let rank = data.cohomology.rank(self, data.as_ref(), degree)?;
+                            odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
+                        }
+                    }
+                }
                 Kind::SheafComplex(form, ref name, degree) => {
                     let data = self
                         .sheaf_complex_named(name)
@@ -4075,13 +4139,18 @@ impl Model {
                 out.push(if *nonzero { "{carry}" } else { "{0}" })
             }
             Value::SheafC(terms) => {
-                let (poset, total) = match self.kind(ty) {
+                let (poset, total, hom) = match self.kind(ty) {
+                    Kind::SheafHom(_, ends, _) => {
+                        let data = self.sheaf_hom(ends);
+                        (data.source.poset.clone(), false, Some(data))
+                    }
                     Kind::Sheaf(_, name, _) => (
                         self.sheaf_named(name)
                             .expect("registered sheaf")
                             .poset
                             .clone(),
                         false,
+                        None,
                     ),
                     Kind::SheafComplex(_, name, _) => (
                         self.sheaf_complex_named(name)
@@ -4089,6 +4158,7 @@ impl Model {
                             .poset()
                             .clone(),
                         true,
+                        None,
                     ),
                     _ => unreachable!(),
                 };
@@ -4114,7 +4184,12 @@ impl Model {
                         }
                         out.push(&poset.names[point])?;
                     }
-                    out.push(&format!("]#{}", generator.index))?;
+                    if let Some(hom) = &hom {
+                        let (column, row) = hom.decode(generator);
+                        out.push(&format!("]#{column}->{row}"))?;
+                    } else {
+                        out.push(&format!("]#{}", generator.index))?;
+                    }
                 }
                 out.push("}")
             }

@@ -160,6 +160,21 @@ impl Matrix {
         )
     }
 
+    pub(crate) fn columns(&self) -> impl Iterator<Item = (usize, &[Coordinate])> {
+        self.0.iter().map(|(i, rows)| (*i, rows.as_ref()))
+    }
+
+    pub(crate) fn row(&self, model: &mut Model, index: usize) -> Result<Vec<Coordinate>> {
+        let mut result = Vec::new();
+        for (column, rows) in self.columns() {
+            model.spend(1 + rows.len().ilog2() as usize)?;
+            if let Ok(position) = rows.binary_search_by_key(&index, |&(row, _)| row) {
+                result.push((column, rows[position].1));
+            }
+        }
+        Ok(result)
+    }
+
     pub(crate) fn column(&self, index: usize) -> &[Coordinate] {
         self.0
             .binary_search_by_key(&index, |&(column, _)| column)
@@ -431,6 +446,14 @@ impl Sheaf {
         &self.dims
     }
 
+    pub(crate) fn lower(&self, point: usize) -> &[usize] {
+        &self.lower[point]
+    }
+
+    pub(crate) fn topological(&self) -> &[usize] {
+        &self.topological
+    }
+
     pub(crate) fn covers(&self) -> &[Vec<usize>] {
         &self.covers
     }
@@ -465,20 +488,12 @@ impl Sheaf {
     ) -> Result<()> {
         let point = *reversed.last().unwrap();
         if remaining == 0 {
-            output.size = output
-                .size
-                .checked_add(dimension)
-                .filter(|&size| size <= bounds.limit)
-                .ok_or_else(|| layer_limit(bounds.limit))?;
-            output.cells += 4 + reversed.len();
-            check_cells(output.cells)?;
-            model.spend(1 + reversed.len())?;
-            output.blocks.push(Block {
-                vertical: 0,
-                chain: reversed.iter().rev().copied().collect(),
-                start: 0,
-            });
-            return Ok(());
+            return output.push_block(
+                model,
+                reversed.iter().rev().copied().collect(),
+                dimension,
+                bounds.limit,
+            );
         }
         model.spend(1 + self.lower[point].len())?;
         for &lower in &self.lower[point] {
@@ -599,15 +614,7 @@ impl Sheaf {
                 reversed.pop();
             }
         }
-        model.spend(sort_work(output.blocks.len()).saturating_mul(degree + 1))?;
-        output
-            .blocks
-            .sort_unstable_by(|left, right| left.chain.cmp(&right.chain));
-        let mut next = 0;
-        for block in &mut output.blocks {
-            block.start = next;
-            next += self.dims[*block.chain.last().unwrap()];
-        }
+        output.order_blocks(model, degree, |chain| self.dims[*chain.last().unwrap()])?;
         Ok(output)
     }
 }
@@ -933,6 +940,47 @@ struct Degree {
 }
 
 impl Layer {
+    pub(crate) fn push_block(
+        &mut self,
+        model: &mut Model,
+        chain: Rc<[usize]>,
+        dimension: usize,
+        limit: usize,
+    ) -> Result<()> {
+        let size = self
+            .size
+            .checked_add(dimension)
+            .filter(|&size| size <= limit)
+            .ok_or_else(|| layer_limit(limit))?;
+        self.cells += 4 + chain.len();
+        check_cells(self.cells)?;
+        model.spend(1 + chain.len())?;
+        self.blocks.push(Block {
+            vertical: 0,
+            chain,
+            start: self.size,
+        });
+        self.size = size;
+        Ok(())
+    }
+
+    pub(crate) fn order_blocks(
+        &mut self,
+        model: &mut Model,
+        degree: usize,
+        dimension: impl Fn(&[usize]) -> usize,
+    ) -> Result<()> {
+        model.spend(sort_work(self.blocks.len()).saturating_mul(degree + 1))?;
+        self.blocks
+            .sort_unstable_by(|left, right| left.chain.cmp(&right.chain));
+        let mut next = 0;
+        for block in &mut self.blocks {
+            block.start = next;
+            next += dimension(&block.chain);
+        }
+        Ok(())
+    }
+
     pub(crate) fn append_layer(
         &mut self,
         model: &mut Model,
@@ -1208,7 +1256,12 @@ pub(crate) fn residue(prime: Prime, value: i64) -> u32 {
     value.rem_euclid(i64::from(prime.get())) as u32
 }
 
-fn inserted(model: &mut Model, chain: &[usize], slot: usize, point: usize) -> Result<Rc<[usize]>> {
+pub(crate) fn inserted(
+    model: &mut Model,
+    chain: &[usize],
+    slot: usize,
+    point: usize,
+) -> Result<Rc<[usize]>> {
     model.spend(1 + chain.len())?;
     let mut output = Vec::with_capacity(chain.len() + 1);
     output.extend_from_slice(&chain[..slot]);

@@ -97,6 +97,7 @@ use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
+use crate::sheaf_ext::{self, Ends as SheafEnds};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
 use crate::sheaf_leray::Leray;
@@ -303,6 +304,7 @@ enum ClassBracketFamily {
 enum SheafComputation {
     Ordinary(Rc<Sheaf>),
     Total(Rc<sheaf_hyper::Complex>),
+    Hom(Rc<sheaf_ext::Hom>),
 }
 
 impl SheafComputation {
@@ -310,6 +312,7 @@ impl SheafComputation {
         match self {
             Self::Ordinary(data) => (data.as_ref(), &data.cohomology),
             Self::Total(data) => (data.as_ref(), &data.cohomology),
+            Self::Hom(data) => (data.as_ref(), &data.cohomology),
         }
     }
 }
@@ -426,6 +429,7 @@ enum TypedForm {
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
+    SheafCompose(Box<[TypedExpr; 2]>),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     SheafPart(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     PScale(Prime, usize, Box<TypedExpr>),
@@ -534,6 +538,22 @@ impl Engine {
                     grade.r,
                     grade.chain.b,
                     grade.f
+                )
+            }
+            StatementForm::SheafExtDimension(source, target, degree) => {
+                let ty = self
+                    .model
+                    .sheaf_hom_type(SheafForm::Class, &source, &target, degree)?;
+                let Kind::SheafHom(_, ends, _) = self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let data = self.model.sheaf_hom(ends);
+                let rank = data
+                    .cohomology
+                    .rank(&mut self.model, data.as_ref(), degree)?;
+                format!(
+                    "shExtDim[{}, {}, {degree}] = {rank}",
+                    source.text, target.text
                 )
             }
             StatementForm::Sheaf(name, base, prime, presentation) => {
@@ -2011,6 +2031,7 @@ impl Engine {
                     .expect("registered sheaf")
                     .prime
             }
+            Kind::SheafHom(_, ends, _) => self.model.sheaf_hom(ends).prime(),
             Kind::SheafComplex(_, name, _) | Kind::SheafPage(name, _) => self
                 .model
                 .sheaf_complex_named(name)
@@ -2214,9 +2235,10 @@ impl Engine {
                             | Kind::PMay(p, ..)
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..) => p,
-                            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) => {
-                                self.sheaf_prime(expr.ty)
-                            }
+                            Kind::Sheaf(..)
+                            | Kind::SheafComplex(..)
+                            | Kind::SheafPage(..)
+                            | Kind::SheafHom(..) => self.sheaf_prime(expr.ty),
                             Kind::MixedChain(grade, _) => {
                                 self.model.mixed_complex(grade.complex).prime
                             }
@@ -3902,6 +3924,46 @@ impl Engine {
                 };
                 leray.include(&mut self.model, *degree, &raw)
             }
+            TypedForm::SheafCompose(arguments) => {
+                let [after, before] = arguments.as_ref();
+                let after_value = self.eval(after)?;
+                let before_value = self.eval(before)?;
+                let Kind::SheafHom(_, a, m) = self.model.kind(after.ty) else {
+                    unreachable!()
+                };
+                let Kind::SheafHom(_, b, n) = self.model.kind(before.ty) else {
+                    unreachable!()
+                };
+                let (a, m, b, n) = (self.model.sheaf_hom(a), *m, self.model.sheaf_hom(b), *n);
+                match (after_value, before_value) {
+                    (Value::SheafC(x), Value::SheafC(y)) => {
+                        let result = sheaf_ext::compose(&mut self.model, (&a, m, &x), (&b, n, &y))?;
+                        sheaf::persist(&mut self.model, result)
+                    }
+                    (Value::OddClass(x), Value::OddClass(y)) => {
+                        let x = a.cohomology.representative_support(
+                            &mut self.model,
+                            a.as_ref(),
+                            m,
+                            &x,
+                        )?;
+                        let y = b.cohomology.representative_support(
+                            &mut self.model,
+                            b.as_ref(),
+                            n,
+                            &y,
+                        )?;
+                        let result = sheaf_ext::compose(&mut self.model, (&a, m, &x), (&b, n, &y))?;
+                        let Kind::SheafHom(_, ends, degree) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let (data, degree) = (self.model.sheaf_hom(ends), *degree);
+                        data.cohomology
+                            .class(&mut self.model, data.as_ref(), degree, &result)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::SheafApply(map, degree, input) => match self.eval(input)? {
                 Value::SheafC(raw) => map.apply_cochain(&mut self.model, &raw),
                 Value::OddClass(class) => map.apply_class(&mut self.model, *degree, &class),
@@ -4287,6 +4349,9 @@ impl Checker<'_> {
                 self.model.mixed_page_type(grade)
             }
             TypeForm::Sheaf(form, name, degree) => self.model.sheaf_type(form, &name, degree),
+            TypeForm::SheafHom(form, source, target, degree) => {
+                self.model.sheaf_hom_type(form, &source, &target, degree)
+            }
             TypeForm::RMExt(grade) => self.model.rmext_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
@@ -4566,11 +4631,11 @@ impl Checker<'_> {
                     Kind::Operations(_) => steenrod::zero(),
                     Kind::Cobar(..) | Kind::CobarAn(..) | Kind::MCobar(..) => cobar::zero(),
                     Kind::RMCobar(..) => real_motivic::zero(),
-                    Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) =>
+                    Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) | Kind::SheafHom(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
                     Kind::SheafPage(..) => odd_ext::zero(),
                     Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
-                    Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) =>
+                    Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
                         odd_ext::zero(),
                     Kind::RhoBock(..) | Kind::RMExt(..) => cohomology::zero(),
                     Kind::RhoLoc(..) => rho_localized::zero(),
@@ -5001,6 +5066,73 @@ impl Checker<'_> {
                     TypedForm::SheafLerayIncl(leray, degree, Box::new(input)),
                 ))
             }
+            ExprForm::SheafHomTerm(source, target, chain, column, row, coefficient) => {
+                let degree = chain
+                    .len()
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::plain("shHomTerm requires a nonempty strict chain"))?;
+                let ty = self
+                    .model
+                    .sheaf_hom_type(SheafForm::Cochain, &source, &target, degree)?;
+                let Kind::SheafHom(_, ends, _) = self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let data = self.model.sheaf_hom(ends);
+                let value = data.term(self.model, &chain, column, row, coefficient)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafExtGenerator(source, target, degree, index) => {
+                let ty = self
+                    .model
+                    .sheaf_hom_type(SheafForm::Class, &source, &target, degree)?;
+                let Kind::SheafHom(_, ends, _) = self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let data = self.model.sheaf_hom(ends);
+                let value = data
+                    .cohomology
+                    .generator(self.model, data.as_ref(), degree, index)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafHomIdentity(name) => {
+                let ty = self
+                    .model
+                    .sheaf_hom_type(SheafForm::Cochain, &name, &name, 0)?;
+                let data = self.model.sheaf(&name)?;
+                let value = sheaf_ext::identity(self.model, &data)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafHomMap(name) => {
+                let map = self.model.sheaf_map(&name)?;
+                let ends = SheafEnds {
+                    source: map.source.name.clone(),
+                    target: map.target.name.clone(),
+                };
+                let ty = self
+                    .model
+                    .known_sheaf_hom_type(SheafForm::Cochain, ends, 0)?;
+                let value = sheaf_ext::map_cochain(self.model, &map)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafCompose(arguments) => {
+                let [after, before] = *arguments;
+                let after = self.expr(after)?;
+                let before = self.expr(before)?;
+                let (left_form, a, m) = self.sheaf_hom_grade(&after)?;
+                let (right_form, b, n) = self.sheaf_hom_grade(&before)?;
+                if left_form != right_form || a.source != b.target {
+                    return Err(Error::plain("shExtCompose requires matching middle sheaf and two cochains or two classes"));
+                }
+                let degree = n.checked_add(m).ok_or_else(|| {
+                    Error::plain("derived sheaf Hom composition degree is out of range")
+                })?;
+                let ends = SheafEnds {
+                    source: b.source.clone(),
+                    target: a.target.clone(),
+                };
+                let ty = self.model.known_sheaf_hom_type(left_form, ends, degree)?;
+                Ok((ty, TypedForm::SheafCompose(Box::new([after, before]))))
+            }
             ExprForm::SheafApply(name, input) => {
                 let map = self.model.sheaf_map(&name)?;
                 let input = self.expr(*input)?;
@@ -5136,6 +5268,39 @@ impl Checker<'_> {
             }
             ExprForm::SheafOperation(operation, input) => {
                 let input = self.expr(*input)?;
+                if let Kind::SheafHom(form, ends, degree) = self.model.kind(input.ty).clone() {
+                    let (output, grade) = match (operation, form) {
+                        (SheafOp::Differential, SheafForm::Cochain) => (
+                            form,
+                            degree.checked_add(1).ok_or_else(|| {
+                                Error::new(input.span, "sheaf differential degree is out of range")
+                            })?,
+                        ),
+                        (SheafOp::Class, SheafForm::Cochain) => (SheafForm::Class, degree),
+                        (SheafOp::Representative, SheafForm::Class) => (SheafForm::Cochain, degree),
+                        (SheafOp::Scale(_), _) => (form, degree),
+                        (SheafOp::Differential | SheafOp::Class, _) => {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "a ShHomC cochain",
+                            ));
+                        }
+                        (SheafOp::Representative, _) => {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "a ShExt class",
+                            ));
+                        }
+                    };
+                    let data = SheafComputation::Hom(self.model.sheaf_hom(&ends));
+                    let ty = self.model.known_sheaf_hom_type(output, ends, grade)?;
+                    return Ok((
+                        ty,
+                        TypedForm::SheafOperation(operation, data, degree, Box::new(input)),
+                    ));
+                }
                 if let (SheafOp::Scale(scalar), Kind::SheafPage(name, _)) =
                     (operation, self.model.kind(input.ty))
                 {
@@ -8533,6 +8698,15 @@ impl Checker<'_> {
         }
     }
 
+    fn sheaf_hom_grade(&self, value: &TypedExpr) -> Result<(SheafForm, &SheafEnds, usize)> {
+        match self.model.kind(value.ty) {
+            Kind::SheafHom(form, ends, degree) => Ok((*form, ends, *degree)),
+            _ => {
+                Err(self.invalid_operand(value, "shExtCompose", "a ShHomC cochain or ShExt class"))
+            }
+        }
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -8567,6 +8741,7 @@ impl Checker<'_> {
                         | Kind::MixedPage(..)
                         | Kind::Sheaf(..)
                         | Kind::SheafComplex(..)
+                        | Kind::SheafHom(..)
                         | Kind::SheafPage(..)
                         | Kind::RMExt(..)
                         | Kind::PCobar(..)
