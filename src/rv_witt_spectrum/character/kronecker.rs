@@ -40,7 +40,7 @@ impl Character {
         from_power_basis(model, degree, factorial(degree), &basis, &mut oracle)
     }
 
-    fn trivial_scalar(&self) -> Option<i128> {
+    pub(super) fn trivial_scalar(&self) -> Option<i128> {
         let (shape, &coefficient) = self.terms.first_key_value()?;
         (self.terms.len() == 1 && shape.rows().len() <= 1).then_some(coefficient)
     }

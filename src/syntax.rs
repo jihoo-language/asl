@@ -1384,6 +1384,7 @@ pub(crate) enum StatementForm {
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
+    SchurCharacterValue(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     StableSchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
@@ -7050,6 +7051,27 @@ impl<'src> Parser<'src> {
                 };
                 (form, depth)
             }
+            "rvStableSchurAdams"
+            | "rvStableSchurExterior"
+            | "rvStableSchurSymmetric"
+            | "rvStableInnerSchur" => {
+                use crate::rv_witt_spectrum::character::Functor;
+                self.expect(Token::LBracket)?;
+                let operation = if name == "rvStableInnerSchur" {
+                    Functor::Schur(self.witt_schur_shape()?)
+                } else {
+                    let index = self.wide_unsigned("stable Schur operation index")?;
+                    match name {
+                        "rvStableSchurAdams" => Functor::Adams(index),
+                        "rvStableSchurExterior" => Functor::Exterior(index),
+                        _ => Functor::Symmetric(index),
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::StableFunctor(operation, Box::new(input)), depth)
+            }
             "rvStableSchurSpecialize" => {
                 self.expect(Token::LBracket)?;
                 let rank = self.wide_unsigned("finite symmetric-group rank")?;
@@ -10837,16 +10859,20 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::PartitionQuery(query, Box::new(self.paren_expr(0)?))
             }
-            Token::Word(name @ ("rvSchurCharacterCoeff" | "rvStableSchurCharacterCoeff")) => {
+            Token::Word(
+                name @ ("rvSchurCharacterCoeff"
+                | "rvStableSchurCharacterCoeff"
+                | "rvSchurCharacterValue"),
+            ) => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
                 let shape = self.witt_schur_shape()?;
                 self.expect(Token::RBracket)?;
                 let input = Box::new(self.paren_expr(0)?);
-                if name == "rvSchurCharacterCoeff" {
-                    StatementForm::SchurCharacterCoeff(shape, input)
-                } else {
-                    StatementForm::StableSchurCharacterCoeff(shape, input)
+                match name {
+                    "rvSchurCharacterCoeff" => StatementForm::SchurCharacterCoeff(shape, input),
+                    "rvSchurCharacterValue" => StatementForm::SchurCharacterValue(shape, input),
+                    _ => StatementForm::StableSchurCharacterCoeff(shape, input),
                 }
             }
             Token::Word(
@@ -18212,6 +18238,10 @@ impl<'src> Parser<'src> {
                         | "rvStableSchurCharacterScale"
                         | "rvStableSchurKronecker"
                         | "rvStableSchurSpecialize"
+                        | "rvStableSchurAdams"
+                        | "rvStableSchurExterior"
+                        | "rvStableSchurSymmetric"
+                        | "rvStableInnerSchur"
                         | "rvSchurCharacterKronecker"
                         | "rvSchurCharacterScale"
                         | "rvSchurPlethysm"

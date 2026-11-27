@@ -11,9 +11,11 @@ use super::{
 };
 
 mod kronecker;
+mod lambda;
 mod plethysm;
 mod stable;
 mod table;
+pub(crate) use lambda::Functor;
 pub(crate) use stable::StableCharacter;
 
 pub(crate) enum Expression {
@@ -25,6 +27,7 @@ pub(crate) enum Expression {
     StableSeed(SchurShape),
     StableScale(i128, Box<ParsedExpr>),
     StableProduct(Box<[ParsedExpr; 2]>),
+    StableFunctor(Functor, Box<ParsedExpr>),
     Specialize(u128, Box<ParsedExpr>),
 }
 

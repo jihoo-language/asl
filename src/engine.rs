@@ -874,6 +874,7 @@ enum TypedForm {
     StableSchurScale(i128, Box<TypedExpr>),
     StableSchurProduct(Box<[TypedExpr; 2]>),
     StableSchurSpecialize(u128, Box<TypedExpr>),
+    StableSchurFunctor(crate::rv_witt_spectrum::character::Functor, Box<TypedExpr>),
     PartitionUnary(crate::partition_algebra::Unary, Box<TypedExpr>),
     PartitionBinary(crate::partition_algebra::Binary, Box<[TypedExpr; 2]>),
     PartitionLocalize(Box<TypedExpr>),
@@ -2255,6 +2256,16 @@ impl Engine {
                     unreachable!()
                 };
                 return Ok(Some(character.coefficient(&shape)));
+            }
+            StatementForm::SchurCharacterValue(shape, input) => {
+                let input = self.checker().expr(*input)?;
+                let ty = self.model.schur_character_type(shape.weight())?;
+                self.checker()
+                    .require_type(ty, &input, "rvSchurCharacterValue")?;
+                let Value::RVSchurCharacter(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return value.class_value(&mut self.model, &shape).map(Some);
             }
             StatementForm::SchurCharacterCoeff(shape, input) => {
                 let value = self.checker().expr(*input)?;
@@ -12285,6 +12296,14 @@ impl Engine {
                     unreachable!()
                 };
                 a.product(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::StableSchurFunctor(operation, input) => {
+                let Value::RVStableSchurCharacter(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .functor(&mut self.model, operation)?
+                    .persist(&mut self.model)
             }
             TypedForm::StableSchurSpecialize(rank, input) => {
                 let Value::RVStableSchurCharacter(value) = self.eval(input)? else {
@@ -25307,6 +25326,15 @@ impl Checker<'_> {
                 self.require_type(ty, &a, "rvStableSchurKronecker")?;
                 self.require_type(ty, &b, "rvStableSchurKronecker")?;
                 Ok((ty, TypedForm::StableSchurProduct(Box::new([a, b]))))
+            }
+            Expression::StableFunctor(operation, input) => {
+                let input = self.expr(*input)?;
+                let stable = self.model.stable_schur_character_type()?;
+                self.require_type(stable, &input, operation.name())?;
+                Ok((
+                    stable,
+                    TypedForm::StableSchurFunctor(operation, Box::new(input)),
+                ))
             }
             Expression::Specialize(rank, input) => {
                 let input = self.expr(*input)?;

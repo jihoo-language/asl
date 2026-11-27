@@ -17,7 +17,7 @@ use super::{
 };
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct StableCharacter(Terms);
+pub(crate) struct StableCharacter(pub(super) Terms);
 
 impl StableCharacter {
     pub(crate) fn seed(tail: SchurShape) -> Self {
@@ -54,7 +54,7 @@ impl StableCharacter {
         Ok(Self(scale_terms(model, &self.0, factor)?))
     }
 
-    fn highest_weight(&self) -> u128 {
+    pub(super) fn highest_weight(&self) -> u128 {
         self.0.keys().map(SchurShape::weight).max().unwrap_or(0)
     }
 
@@ -81,14 +81,7 @@ impl StableCharacter {
         let mut expansions = Expansions::new(model, degree)?;
         let left = expansions.character(model, &self.0)?;
         let right = expansions.character(model, &rhs.0)?;
-        let mut polynomial = BTreeMap::new();
-        for (left, &a) in &left {
-            for (right, &b) in &right {
-                let value = multiply(model, a, b)?;
-                let groups = counts(left, right);
-                overlaps(model, &groups, &mut Vec::new(), value, &mut polynomial)?;
-            }
-        }
+        let polynomial = binomial_product(model, &left, &right)?;
         expansions.reduced_basis(model, degree, polynomial)
     }
 
@@ -114,14 +107,14 @@ impl StableCharacter {
     }
 }
 
-struct Expansions {
+pub(super) struct Expansions {
     finite: CharacterOracle,
     classes: Vec<Vec<Partition>>,
     stable: BTreeMap<Partition, Coefficients>,
 }
 
 impl Expansions {
-    fn new(model: &mut Model, degree: u8) -> Result<Self> {
+    pub(super) fn new(model: &mut Model, degree: u8) -> Result<Self> {
         let classes = (0..=degree)
             .map(|n| partitions(model, n))
             .collect::<Result<_>>()?;
@@ -132,7 +125,7 @@ impl Expansions {
         })
     }
 
-    fn character(&mut self, model: &mut Model, terms: &Terms) -> Result<Coefficients> {
+    pub(super) fn character(&mut self, model: &mut Model, terms: &Terms) -> Result<Coefficients> {
         let mut polynomial = BTreeMap::new();
         for (shape, &coefficient) in terms {
             let tail = small_tail(shape);
@@ -145,6 +138,10 @@ impl Expansions {
             )?;
         }
         Ok(polynomial)
+    }
+
+    pub(super) fn cycle_types(&self, degree: u8) -> impl Iterator<Item = &Partition> {
+        self.classes[..=usize::from(degree)].iter().flatten()
     }
 
     fn expansion(&mut self, model: &mut Model, tail: &Partition) -> Result<&Coefficients> {
@@ -177,7 +174,7 @@ impl Expansions {
         Ok(&self.stable[tail])
     }
 
-    fn reduced_basis(
+    pub(super) fn reduced_basis(
         &mut self,
         model: &mut Model,
         degree: u8,
@@ -222,7 +219,7 @@ fn small_tail(shape: &SchurShape) -> Partition {
     shape.rows().iter().map(|&row| row as u8).collect()
 }
 
-fn add_scaled(
+pub(super) fn add_scaled(
     model: &mut Model,
     result: &mut Coefficients,
     source: &Coefficients,
@@ -262,6 +259,22 @@ fn vertical_strips(
         rows.truncate(start);
     }
     Ok(())
+}
+
+pub(super) fn binomial_product(
+    model: &mut Model,
+    left: &Coefficients,
+    right: &Coefficients,
+) -> Result<Coefficients> {
+    let mut product = Coefficients::new();
+    for (left, &a) in left {
+        for (right, &b) in right {
+            let value = multiply(model, a, b)?;
+            let groups = counts(left, right);
+            overlaps(model, &groups, &mut Vec::new(), value, &mut product)?;
+        }
+    }
+    Ok(product)
 }
 
 fn counts(left: &[u8], right: &[u8]) -> Vec<(u8, u8, u8)> {
@@ -305,7 +318,7 @@ fn overlaps(
     Ok(())
 }
 
-fn choose(n: u8, k: u8) -> i128 {
+pub(super) fn choose(n: u8, k: u8) -> i128 {
     (1..=k).fold(1, |value, i| value * i128::from(n - i + 1) / i128::from(i))
 }
 

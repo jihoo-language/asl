@@ -19,8 +19,43 @@ impl Character {
         oracle: &mut CharacterOracle,
         n: u8,
     ) -> Result<Coefficients> {
-        let input: Vec<_> = self
-            .terms
+        let input = self.table_terms();
+        let mut terms = BTreeMap::new();
+        for partition in partitions(model, n)? {
+            let value = linear_character_value(model, oracle, &input, pack(&partition))?;
+            if !value.is_zero() {
+                terms.insert(partition, value);
+            }
+        }
+        Ok(terms)
+    }
+
+    pub(crate) fn class_value(&self, model: &mut Model, shape: &SchurShape) -> Result<String> {
+        debug_assert_eq!(self.weight, shape.weight());
+        let value = if self.terms.is_empty() {
+            0
+        } else if let Some(scalar) = self.trivial_scalar() {
+            scalar
+        } else {
+            if self.weight > u128::from(MAX_WEIGHT) {
+                return Err(Error::plain(
+                    "Schur character value exceeds the weight limit of 16 boxes",
+                ));
+            }
+            let cycles: Partition = shape.rows().iter().map(|&r| r as u8).collect();
+            let mut oracle = CharacterOracle::default();
+            linear_character_value(model, &mut oracle, &self.table_terms(), pack(&cycles))?
+                .signed()
+                .ok_or_else(overflow)?
+        };
+        Ok(format!(
+            "rvSchurCharacterValue[{:?}] = {value}",
+            shape.rows()
+        ))
+    }
+
+    fn table_terms(&self) -> Vec<(u64, Integer)> {
+        self.terms
             .iter()
             .map(|(shape, &value)| {
                 (
@@ -28,21 +63,22 @@ impl Character {
                     Integer::from_i128(value),
                 )
             })
-            .collect();
-        let mut terms = BTreeMap::new();
-        for partition in partitions(model, n)? {
-            let code = pack(&partition);
-            let mut value = zero();
-            for &(beta, coefficient) in &input {
-                let irreducible = Integer::from_i128(oracle.value(model, beta, code)?);
-                value = add(value, multiply(model, coefficient, irreducible)?)?;
-            }
-            if !value.is_zero() {
-                terms.insert(partition, value);
-            }
-        }
-        Ok(terms)
+            .collect()
     }
+}
+
+fn linear_character_value(
+    model: &mut Model,
+    oracle: &mut CharacterOracle,
+    terms: &[(u64, Integer)],
+    code: u128,
+) -> Result<Integer> {
+    let mut value = zero();
+    for &(beta, coefficient) in terms {
+        let irreducible = Integer::from_i128(oracle.value(model, beta, code)?);
+        value = add(value, multiply(model, coefficient, irreducible)?)?;
+    }
+    Ok(value)
 }
 
 // Store the Frobenius characteristic in the power basis with common
