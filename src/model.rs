@@ -3,6 +3,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
 use hochschild::tate as verbitsky_tate;
+use mf::knorrer;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -357,6 +358,7 @@ pub(crate) enum Kind {
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
     VerbitskyCyclic(verbitsky_cyclic::Grade, bool),
+    Knorrer(knorrer::Grade, bool),
     MatrixFactorization(mf::Grade, bool),
     VerbitskyTate(verbitsky_tate::Grade),
     VerbitskyHochschild(hochschild::Grade, bool),
@@ -631,6 +633,7 @@ pub(crate) enum Value {
     VerbitskyKoszul(Rc<koszul::Chain>),
     VerbitskyFree(Rc<verbitsky_resolution::Vector>),
     VerbitskyCyclic(Rc<verbitsky_cyclic::Chain>),
+    Knorrer(Rc<knorrer::Cochain>),
     MatrixFactorization(Rc<mf::Morphism>),
     VerbitskyTate(Rc<verbitsky_tate::State>),
     VerbitskyHochschild(Rc<hochschild::Cochain>),
@@ -938,6 +941,7 @@ pub(crate) struct Model {
     cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    knorrer_objects: HashMap<String, Rc<knorrer::Doubled>>,
     matrix_factorizations: HashMap<String, Rc<mf::Object>>,
     verbitsky_tate: HashMap<String, Rc<verbitsky_tate::Definition>>,
     verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
@@ -1111,6 +1115,7 @@ impl Model {
             cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
+            knorrer_objects: HashMap::new(),
             matrix_factorizations: HashMap::new(),
             verbitsky_tate: HashMap::new(),
             verbitsky_associative: HashMap::new(),
@@ -1804,6 +1809,17 @@ impl Model {
                     1
                 }
             }
+            Kind::Knorrer(ref grade, _) => {
+                let source = &self.knorrer_objects[grade.source.as_ref()].base;
+                let target = &self.knorrer_objects[grade.target.as_ref()].base;
+                if self.matrix_factorizations[source.as_ref()].is_empty()
+                    || self.matrix_factorizations[target.as_ref()].is_empty()
+                {
+                    1
+                } else {
+                    usize::MAX
+                }
+            }
             Kind::MatrixFactorization(ref grade, _) => {
                 if self.matrix_factorizations[grade.source.as_ref()].is_empty()
                     || self.matrix_factorizations[grade.target.as_ref()].is_empty()
@@ -2143,6 +2159,7 @@ impl Model {
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
                 | Kind::VerbitskyCyclic(..)
+                | Kind::Knorrer(..)
                 | Kind::MatrixFactorization(..)
                 | Kind::VerbitskyTate(..)
                 | Kind::VerbitskyHochschild(..)
@@ -6146,6 +6163,37 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn register_knorrer(&mut self, name: Label, base: Label) -> Result<()> {
+        if self.knorrer_objects.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Knörrer object '{}' is already defined", name.text),
+            ));
+        }
+        self.matrix_factorization(&base.text)?;
+        self.allocate(12)?;
+        self.knorrer_objects.insert(
+            name.text,
+            Rc::new(knorrer::Doubled {
+                base: base.text.into(),
+            }),
+        );
+        Ok(())
+    }
+
+    pub(crate) fn knorrer_object(&self, name: &str) -> Result<Rc<knorrer::Doubled>> {
+        self.knorrer_objects
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Knörrer object '{name}'")))
+    }
+
+    pub(crate) fn knorrer_type(&mut self, grade: knorrer::Grade, class: bool) -> Result<TypeId> {
+        let [source, target] = grade.base_grade(self)?.objects(self)?;
+        knorrer::Hom::new(&source, &target, grade.odd)?;
+        self.inhabited_type(Kind::Knorrer(grade, class), 0)
+    }
+
     pub(crate) fn register_matrix_factorization(
         &mut self,
         name: Label,
@@ -8263,6 +8311,7 @@ impl Model {
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
             | Kind::VerbitskyCyclic(..)
+            | Kind::Knorrer(..)
             | Kind::MatrixFactorization(..)
             | Kind::VerbitskyTate(..)
             | Kind::VerbitskyHochschild(..)
@@ -8881,6 +8930,19 @@ impl Model {
                     grade.weight
                 ))
             }
+            Kind::Knorrer(grade, class) => {
+                let name = if *class {
+                    "RVKnorrer"
+                } else {
+                    "RVKnorrerCochain"
+                };
+                out.push(&format!(
+                    "{name}({},{},{})",
+                    grade.source,
+                    grade.target,
+                    u8::from(grade.odd)
+                ))
+            }
             Kind::MatrixFactorization(grade, class) => {
                 let name = if *class { "RVMF" } else { "RVMFCochain" };
                 out.push(&format!(
@@ -9404,6 +9466,7 @@ impl Model {
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
+            (Value::Knorrer(a), Value::Knorrer(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::MatrixFactorization(a), Value::MatrixFactorization(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -9848,6 +9911,7 @@ impl Model {
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => a.compare(self, b),
+            (Value::Knorrer(a), Value::Knorrer(b)) => a.compare(self, b),
             (Value::MatrixFactorization(a), Value::MatrixFactorization(b)) => a.compare(self, b),
             (Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => a.compare(self, b),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => a.compare(self, b),
@@ -10416,6 +10480,15 @@ impl Model {
                         ));
                     }
                     vec![verbitsky_cyclic::Chain::default().persist(self)?]
+                }
+                Kind::Knorrer(ref grade, _) => {
+                    let [source, target] = grade.base_grade(self)?.objects(self)?;
+                    if !source.is_empty() && !target.is_empty() {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Knörrer Hom space",
+                        ));
+                    }
+                    vec![knorrer::Cochain::default().persist(self)?]
                 }
                 Kind::MatrixFactorization(ref grade, _) => {
                     if !self.matrix_factorization(&grade.source)?.is_empty()
@@ -12538,6 +12611,14 @@ impl Model {
             Value::VerbitskyCyclic(chain) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&chain.text(self)?)
+            }
+            Value::Knorrer(cochain) => {
+                let Kind::Knorrer(grade, _) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let odd = grade.odd;
+                self.write_type(out, ty, 0)?;
+                out.push(&cochain.text(self, odd)?)
             }
             Value::MatrixFactorization(morphism) => {
                 self.write_type(out, ty, 0)?;

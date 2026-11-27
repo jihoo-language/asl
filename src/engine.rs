@@ -3,6 +3,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
 use hochschild::tate as verbitsky_tate;
+use mf::knorrer;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use verbitsky_cyclic::eulerian;
@@ -1128,6 +1129,10 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    KnorrerUnary(knorrer::Unary, Box<TypedExpr>),
+    KnorrerInclude(Box<TypedExpr>),
+    KnorrerShift(Box<TypedExpr>),
+    KnorrerCompose(Box<[TypedExpr; 2]>),
     MatrixFactorizationUnary(mf::Unary, Box<TypedExpr>),
     MatrixFactorizationCompose(Box<[TypedExpr; 2]>),
     MatrixFactorizationAction(Box<[TypedExpr; 2]>),
@@ -2864,6 +2869,7 @@ impl Engine {
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
             }
+            StatementForm::Knorrer(command) => return self.knorrer_command(*command),
             StatementForm::MatrixFactorization(command) => {
                 return self.matrix_factorization_command(*command)
             }
@@ -6873,6 +6879,45 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn knorrer_command(&mut self, command: knorrer::Command) -> Result<Option<String>> {
+        use knorrer::{Command, Query};
+        match command {
+            Command::Declare(name, base) => {
+                self.model.register_knorrer(name, base)?;
+                Ok(None)
+            }
+            Command::Object(name) => {
+                let object = self.model.knorrer_object(&name.text)?;
+                let base = self.model.matrix_factorization(&object.base)?;
+                let report = knorrer::object_report(&mut self.model, &base)?;
+                Ok(Some(format!("rvKnorrerObject[{}] = {report}", name.text)))
+            }
+            Command::Inspect(query, input) => {
+                let operation = match query {
+                    Query::Weights => "rvKnorrerWeights",
+                    Query::Cone => "rvKnorrerCone",
+                    Query::Trace => "rvKnorrerTrace",
+                };
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().knorrer_operand(&input, operation)?.0.clone();
+                if matches!(query, Query::Trace) && grade.source != grade.target {
+                    return Err(Error::plain("Knörrer trace requires an endomorphism"));
+                }
+                let Value::Knorrer(cochain) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let [source, target] = grade.base_grade(&self.model)?.objects(&self.model)?;
+                let hom = knorrer::Hom::new(&source, &target, grade.odd)?;
+                let report = match query {
+                    Query::Weights => hom.weights(&mut self.model, &cochain)?,
+                    Query::Cone => hom.cone(&mut self.model, &cochain)?,
+                    Query::Trace => hom.trace(&mut self.model, &cochain)?,
+                };
+                Ok(Some(format!("{operation} = {report}")))
             }
         }
     }
@@ -13421,6 +13466,9 @@ impl Engine {
                         Value::MatrixFactorization(a),
                         Value::MatrixFactorization(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::Knorrer(a), Value::Knorrer(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -15791,6 +15839,76 @@ impl Engine {
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
+            }
+            TypedForm::KnorrerUnary(operation, input) => {
+                use knorrer::Unary;
+                let Kind::Knorrer(grade, _) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Value::Knorrer(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let result = match operation {
+                    Unary::Project => {
+                        return knorrer::project(&mut self.model, &value)?.persist(&mut self.model)
+                    }
+                    Unary::Representative => return Ok(Value::Knorrer(value)),
+                    Unary::Scale(coefficient) => value.scale(&mut self.model, *coefficient)?,
+                    _ => {
+                        let [source, target] =
+                            grade.base_grade(&self.model)?.objects(&self.model)?;
+                        let hom = knorrer::Hom::new(&source, &target, grade.odd)?;
+                        match operation {
+                            Unary::Diff => hom.differential(&mut self.model, &value)?,
+                            Unary::Homotopy => hom.homotopy(&mut self.model, &value)?,
+                            Unary::Primitive => hom.primitive(&mut self.model, &value)?,
+                            Unary::Class => hom.class(&mut self.model, &value)?,
+                            _ => unreachable!(),
+                        }
+                    }
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::KnorrerInclude(input) => {
+                let Value::MatrixFactorization(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                knorrer::include(&mut self.model, &value)?.persist(&mut self.model)
+            }
+            TypedForm::KnorrerShift(input) => {
+                let Value::Knorrer(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.shifted(&mut self.model)?.persist(&mut self.model)
+            }
+            TypedForm::KnorrerCompose(inputs) => {
+                let Kind::Knorrer(left, _) = self.model.kind(inputs[0].ty) else {
+                    unreachable!()
+                };
+                let Kind::Knorrer(right, _) = self.model.kind(inputs[1].ty) else {
+                    unreachable!()
+                };
+                let (left_odd, right_odd) = (left.odd, right.odd);
+                let Kind::Knorrer(grade, class) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let (grade, class) = (grade.clone(), *class);
+                let Value::Knorrer(a) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::Knorrer(b) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                let result = a.compose(&mut self.model, left_odd, &b, right_odd)?;
+                let result = if class {
+                    let [source, target] = grade.base_grade(&self.model)?.objects(&self.model)?;
+                    knorrer::Hom::new(&source, &target, grade.odd)?
+                        .class(&mut self.model, &result)?
+                } else {
+                    result
+                };
+                result.persist(&mut self.model)
             }
             TypedForm::MatrixFactorizationUnary(operation, input) => {
                 let Kind::MatrixFactorization(grade, _) = self.model.kind(input.ty) else {
@@ -20079,6 +20197,14 @@ impl Checker<'_> {
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
             }
+            TypeForm::Knorrer(source, target, odd, class) => self.model.knorrer_type(
+                knorrer::Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd,
+                },
+                class,
+            ),
             TypeForm::MatrixFactorization(source, target, odd, class) => {
                 self.model.matrix_factorization_type(
                     mf::Grade {
@@ -21342,6 +21468,7 @@ impl Checker<'_> {
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
                     Kind::VerbitskyCyclic(..) => verbitsky_cyclic::Chain::default().persist(self.model)?,
+                    Kind::Knorrer(..) => knorrer::Cochain::default().persist(self.model)?,
                     Kind::MatrixFactorization(..) => mf::Morphism::default().persist(self.model)?,
                     Kind::VerbitskyTate(..) => verbitsky_tate::State::default().persist(self.model)?,
                     Kind::VerbitskyHochschild(..) => hochschild::Cochain::default().persist(self.model)?,
@@ -23654,6 +23781,7 @@ impl Checker<'_> {
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::Knorrer(expression) => self.knorrer_expression(*expression),
             ExprForm::MatrixFactorization(expression) => {
                 self.matrix_factorization_expression(*expression)
             }
@@ -24623,6 +24751,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::VerbitskyCyclicScale((-1, 1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Knorrer(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KnorrerUnary(knorrer::Unary::Scale((-1, 1)), Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::MatrixFactorization(..)) {
@@ -28896,6 +29030,7 @@ impl Checker<'_> {
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
                         | Kind::VerbitskyCyclic(..)
+                        | Kind::Knorrer(..)
                         | Kind::MatrixFactorization(..)
                         | Kind::VerbitskyTate(..)
                         | Kind::VerbitskyHochschild(..)
@@ -30612,6 +30747,116 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
                 ))
+            }
+        }
+    }
+
+    fn knorrer_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(&knorrer::Grade, bool)> {
+        if let Kind::Knorrer(grade, class) = self.model.kind(input.ty) {
+            Ok((grade, *class))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVKnorrer class or RVKnorrerCochain"))
+        }
+    }
+
+    fn knorrer_expression(
+        &mut self,
+        expression: knorrer::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use knorrer::{Expression, Grade, Unary};
+        match expression {
+            Expression::Term(source, target, odd, row, column, exponents, coefficient) => {
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd,
+                };
+                let [source, target] = grade.base_grade(self.model)?.objects(self.model)?;
+                let value = knorrer::Hom::new(&source, &target, odd)?.term(
+                    self.model,
+                    row,
+                    column,
+                    exponents,
+                    coefficient,
+                )?;
+                let ty = self.model.knorrer_type(grade, false)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Include(source, target, input) => {
+                let input = self.expr(*input)?;
+                let (base, class) =
+                    self.matrix_factorization_operand(&input, "rvKnorrerInclude")?;
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd: base.odd,
+                };
+                if grade.base_grade(self.model)? != *base {
+                    return Err(Error::plain(
+                        "Knörrer inclusion requires the indicated underlying objects",
+                    ));
+                }
+                let ty = self.model.knorrer_type(grade, class)?;
+                Ok((ty, TypedForm::KnorrerInclude(Box::new(input))))
+            }
+            Expression::Shift(source, target, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) = self.knorrer_operand(&input, "rvKnorrerShift")?;
+                let [old_source, old_target] = grade.base_grade(self.model)?.objects(self.model)?;
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd: grade.odd,
+                };
+                let [new_source, new_target] = grade.base_grade(self.model)?.objects(self.model)?;
+                if !new_source.is_shift_of(&old_source) || !new_target.is_shift_of(&old_target) {
+                    return Err(Error::plain(
+                        "Knörrer shift requires the indicated shifted underlying objects",
+                    ));
+                }
+                let ty = self.model.knorrer_type(grade, class)?;
+                Ok((ty, TypedForm::KnorrerShift(Box::new(input))))
+            }
+            Expression::Compose(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (left, class) = self.knorrer_operand(&a, "rvKnorrerCompose")?;
+                let (right, other) = self.knorrer_operand(&b, "rvKnorrerCompose")?;
+                if class != other {
+                    return Err(Error::plain(
+                        "Knörrer composition requires both raw cochains or both classes",
+                    ));
+                }
+                let type_id = self.model.knorrer_type(left.compose(right)?, class)?;
+                Ok((type_id, TypedForm::KnorrerCompose(Box::new([a, b]))))
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) = self.knorrer_operand(&input, "Knörrer operation")?;
+                let output = match operation {
+                    Unary::Project => {
+                        let base = grade.base_grade(self.model)?;
+                        let ty = self.model.matrix_factorization_type(base,class)?;
+                        return Ok((ty,TypedForm::KnorrerUnary(operation,Box::new(input))));
+                    }
+                    Unary::Diff | Unary::Homotopy | Unary::Primitive if !class => (grade.opposite(),false),
+                    Unary::Class if !class => (grade.clone(),true),
+                    Unary::Representative if class => (grade.clone(),false),
+                    Unary::Scale((_,denominator)) => {
+                        if denominator <= 0 {
+                            return Err(Error::plain("Knörrer coefficient denominator must be positive"));
+                        }
+                        (grade.clone(),class)
+                    }
+                    _ => return Err(Error::plain("Knörrer differential, homotopy, primitive and class require a raw cochain, and representative requires a class")),
+                };
+                let ty = self.model.knorrer_type(output.0, output.1)?;
+                Ok((ty, TypedForm::KnorrerUnary(operation, Box::new(input))))
             }
         }
     }

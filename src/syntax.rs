@@ -202,6 +202,7 @@ pub(crate) enum TypeForm {
         crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::SyntaxGrade,
         bool,
     ),
+    Knorrer(Label, Label, bool, bool),
     MatrixFactorization(Label, Label, bool, bool),
     VerbitskyTate(
         Label,
@@ -1142,6 +1143,7 @@ pub(crate) enum ExprForm {
     VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Expression>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
+    Knorrer(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::Expression>),
     MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Expression>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
@@ -1434,6 +1436,7 @@ pub(crate) enum StatementForm {
     MonomialCICotangent(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
+    Knorrer(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::Command>),
     MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Command>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
@@ -9727,6 +9730,106 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn knorrer_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::{Command, Query};
+        self.advance()?;
+        let command = match name {
+            "rvknorrer" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Declare(label, base)
+            }
+            "rvKnorrerObject" => {
+                self.expect(Token::LBracket)?;
+                let object = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Object(object)
+            }
+            "rvKnorrerWeights" => Command::Inspect(Query::Weights, Box::new(self.paren_expr(0)?)),
+            "rvKnorrerCone" => Command::Inspect(Query::Cone, Box::new(self.paren_expr(0)?)),
+            _ => Command::Inspect(Query::Trace, Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::Knorrer(Box::new(command)))
+    }
+
+    fn knorrer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::{Expression, Unary};
+        let (operation, depth) = match name {
+            "rvKnorrerTerm" => {
+                self.expect(Token::LBracket)?;
+                let (source, target, odd) = self.matrix_factorization_grade()?;
+                self.expect(Token::Comma)?;
+                let row = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let column = self.number()?.0;
+                let coefficient = if self.eat(Token::Comma)? {
+                    self.rational_entry(
+                        "Knörrer coefficient numerator",
+                        "Knörrer coefficient denominator",
+                    )?
+                } else {
+                    (1, 1)
+                };
+                self.expect(Token::RBracket)?;
+                let exponents = self
+                    .set_named_rows(|parser| parser.wide_unsigned("Knörrer polynomial exponent"))?
+                    .try_into()
+                    .map_err(|_| {
+                        Error::new(span, "Knörrer term requires three polynomial exponents")
+                    })?;
+                (
+                    Expression::Term(source, target, odd, row, column, exponents, coefficient),
+                    0,
+                )
+            }
+            "rvKnorrerInclude" | "rvKnorrerShift" => {
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let operation = if name == "rvKnorrerInclude" {
+                    Expression::Include(source, target, Box::new(input))
+                } else {
+                    Expression::Shift(source, target, Box::new(input))
+                };
+                (operation, depth)
+            }
+            "rvKnorrerCompose" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = inputs[0].depth.max(inputs[1].depth) + 1;
+                (Expression::Compose(Box::new(inputs)), depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvKnorrerDiff" => Unary::Diff,
+                    "rvKnorrerHomotopy" => Unary::Homotopy,
+                    "rvKnorrerPrimitive" => Unary::Primitive,
+                    "rvKnorrerClass" => Unary::Class,
+                    "rvKnorrerRepresentative" => Unary::Representative,
+                    "rvKnorrerProject" => Unary::Project,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let num = self.signed_wide("an integer numerator", "Knörrer numerator")?;
+                        self.expect(Token::Comma)?;
+                        let den =
+                            self.signed_wide("a positive denominator", "Knörrer denominator")?;
+                        self.expect(Token::RBracket)?;
+                        Unary::Scale((num, den))
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Apply(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::Knorrer(Box::new(operation)), depth)
+    }
+
     fn matrix_factorization_grade(&mut self) -> Result<(Label, Label, bool)> {
         let source = self.label()?;
         self.expect(Token::Comma)?;
@@ -14033,6 +14136,10 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word(
+                command @ ("rvknorrer" | "rvKnorrerObject" | "rvKnorrerTrace" | "rvKnorrerCone"
+                | "rvKnorrerWeights"),
+            ) => self.knorrer_statement(command)?,
             Token::Word(
                 command @ ("rvmf" | "rvmfshift" | "rvmfcone" | "rvMFCone" | "rvMFObject"
                 | "rvMFHom" | "rvMFTrace" | "rvMFPair"),
@@ -18947,6 +19054,17 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if matches!(name.text.as_str(), "RVKnorrer" | "RVKnorrerCochain")
+            && self.eat(Token::LParen)?
+        {
+            let (source, target, odd) = self.matrix_factorization_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::Knorrer(source, target, odd, name.text == "RVKnorrer"),
+                0,
+            );
+        }
         if matches!(name.text.as_str(), "RVMF" | "RVMFCochain") && self.eat(Token::LParen)? {
             let (source, target, parity) = self.matrix_factorization_grade()?;
             self.expect(Token::RParen)?;
@@ -20929,6 +21047,23 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKnorrerTerm" | "rvKnorrerInclude" | "rvKnorrerShift" | "rvKnorrerScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKnorrerDiff"
+                            | "rvKnorrerCompose"
+                            | "rvKnorrerHomotopy"
+                            | "rvKnorrerPrimitive"
+                            | "rvKnorrerClass"
+                            | "rvKnorrerRepresentative"
+                            | "rvKnorrerProject"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.knorrer_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
