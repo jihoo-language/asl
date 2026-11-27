@@ -3,10 +3,12 @@ BEGIN {
     if (r == "") r = 20
     if (p == "") p = 3
     if (control == "") control = 0
+    if (bars == "") bars = 0
+    if (direct == "") direct = 0
     if (r !~ /^[0-9]+$/ || r < 1 ||
         p !~ /^[0-9]+$/ || p < 2 || p > 4294967295 ||
-        control !~ /^[01]$/) {
-        print "r must be positive, p a prime fitting u32, and control 0 or 1" > "/dev/stderr"
+        control !~ /^[01]$/ || bars !~ /^[01]$/ || direct !~ /^[01]$/) {
+        print "r must be positive and p must be a prime fitting u32. Set control, bars, and direct to 0 or 1." > "/dev/stderr"
         exit 2
     }
     emit("mixedcomplex Stair[" p "] {")
@@ -18,7 +20,7 @@ BEGIN {
     emit("};")
     emit(sprintf("let x = mixgen[Stair,%d,0,0,0];", r))
     emit(sprintf("let y = mixU[%d](mixchain[Stair,%d][(y%d,1)]);", r,2*r-1,r))
-    for (i=0; i<r; i++) {
+    for (i=(direct ? r-1 : 0); i<r; i++) {
         emit(sprintf("assert mixD(mixgen[Stair,%d,0,0,0]) == zero[MixedE(Stair,%d,-1,%d)];", i,i,i))
     }
     emit(sprintf("assert mixPrev(x) == mixgen[Stair,%d,0,0,0];", r-1))
@@ -32,6 +34,17 @@ BEGIN {
         emit(sprintf("assert mixNext(mixD(x)) == zero[MixedE(Stair,%d,-1,%d)];",r+1,r))
         emit(sprintf("mixdim[Stair,%d,0,0];",r+1))
         emit("show mixD(x);")
+    }
+
+    if (bars) {
+        if (control) {
+            emit("assert mixBarRep[Stair,0] == mixPageRep(x);")
+            emit(sprintf("assert mixD(mixBarRep[Stair,1]) == zero[MixedU(Stair,%d)];",2*r-2))
+        } else {
+            emit("assert mixBarNull[Stair,0] == mixPageRep(x);")
+            emit(sprintf("assert mixD(mixBarNull[Stair,0]) == mixU[%d](mixBarRep[Stair,0]);",r))
+        }
+        emit("mixbars[Stair];")
     }
 
     for (i=1; i<=line_count; i++) print lines[i]

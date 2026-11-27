@@ -24,6 +24,7 @@ use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
+use crate::mixed_bars;
 use crate::motivic;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
@@ -385,6 +386,7 @@ pub(crate) struct Model {
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
+    mixed_bars: HashMap<mixed::Id, Rc<mixed_bars::Bars>>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
@@ -425,6 +427,7 @@ impl Model {
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
+            mixed_bars: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
             sheaf_maps: HashMap::new(),
@@ -886,6 +889,47 @@ impl Model {
 
     pub(crate) fn mixed_chain_type(&mut self, grade: mixed::Grade, total: bool) -> Result<TypeId> {
         self.inhabited_type(Kind::MixedChain(grade, total), 0)
+    }
+
+    pub(crate) fn mixed_bars(&mut self, id: mixed::Id) -> Result<Rc<mixed_bars::Bars>> {
+        if let Some(bars) = self.mixed_bars.get(&id) {
+            return Ok(bars.clone());
+        }
+        let complex = self.mixed_complex(id);
+        let bars = Rc::new(mixed_bars::Bars::build(self, &complex)?);
+        self.mixed_bars.insert(id, bars.clone());
+        Ok(bars)
+    }
+
+    pub(crate) fn show_mixed_bars(&mut self, id: mixed::Id) -> Result<String> {
+        let bars = self.mixed_bars(id)?;
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!("mixbars[{}] = free [", self.mixed_name(id)))?;
+        for (index, bar) in bars
+            .bars()
+            .iter()
+            .filter(|bar| bar.torsion.is_none())
+            .enumerate()
+        {
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&bar.birth.to_string())?;
+        }
+        out.push("], torsion [")?;
+        for (index, (birth, torsion)) in bars
+            .bars()
+            .iter()
+            .filter_map(|bar| bar.torsion.as_ref().map(|t| (bar.birth, t)))
+            .enumerate()
+        {
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!("({}, {})", birth, torsion.length))?;
+        }
+        out.push("]")?;
+        Ok(out.string)
     }
 
     pub(crate) fn mixed_page_type(&mut self, grade: mixed_page::Grade) -> Result<TypeId> {

@@ -496,6 +496,28 @@ impl Engine {
                 self.model.define_hh_mixed(name.text, complex, origin);
                 return Ok(None);
             }
+            StatementForm::MixedBars(name) => {
+                let id = self.model.mixed_id(&name)?;
+                self.model.show_mixed_bars(id)?
+            }
+            StatementForm::MixedBarRank(name, source, target) => {
+                let id = self.model.mixed_id(&name)?;
+                let bars = self.model.mixed_bars(id)?;
+                let rank = bars.rank(&mut self.model, source, target.unwrap_or(source))?;
+                if let Some(target) = target {
+                    format!("mixbarrank[{}, {source}, {target}] = {rank}", name.text)
+                } else {
+                    format!("mixbardim[{}, {source}] = {rank}", name.text)
+                }
+            }
+            StatementForm::MixedPeriodicRank(name, degree) => {
+                let id = self.model.mixed_id(&name)?;
+                let rank = self
+                    .model
+                    .mixed_bars(id)?
+                    .periodic_rank(&mut self.model, degree)?;
+                format!("mixbarperiodicdim[{}, {degree}] = {rank}", name.text)
+            }
             StatementForm::MixedDimension(spec) => {
                 let grade = self.checker().mixed_grade(spec)?;
                 let ty = self.model.mixed_page_type(grade)?;
@@ -4750,6 +4772,25 @@ impl Checker<'_> {
                 let value = odd_ext::persist(self.model, terms)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MixedBarTerm(name, index, null) => {
+                let complex = self.model.mixed_id(&name)?;
+                let bars = self.model.mixed_bars(complex)?;
+                let bar = bars.bar(index)?;
+                let (b, support) = if null {
+                    let torsion = bar
+                        .torsion
+                        .as_ref()
+                        .ok_or_else(|| Error::plain("mixBarNull requires a torsion bar"))?;
+                    (torsion.null_degree, torsion.witness.as_ref())
+                } else {
+                    (bar.birth, bar.cycle.as_ref())
+                };
+                let ty = self
+                    .model
+                    .mixed_chain_type(mixed::Grade { complex, b }, true)?;
+                let value = odd_ext::persist(self.model, support.to_vec())?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::MixedGenerator(spec, index, at) => {
                 let grade = self.mixed_grade(spec)?;
                 let ty = self.model.mixed_page_type(grade)?;
@@ -4759,8 +4800,12 @@ impl Checker<'_> {
             }
             ExprForm::MixedEmbed(power, input) => {
                 let input = self.expr(*input)?;
-                let Kind::MixedChain(grade, false) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "mixU", "a MixedChain"));
+                let Kind::MixedChain(grade, _) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "mixU",
+                        "a MixedChain or MixedU chain",
+                    ));
                 };
                 let ty = self
                     .model

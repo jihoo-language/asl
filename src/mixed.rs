@@ -152,6 +152,10 @@ impl Complex {
         self.names.len()
     }
 
+    pub(crate) fn raw_degree(&self, index: usize) -> i64 {
+        self.degrees[index]
+    }
+
     pub(crate) fn name(&self, index: usize) -> &str {
         &self.names[index]
     }

@@ -533,6 +533,7 @@ pub(crate) enum ExprForm {
     MixedLiteral(Label, i64, crate::mixed::Terms),
     MixedEmbed(usize, Box<ParsedExpr>),
     RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
+    MixedBarTerm(Label, usize, bool),
     MixedGenerator(MixedSpec, usize, Span),
     MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
@@ -730,6 +731,9 @@ pub(crate) enum StatementForm {
         crate::mixed::Rules,
     ),
     RvHHMixed(Label, Label, Vec<usize>),
+    MixedBars(Label),
+    MixedBarRank(Label, i64, Option<i64>),
+    MixedPeriodicRank(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
@@ -1438,6 +1442,32 @@ impl<'src> Parser<'src> {
                 let b = self.mixed_rules()?;
                 let big_b = self.mixed_rules()?;
                 StatementForm::MixedComplex(complex, prime, generators, b, big_b)
+            }
+            Token::Word("mixbars") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedBars(name)
+            }
+            Token::Word(command @ ("mixbardim" | "mixbarrank" | "mixbarperiodicdim")) => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.signed_degree()?;
+                let target = if command == "mixbarrank" {
+                    self.expect(Token::Comma)?;
+                    Some(self.signed_degree()?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                if command == "mixbarperiodicdim" {
+                    StatementForm::MixedPeriodicRank(name, source)
+                } else {
+                    StatementForm::MixedBarRank(name, source, target)
+                }
             }
             Token::Word("mixdim") => {
                 self.advance()?;
@@ -3692,6 +3722,19 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     let terms = self.mixed_terms()?;
                     return expr(span, ExprForm::MixedLiteral(name, b, terms), 0);
+                }
+                if matches!(name.text.as_str(), "mixBarRep" | "mixBarNull")
+                    && self.eat(Token::LBracket)?
+                {
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let i = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::MixedBarTerm(complex, i, name.text == "mixBarNull"),
+                        0,
+                    );
                 }
                 if name.text == "mixgen" && self.eat(Token::LBracket)? {
                     let spec = self.mixed_spec()?;
