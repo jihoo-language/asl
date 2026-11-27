@@ -131,6 +131,7 @@ pub(crate) enum TypeForm {
     RVQpQuad(Label),
     RVResSpace(usize, usize),
     RVValMat(usize, usize, usize),
+    HyperArithmetic(usize, usize),
     HyperCover(usize, usize),
     StableTree(usize),
     StableMarks(usize, usize),
@@ -959,6 +960,12 @@ pub(crate) enum ExprForm {
     ValMatQuad(Label, usize, Vec<Vec<ParsedExpr>>),
     ValFil(Label, i64),
     ValDual(Box<ParsedExpr>),
+    HyperArithmetic(
+        usize,
+        crate::hyperelliptic_graph::arith::Rational,
+        Vec<crate::hyperelliptic_graph::arith::Rational>,
+    ),
+    HyperGeometric(Box<ParsedExpr>),
     HyperCover(Box<ParsedExpr>),
     StableLine(usize, Vec<[i128; 2]>),
     StableLineQuad(Label, Vec<[ParsedExpr; 2]>),
@@ -1209,6 +1216,7 @@ pub(crate) enum StatementForm {
     ResReport(crate::rv_res_space::Query, ParsedExpr),
     ResLeq(ParsedExpr, ParsedExpr),
     ValMatReport(crate::tropical_matroid::Query, ParsedExpr),
+    HyperArithReport(crate::hyperelliptic_graph::arith::Query, ParsedExpr),
     HyperReport(crate::hyperelliptic_graph::Query, ParsedExpr),
     StableReport(crate::stable_marks::Query, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
@@ -4751,6 +4759,16 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::ValMatReport(query, self.paren_expr(0)?)
             }
+            Token::Word(op @ ("rvHyperFrobenius" | "rvHyperFixed")) => {
+                use crate::hyperelliptic_graph::arith::Query;
+                self.advance()?;
+                let query = if op == "rvHyperFrobenius" {
+                    Query::Frobenius
+                } else {
+                    Query::Fixed
+                };
+                StatementForm::HyperArithReport(query, self.paren_expr(0)?)
+            }
             Token::Word(
                 op @ ("rvHyperGraph" | "rvHyperHarmonic" | "rvHyperGenus" | "rvHyperCycles"
                 | "rvHyperMetric" | "rvHyperMonodromy" | "rvHyperComponent"),
@@ -6146,6 +6164,11 @@ impl<'src> Parser<'src> {
             let (p, n) = self.bidegree()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVResSpace(p, n), 0);
+        }
+        if name.text == "RVHyperArithmetic" && self.eat(Token::LParen)? {
+            let (p, marks) = self.bidegree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HyperArithmetic(p, marks), 0);
         }
         if name.text == "RVHyperCover" && self.eat(Token::LParen)? {
             let (p, marks) = self.bidegree()?;
@@ -7798,6 +7821,33 @@ impl<'src> Parser<'src> {
                         })
                         .collect::<Result<Vec<_>>>()?;
                     return expr(span, ExprForm::StableLineQuad(field, marks), depth);
+                }
+                if name.text == "rvHyperArithmetic" && self.eat(Token::LBracket)? {
+                    let (p, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let leading = self.rational_entry(
+                        "hyperelliptic leading numerator",
+                        "hyperelliptic leading denominator",
+                    )?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut roots = Vec::new();
+                    while self.token() != Token::RBrace {
+                        roots.push(self.rational_entry(
+                            "hyperelliptic root numerator",
+                            "hyperelliptic root denominator",
+                        )?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::HyperArithmetic(p, leading, roots), 0);
+                }
+                if name.text == "rvHyperGeometric" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::HyperGeometric(Box::new(input)), depth);
                 }
                 if name.text == "rvHyperCover" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;
@@ -10645,6 +10695,24 @@ impl<'src> Parser<'src> {
         Ok(weights)
     }
 
+    fn rational_entry(
+        &mut self,
+        numerator_label: &str,
+        denominator_label: &str,
+    ) -> Result<(i128, i128)> {
+        let pair = self.eat(Token::LParen)?;
+        let numerator = self.signed_wide("an integer", numerator_label)?;
+        let denominator = if pair {
+            self.expect(Token::Comma)?;
+            let value = self.signed_wide("a positive integer", denominator_label)?;
+            self.expect(Token::RParen)?;
+            value
+        } else {
+            1
+        };
+        Ok((numerator, denominator))
+    }
+
     fn residue_rational_rows(&mut self) -> Result<Vec<Vec<(i128, i128)>>> {
         let mut rows = Vec::new();
         self.expect(Token::LBrace)?;
@@ -10652,18 +10720,7 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let mut row = Vec::new();
             while self.token() != Token::RBracket {
-                let pair = self.eat(Token::LParen)?;
-                let numerator = self.signed_wide("an integer", "residue row numerator")?;
-                let denominator = if pair {
-                    self.expect(Token::Comma)?;
-                    let value =
-                        self.signed_wide("a positive integer", "residue row denominator")?;
-                    self.expect(Token::RParen)?;
-                    value
-                } else {
-                    1
-                };
-                row.push((numerator, denominator));
+                row.push(self.rational_entry("residue row numerator", "residue row denominator")?);
                 if !self.eat(Token::Comma)? {
                     break;
                 }

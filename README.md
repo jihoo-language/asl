@@ -1730,6 +1730,15 @@ The two nine-mark configurations over $\mathbb Q_7$ in the example have the same
 
 The three pairs of branch marks in the genus-two example produce a theta graph whose paths have lengths $4,6,10$ after suppressing bivalent vertices. Its component group has factors $2,62$ and order $124$. Doubling the metric gives factors $4,124$ and order $496$. A second example has two genus-one vertices and toric rank one. Its separating odd split requires an even multiplier to give integral lengths. [Hyperelliptic metric cover example](examples/rv-hyperelliptic-graph.asl)
 
+#### Arithmetic Frobenius and rational hyperelliptic component groups
+
+`rvHyperArithmetic[p,c]{r0,...}` takes distinct, $p$-integral rational branch roots and a rational leading unit $c$ at odd $p$ for $y^2=c\prod_i(x-r_i)$. Rationals may be written as integers or pairs `(numerator,denominator)` with positive denominator. The affine root configuration must occupy at least three residues at depth zero. For each proper cluster with center $z$ and depth $d$, the normalized chart requires $\nu=\sum_i\min(d,v_p(z-r_i))$ even. The semistable metric must already have integral lifted lengths at multiplier one. This gives a split-branch semistable family over $\mathbb Q_p$, including nonsquare unit twists.
+
+`rvHyperGeometric(A)` forgets the Frobenius action. For an even cluster $S$ the two edges are exchanged by arithmetic Frobenius when the unit part of $c\prod_{r_i\notin S}(z-r_i)$ is a nonsquare. At an unbranched vertex the same square class of the normalized chart exchanges its two components. The root chart uses $c$. `rvHyperFrobenius(A);` lists the Frobenius permutation of the geometric vertices and finite edges, its integral matrix $F$ in the chosen cycle basis, and its dual matrix $F^{\mathsf T}$, since $F$ is an involution. The calculation verifies the incidence map and $F^{\mathsf T}QF=Q$. Equality compares the labeled cover, its Frobenius permutations and its canonical normalized residual charts. In each chart the first two finite residue directions by mark order fix coordinates $0,1$. The leading unit is normalized to its square class after this coordinate change.
+
+`rvHyperFixed(A);` gives the invariant factors, order and actual dual-cycle representatives of the rational component group $(\mathbb Z^b/Q\mathbb Z^b)^{F^{\mathsf T}}$. It computes the integral lattice $L=\{x:(F^{\mathsf T}-I)x\in Q\mathbb Z^b\}$ using an integral kernel and then finds representatives of $L/Q\mathbb Z^b$ by tracked Smith reduction. The displayed order is the Tamagawa number. In the $p=7$ theta example the geometric order is $124$ and the nonsquare twist has rational order $4$. A second pair has both signs on the two cycles, and the rational orders are $12$ and $20$ even though both geometric orders are $60$. [Arithmetic hyperelliptic example](examples/rv-hyperelliptic-arithmetic.asl)
+
+
 
 #### Two-pole odd-prime Artin–Schreier curves
 

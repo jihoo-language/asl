@@ -248,6 +248,7 @@ pub(crate) enum Kind {
     RVQpQuad(Rc<str>),
     RVResSpace(ResGrade),
     RVValMat(ValGrade),
+    RVHyperArithmetic(crate::hyperelliptic_graph::Grade),
     RVHyperCover(crate::hyperelliptic_graph::Grade),
     RVStableTree(usize),
     RVStableMarks(u32, usize),
@@ -408,6 +409,7 @@ pub(crate) enum Value {
     RVQpQuad(QuadElement),
     RVResSpace(Rc<ResSpace>),
     RVValMat(Rc<ValMatroid>),
+    RVHyperArithmetic(Rc<crate::hyperelliptic_graph::arith::Arithmetic>),
     RVHyperCover(Rc<crate::hyperelliptic_graph::Cover>),
     RVStableTree(Rc<StableTree>),
     RVStableMarks(Rc<StableCurve>),
@@ -898,7 +900,7 @@ impl Model {
             Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => 1,
             Kind::RVValMat(..) => usize::MAX,
             Kind::RVStableTree(3) | Kind::RVStableMarks(_, 3) => 1,
-            Kind::RVHyperCover(..) => usize::MAX,
+            Kind::RVHyperArithmetic(..) | Kind::RVHyperCover(..) => usize::MAX,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
             Kind::ECCurve(..) | Kind::ECIso(..) => 1,
             Kind::ECPoint(..) => usize::MAX,
@@ -1119,6 +1121,7 @@ impl Model {
                 | Kind::RVQpQuad(..)
                 | Kind::RVResSpace(..)
                 | Kind::RVValMat(..)
+                | Kind::RVHyperArithmetic(..)
                 | Kind::RVHyperCover(..)
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
@@ -3595,6 +3598,13 @@ impl Model {
         self.inhabited_type(Kind::RVResSpace(grade), 0)
     }
 
+    pub(crate) fn rv_hyper_arith_type(
+        &mut self,
+        grade: crate::hyperelliptic_graph::Grade,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVHyperArithmetic(grade), 0)
+    }
+
     pub(crate) fn rv_hyper_cover_type(
         &mut self,
         grade: crate::hyperelliptic_graph::Grade,
@@ -4324,6 +4334,7 @@ impl Model {
             | Kind::RVCycloQ(..)
             | Kind::RVResSpace(..)
             | Kind::RVValMat(..)
+            | Kind::RVHyperArithmetic(..)
             | Kind::RVHyperCover(..)
             | Kind::RVStableTree(..)
             | Kind::RVStableMarks(..)
@@ -4762,6 +4773,11 @@ impl Model {
                 grade.prime.get(),
                 grade.width,
             )),
+            Kind::RVHyperArithmetic(grade) => out.push(&format!(
+                "RVHyperArithmetic({}, {})",
+                grade.prime.get(),
+                grade.marks,
+            )),
             Kind::RVHyperCover(grade) => out.push(&format!(
                 "RVHyperCover({}, {})",
                 grade.prime.get(),
@@ -5017,6 +5033,9 @@ impl Model {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left == right),
+            (Value::RVHyperArithmetic(left), Value::RVHyperArithmetic(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::RVHyperCover(left), Value::RVHyperCover(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
@@ -5313,6 +5332,13 @@ impl Model {
             }
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
+            (Value::RVHyperArithmetic(left), Value::RVHyperArithmetic(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
+            }
             (Value::RVHyperCover(left), Value::RVHyperCover(right)) => {
                 if Rc::ptr_eq(left, right) {
                     Ok(Ordering::Equal)
@@ -5616,6 +5642,11 @@ impl Model {
                 Kind::RVStableTree(3) => vec![Value::RVStableTree(StableTree::three(self)?)],
                 Kind::RVStableMarks(prime, 3) => {
                     vec![Value::RVStableMarks(StableCurve::three(self, prime)?)]
+                }
+                Kind::RVHyperArithmetic(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate arithmetic hyperelliptic covers",
+                    ));
                 }
                 Kind::RVHyperCover(..) => {
                     return Err(Error::plain("cannot enumerate hyperelliptic metric graphs"));
@@ -6998,6 +7029,7 @@ impl Model {
                 }
                 out.push("}")
             }
+            Value::RVHyperArithmetic(value) => out.push(&value.summary(self)?),
             Value::RVHyperCover(value) => out.push(&value.summary(self)?),
             Value::RVStableTree(value) => out.push(&value.summary(self)?),
             Value::RVStableMarks(value) => out.push(&value.summary(self)?),

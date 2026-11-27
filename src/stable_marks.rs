@@ -51,7 +51,7 @@ impl Tree {
         Self::from_pairs(model, count, &values)
     }
 
-    fn from_pairs(model: &mut Model, count: usize, values: &[i128]) -> Result<Rc<Self>> {
+    pub(crate) fn from_pairs(model: &mut Model, count: usize, values: &[i128]) -> Result<Rc<Self>> {
         let anchor = count - 1;
         model.spend(count * count)?;
         let mut depths = vec![0i128; count * count];

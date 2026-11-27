@@ -8,6 +8,8 @@ use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::stable_marks::{self, Tree};
 
+pub(crate) mod arith;
+
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) struct Grade {
     pub(crate) prime: Prime,
@@ -83,6 +85,7 @@ pub(crate) struct Cover {
     edges: Vec<Edge>,
     branches: Vec<usize>,
     cycles: Vec<Cycle>,
+    chords: Vec<usize>,
 }
 
 struct Base {
@@ -198,9 +201,11 @@ impl Cover {
             edges,
             branches,
             cycles: Vec::new(),
+            chords: Vec::new(),
         };
         result.certify_map(model, &base)?;
-        result.cycles = fundamental_cycles(model, result.vertices.len(), &result.edges)?;
+        (result.chords, result.cycles) =
+            fundamental_cycles(model, result.vertices.len(), &result.edges)?;
         if result.cycles.len() + result.vertices.iter().map(|v| v.genus).sum::<usize>()
             != grade.genus()
         {
@@ -285,7 +290,8 @@ impl Cover {
     }
 
     fn cells(&self) -> usize {
-        8 + 5 * self.vertices.len()
+        8 + self.chords.len()
+            + 5 * self.vertices.len()
             + 8 * self.edges.len()
             + self.branches.len()
             + self
@@ -413,7 +419,11 @@ impl Cover {
     }
 }
 
-fn fundamental_cycles(model: &mut Model, count: usize, edges: &[Edge]) -> Result<Vec<Cycle>> {
+fn fundamental_cycles(
+    model: &mut Model,
+    count: usize,
+    edges: &[Edge],
+) -> Result<(Vec<usize>, Vec<Cycle>)> {
     if count == 0 {
         return Err(Error::plain("hyperelliptic graph has no vertices"));
     }
@@ -446,6 +456,7 @@ fn fundamental_cycles(model: &mut Model, count: usize, edges: &[Edge]) -> Result
         return Err(Error::plain("hyperelliptic graph is disconnected"));
     }
     let mut basis = Vec::new();
+    let mut chords = Vec::new();
     let mut cells = 0;
     for (edge, e) in edges.iter().enumerate().filter(|(i, _)| !in_tree[*i]) {
         let mut cycle = BTreeMap::from([(edge, 1)]);
@@ -469,8 +480,9 @@ fn fundamental_cycles(model: &mut Model, count: usize, edges: &[Edge]) -> Result
         cells += 3 + 2 * row.len();
         integer_smith::storage(cells)?;
         basis.push(row);
+        chords.push(edge);
     }
-    Ok(basis)
+    Ok((chords, basis))
 }
 
 fn root_path(

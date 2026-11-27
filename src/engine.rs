@@ -481,6 +481,7 @@ enum TypedForm {
     ResOrthogonal(Box<TypedExpr>),
     ValMatQuad(ValGrade, QuadField, Vec<Vec<TypedExpr>>),
     ValDual(Box<TypedExpr>),
+    HyperGeometric(Box<TypedExpr>),
     HyperCover(crate::hyperelliptic_graph::Grade, Box<TypedExpr>),
     StableLineQuad(QuadField, Vec<[TypedExpr; 2]>),
     StableProjection(Box<TypedExpr>),
@@ -2962,6 +2963,19 @@ impl Engine {
                     unreachable!()
                 };
                 format!("rvResLeq = {}", lower.is_subspace(&mut self.model, &upper)?)
+            }
+            StatementForm::HyperArithReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVHyperArithmetic(..)) {
+                    return Err(Error::new(
+                        input.span,
+                        "arithmetic hyperelliptic query requires an RVHyperArithmetic",
+                    ));
+                }
+                let Value::RVHyperArithmetic(arithmetic) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                query.report(&mut self.model, &arithmetic)?
             }
             StatementForm::HyperReport(query, input) => {
                 let input = self.checker().expr(input)?;
@@ -5599,6 +5613,12 @@ impl Engine {
                     &rows,
                 )?))
             }
+            TypedForm::HyperGeometric(input) => {
+                let Value::RVHyperArithmetic(arithmetic) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::RVHyperCover(arithmetic.cover.clone()))
+            }
             TypedForm::HyperCover(grade, input) => {
                 let Value::RVStableMarks(curve) = self.eval(input)? else {
                     unreachable!()
@@ -7701,6 +7721,8 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::ValMatQuad(..)
             | ExprForm::ValFil(..)
             | ExprForm::ValDual(..)
+            | ExprForm::HyperGeometric(..)
+            | ExprForm::HyperArithmetic(..)
             | ExprForm::HyperCover(..)
             | ExprForm::StableLine(..)
             | ExprForm::StableLineQuad(..)
@@ -7906,6 +7928,11 @@ impl Checker<'_> {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
                 let grade = ResGrade::new(prime, n)?;
                 self.model.rv_res_space_type(grade)
+            }
+            TypeForm::HyperArithmetic(p, marks) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = crate::hyperelliptic_graph::Grade::new(prime, marks)?;
+                self.model.rv_hyper_arith_type(grade)
             }
             TypeForm::HyperCover(p, marks) => {
                 let p = crate::rv_phodge::residue_prime(self.model, p)?;
@@ -11932,6 +11959,27 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_res_space(&input, "rvResOrthogonal")?;
                 Ok((input.ty, TypedForm::ResOrthogonal(Box::new(input))))
+            }
+            ExprForm::HyperArithmetic(p, leading, roots) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = crate::hyperelliptic_graph::Grade::new(prime, roots.len())?;
+                let ty = self.model.rv_hyper_arith_type(grade)?;
+                let value = crate::hyperelliptic_graph::arith::Arithmetic::build(
+                    self.model, grade, leading, roots,
+                )?;
+                Ok((ty, TypedForm::Constant(Value::RVHyperArithmetic(value))))
+            }
+            ExprForm::HyperGeometric(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHyperArithmetic(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvHyperGeometric",
+                        "an RVHyperArithmetic",
+                    ));
+                };
+                let ty = self.model.rv_hyper_cover_type(grade)?;
+                Ok((ty, TypedForm::HyperGeometric(Box::new(input))))
             }
             ExprForm::HyperCover(input) => {
                 let input = self.expr(*input)?;
