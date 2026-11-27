@@ -120,6 +120,7 @@ pub(crate) enum TypeForm {
     RVFusion(usize, usize),
     RVCyclo(usize),
     HWMatrix(usize, usize, usize),
+    HWWMatrix(Label, usize),
     HWScalar(usize, usize),
     RVUnram(Label),
     RVCycloQ(usize),
@@ -934,6 +935,7 @@ pub(crate) enum ExprForm {
     UnramElement(Label, Vec<i128>),
     UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
+    HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
     ResSpace(usize, usize, Vec<Vec<i128>>),
@@ -1088,6 +1090,7 @@ pub(crate) enum StatementForm {
     Lee(crate::lee::Command),
     Khovanov(Box<crate::khovanov::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
+    HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
@@ -2500,6 +2503,22 @@ impl<'src> Parser<'src> {
         if name == "rvhyperelliptic" {
             let curve = self.label()?;
             self.expect(Token::LBracket)?;
+            if matches!(self.token(), Token::Word(_)) {
+                let ring = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut coefficients = Vec::new();
+                while !self.eat(Token::RBrace)? {
+                    coefficients.push(self.expr(0)?);
+                    if !self.eat(Token::Comma)? {
+                        self.expect(Token::RBrace)?;
+                        break;
+                    }
+                }
+                return Ok(StatementForm::HWWClosed(Box::new(
+                    crate::hw_closed::Command::Define(curve, ring, coefficients),
+                )));
+            }
             let p = self.number()?.0;
             self.expect(Token::RBracket)?;
             self.expect(Token::LBrace)?;
@@ -2606,6 +2625,88 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::HasseWitt(Box::new(expression)), depth)
     }
 
+    fn hww_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hw_closed::{Command, Query};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let curve = self.label()?;
+        let query = match name {
+            "rvHWWPoints" => {
+                self.expect(Token::Comma)?;
+                Query::Points(self.number()?.0)
+            }
+            "rvHWWWeil" => Query::Weil,
+            _ => Query::Verify,
+        };
+        self.expect(Token::RBracket)?;
+        let candidate = if matches!(query, Query::Verify) && self.token() == Token::LParen {
+            Some(Box::new(self.paren_expr(0)?))
+        } else {
+            None
+        };
+        Ok(StatementForm::HWWClosed(Box::new(Command::Report(
+            curve, query, candidate,
+        ))))
+    }
+
+    fn hww_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hw_closed::{CurveOp, Expression, Unary};
+        let mut depth = 0;
+        let expression = match name {
+            "rvHWW" | "rvHWWRatio" | "rvHWWUnit" => {
+                self.expect(Token::LBracket)?;
+                let curve = self.label()?;
+                let query = match name {
+                    "rvHWW" => {
+                        self.expect(Token::Comma)?;
+                        CurveOp::Alpha(self.number()?.0)
+                    }
+                    "rvHWWRatio" => CurveOp::Ratio,
+                    _ => CurveOp::Product,
+                };
+                self.expect(Token::RBracket)?;
+                Expression::Curve(curve, query)
+            }
+            "rvHWWCompose" => {
+                let pair = self.paren_pair(nest)?;
+                depth = 1 + pair[0].depth.max(pair[1].depth);
+                Expression::Compose(Box::new(pair))
+            }
+            "rvHWWReduce" => {
+                self.expect(Token::LBracket)?;
+                let ring = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                depth = input.depth + 1;
+                Expression::Reduce(ring, Box::new(input))
+            }
+            _ => {
+                let operation = match name {
+                    "rvHWWInv" => Unary::Inverse,
+                    "rvHWWDescend" => Unary::Descend,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let i = self.number()?.0;
+                        let operation = match name {
+                            "rvHWWEntry" => {
+                                self.expect(Token::Comma)?;
+                                Unary::Entry(i, self.number()?.0)
+                            }
+                            "rvHWWChar" => Unary::Characteristic(i),
+                            _ => Unary::Frobenius(i),
+                        };
+                        self.expect(Token::RBracket)?;
+                        operation
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                depth = input.depth + 1;
+                Expression::Unary(operation, Box::new(input))
+            }
+        };
+        expr(span, ExprForm::HWWClosed(Box::new(expression)), depth)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
@@ -2626,6 +2727,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvhyperelliptic" | "rvHWStatus" | "rvHWPoints" | "rvHWWeil"
                 | "rvHWConverges" | "rvHWCertify" | "rvHWVal"),
             ) => self.hw_statement(command)?,
+            Token::Word(command @ ("rvHWWWeil" | "rvHWWPoints" | "rvHWWVerify")) => {
+                self.hww_statement(command)?
+            }
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -5712,6 +5816,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::HWMatrix(p, g, s), 0);
         }
+        if name.text == "RVHWWMatrix" && self.eat(Token::LParen)? {
+            let ring = self.label()?;
+            self.expect(Token::Comma)?;
+            let genus = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HWWMatrix(ring, genus), 0);
+        }
         if name.text == "RVHWScalar" && self.eat(Token::LParen)? {
             let p = self.number()?.0;
             self.expect(Token::Comma)?;
@@ -7443,6 +7554,21 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.hw_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvHWW"
+                        | "rvHWWRatio"
+                        | "rvHWWUnit"
+                        | "rvHWWCompose"
+                        | "rvHWWFrob"
+                        | "rvHWWInv"
+                        | "rvHWWEntry"
+                        | "rvHWWChar"
+                        | "rvHWWReduce"
+                        | "rvHWWDescend"
+                ) {
+                    return self.hww_expression(&name.text, span, nest);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;

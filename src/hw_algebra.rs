@@ -367,9 +367,9 @@ pub(crate) fn hasse_witt<R: CoefficientRing>(
     f: &[R::Element],
     q: u64,
 ) -> Result<Matrix<R::Element>> {
-    if f.len() < 2 || !f.len().is_multiple_of(2) || f.last() != Some(&ring.one()) {
+    if f.len() < 2 || !ring.is_unit(f.last().unwrap()) {
         return Err(Error::plain(
-            "Hasse–Witt equation requires a monic odd-degree polynomial",
+            "Hasse–Witt equation requires positive degree and a unit leading coefficient",
         ));
     }
     if q.is_multiple_of(2) {
@@ -388,7 +388,7 @@ pub(crate) fn hasse_witt<R: CoefficientRing>(
     let lowest = f
         .iter()
         .position(|a| !ring.is_zero(a))
-        .expect("monic polynomial");
+        .expect("polynomial with a unit leading coefficient");
     let f = &f[lowest..];
     let degree = (f.len() - 1) as u128 * u128::from(exponent);
     let shift = lowest as u128 * u128::from(exponent);

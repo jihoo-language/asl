@@ -365,6 +365,115 @@ impl Ring {
         x.iter().map(|&c| c % self.prime()).collect()
     }
 
+    pub(crate) fn residue_ring(&self, model: &mut Model) -> Result<Self> {
+        let p = self.prime();
+        let h = self.degree();
+        model.spend(h * (h + 1))?;
+        model.allocate(8 + h * (4 + h))?;
+        Ok(Self {
+            prime: self.prime,
+            precision: 1,
+            modulus: p,
+            lower: self.residue(&self.lower).into(),
+            frobenius_images: self
+                .frobenius_images
+                .iter()
+                .map(|image| self.residue(image))
+                .collect(),
+        })
+    }
+
+    pub(crate) fn reduces_to(&self, target: &Self) -> bool {
+        self.prime() == target.prime()
+            && self.precision >= target.precision
+            && self.degree() == target.degree()
+            && self
+                .lower
+                .iter()
+                .zip(&target.lower)
+                .all(|(&a, &b)| a % target.modulus == b)
+    }
+
+    pub(crate) fn evaluate_polynomial(
+        &self,
+        model: &mut Model,
+        coefficients: &[Element],
+        point: &[u64],
+    ) -> Result<Element> {
+        let Some((leading, rest)) = coefficients.split_last() else {
+            return Ok(self.scalar(0));
+        };
+        model.spend(self.degree())?;
+        let mut output = leading.clone();
+        for term in rest.iter().rev() {
+            let product = self.multiply(model, &output, point)?;
+            output = self.add(model, &product, term)?;
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn embed_residue_coefficients(
+        &self,
+        model: &mut Model,
+        target: &Self,
+        coefficients: &[Element],
+    ) -> Result<Vec<Element>> {
+        if self.prime() != target.prime()
+            || target.precision != 1
+            || !target.degree().is_multiple_of(self.degree())
+        {
+            return Err(Error::plain(
+                "residue embedding requires an extension of the coefficient field",
+            ));
+        }
+        if self.reduces_to(target) {
+            model.spend(coefficients.len().saturating_mul(self.degree()))?;
+            return Ok(coefficients
+                .iter()
+                .map(|value| self.residue(value))
+                .collect());
+        }
+        if self.degree() == 1 {
+            model.spend(coefficients.len().saturating_mul(target.degree()))?;
+            return Ok(coefficients
+                .iter()
+                .map(|value| target.scalar(value[0]))
+                .collect());
+        }
+
+        let mut defining = self.residue(&self.lower);
+        defining.push(1);
+        let root = target.root_in_residue(model, &defining)?;
+        let algebra = target.algebra(target.prime());
+        coefficients
+            .iter()
+            .map(|value| algebra.evaluate(model, &self.residue(value), &root))
+            .collect()
+    }
+
+    fn root_in_residue(&self, model: &mut Model, polynomial: &[u64]) -> Result<Element> {
+        let p = self.prime();
+        let algebra = self.algebra(p);
+        let mut root = algebra.constant(0);
+        for mut index in 0..self.size_of_residue_field()? {
+            model.spend(self.degree())?;
+            for c in &mut root {
+                *c = index % p;
+                index /= p;
+            }
+            if algebra
+                .evaluate(model, polynomial, &root)?
+                .iter()
+                .all(|&c| c == 0)
+            {
+                return Ok(root);
+            }
+        }
+        Err(Error::plain(
+            "defining polynomial has no root in the proposed residue extension",
+        ))
+    }
+
     pub(crate) fn legendre_trace(&self, model: &mut Model, lambda: &[u64]) -> Result<i64> {
         let alg = self.algebra(self.prime());
         let lambda = self.residue(lambda);

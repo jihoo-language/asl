@@ -27,6 +27,7 @@ mod engine;
 mod eo;
 mod error;
 mod hw_algebra;
+mod hw_closed;
 mod hyperelliptic;
 mod integer_smith;
 mod jet_hom;
