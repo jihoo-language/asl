@@ -13,6 +13,7 @@ pub(crate) mod cubic_division;
 pub(crate) mod cubic_hilbert;
 pub(crate) mod cubic_iwahori;
 pub(crate) mod cubic_principal;
+pub(crate) mod cubic_schottky;
 pub(crate) mod cubic_tree;
 pub(crate) mod kummer;
 

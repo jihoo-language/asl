@@ -35,7 +35,7 @@ use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQu
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_principal, cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_schottky, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
@@ -259,6 +259,7 @@ pub(crate) enum TypeForm {
     CubicTree(Label, bool),
     CubicChamber(Label),
     CubicBoundary(Label),
+    CubicSchottky(Label),
     CubicHecke(Label, cubic_iwahori::Sort),
     CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
@@ -1238,6 +1239,7 @@ pub(crate) enum ExprForm {
     CubicTree(cubic_tree::Expression),
     CubicIwahori(cubic_iwahori::Expression),
     CubicPrincipal(cubic_principal::Expression),
+    CubicSchottky(cubic_schottky::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1554,6 +1556,8 @@ pub(crate) enum StatementForm {
     CubicTreeReport(cubic_tree::Report),
     CubicIwahoriReport(cubic_iwahori::Report),
     CubicPrincipalReport(cubic_principal::Report),
+    CubicSchottkyDeclaration(cubic_schottky::Declaration),
+    CubicSchottkyReport(cubic_schottky::Report),
     CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
     CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
@@ -8945,6 +8949,156 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_schottky_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_schottky::{Declaration, Report, ReportKind, WordReport};
+        self.advance()?;
+        if name == "rvcubicschottky" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let division = self.label()?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LBrace)?;
+            let mut generators = Vec::new();
+            if !self.eat(Token::RBrace)? {
+                loop {
+                    self.expect(Token::LBracket)?;
+                    let length = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let operator = self.expr(0)?;
+                    self.expect(Token::RBracket)?;
+                    generators.push((length, operator));
+                    if !self.eat(Token::Comma)? {
+                        self.expect(Token::RBrace)?;
+                        break;
+                    }
+                }
+            }
+            return Ok(StatementForm::CubicSchottkyDeclaration(Declaration(
+                name, division, generators,
+            )));
+        }
+        let report = match name {
+            "rvCubicSchottkyLengths" | "rvCubicSchottkyPath" | "rvCubicSchottkyAxisCheck" => {
+                let kind = match name {
+                    "rvCubicSchottkyLengths" => WordReport::Lengths,
+                    "rvCubicSchottkyPath" => WordReport::Path,
+                    _ => WordReport::Axis,
+                };
+                Report::Word(kind, Box::new(self.paren_expr(0)?))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let chart = self.label()?;
+                let kind = match name {
+                    "rvCubicSchottkyData" => ReportKind::Marking,
+                    "rvCubicSchottkyCore" => ReportKind::Core,
+                    "rvCubicIhara" => ReportKind::Ihara,
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        match name {
+                            "rvCubicSchottkyNB" => {
+                                let (i, j) = self.cubic_indices()?;
+                                ReportKind::Nonbacktracking(i, j)
+                            }
+                            "rvCubicSchottkyWeighted" => {
+                                let a = self
+                                    .signed_wide("a signed Schottky letter", "Schottky letter")?;
+                                self.expect(Token::Comma)?;
+                                let b = self
+                                    .signed_wide("a signed Schottky letter", "Schottky letter")?;
+                                ReportKind::Weighted(a, b)
+                            }
+                            "rvCubicSchottkyPingPong" => {
+                                let letter = self
+                                    .signed_wide("a signed Schottky letter", "Schottky letter")?;
+                                self.expect(Token::RBracket)?;
+                                return Ok(StatementForm::CubicSchottkyReport(Report::PingPong(
+                                    chart,
+                                    letter,
+                                    Box::new(self.paren_expr(0)?),
+                                )));
+                            }
+                            _ => {
+                                let n = self.number()?.0;
+                                match name {
+                                    "rvCubicIharaCoeff" => ReportKind::Coefficient(n),
+                                    "rvCubicSchottkyTrace" => ReportKind::Trace(n),
+                                    "rvCubicSchottkyPrimitive" => ReportKind::Primitive(n),
+                                    _ => ReportKind::Enumerate(n),
+                                }
+                            }
+                        }
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                Report::Data(chart, kind)
+            }
+        };
+        Ok(StatementForm::CubicSchottkyReport(report))
+    }
+
+    fn cubic_schottky_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use cubic_schottky::{Binary, Expression, Unary};
+        let (operation, depth) = match name {
+            "rvCubicSchottkyWord" | "rvCubicSchottkyDirection" | "rvCubicSchottkyCoreVertex" => {
+                self.expect(Token::LBracket)?;
+                let chart = self.label()?;
+                self.expect(Token::Comma)?;
+                let op = match name {
+                    "rvCubicSchottkyWord" => Expression::Literal(
+                        chart,
+                        self.signed_tuple("a signed Schottky letter", "Schottky letter")?,
+                    ),
+                    "rvCubicSchottkyDirection" => Expression::Direction(
+                        chart,
+                        self.signed_wide("a signed Schottky letter", "Schottky letter")?,
+                    ),
+                    _ => Expression::CoreVertex(chart, self.number()?.0),
+                };
+                self.expect(Token::RBracket)?;
+                (op, 0)
+            }
+            "rvCubicSchottkyMul"
+            | "rvCubicSchottkyConjugate"
+            | "rvCubicSchottkyApply"
+            | "rvCubicSchottkyBoundary" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                let op = match name {
+                    "rvCubicSchottkyMul" => Binary::Multiply,
+                    "rvCubicSchottkyConjugate" => Binary::Conjugate,
+                    "rvCubicSchottkyApply" => Binary::Apply,
+                    _ => Binary::Boundary,
+                };
+                (Expression::Binary(op, Box::new(pair)), depth)
+            }
+            _ => {
+                let op = match name {
+                    "rvCubicSchottkyInverse" => Unary::Inverse,
+                    "rvCubicSchottkyCyclic" => Unary::Cyclic,
+                    "rvCubicSchottkyPrefix" => Unary::Prefix,
+                    "rvCubicSchottkyAxis" => Unary::Axis,
+                    "rvCubicSchottkyIsPrimitive" => Unary::Primitive,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let exponent = self.signed_number("Schottky word exponent")?;
+                        self.expect(Token::RBracket)?;
+                        Unary::Power(exponent)
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Unary(op, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::CubicSchottky(operation), depth)
+    }
+
     fn cubic_principal_rational(&mut self, spectral: bool) -> Result<cubic_principal::Rat> {
         let a = self.signed_wide("a signed rational numerator", "boundary coefficient")?;
         self.expect(Token::Comma)?;
@@ -15633,6 +15787,22 @@ impl<'src> Parser<'src> {
                 | "rvCubicKnappSpectrum"
                 | "rvCubicKnappKernel"),
             ) => self.cubic_principal_statement(name)?,
+            Token::Word(
+                name @ ("rvcubicschottky"
+                | "rvCubicSchottkyData"
+                | "rvCubicSchottkyLengths"
+                | "rvCubicSchottkyPath"
+                | "rvCubicSchottkyAxisCheck"
+                | "rvCubicSchottkyPingPong"
+                | "rvCubicSchottkyCore"
+                | "rvCubicSchottkyNB"
+                | "rvCubicSchottkyWeighted"
+                | "rvCubicIhara"
+                | "rvCubicIharaCoeff"
+                | "rvCubicSchottkyTrace"
+                | "rvCubicSchottkyPrimitive"
+                | "rvCubicSchottkyEnumerate"),
+            ) => self.cubic_schottky_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -20053,6 +20223,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CubicBoundary(chart), 0);
         }
+        if name.text == "RVCubicSchottkyWord" && self.eat(Token::LParen)? {
+            let group = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CubicSchottky(group), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -23583,6 +23758,28 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LBracket)
                 {
                     return self.cubic_principal_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCubicSchottkyWord"
+                        | "rvCubicSchottkyDirection"
+                        | "rvCubicSchottkyCoreVertex"
+                        | "rvCubicSchottkyPow"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicSchottkyMul"
+                            | "rvCubicSchottkyConjugate"
+                            | "rvCubicSchottkyApply"
+                            | "rvCubicSchottkyBoundary"
+                            | "rvCubicSchottkyInverse"
+                            | "rvCubicSchottkyCyclic"
+                            | "rvCubicSchottkyPrefix"
+                            | "rvCubicSchottkyAxis"
+                            | "rvCubicSchottkyIsPrimitive"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cubic_schottky_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

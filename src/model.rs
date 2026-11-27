@@ -110,7 +110,7 @@ use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_principal, cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_schottky, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_fusion;
 use crate::rv_hh;
@@ -414,6 +414,7 @@ pub(crate) enum Kind {
     CubicTreeOperator(Box<str>),
     CubicChamber(Box<str>),
     CubicBoundary(Box<str>),
+    CubicSchottky(Box<str>),
     CubicHecke(Box<str>, cubic_iwahori::Sort),
     CubicSplitMatrix(Box<str>),
     PeriodPolynomial(period::Grade),
@@ -699,6 +700,7 @@ pub(crate) enum Value {
     CubicTreeOperator(Rc<cubic_tree::Operator>),
     CubicChamber(Rc<cubic_iwahori::Chamber>),
     CubicBoundary(Rc<cubic_principal::Function>),
+    CubicSchottky(Rc<cubic_schottky::Word>),
     CubicHecke(Rc<cubic_iwahori::Object>),
     CubicSplitMatrix(Rc<cubic_algebra::SplitMatrix>),
     PeriodPolynomial(Rc<period::Polynomial>),
@@ -975,6 +977,7 @@ pub(crate) struct Model {
     cubic_certificate: Option<Rc<cubic::Certificate>>,
     cubic_algebras: HashMap<String, Rc<cubic_algebra::Extension>>,
     cubic_divisions: HashMap<String, Rc<cubic_division::Extension>>,
+    cubic_schottky_groups: HashMap<String, Rc<cubic_schottky::Group>>,
     cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
@@ -1156,6 +1159,7 @@ impl Model {
             cubic_certificate: None,
             cubic_algebras: HashMap::new(),
             cubic_divisions: HashMap::new(),
+            cubic_schottky_groups: HashMap::new(),
             cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
@@ -1893,6 +1897,7 @@ impl Model {
             | Kind::CubicTreeOperator(..)
             | Kind::CubicChamber(..)
             | Kind::CubicBoundary(..)
+            | Kind::CubicSchottky(..)
             | Kind::CubicHecke(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
@@ -2328,6 +2333,7 @@ impl Model {
                 | Kind::CubicTreeOperator(..)
                 | Kind::CubicChamber(..)
                 | Kind::CubicBoundary(..)
+                | Kind::CubicSchottky(..)
                 | Kind::CubicHecke(..)
                 | Kind::CubicSplitMatrix(..)
                 | Kind::PeriodPolynomial(..)
@@ -6989,6 +6995,42 @@ impl Model {
         })
     }
 
+    pub(crate) fn register_cubic_schottky(
+        &mut self,
+        name: Label,
+        division: Label,
+        generators: Vec<(usize, cubic_tree::Operator)>,
+    ) -> Result<()> {
+        if self.cubic_schottky_groups.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("cubic Schottky group '{}' is already defined", name.text),
+            ));
+        }
+        let extension = self.cubic_division(&division)?;
+        let group = cubic_schottky::Group::new(self, division.text.into(), extension, generators)
+            .map_err(|error| error.at(name.span))?;
+        self.cubic_schottky_groups.insert(name.text, Rc::new(group));
+        Ok(())
+    }
+
+    pub(crate) fn cubic_schottky_named(&self, name: &str) -> Option<Rc<cubic_schottky::Group>> {
+        self.cubic_schottky_groups.get(name).cloned()
+    }
+
+    pub(crate) fn cubic_schottky(&self, name: &Label) -> Result<Rc<cubic_schottky::Group>> {
+        self.cubic_schottky_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown cubic Schottky group '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn cubic_schottky_type(&mut self, name: Box<str>) -> Result<TypeId> {
+        self.inhabited_type(Kind::CubicSchottky(name), 0)
+    }
+
     pub(crate) fn cubic_boundary_type(&mut self, name: Box<str>) -> Result<TypeId> {
         self.inhabited_type(Kind::CubicBoundary(name), 0)
     }
@@ -8697,6 +8739,7 @@ impl Model {
             | Kind::CubicTreeOperator(..)
             | Kind::CubicChamber(..)
             | Kind::CubicBoundary(..)
+            | Kind::CubicSchottky(..)
             | Kind::CubicHecke(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..)
@@ -9414,6 +9457,7 @@ impl Model {
             Kind::CubicTreeOperator(name) => out.push(&format!("RVCubicTreeOp({name})")),
             Kind::CubicChamber(name) => out.push(&format!("RVCubicChamber({name})")),
             Kind::CubicBoundary(name) => out.push(&format!("RVCubicBoundary({name})")),
+            Kind::CubicSchottky(name) => out.push(&format!("RVCubicSchottkyWord({name})")),
             Kind::CubicHecke(name, sort) => out.push(&format!("{}({name})", sort.name())),
             Kind::CubicSplitMatrix(name) => out.push(&format!("RVCubicSplitMatrix({name})")),
             Kind::CubicClass(field) => out.push(&format!("RVCubicClass({field})")),
@@ -9878,6 +9922,7 @@ impl Model {
             (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a == b),
             (Value::CubicChamber(a), Value::CubicChamber(b)) => Ok(a == b),
             (Value::CubicBoundary(a), Value::CubicBoundary(b)) => Ok(a == b),
+            (Value::CubicSchottky(a), Value::CubicSchottky(b)) => Ok(a == b),
             (Value::CubicHecke(a), Value::CubicHecke(b)) => Ok(a == b),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries() == b.entries())
@@ -10322,6 +10367,7 @@ impl Model {
             (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a.cmp(b)),
             (Value::CubicChamber(a), Value::CubicChamber(b)) => Ok(a.cmp(b)),
             (Value::CubicBoundary(a), Value::CubicBoundary(b)) => Ok(a.cmp(b)),
+            (Value::CubicSchottky(a), Value::CubicSchottky(b)) => Ok(a.cmp(b)),
             (Value::CubicHecke(a), Value::CubicHecke(b)) => Ok(a.cmp(b)),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries().cmp(b.entries()))
@@ -10994,6 +11040,11 @@ impl Model {
                 Kind::MazurAmice(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
+                    ));
+                }
+                Kind::CubicSchottky(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the group of all reduced Schottky words",
                     ));
                 }
                 Kind::CubicChamber(..) | Kind::CubicBoundary(..) | Kind::CubicHecke(..) => {
@@ -13163,6 +13214,10 @@ impl Model {
             Value::CubicTreeVertex(vertex) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", vertex.description()))
+            }
+            Value::CubicSchottky(w) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", w.description()))
             }
             Value::CubicBoundary(f) => {
                 self.write_type(out, ty, 0)?;

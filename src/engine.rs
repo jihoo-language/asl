@@ -167,7 +167,7 @@ use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_principal, cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_schottky, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_field;
 use crate::rv_fusion;
@@ -1344,6 +1344,8 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicSchottkyUnary(cubic_schottky::Unary, Box<TypedExpr>),
+    CubicSchottkyBinary(cubic_schottky::Binary, Box<[TypedExpr; 2]>),
     CubicBoundaryCylinder(Box<TypedExpr>),
     CubicBoundaryUnary(cubic_principal::Unary, Box<TypedExpr>),
     CubicPrincipalCompact(cubic_principal::Rat, Box<[TypedExpr; 2]>),
@@ -3247,6 +3249,35 @@ impl Engine {
                     }
                 };
                 return Ok(Some(output));
+            }
+            StatementForm::CubicSchottkyDeclaration(cubic_schottky::Declaration(
+                name,
+                division,
+                terms,
+            )) => {
+                self.model.cubic_division(&division)?;
+                let expected = self
+                    .model
+                    .cubic_tree_type(division.text.as_str().into(), true)?;
+                let mut matrices = Vec::with_capacity(terms.len());
+                for (length, input) in terms {
+                    let input = self.checker().expr(input)?;
+                    self.checker().require_type(
+                        expected,
+                        &input,
+                        "rvcubicschottky marking matrix",
+                    )?;
+                    let Value::CubicTreeOperator(matrix) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    matrices.push((length, (*matrix).clone()));
+                }
+                self.model
+                    .register_cubic_schottky(name, division, matrices)?;
+                return Ok(None);
+            }
+            StatementForm::CubicSchottkyReport(report) => {
+                return self.cubic_schottky_report(report).map(Some)
             }
             StatementForm::CubicPrincipalReport(report) => {
                 return self.cubic_principal_report(report).map(Some)
@@ -13260,6 +13291,40 @@ impl Engine {
         }
     }
 
+    fn cubic_schottky_report(&mut self, report: cubic_schottky::Report) -> Result<String> {
+        use cubic_schottky::Report;
+        match report {
+            Report::Data(name, report) => {
+                self.model
+                    .cubic_schottky(&name)?
+                    .report(&mut self.model, &name.text, report)
+            }
+            Report::Word(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let group = self
+                    .checker()
+                    .cubic_schottky_grade(&input, "Schottky word report")?;
+                let Value::CubicSchottky(w) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                group.word_report(&mut self.model, &w, report)
+            }
+            Report::PingPong(name, letter, input) => {
+                let group = self.model.cubic_schottky(&name)?;
+                let expected = self
+                    .model
+                    .cubic_tree_type(group.division_name.clone(), false)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_type(expected, &input, "rvCubicSchottkyPingPong ray")?;
+                let Value::CubicTreeVertex(v) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                group.ping_pong(&mut self.model, letter, &v)
+            }
+        }
+    }
+
     fn cubic_principal_report(&mut self, report: cubic_principal::Report) -> Result<String> {
         use cubic_principal::{fraction, BoundaryQuery, Motion, Report};
         match report {
@@ -17411,6 +17476,49 @@ impl Engine {
                 disc.root(&mut self.model, &grade, *residue)?
                     .persist(&mut self.model)
             }
+            TypedForm::CubicSchottkyUnary(operation, input) => {
+                use cubic_schottky::Unary;
+                let Value::CubicSchottky(w) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let group = self
+                    .checker()
+                    .cubic_schottky_grade(input, "Schottky word")?;
+                match *operation {
+                    Unary::Inverse => w.inverse(&mut self.model)?.persist(&mut self.model),
+                    Unary::Power(n) => w.power(&mut self.model, n)?.persist(&mut self.model),
+                    Unary::Cyclic => w.cyclic(&mut self.model)?.persist(&mut self.model),
+                    Unary::Prefix => w.prefix(&mut self.model)?.persist(&mut self.model),
+                    Unary::Axis => group.axis(&mut self.model, &w)?.persist(&mut self.model),
+                    Unary::Primitive => {
+                        Ok(Value::Point(usize::from(w.primitive(&mut self.model)?)))
+                    }
+                }
+            }
+            TypedForm::CubicSchottkyBinary(operation, pair) => {
+                use cubic_schottky::Binary;
+                let [a, b] = &**pair;
+                let Value::CubicSchottky(w) = self.eval(a)? else {
+                    unreachable!()
+                };
+                let rhs = self.eval(b)?;
+                let group = self.checker().cubic_schottky_grade(a, "Schottky word")?;
+                match (operation, rhs) {
+                    (Binary::Multiply, Value::CubicSchottky(v)) => {
+                        w.multiply(&mut self.model, &v)?.persist(&mut self.model)
+                    }
+                    (Binary::Conjugate, Value::CubicSchottky(v)) => {
+                        Ok(Value::Point(usize::from(w.conjugate(&mut self.model, &v)?)))
+                    }
+                    (Binary::Apply, Value::CubicTreeVertex(v)) => group
+                        .apply(&mut self.model, &w, &v)?
+                        .persist(&mut self.model),
+                    (Binary::Boundary, Value::CubicBoundary(f)) => group
+                        .boundary(&mut self.model, &w, &f)?
+                        .persist(&mut self.model),
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::CubicBoundaryCylinder(input) => {
                 let extension = self.cubic_division_type(input.ty);
                 let Value::CubicTreeVertex(v) = self.eval(input)? else {
@@ -21202,6 +21310,10 @@ impl Checker<'_> {
             }
             TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
             TypeForm::CubicDiv(name) => self.model.cubic_div_type(&name),
+            TypeForm::CubicSchottky(name) => {
+                self.model.cubic_schottky(&name)?;
+                self.model.cubic_schottky_type(name.text.into())
+            }
             TypeForm::CubicBoundary(name) => {
                 self.model.cubic_division(&name)?;
                 self.model.cubic_boundary_type(name.text.into())
@@ -24923,6 +25035,7 @@ impl Checker<'_> {
             ExprForm::CubicTree(operation) => self.cubic_tree_expression(operation),
             ExprForm::CubicIwahori(operation) => self.cubic_iwahori_expression(operation),
             ExprForm::CubicPrincipal(operation) => self.cubic_principal_expression(operation),
+            ExprForm::CubicSchottky(operation) => self.cubic_schottky_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -37016,6 +37129,96 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_schottky_expression(
+        &mut self,
+        expression: cubic_schottky::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_schottky::{Binary, Expression, Unary};
+        match expression {
+            Expression::Literal(name, terms) => {
+                let group = self.model.cubic_schottky(&name)?;
+                let ty = self.model.cubic_schottky_type(name.text.into())?;
+                let value = group.literal(self.model, &terms)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Direction(ref name, _) | Expression::CoreVertex(ref name, _) => {
+                let group = self.model.cubic_schottky(name)?;
+                let ty = self
+                    .model
+                    .cubic_tree_type(group.division_name.clone(), false)?;
+                let vertex = match expression {
+                    Expression::Direction(_, letter) => group.direction(letter)?,
+                    Expression::CoreVertex(_, i) => group.core_vertex(self.model, i)?,
+                    _ => unreachable!(),
+                };
+                Ok((ty, TypedForm::Constant(vertex.persist(self.model)?)))
+            }
+            Expression::Unary(op, input) => {
+                let input = self.expr(*input)?;
+                let name = match op {
+                    Unary::Inverse => "rvCubicSchottkyInverse",
+                    Unary::Power(_) => "rvCubicSchottkyPow",
+                    Unary::Cyclic => "rvCubicSchottkyCyclic",
+                    Unary::Prefix => "rvCubicSchottkyPrefix",
+                    Unary::Axis => "rvCubicSchottkyAxis",
+                    Unary::Primitive => "rvCubicSchottkyIsPrimitive",
+                };
+                let group = self.cubic_schottky_grade(&input, name)?;
+                let ty = match op {
+                    Unary::Axis => self
+                        .model
+                        .cubic_tree_type(group.division_name.clone(), false)?,
+                    Unary::Primitive => self.model.named("S").expect("built-in truth type"),
+                    _ => input.ty,
+                };
+                Ok((ty, TypedForm::CubicSchottkyUnary(op, Box::new(input))))
+            }
+            Expression::Binary(op, pair) => {
+                let [a, b] = *pair;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let name = match op {
+                    Binary::Multiply => "rvCubicSchottkyMul",
+                    Binary::Conjugate => "rvCubicSchottkyConjugate",
+                    Binary::Apply => "rvCubicSchottkyApply",
+                    Binary::Boundary => "rvCubicSchottkyBoundary",
+                };
+                let group = self.cubic_schottky_grade(&a, name)?;
+                let expected = match op {
+                    Binary::Apply => self
+                        .model
+                        .cubic_tree_type(group.division_name.clone(), false)?,
+                    Binary::Boundary => self
+                        .model
+                        .cubic_boundary_type(group.division_name.clone())?,
+                    _ => a.ty,
+                };
+                self.require_type(expected, &b, name)?;
+                let ty = if matches!(op, Binary::Conjugate) {
+                    self.model.named("S").expect("built-in truth type")
+                } else {
+                    expected
+                };
+                Ok((ty, TypedForm::CubicSchottkyBinary(op, Box::new([a, b]))))
+            }
+        }
+    }
+
+    fn cubic_schottky_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<cubic_schottky::Group>> {
+        if let Kind::CubicSchottky(name) = self.model.kind(input.ty) {
+            Ok(self
+                .model
+                .cubic_schottky_named(name)
+                .expect("registered cubic Schottky group"))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicSchottkyWord(G)"))
+        }
     }
 
     fn cubic_principal_expression(

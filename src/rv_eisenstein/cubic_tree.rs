@@ -81,6 +81,10 @@ pub(crate) struct Operator {
 }
 
 impl Operator {
+    pub(super) fn is_integral(&self) -> bool {
+        self.power == 0
+    }
+
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
         model.allocate(182)?;
         Ok(Value::CubicTreeOperator(Rc::new(self)))

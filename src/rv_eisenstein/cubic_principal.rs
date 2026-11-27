@@ -93,26 +93,8 @@ impl Motion<'_> {
         z: Rat,
         f: &Function,
     ) -> Result<Function> {
-        let mut transported = Node::Constant(Rat::ZERO);
-        f.visit(&mut |key, c| {
-            if key.is_empty() {
-                return transported.add_indicator(model, key, 0, c);
-            }
-            let endpoint = tree.vertex_at_address(model, key)?;
-            let parent = tree.ancestor(&endpoint, key.len() - 1)?;
-            let target = self.image(model, tree, &endpoint)?;
-            let nearer = self.image(model, tree, &parent)?;
-            if tree.distance(&target, &nearer)? != 1 {
-                return Err(Error::plain(
-                    "principal-series motion failed to preserve a cylinder edge",
-                ));
-            }
-            let complement = target.level() < nearer.level();
-            let bound = if complement { &nearer } else { &target };
-            let key = tree.address(model, bound)?;
-            complementary(&mut transported, model, complement, &key, c)
-        })?;
-        let transported = Function::from_node(transported, f.presentation());
+        let transported =
+            transport_cylinders(model, tree, f, |model, v| self.image(model, tree, v))?;
         let root = self.image(model, tree, &tree.root())?;
         let path = tree.address(model, &root)?;
         if path.is_empty() {
@@ -155,6 +137,34 @@ impl Motion<'_> {
             preimage.level()
         ))
     }
+}
+
+pub(super) fn transport_cylinders(
+    model: &mut Model,
+    tree: &Tree<'_>,
+    f: &Function,
+    mut image: impl FnMut(&mut Model, &Vertex) -> Result<Vertex>,
+) -> Result<Function> {
+    let mut transported = Node::Constant(Rat::ZERO);
+    f.visit(&mut |key, c| {
+        if key.is_empty() {
+            return transported.add_indicator(model, key, 0, c);
+        }
+        let endpoint = tree.vertex_at_address(model, key)?;
+        let parent = tree.ancestor(&endpoint, key.len() - 1)?;
+        let target = image(model, &endpoint)?;
+        let nearer = image(model, &parent)?;
+        if tree.distance(&target, &nearer)? != 1 {
+            return Err(Error::plain(
+                "principal-series motion failed to preserve a cylinder edge",
+            ));
+        }
+        let complement = target.level() < nearer.level();
+        let bound = if complement { &nearer } else { &target };
+        let key = tree.address(model, bound)?;
+        complementary(&mut transported, model, complement, &key, c)
+    })?;
+    Ok(Function::from_node(transported, f.presentation()))
 }
 
 pub(crate) fn poisson(
