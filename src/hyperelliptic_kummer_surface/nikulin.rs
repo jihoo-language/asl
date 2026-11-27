@@ -6,14 +6,14 @@ use crate::jacobian_level::{binary_mask_image, Basis};
 use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
 
-const PAIRS: [(u8, u8); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+pub(crate) const PAIRS: [(u8, u8); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 pub(crate) const ORDER: u8 = 1 << PAIRS.len();
 const NODES: usize = 16;
 
 // The truth table of coordinate x_i has bit v set exactly when v_i=1.
-const AFFINE: [u16; 5] = [u16::MAX, 0xaaaa, 0xcccc, 0xf0f0, 0xff00];
+pub(crate) const AFFINE: [u16; 5] = [u16::MAX, 0xaaaa, 0xcccc, 0xf0f0, 0xff00];
 const GEOMETRIC_DETERMINANT: i128 = (-2i128).pow(NODES as u32) / (1i128 << (2 * AFFINE.len()));
-const QUADRATIC: [u16; 6] = [
+pub(crate) const QUADRATIC: [u16; 6] = [
     AFFINE[1] & AFFINE[2],
     AFFINE[1] & AFFINE[3],
     AFFINE[1] & AFFINE[4],
@@ -64,7 +64,11 @@ where
 
 pub(crate) fn quadratic(mask: u8) -> u32 {
     // The lift (Σ f(v)E_v)/2 has square −wt(f)/2 in Z/2Z.
-    (combine(mask, &QUADRATIC).count_ones() / 2) & 1
+    (quadratic_table(mask).count_ones() / 2) & 1
+}
+
+pub(crate) fn quadratic_table(mask: u8) -> u16 {
+    combine(mask, &QUADRATIC)
 }
 
 pub(crate) fn pair(left: u8, right: u8) -> u32 {

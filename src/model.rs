@@ -30,7 +30,7 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
-use crate::hyperelliptic_kummer_surface::{self, nikulin, Point as KummerPoint};
+use crate::hyperelliptic_kummer_surface::{self, nikulin, unimodular, Point as KummerPoint};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -256,6 +256,7 @@ pub(crate) enum Kind {
     KummerK3(Rc<str>),
     KummerDisc(Rc<str>),
     KummerDiv(Rc<str>),
+    K3Lattice(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -423,6 +424,7 @@ pub(crate) enum Value {
     KummerK3(Rc<KummerK3Point>),
     KummerDisc(u8),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
+    K3Lattice(Rc<unimodular::Vector>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -980,6 +982,7 @@ impl Model {
                 usize::MAX
             }
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
+            Kind::K3Lattice(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1195,6 +1198,7 @@ impl Model {
                 | Kind::KummerK3(..)
                 | Kind::KummerDisc(..)
                 | Kind::KummerDiv(..)
+                | Kind::K3Lattice(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3782,6 +3786,15 @@ impl Model {
         self.inhabited_type(Kind::KummerDisc(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn k3_lattice_type(&mut self, name: &Label) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "K3 lattices require a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::K3Lattice(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -4904,6 +4917,7 @@ impl Model {
             | Kind::KummerK3(..)
             | Kind::KummerDisc(..)
             | Kind::KummerDiv(..)
+            | Kind::K3Lattice(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5406,6 +5420,7 @@ impl Model {
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
+            Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5687,6 +5702,7 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6014,6 +6030,7 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
+            (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6330,6 +6347,9 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate an integral marked Kummer divisor lattice",
                     ));
+                }
+                Kind::K3Lattice(..) => {
+                    return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
@@ -7765,6 +7785,11 @@ impl Model {
                     out.push(&coefficient.to_string())?;
                 }
                 out.push("}")
+            }
+            Value::K3Lattice(vector) => {
+                let (w, b) = vector.coordinates();
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{w={w:?}, b={b:?}}}"))
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

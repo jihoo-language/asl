@@ -127,6 +127,7 @@ pub(crate) enum TypeForm {
     KummerK3(Label),
     KummerDisc(Label),
     KummerDiv(Label),
+    K3Lattice(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -969,6 +970,7 @@ pub(crate) enum ExprForm {
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
+    K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1151,6 +1153,7 @@ pub(crate) enum StatementForm {
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
+    K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -2892,6 +2895,84 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
 
+    fn k3_lattice_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::unimodular::Command;
+        self.advance()?;
+        let command = if name == "rvK3LatticePair" {
+            Command::Pair(Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Gram(basis)
+        };
+        Ok(StatementForm::K3Lattice(Box::new(command)))
+    }
+
+    fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
+        let (expression, depth) = match name {
+            "rvK3Lattice" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let w = self.signed_tuple("a signed wedge coordinate", "K3 lattice coordinate")?;
+                self.expect(Token::Comma)?;
+                let b =
+                    self.signed_tuple("a signed exceptional coordinate", "K3 lattice coordinate")?;
+                self.expect(Token::RBrace)?;
+                let w = w
+                    .try_into()
+                    .map_err(|_| Error::new(span, "rvK3Lattice requires six wedge coordinates"))?;
+                let b = b.try_into().map_err(|_| {
+                    Error::new(span, "rvK3Lattice requires sixteen exceptional coordinates")
+                })?;
+                (Expression::Literal(basis, Box::new((w, b))), 0)
+            }
+            "rvK3LatticeBasis" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let (index, at) = self.number()?;
+                if index >= RANK {
+                    return Err(Error::new(
+                        at,
+                        "rvK3LatticeBasis index must be between 0 and 21",
+                    ));
+                }
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(basis, index), 0)
+            }
+            "rvK3Reflect" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Reflect(Box::new(inputs)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let (mask, at) = self.number()?;
+                if mask >= 16 {
+                    return Err(Error::new(
+                        at,
+                        "rvK3Transvection mask must be between 0 and 15",
+                    ));
+                }
+                self.expect(Token::Comma)?;
+                let amount =
+                    self.signed_wide("a signed transvection amount", "K3 transvection amount")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Transvection(mask as u8, amount, Box::new(input)),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::K3Lattice(Box::new(expression)), depth)
+    }
+
     fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::nikulin::Command;
         self.advance()?;
@@ -4150,6 +4231,9 @@ impl<'src> Parser<'src> {
                 | "rvKummerHilbChar"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
+                self.k3_lattice_statement(name)?
+            }
             Token::Word(
                 command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
                 | "rvGenKummerLevel"),
@@ -7409,7 +7493,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc" | "RVKummerDiv"
+            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc" | "RVKummerDiv" | "RVK3Lattice"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -7419,7 +7503,8 @@ impl<'src> Parser<'src> {
                 "RVKummer" => TypeForm::Kummer(endpoint),
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
-                _ => TypeForm::KummerDisc(endpoint),
+                "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
+                _ => TypeForm::K3Lattice(endpoint),
             };
             return ty(span, form, 0);
         }
@@ -9397,6 +9482,14 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.kummer_divisor_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvK3Lattice" | "rvK3LatticeBasis" | "rvK3Transvection"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvK3Reflect" && self.token() == Token::LParen)
+                {
+                    return self.k3_lattice_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

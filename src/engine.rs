@@ -33,7 +33,7 @@ use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::{
-    self as kummer_surface, nikulin, polarized as kummer_div, Point as KummerPoint,
+    self as kummer_surface, nikulin, polarized as kummer_div, unimodular, Point as KummerPoint,
 };
 use crate::jacobian_level;
 use crate::jet_hom;
@@ -612,6 +612,9 @@ enum TypedForm {
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
     KummerDiv(KummerDivAction),
+    K3LatticeReflect(Box<[TypedExpr; 2]>),
+    K3LatticeTransvection(u8, i128, Box<TypedExpr>),
+    K3LatticeNegate(Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1587,6 +1590,9 @@ impl Engine {
             }
             StatementForm::KummerDiv(command) => {
                 return self.kummer_divisor_command(*command).map(Some)
+            }
+            StatementForm::K3Lattice(command) => {
+                return self.k3_lattice_command(*command).map(Some)
             }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
@@ -4605,6 +4611,28 @@ impl Engine {
         ))
     }
 
+    fn k3_lattice_command(&mut self, command: unimodular::Command) -> Result<String> {
+        match command {
+            unimodular::Command::Gram(name) => unimodular::gram_report(&mut self.model, &name),
+            unimodular::Command::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                self.checker()
+                    .k3_lattice_operand(&left, "rvK3LatticePair")?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "rvK3LatticePair right argument")?;
+                let (Value::K3Lattice(left), Value::K3Lattice(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let pair = left.pair(&mut self.model, &right)?;
+                Ok(format!("rvK3LatticePair = {pair}"))
+            }
+        }
+    }
+
     fn jacobian_command(
         &mut self,
         command: hyperelliptic_jacobian::Command,
@@ -5821,6 +5849,9 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::KummerDisc(a), Value::KummerDisc(b)) => {
                         Ok(Value::KummerDisc(a ^ b))
+                    }
+                    (BinaryOp::Add, Value::K3Lattice(a), Value::K3Lattice(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
                         let p = match *self.model.kind(expr.ty) {
@@ -7257,6 +7288,30 @@ impl Engine {
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
+            TypedForm::K3LatticeReflect(inputs) => {
+                let (Value::K3Lattice(root), Value::K3Lattice(vector)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                vector
+                    .reflect(&mut self.model, &root)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::K3LatticeTransvection(mask, amount, input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector
+                    .transvection(&mut self.model, *mask, *amount)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::K3LatticeNegate(input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector.negate(&mut self.model)?.persist(&mut self.model)
+            }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -9587,6 +9642,7 @@ impl Checker<'_> {
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
+            TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -10625,6 +10681,7 @@ impl Checker<'_> {
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
+                    Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -12756,6 +12813,7 @@ impl Checker<'_> {
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
+            ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -13433,6 +13491,9 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
+                    return Ok((input.ty, TypedForm::K3LatticeNegate(Box::new(input))));
+                }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
                     return Ok((input.ty, input.kind));
                 }
@@ -17152,6 +17213,7 @@ impl Checker<'_> {
                         | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
+                        | Kind::K3Lattice(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -18604,6 +18666,53 @@ impl Checker<'_> {
         self.require_type(coefficient, &x, context)?;
         self.require_type(coefficient, &y, context)?;
         Ok([x, y])
+    }
+
+    fn k3_lattice_expression(
+        &mut self,
+        expression: unimodular::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use unimodular::Expression;
+        match expression {
+            Expression::Literal(name, coordinates) => {
+                let ty = self.model.k3_lattice_type(&name)?;
+                let (w, b) = *coordinates;
+                let vector = unimodular::Vector::new(w, b)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(vector)))
+            }
+            Expression::Basis(name, index) => {
+                let ty = self.model.k3_lattice_type(&name)?;
+                let vector = unimodular::basis_vector(self.model, index)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(vector)))
+            }
+            Expression::Reflect(inputs) => {
+                let [root, vector] = *inputs;
+                let root = self.expr(root)?;
+                self.k3_lattice_operand(&root, "rvK3Reflect")?;
+                let vector = self.expr(vector)?;
+                self.require_type(root.ty, &vector, "rvK3Reflect vector")?;
+                Ok((
+                    root.ty,
+                    TypedForm::K3LatticeReflect(Box::new([root, vector])),
+                ))
+            }
+            Expression::Transvection(mask, amount, input) => {
+                let input = self.expr(*input)?;
+                self.k3_lattice_operand(&input, "rvK3Transvection")?;
+                Ok((
+                    input.ty,
+                    TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn k3_lattice_operand(&self, input: &TypedExpr, operation: &str) -> Result<()> {
+        if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
+            Ok(())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
+        }
     }
 
     fn kummer_disc_expression(

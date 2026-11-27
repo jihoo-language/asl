@@ -17,6 +17,7 @@ pub(crate) mod nikulin;
 pub(crate) mod polarized;
 pub(crate) mod resolution;
 pub(crate) mod theta;
+pub(crate) mod unimodular;
 
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),

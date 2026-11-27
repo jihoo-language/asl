@@ -1,0 +1,27 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zero = rvUnramElem[W]{};
+let one = rvUnramElem[W]{1};
+let i = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zero,zero);
+let r1 = rvJacPoint[L](one,zero);
+let r2 = rvJacPoint[L](neg(one),zero);
+let ri = rvJacPoint[L](i,zero);
+rvjactorsionbasis B[L,2](neg(one)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),ri)};
+
+let root = rvK3Lattice[B]{[0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2]};
+let x = rvK3Lattice[B]{[1,0,0,0,0,0],[0,0,0,1,0,0,0,1,0,0,0,1,0,0,0,1]};
+let y = rvK3Transvection[1,1](x);
+assert y == rvK3Lattice[B]{[1,0,0,-1,0,0],[0,0,0,1,0,0,1,0,0,0,0,1,0,0,1,0]};
+assert add(x,neg(x)) == zero[RVK3Lattice(B)];
+assert rvK3Reflect(root,root) == neg(root);
+assert rvK3Reflect(root,rvK3Reflect(root,x)) == x;
+assert rvK3Transvection[1,-1](y) == x;
+rvK3LatticePair(root,x);
+rvK3LatticePair(rvK3Transvection[1,1](root),y);
+rvK3LatticePair(rvK3Reflect(root,root),rvK3Reflect(root,x));
+rvK3LatticeGram[B];
