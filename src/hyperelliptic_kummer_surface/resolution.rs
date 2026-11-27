@@ -12,6 +12,7 @@ mod jets;
 mod node_projection;
 mod switch;
 
+#[derive(Clone)]
 pub(crate) struct ResolvedPoint {
     base: Rc<Point>,
     direction: Option<[Scalar; 4]>,
@@ -34,7 +35,17 @@ impl ResolvedPoint {
         model: &mut Model,
         curve: &Curve,
         base: Rc<Point>,
+        direction: [Scalar; 4],
+    ) -> Result<Self> {
+        Self::exceptional_with_quartic(model, curve, base, direction, None)
+    }
+
+    fn exceptional_with_quartic(
+        model: &mut Model,
+        curve: &Curve,
+        base: Rc<Point>,
         mut direction: [Scalar; 4],
+        terms: Option<&[QuarticTerm]>,
     ) -> Result<Self> {
         if !base.is_node(model, curve)? {
             return Err(Error::plain("rvKummerExceptional requires a Kummer node"));
@@ -53,8 +64,14 @@ impl ResolvedPoint {
                 *coordinate = field.multiply(model, coordinate, &inverse)?;
             }
         }
-        let quartic = quartic(model, curve)?;
-        let cone = TangentCone::new(model, field, &base, &quartic)?;
+        let owned_terms;
+        let terms = if let Some(terms) = terms {
+            terms
+        } else {
+            owned_terms = quartic(model, curve)?;
+            &owned_terms
+        };
+        let cone = TangentCone::new(model, field, &base, terms)?;
         if !cone.contains(model, field, cone.axes.map(|axis| &direction[axis]))? {
             return Err(Error::plain(
                 "rvKummerExceptional direction does not lie on the quadratic tangent cone",
@@ -128,12 +145,24 @@ impl ResolvedPoint {
         curve: &Curve,
         apply: impl Fn(&mut Model, &[Scalar; 4]) -> Result<[Scalar; 4]>,
     ) -> Result<Self> {
+        let image = self.projective_image_transient(model, curve, None, apply)?;
+        image.base.account_storage(model)?;
+        Ok(image)
+    }
+
+    pub(super) fn projective_image_transient(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        terms: Option<&[QuarticTerm]>,
+        apply: impl Fn(&mut Model, &[Scalar; 4]) -> Result<[Scalar; 4]>,
+    ) -> Result<Self> {
         let coordinates = apply(model, self.base.coordinates())?;
-        let base = Point::new(model, curve, coordinates)?.keep(model)?;
+        let base = Rc::new(Point::new(model, curve, coordinates)?);
         match &self.direction {
             Some(direction) => {
                 let direction = apply(model, direction)?;
-                Self::exceptional(model, curve, base, direction)
+                Self::exceptional_with_quartic(model, curve, base, direction, terms)
             }
             None => Self::smooth(model, curve, base),
         }
@@ -191,6 +220,11 @@ impl ResolvedPoint {
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
         Ok(Value::KummerK3(self.keep(model)?))
     }
+
+    pub(super) fn persist_image(self, model: &mut Model) -> Result<Value> {
+        self.base.account_storage(model)?;
+        self.persist(model)
+    }
 }
 
 fn pivot(base: &Point) -> usize {
@@ -214,14 +248,14 @@ fn remove_radial_component(
     Ok(())
 }
 
-type QuarticTerm = ([usize; 4], Scalar);
+pub(super) type QuarticTerm = ([usize; 4], Scalar);
 
 const W: usize = 0;
 const S: usize = 1;
 const P: usize = 2;
 const T: usize = 3;
 
-fn quartic(model: &mut Model, curve: &Curve) -> Result<Vec<QuarticTerm>> {
+pub(super) fn quartic(model: &mut Model, curve: &Curve) -> Result<Vec<QuarticTerm>> {
     let field = field(curve);
     let f = curve.polynomial();
     let mut terms = vec![

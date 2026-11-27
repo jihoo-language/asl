@@ -982,6 +982,7 @@ pub(crate) enum ExprForm {
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
+    K3AutoPoint(Box<crate::hyperelliptic_kummer_surface::dynamics::PointExpression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1173,6 +1174,7 @@ pub(crate) enum StatementForm {
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
+    K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -2978,7 +2980,7 @@ impl<'src> Parser<'src> {
     }
 
     fn k3_automorphism_statement(&mut self, operation: &str) -> Result<StatementForm> {
-        use crate::hyperelliptic_kummer_surface::dynamics::{Command, Generator};
+        use crate::hyperelliptic_kummer_surface::dynamics::{Command, Expression, Generator};
         self.advance()?;
         let command = if operation == "rvk3autom" {
             let name = self.label()?;
@@ -3014,7 +3016,17 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
             self.expect(Token::RBracket)?;
-            Command::Entropy(name)
+            match operation {
+                "rvK3AutoPeriod" => {
+                    let input = self.paren_expr(0)?;
+                    return Ok(StatementForm::K3AutoPeriod(Box::new(Expression(
+                        name,
+                        Box::new(input),
+                    ))));
+                }
+                "rvK3AutoCycles" => Command::Cycles(name),
+                _ => Command::Entropy(name),
+            }
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
     }
@@ -4687,9 +4699,9 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
             }
-            Token::Word(name @ ("rvk3autom" | "rvK3Entropy")) => {
-                self.k3_automorphism_statement(name)?
-            }
+            Token::Word(
+                name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"),
+            ) => self.k3_automorphism_statement(name)?,
             Token::Word(
                 command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
                 | "rvGenKummerLevel" | "rvGenKummerBetti" | "rvGenKummerTrace"
@@ -10035,6 +10047,29 @@ impl<'src> Parser<'src> {
                         Box::new(input),
                     );
                     return expr(span, ExprForm::K3AutoDiv(Box::new(expression)), depth);
+                }
+                if matches!(name.text.as_str(), "rvK3AutoPoint" | "rvK3AutoIter")
+                    && self.eat(Token::LBracket)?
+                {
+                    let word = self.label()?;
+                    let power = if name.text == "rvK3AutoIter" {
+                        self.expect(Token::Comma)?;
+                        self.signed_wide(
+                            "a signed iteration count",
+                            "K3 automorphism iteration count",
+                        )?
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    let expression = crate::hyperelliptic_kummer_surface::dynamics::PointExpression(
+                        word,
+                        power,
+                        Box::new(input),
+                    );
+                    return expr(span, ExprForm::K3AutoPoint(Box::new(expression)), depth);
                 }
                 if (matches!(
                     name.text.as_str(),

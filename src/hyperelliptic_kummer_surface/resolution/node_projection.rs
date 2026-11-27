@@ -23,18 +23,32 @@ impl ResolvedPoint {
                 "rvKummerNodeInvolution center must be a Kummer node",
             ));
         }
-        let field = field(curve);
         let terms = quartic(model, curve)?;
-        if self.base() == &center {
-            return self.project_center_ray(model, curve, field, &terms);
+        let image = self.node_involution_transient(model, curve, &center, &terms)?;
+        if !Rc::ptr_eq(&image.base, &self.base) && !Rc::ptr_eq(&image.base, &center) {
+            image.base.account_storage(model)?;
+        }
+        Ok(image)
+    }
+
+    pub(in crate::hyperelliptic_kummer_surface) fn node_involution_transient(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        center: &Rc<Point>,
+        terms: &[QuarticTerm],
+    ) -> Result<Self> {
+        let field = field(curve);
+        if self.base() == center {
+            return self.project_center_ray(model, curve, field, terms);
         }
 
         // The line through the center N and P has equation
         // F(uN+vP)=u v²(uA+vB). The second jet is invariant along N.
         let point = self.base();
         let mut ray = point.coordinates().clone();
-        remove_radial_component(model, field, &center, &mut ray)?;
-        let cone = TangentCone::new(model, field, &center, &terms)?;
+        remove_radial_component(model, field, center, &mut ray)?;
+        let cone = TangentCone::new(model, field, center, terms)?;
         let a = cone.evaluate(model, field, cone.axes.map(|axis| &ray[axis]))?;
 
         if let Some(direction) = self.direction() {
@@ -43,22 +57,22 @@ impl ResolvedPoint {
             if field.is_zero(&a) {
                 return Err(contained_line());
             }
-            let cone = TangentCone::new(model, field, point, &terms)?;
+            let cone = TangentCone::new(model, field, point, terms)?;
             let hessian = cone.hessian(model, field)?;
             let normal = cone.normal(model, field, point, &hessian, direction)?;
             let db = dot(model, field, center.coordinates().iter().zip(&normal))?;
             let image =
                 subtract_scaled(model, field, (center.coordinates(), &db), (direction, &a))?;
-            return Self::exceptional(model, curve, point.clone(), image);
+            return Self::exceptional_with_quartic(model, curve, point.clone(), image, Some(terms));
         }
 
-        let normal = gradient(model, field, point.coordinates(), &terms)?;
+        let normal = gradient(model, field, point.coordinates(), terms)?;
         let b = dot(model, field, center.coordinates().iter().zip(&normal))?;
         if field.is_zero(&a) {
             if field.is_zero(&b) {
                 return Err(contained_line());
             }
-            return Self::exceptional(model, curve, center, ray);
+            return Self::exceptional_with_quartic(model, curve, center.clone(), ray, Some(terms));
         }
         let image = subtract_scaled(
             model,
@@ -66,7 +80,7 @@ impl ResolvedPoint {
             (center.coordinates(), &b),
             (point.coordinates(), &a),
         )?;
-        let image = Point::new(model, curve, image)?.keep(model)?;
+        let image = Rc::new(Point::new(model, curve, image)?);
         Self::smooth(model, curve, image)
     }
 
@@ -100,7 +114,7 @@ impl ResolvedPoint {
             (center.coordinates(), &value),
             (direction, &b),
         )?;
-        let image = Point::new(model, curve, image)?.keep(model)?;
+        let image = Rc::new(Point::new(model, curve, image)?);
         Self::smooth(model, curve, image)
     }
 }

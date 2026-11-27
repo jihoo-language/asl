@@ -650,6 +650,7 @@ enum TypedForm {
     HilbertSquareDivisor(i128, Box<TypedExpr>),
     HilbertSquareCup(Box<[TypedExpr; 2]>),
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
+    K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1661,6 +1662,9 @@ impl Engine {
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
+            StatementForm::K3AutoPeriod(expression) => {
+                return self.k3_auto_period(*expression).map(Some)
+            }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
@@ -4678,6 +4682,21 @@ impl Engine {
         ))
     }
 
+    fn k3_auto_period(
+        &mut self,
+        expression: kummer_surface::dynamics::Expression,
+    ) -> Result<String> {
+        let kummer_surface::dynamics::Expression(name, input) = expression;
+        let (word, input) = self
+            .checker()
+            .k3_point_input(&name, *input, "rvK3AutoPeriod input")?;
+        let Value::KummerK3(point) = self.eval(&input)? else {
+            unreachable!()
+        };
+        let period = word.period(&mut self.model, &point)?;
+        Ok(format!("rvK3AutoPeriod[{}] = {period}", name.text))
+    }
+
     fn k3_lattice_command(&mut self, command: unimodular::Command) -> Result<String> {
         match command {
             unimodular::Command::Gram(name) => unimodular::gram_report(&mut self.model, &name),
@@ -7664,6 +7683,12 @@ impl Engine {
                     nakajima::Operation::Scale(scalar) => input.scale(&mut self.model, scalar)?,
                 };
                 output.persist(&mut self.model)
+            }
+            TypedForm::K3AutoPoint(word, power, input) => {
+                let Value::KummerK3(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                word.iterate(&mut self.model, point, *power)
             }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
@@ -13195,6 +13220,15 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::K3AutoDiv(word, Box::new(input))))
             }
             ExprForm::HilbertSquare(expression) => self.hilbert_square_expression(*expression),
+            ExprForm::K3AutoPoint(expression) => {
+                let kummer_surface::dynamics::PointExpression(name, power, input) = *expression;
+                let (word, input) =
+                    self.k3_point_input(&name, *input, "K3 automorphism point input")?;
+                Ok((
+                    input.ty,
+                    TypedForm::K3AutoPoint(word, power, Box::new(input)),
+                ))
+            }
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -19081,6 +19115,19 @@ impl Checker<'_> {
         self.require_type(coefficient, &x, context)?;
         self.require_type(coefficient, &y, context)?;
         Ok([x, y])
+    }
+
+    fn k3_point_input(
+        &mut self,
+        name: &Label,
+        input: ParsedExpr,
+        context: &str,
+    ) -> Result<(Rc<kummer_surface::dynamics::Word>, TypedExpr)> {
+        let word = self.model.k3_automorphism(name)?;
+        let ty = self.model.kummer_k3_type(word.curve_name())?;
+        let input = self.expr(input)?;
+        self.require_type(ty, &input, context)?;
+        Ok((word, input))
     }
 
     fn hilbert_square_operand(

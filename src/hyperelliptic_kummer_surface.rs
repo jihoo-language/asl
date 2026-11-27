@@ -390,8 +390,12 @@ impl Point {
     }
 
     fn keep(self, model: &mut Model) -> Result<Rc<Self>> {
-        model.allocate(4 * (3 + self.0[0].len()))?;
+        self.account_storage(model)?;
         Ok(Rc::new(self))
+    }
+
+    fn account_storage(&self, model: &mut Model) -> Result<()> {
+        model.allocate(4 * (3 + self.0[0].len()))
     }
 
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::ec_poly::{Field, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::{self, CoefficientRing};
@@ -5,18 +7,29 @@ use crate::hw_closed::Curve;
 use crate::model::Model;
 
 use super::jets::{apply, dot, gradient};
-use super::{field, quartic, Point, ResolvedPoint, TangentCone};
+use super::{field, quartic, Point, QuarticTerm, ResolvedPoint, TangentCone};
 
 impl ResolvedPoint {
     pub(crate) fn gauss_switch(&self, model: &mut Model, curve: &Curve) -> Result<Self> {
-        let field = field(curve);
         let terms = quartic(model, curve)?;
+        let image = self.gauss_switch_transient(model, curve, &terms)?;
+        image.base.account_storage(model)?;
+        Ok(image)
+    }
+
+    pub(in crate::hyperelliptic_kummer_surface) fn gauss_switch_transient(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        terms: &[QuarticTerm],
+    ) -> Result<Self> {
+        let field = field(curve);
         let normal = if let Some(direction) = self.direction() {
-            let cone = TangentCone::new(model, field, self.base(), &terms)?;
+            let cone = TangentCone::new(model, field, self.base(), terms)?;
             let hessian = cone.hessian(model, field)?;
             cone.normal(model, field, self.base(), &hessian, direction)?
         } else {
-            gradient(model, field, self.base().coordinates(), &terms)?
+            gradient(model, field, self.base().coordinates(), terms)?
         };
         // The alternating polarity has A²=-I, so it also represents A⁻¹.
         let target_coordinates = polarity(model, field, &normal)?;
@@ -29,21 +42,21 @@ impl ResolvedPoint {
             ));
         }
         if !target.is_node(model, curve)? {
-            let normal = gradient(model, field, target.coordinates(), &terms)?;
+            let normal = gradient(model, field, target.coordinates(), terms)?;
             if !parallel(model, field, &normal, &reciprocal)? {
                 return Err(Error::plain(
                     "Kummer switch failed its reciprocal Gauss relation",
                 ));
             }
             return Ok(Self {
-                base: target.keep(model)?,
+                base: Rc::new(target),
                 direction: None,
             });
         }
 
         // Fix the target direction's pivot coordinate at zero. The restricted
         // Hessian is invertible, with the last equation forced by incidence.
-        let cone = TangentCone::new(model, field, &target, &terms)?;
+        let cone = TangentCone::new(model, field, &target, terms)?;
         let hessian = cone.hessian(model, field)?;
         let inverse = hw_algebra::inverse(model, &field, &hessian)?
             .ok_or_else(|| Error::plain("Kummer switch node Hessian is singular"))?;
@@ -62,8 +75,7 @@ impl ResolvedPoint {
                 "Kummer switch failed to recover the exceptional direction",
             ));
         }
-        let target = target.keep(model)?;
-        Self::exceptional(model, curve, target, direction)
+        Self::exceptional_with_quartic(model, curve, Rc::new(target), direction, Some(terms))
     }
 }
 

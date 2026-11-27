@@ -1,0 +1,26 @@
+rvunram F[5,1]{0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+let two = rvUnramElem[F]{2};
+let three = rvUnramElem[F]{3};
+let four = neg(o);
+rvhyperelliptic C[F]{z,four,z,z,z,o};
+let r0 = rvJacPoint[C](z,z);
+let r1 = rvJacPoint[C](o,z);
+let r2 = rvJacPoint[C](two,z);
+let r3 = rvJacPoint[C](three,z);
+rvjactorsionbasis B[C,2](four){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),r3)};
+
+let x = rvKummerExceptional(rvJacKummerPoint(r1),o,z,z,z);
+rvk3autom Mix[B]{translate(3),switch(5),project(1)};
+rvk3autom Reverse[B]{project(1),switch(5),translate(3)};
+rvk3autom Hyperbolic[B]{project(0),project(1),project(2)};
+assert rvK3AutoPoint[Mix](x) == rvKummerExceptional(rvKummer[C](z,o,three,four),o,z,o,four);
+assert rvK3AutoPoint[Reverse](x) == rvKummerExceptional(rvKummer[C](o,o,z,four),z,z,o,two);
+assert rvK3AutoPoint[Reverse](rvK3AutoPoint[Mix](x)) == x;
+assert rvK3AutoIter[Mix,-170141183460469231731687303715884105728](x) == rvK3AutoIter[Mix,7](x);
+rvKummerK3Points[C,1];
+rvK3AutoPeriod[Mix](x);
+rvK3AutoCycles[Mix];
+rvK3AutoCycles[Hyperbolic];
+rvK3Entropy[Hyperbolic];

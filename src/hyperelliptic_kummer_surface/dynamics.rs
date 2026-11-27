@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
@@ -9,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::nikulin::{self, AFFINE};
 use super::polarized::{self, Divisor, COEFFICIENTS};
 
+mod points;
 mod spectrum;
 
 const RANK: usize = COEFFICIENTS;
@@ -26,15 +28,22 @@ pub(crate) enum Generator {
 pub(crate) enum Command {
     Define(Label, Label, Vec<Generator>),
     Entropy(Label),
+    Cycles(Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Box<ParsedExpr>);
+pub(crate) struct PointExpression(
+    pub(crate) Label,
+    pub(crate) i128,
+    pub(crate) Box<ParsedExpr>,
+);
 
 pub(crate) struct Word {
     pub(crate) basis_name: Rc<str>,
     pub(crate) generators: Box<[Generator]>,
     basis: Rc<Basis>,
     origin: u16,
+    point_geometry: OnceCell<points::Geometry>,
 }
 
 impl Command {
@@ -48,6 +57,7 @@ impl Command {
                     generators: generators.into_boxed_slice(),
                     basis,
                     origin,
+                    point_geometry: OnceCell::new(),
                 };
                 model.define_k3_automorphism(name, word)?;
                 Ok(None)
@@ -55,6 +65,10 @@ impl Command {
             Self::Entropy(name) => {
                 let word = model.k3_automorphism(&name)?;
                 Ok(Some(word.entropy(model, &name.text)?))
+            }
+            Self::Cycles(name) => {
+                let word = model.k3_automorphism(&name)?;
+                Ok(Some(word.cycles(model, &name.text)?))
             }
         }
     }
