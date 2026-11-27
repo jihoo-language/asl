@@ -119,6 +119,7 @@ pub(crate) enum TypeForm {
     RVQGr(usize, usize),
     RVQGrP(usize, usize, usize),
     RVOre,
+    RVWittSpectrum,
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
@@ -823,6 +824,7 @@ pub(crate) enum ExprForm {
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
     OreUnary(OreOp, Box<ParsedExpr>),
+    WittSpectrum(Box<crate::rv_witt_spectrum::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
@@ -1277,6 +1279,7 @@ pub(crate) enum StatementForm {
     QuantumCoefficient(usize, Vec<usize>, ParsedExpr),
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
+    WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
     WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
@@ -4782,6 +4785,99 @@ impl<'src> Parser<'src> {
         ))))
     }
 
+    fn witt_spectrum_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_witt_spectrum::{Bridge, Expression};
+        let (form, depth) = match name {
+            "rvWittSpectrum" => {
+                self.expect(Token::LBrace)?;
+                let coefficients = |parser: &mut Self| {
+                    parser.expect(Token::LBracket)?;
+                    let mut out = Vec::new();
+                    while parser.token() != Token::RBracket {
+                        out.push(
+                            parser.signed_wide("a signed Witt coefficient", "Witt coefficient")?,
+                        );
+                        if !parser.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    parser.expect(Token::RBracket)?;
+                    Ok(out)
+                };
+                let p = coefficients(self)?;
+                let q = if self.eat(Token::Comma)? {
+                    Some(coefficients(self)?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBrace)?;
+                (Expression::Literal(p, q), 0)
+            }
+            "rvWittSpectrumLine" => {
+                self.expect(Token::LBracket)?;
+                let a = self.signed_wide("a signed eigenvalue", "Witt line eigenvalue")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Line(a), 0)
+            }
+            "rvWittSpectrumTensor" => {
+                let args = self.paren_pair(nest)?;
+                let depth = 1 + args[0].depth.max(args[1].depth);
+                (Expression::Tensor(Box::new(args)), depth)
+            }
+            "rvWittSpectrumAdams" | "rvWittSpectrumExterior" => {
+                self.expect(Token::LBracket)?;
+                let index = self.wide_unsigned("Witt operation index")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let form = if name == "rvWittSpectrumAdams" {
+                    Expression::Adams(index, Box::new(input))
+                } else {
+                    Expression::Exterior(index, Box::new(input))
+                };
+                (form, depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let word = self.label()?;
+                self.expect(Token::Comma)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let stratum = self.label()?;
+                self.expect(Token::Comma)?;
+                let span = self.span();
+                let r = self.wide_unsigned("K3 Frobenius iteration count")?;
+                if r == 0 {
+                    return Err(Error::new(
+                        span,
+                        "K3 Frobenius iteration count must be positive",
+                    ));
+                }
+                self.expect(Token::Comma)?;
+                let i = self.wide_unsigned("cohomological degree")?;
+                self.expect(Token::RBracket)?;
+                let specht = name == "rvK3SpechtSpectrum";
+                (
+                    Expression::Bridge(Bridge {
+                        word,
+                        base,
+                        stratum,
+                        r,
+                        i,
+                        specht,
+                    }),
+                    0,
+                )
+            }
+        };
+        expr(span, ExprForm::WittSpectrum(Box::new(form)), depth)
+    }
+
     fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::nikulin::Command;
         self.advance()?;
@@ -7730,6 +7826,25 @@ impl<'src> Parser<'src> {
                     input,
                 )
             }
+            Token::Word(
+                name @ ("rvWittSpectrumData" | "rvWittSpectrumGhost" | "rvWittSpectrumCoeff"),
+            ) => {
+                use crate::rv_witt_spectrum::Query;
+                self.advance()?;
+                let query = if name == "rvWittSpectrumData" {
+                    Query::Data
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let index = self.wide_unsigned("Witt spectrum query index")?;
+                    self.expect(Token::RBracket)?;
+                    if name == "rvWittSpectrumGhost" {
+                        Query::Ghost(index)
+                    } else {
+                        Query::Factor(index)
+                    }
+                };
+                StatementForm::WittSpectrumQuery(query, Box::new(self.paren_expr(0)?))
+            }
             Token::Word("rvOreCoeff" | "rvQGrPeriod") => {
                 let period = self.token() == Token::Word("rvQGrPeriod");
                 self.advance()?;
@@ -10229,6 +10344,9 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVWittSpectrum" {
+            return ty(span, TypeForm::RVWittSpectrum, 0);
         }
         if name.text == "RVQGrP" && self.eat(Token::LParen)? {
             let (prime, rank, ambient) = self.quantum_mod_grade()?;
@@ -14501,6 +14619,18 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvWittSpectrum"
+                        | "rvWittSpectrumLine"
+                        | "rvWittSpectrumTensor"
+                        | "rvWittSpectrumAdams"
+                        | "rvWittSpectrumExterior"
+                        | "rvK3SpechtSpectrum"
+                        | "rvK3StratumSpectrum"
+                ) {
+                    return self.witt_spectrum_expression(&name.text, span, nest);
                 }
                 if name.text == "rvOre" && self.eat(Token::LBracket)? {
                     let (q, theta) = self.quantum_grade()?;

@@ -709,6 +709,10 @@ enum TypedForm {
     Nakajima(nakajima::Operation, Box<TypedExpr>),
     NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
     OG6Clifford(OG6CliffordAction),
+    WittBridge(Box<crate::rv_witt_spectrum::Bridge>),
+    WittTensor(Box<[TypedExpr; 2]>),
+    WittAdams(u128, Box<TypedExpr>),
+    WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
@@ -1859,6 +1863,16 @@ impl Engine {
                 return command.execute(&mut self.model).map(Some)
             }
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
+            StatementForm::WittSpectrumQuery(query, input) => {
+                let value = self.checker().expr(*input)?;
+                let ty = self.model.witt_spectrum_type()?;
+                self.checker()
+                    .require_type(ty, &value, "Witt spectrum query")?;
+                let Value::RVWittSpectrum(spectrum) = self.eval(&value)? else {
+                    unreachable!();
+                };
+                return spectrum.query(&mut self.model, query).map(Some);
+            }
             StatementForm::DeclareSpecht(declaration) => {
                 declaration.execute(&mut self.model)?;
                 return Ok(None);
@@ -7822,6 +7836,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
                         rv_ore::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVQGrP(a), Value::RVQGrP(b)) => {
                         let Kind::RVQGrP(grade) = *self.model.kind(expr.ty) else {
                             unreachable!()
@@ -9570,9 +9587,36 @@ impl Engine {
                 Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
                 Value::RVSphHecke(value) => rv_sphhecke::neg(&mut self.model, &value),
                 Value::RVOre(value) => rv_ore::negate(&mut self.model, &value),
+                Value::RVWittSpectrum(value) => value.negate().persist(&mut self.model),
                 Value::RVSatake(value) => rv_satake::neg(&mut self.model, &value),
                 _ => unreachable!(),
             },
+            TypedForm::WittBridge(bridge) => {
+                kummer_surface::dynamics::stratum_spectrum(&mut self.model, bridge)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::WittTensor(inputs) => {
+                let (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.tensor(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::WittAdams(r, input) => {
+                let Value::RVWittSpectrum(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.adams(&mut self.model, *r)?.persist(&mut self.model)
+            }
+            TypedForm::WittExterior(r, input) => {
+                let Value::RVWittSpectrum(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .exterior(&mut self.model, *r)?
+                    .persist(&mut self.model)
+            }
             TypedForm::SphericalProduct(arguments) => {
                 let Kind::RVSphHecke(rank) = *self.model.kind(expr.ty) else {
                     unreachable!()
@@ -11920,6 +11964,7 @@ impl Checker<'_> {
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
             TypeForm::RVOre => self.model.ore_type(),
+            TypeForm::RVWittSpectrum => self.model.witt_spectrum_type(),
             TypeForm::RVCTState(name, p, s) => {
                 let grade = self.model.rv_ct_state_grade(name, p, s)?;
                 self.model.rv_ct_state_type(grade)
@@ -12969,6 +13014,7 @@ impl Checker<'_> {
                     Kind::RVQGr(..) => rv_qgr::zero(),
                     Kind::RVQGrP(..) => rv_pcurv::zero(),
                     Kind::RVOre => rv_ore::zero(),
+                    Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVCTState(..) => Value::PeriodState([].into()),
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
                     Kind::RVFusion(..) => rv_fusion::zero(),
@@ -15114,6 +15160,7 @@ impl Checker<'_> {
             ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
+            ExprForm::WittSpectrum(expression) => self.witt_spectrum_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
@@ -16017,7 +16064,10 @@ impl Checker<'_> {
                         TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::RVOre) {
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::RVOre | Kind::RVWittSpectrum
+                ) {
                     return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
                 }
                 if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
@@ -19740,6 +19790,7 @@ impl Checker<'_> {
                         | Kind::RVQGr(..)
                         | Kind::RVQGrP(..)
                         | Kind::RVOre
+                        | Kind::RVWittSpectrum
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
@@ -21602,6 +21653,54 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn witt_spectrum_expression(
+        &mut self,
+        expression: crate::rv_witt_spectrum::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::rv_witt_spectrum::{Expression, Spectrum};
+        let ty = self.model.witt_spectrum_type()?;
+        let form = match expression {
+            Expression::Literal(p, q) => {
+                let value = Spectrum::literal(self.model, p, q)?.persist(self.model)?;
+                TypedForm::Constant(value)
+            }
+            Expression::Line(value) => {
+                TypedForm::Constant(Spectrum::line(value)?.persist(self.model)?)
+            }
+            Expression::Tensor(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                self.require_type(ty, &left, "rvWittSpectrumTensor")?;
+                self.require_type(ty, &right, "rvWittSpectrumTensor")?;
+                TypedForm::WittTensor(Box::new([left, right]))
+            }
+            Expression::Adams(r, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvWittSpectrumAdams")?;
+                TypedForm::WittAdams(r, Box::new(input))
+            }
+            Expression::Exterior(m, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvWittSpectrumExterior")?;
+                TypedForm::WittExterior(m, Box::new(input))
+            }
+            Expression::Bridge(bridge) => {
+                self.model.k3_automorphism(&bridge.word)?;
+                self.model
+                    .kummer_curve(&bridge.base.text)
+                    .map_err(|error| error.at(bridge.base.span))?;
+                if bridge.specht {
+                    self.model.specht_stratum(&bridge.stratum)?;
+                } else {
+                    self.model.hilbert_stratum(&bridge.stratum)?;
+                }
+                TypedForm::WittBridge(Box::new(bridge))
+            }
+        };
+        Ok((ty, form))
     }
 
     fn nakajima_expression(

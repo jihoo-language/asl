@@ -15,6 +15,7 @@ mod points;
 mod semilinear;
 mod spectrum;
 mod strata;
+pub(crate) use strata::spectrum as stratum_spectrum;
 
 const RANK: usize = COEFFICIENTS;
 const GLUE_DIMENSION: usize = 1 + AFFINE.len();

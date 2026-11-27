@@ -4,6 +4,7 @@ use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::hw_closed::Curve;
 use crate::model::Model;
+use crate::rv_witt_spectrum::{self, determinant_from_ghosts, Bridge, Spectrum};
 use crate::syntax::Label;
 
 use super::super::{
@@ -35,9 +36,7 @@ pub(super) fn report(
         base,
         shape_name,
         Summand::Hilbert(&shape),
-        r,
-        i,
-        coefficient,
+        Index { r, i, coefficient },
     )
 }
 
@@ -57,10 +56,56 @@ pub(super) fn specht_report(
         base,
         shape_name,
         Summand::Specht(&shape),
-        r,
-        i,
-        coefficient,
+        Index { r, i, coefficient },
     )
+}
+
+pub(crate) fn spectrum(model: &mut Model, bridge: &Bridge) -> Result<Spectrum> {
+    let (word, curve) = word_and_base(model, &bridge.word, &bridge.base)?;
+    word.basis
+        .require_base_extension(model, &curve)
+        .map_err(|error| error.at(bridge.base.span))?;
+    let shape;
+    let decoration;
+    let summand = if bridge.specht {
+        decoration = model.specht_stratum(&bridge.stratum)?;
+        Summand::Specht(&decoration)
+    } else {
+        shape = model.hilbert_stratum(&bridge.stratum)?;
+        Summand::Hilbert(&shape)
+    };
+    let Some((degree, twist)) = summand.grade(model, bridge.i)? else {
+        return Ok(Spectrum::zero());
+    };
+    let action = Action {
+        word: &word,
+        curve: &curve,
+        base: &bridge.base,
+        r: bridge.r,
+    };
+    if degree == 0 {
+        let eigenvalue = tate(model, &action, 1, twist, Integer::from_i128(1))?;
+        return Spectrum::effective(vec![Integer::from_i128(1), eigenvalue.negate()]);
+    }
+    let length = summand.symmetric_length(degree);
+    let rank = partition_value(model, &summand, length, degree, None)?;
+    let rank = rank
+        .magnitude
+        .small()
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(usize::MAX);
+    rv_witt_spectrum::require_degree(rank)?;
+    if rank == 0 {
+        return Ok(Spectrum::zero());
+    }
+    let traces = power_traces(model, &action, &summand, length, degree, twist, rank)?;
+    Spectrum::effective(determinant_from_ghosts(model, &traces)?)
+}
+
+struct Index {
+    r: u128,
+    i: u128,
+    coefficient: Option<u128>,
 }
 
 fn report_summand(
@@ -69,10 +114,9 @@ fn report_summand(
     base: &Label,
     shape_name: &Label,
     summand: Summand<'_>,
-    r: u128,
-    i: u128,
-    coefficient: Option<u128>,
+    index: Index,
 ) -> Result<String> {
+    let Index { r, i, coefficient } = index;
     let (word, curve) = word_and_base(model, word_name, base)?;
     word.basis
         .require_base_extension(model, &curve)
@@ -137,6 +181,16 @@ impl Summand<'_> {
         }
         Ok(Some((degree, twist + shift)))
     }
+
+    fn symmetric_length(&self, degree: u128) -> u128 {
+        self.shape()
+            .parts()
+            .iter()
+            .map(|&(_, count)| count)
+            .max()
+            .unwrap_or(0)
+            .min(degree)
+    }
 }
 
 struct Action<'a> {
@@ -166,14 +220,7 @@ fn evaluate(
             value
         });
     }
-    let length = summand
-        .shape()
-        .parts()
-        .iter()
-        .map(|&(_, c)| c)
-        .max()
-        .unwrap_or(0)
-        .min(degree);
+    let length = summand.symmetric_length(degree);
     if steps > 1 {
         let rank = partition_value(model, summand, length, degree, None)?;
         if rank.magnitude.cmp(Magnitude::from_small(steps)).is_lt() {
@@ -181,6 +228,23 @@ fn evaluate(
         }
     }
     let steps = usize::try_from(steps).map_err(|_| storage_limit())?;
+    let traces = power_traces(model, action, summand, length, degree, twist, steps)?;
+    if coefficient.is_some() {
+        Ok(*determinant_from_ghosts(model, &traces)?.last().unwrap())
+    } else {
+        Ok(traces[0])
+    }
+}
+
+fn power_traces(
+    model: &mut Model,
+    action: &Action<'_>,
+    summand: &Summand<'_>,
+    length: u128,
+    degree: u128,
+    twist: u128,
+    steps: usize,
+) -> Result<Vec<Integer>> {
     let words = size_of::<Integer>().div_ceil(size_of::<usize>());
     if steps.saturating_add(1).saturating_mul(2 * words) > MAX_PIVOT_CELLS {
         return Err(storage_limit());
@@ -220,11 +284,7 @@ fn evaluate(
         )?;
         traces.push(tate(model, action, step, twist, value)?);
     }
-    if coefficient.is_some() {
-        newton_coefficient(model, &traces)
-    } else {
-        Ok(traces[0])
-    }
+    Ok(traces)
 }
 
 fn partition_value(
@@ -269,30 +329,6 @@ fn tate(
             negative: false,
         },
     )
-}
-
-fn newton_coefficient(model: &mut Model, traces: &[Integer]) -> Result<Integer> {
-    model.spend(traces.len() + 1)?;
-    let mut coefficients = Vec::with_capacity(traces.len() + 1);
-    coefficients.push(Integer::from_i128(1));
-    for j in 1..=traces.len() {
-        let mut sum = Integer::from_i128(0);
-        for (&trace, &coefficient) in traces.iter().zip(coefficients.iter().rev()) {
-            let term = checked_product(model, trace, coefficient)?;
-            sum = sum.add(term).map_err(|_| intermediate_overflow())?;
-        }
-        let (magnitude, remainder) = sum.magnitude.divide(model, j as u128)?;
-        if remainder != 0 {
-            return Err(Error::plain(
-                "Hilbert–Chow Euler factor Newton division is inexact",
-            ));
-        }
-        coefficients.push(Integer {
-            magnitude,
-            negative: !sum.negative,
-        });
-    }
-    Ok(*coefficients.last().unwrap())
 }
 
 fn storage_limit() -> Error {
