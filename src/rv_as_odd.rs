@@ -8,6 +8,7 @@ use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::rv_as_odd_cartier::Cartier;
 use crate::rv_as_odd_derham::DeRham;
+use crate::rv_as_odd_tate::Tate;
 use crate::{rv_cyclotomic as cyclo, rv_newton};
 
 type Character = Rc<[Vec<i128>]>;
@@ -20,6 +21,8 @@ pub(crate) enum Query {
     ANumber,
     FinalType,
     Gram,
+    TateDim(i64),
+    TateJordan,
     Genus,
     PRank,
     Character(usize),
@@ -38,6 +41,8 @@ impl Query {
             Self::ANumber => "rvASOddaNumber",
             Self::FinalType => "rvASOddEO",
             Self::Gram => "rvASOddGram",
+            Self::TateDim(_) => "rvASOddTatedim",
+            Self::TateJordan => "rvASOddTateJordan",
             Self::Genus => "rvASOddGenus",
             Self::PRank => "rvASOddPrank",
             Self::Character(_) => "rvASOddCharacterL",
@@ -56,6 +61,7 @@ pub(crate) struct Cover {
     genus: usize,
     cartier: OnceCell<Rc<Cartier>>,
     derham: OnceCell<Rc<DeRham>>,
+    tate: OnceCell<Rc<Tate>>,
     character: OnceCell<Character>,
     numerator: OnceCell<Rc<[i128]>>,
 }
@@ -99,6 +105,7 @@ impl Cover {
             genus,
             cartier: OnceCell::new(),
             derham: OnceCell::new(),
+            tate: OnceCell::new(),
             character: OnceCell::new(),
             numerator: OnceCell::new(),
         })
@@ -134,6 +141,14 @@ impl Cover {
         }
         let derham = Rc::new(DeRham::build(model, self)?);
         Ok(self.derham.get_or_init(|| derham).clone())
+    }
+
+    pub(crate) fn tate(&self, model: &mut Model) -> Result<Rc<Tate>> {
+        if let Some(tate) = self.tate.get() {
+            return Ok(tate.clone());
+        }
+        let tate = Rc::new(Tate::build(model, self)?);
+        Ok(self.tate.get_or_init(|| tate).clone())
     }
 
     pub(crate) fn order(&self) -> usize {
@@ -190,6 +205,11 @@ impl Cover {
             Query::ANumber => (self.genus - self.cartier(model)?.rank(model, self, 1)?).to_string(),
             Query::FinalType => format!("{:?}", self.derham(model)?.final_type(model, self)?),
             Query::Gram => format!("{:?}", self.derham(model)?.gram(model, self)?),
+            Query::TateDim(degree) => {
+                let rank = self.tate(model)?.group(model, self, degree)?.rank();
+                return Ok(format!("{operation}[{name}, {degree}] = {rank}"));
+            }
+            Query::TateJordan => format!("{:?}", self.tate(model)?.jordan(model, self)?),
             Query::Genus => self.genus.to_string(),
             Query::PRank => "0".to_owned(),
             Query::Character(j) => {

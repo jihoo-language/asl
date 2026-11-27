@@ -19,6 +19,7 @@ use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
 use crate::rv_as_odd::Query as AsOddQuery;
 use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
 use crate::rv_as_odd_derham::Operation as AsOddDeRhamOp;
+use crate::rv_as_odd_tate::Operation as AsOddTateOp;
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -112,6 +113,7 @@ pub(crate) enum TypeForm {
     CurveDiff(DiffFamily, Label, usize),
     ASOddDiff(Label),
     ASOddDeRham(Label),
+    ASOddTate(Label, i64),
     PrimeScalar(usize),
     ASDeRham(Label, usize),
     BinaryScalar(usize),
@@ -438,6 +440,7 @@ pub(crate) enum BinaryOp {
     MixEval,
     RvBarPair,
     AsOddDeRhamPair,
+    AsOddTatePair,
     AsDeRhamPair,
     EOBruhat,
     EOClosure,
@@ -470,6 +473,7 @@ impl BinaryOp {
             "mixEval" => Some(Self::MixEval),
             "rvBarPair" => Some(Self::RvBarPair),
             "rvASOddDeRhamPair" => Some(Self::AsOddDeRhamPair),
+            "rvASOddTatePair" => Some(Self::AsOddTatePair),
             "rvASDeRhamPair" => Some(Self::AsDeRhamPair),
             "eoBruhat" => Some(Self::EOBruhat),
             "eoClosure" => Some(Self::EOClosure),
@@ -753,6 +757,8 @@ pub(crate) enum ExprForm {
     AsOddOmega(Label, usize, usize),
     AsOddDiffOperation(AsOddDiffOp, Box<ParsedExpr>),
     AsOddDeRhamGen(Label, usize),
+    AsOddTateGen(Label, i64, usize),
+    AsOddTateOperation(AsOddTateOp, Box<ParsedExpr>),
     AsOddDeRhamOperation(AsOddDeRhamOp, Box<ParsedExpr>),
     PrimeScalar(usize, i128),
     RvOmega(DiffFamily, Label, usize, usize),
@@ -2423,6 +2429,8 @@ impl<'src> Parser<'src> {
                 | "rvASOddaNumber"
                 | "rvASOddEO"
                 | "rvASOddGram"
+                | "rvASOddTatedim"
+                | "rvASOddTateJordan"
                 | "rvASOddGenus"
                 | "rvASOddPrank"
                 | "rvASOddCharacterL"
@@ -2441,6 +2449,11 @@ impl<'src> Parser<'src> {
                     Token::Word("rvASOddaNumber") => AsOddQuery::ANumber,
                     Token::Word("rvASOddEO") => AsOddQuery::FinalType,
                     Token::Word("rvASOddGram") => AsOddQuery::Gram,
+                    Token::Word("rvASOddTateJordan") => AsOddQuery::TateJordan,
+                    Token::Word("rvASOddTatedim") => {
+                        self.expect(Token::Comma)?;
+                        AsOddQuery::TateDim(self.signed_number("Tate degree")?)
+                    }
                     Token::Word("rvASOddCartierRank") => {
                         self.expect(Token::Comma)?;
                         AsOddQuery::CartierRank(self.number()?.0)
@@ -3636,6 +3649,13 @@ impl<'src> Parser<'src> {
             let modulus = self.number()?.0;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BinaryScalar(modulus), 0);
+        }
+        if name.text == "ASOddTate" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_number("Tate degree")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASOddTate(cover, degree), 0);
         }
         if name.text == "ASOddDeRham" && self.eat(Token::LParen)? {
             let cover = self.label()?;
@@ -4892,6 +4912,52 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::AsDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASOddTategen" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.signed_number("Tate degree")?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsOddTateGen(cover, degree, index), 0);
+                }
+                if matches!(name.text.as_str(), "rvASOddTateD" | "rvASOddTateClass")
+                    && self.eat(Token::LBracket)?
+                {
+                    let degree = self.signed_number("Tate degree")?;
+                    self.expect(Token::RBracket)?;
+                    let operation = if name.text == "rvASOddTateD" {
+                        AsOddTateOp::Differential(degree)
+                    } else {
+                        AsOddTateOp::Class(degree)
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsOddTateOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvASOddTateRep" | "rvASOddTateF" | "rvASOddTateV"
+                ) && self.token() == Token::LParen
+                {
+                    let operation = match name.text.as_str() {
+                        "rvASOddTateRep" => AsOddTateOp::Representative,
+                        "rvASOddTateF" => AsOddTateOp::Frobenius,
+                        "rvASOddTateV" => AsOddTateOp::Verschiebung,
+                        _ => unreachable!(),
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsOddTateOperation(operation, Box::new(input)),
                         depth,
                     );
                 }

@@ -175,6 +175,7 @@ pub(crate) enum Kind {
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
     ASOddDiff(Rc<str>, Prime),
     ASOddDeRham(Rc<str>, Prime),
+    ASOddTate(Rc<str>, Prime, i64),
     PrimeScalar(Prime),
     ASDeRham(Rc<str>, BinaryField),
     BinaryScalar(BinaryField),
@@ -729,7 +730,7 @@ impl Model {
             Kind::BinaryScalar(field) => field.order(),
             Kind::EOType(genus) => support_space_size(genus),
             Kind::PrimeScalar(prime) => prime.get() as usize,
-            Kind::ASOddDeRham(ref name, prime) => {
+            Kind::ASOddDeRham(ref name, prime) | Kind::ASOddTate(ref name, prime, _) => {
                 let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();
                 (prime.get() as usize).saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
             }
@@ -851,6 +852,7 @@ impl Model {
                 | Kind::CurveDiff(..)
                 | Kind::ASOddDiff(..)
                 | Kind::ASOddDeRham(..)
+                | Kind::ASOddTate(..)
                 | Kind::PrimeScalar(..)
                 | Kind::ASDeRham(..)
                 | Kind::BinaryScalar(..)
@@ -2184,6 +2186,25 @@ impl Model {
         self.inhabited_type(Kind::ASOddDeRham(name, cover.prime()), 0)
     }
 
+    pub(crate) fn rv_as_odd_tate_type(&mut self, name: &Label, degree: i64) -> Result<TypeId> {
+        let cover = self.rv_as_odd_cover(name)?;
+        self.rv_as_odd_tate_named(name.text.as_str().into(), &cover, degree)
+    }
+
+    pub(crate) fn rv_as_odd_tate_named(
+        &mut self,
+        name: Rc<str>,
+        cover: &RvAsOddCover,
+        degree: i64,
+    ) -> Result<TypeId> {
+        if cover.genus().checked_mul(2).is_none() {
+            return Err(Error::plain(
+                "odd Artin–Schreier de Rham dimension is out of range",
+            ));
+        }
+        self.inhabited_type(Kind::ASOddTate(name, cover.prime(), degree), 0)
+    }
+
     pub(crate) fn rv_as_odd_diff_type(&mut self, name: &Label) -> Result<TypeId> {
         let cover = self.rv_as_odd_cover(name)?;
         self.inhabited_type(Kind::ASOddDiff(name.text.as_str().into(), cover.prime()), 0)
@@ -2808,6 +2829,7 @@ impl Model {
             | Kind::CurveDiff(..)
             | Kind::ASOddDiff(..)
             | Kind::ASOddDeRham(..)
+            | Kind::ASOddTate(..)
             | Kind::PrimeScalar(..)
             | Kind::ASDeRham(..)
             | Kind::BinaryScalar(..)
@@ -3139,6 +3161,7 @@ impl Model {
             Kind::EOType(genus) => out.push(&format!("EOType({genus})")),
             Kind::ASOddDiff(name, _) => out.push(&format!("ASOddDiff({name})")),
             Kind::ASOddDeRham(name, _) => out.push(&format!("ASOddDeRham({name})")),
+            Kind::ASOddTate(name, _, degree) => out.push(&format!("ASOddTate({name}, {degree})")),
             Kind::PrimeScalar(prime) => out.push(&format!("PrimeScalar({})", prime.get())),
             Kind::CurveDiff(family, name, field) => out.push(&format!(
                 "{}({name}, {})",
@@ -3857,6 +3880,11 @@ impl Model {
                     self.spend(size)?;
                     self.allocate(size)?;
                     (0..prime.get()).map(Value::PrimeScalar).collect()
+                }
+                Kind::ASOddTate(ref name, prime, degree) => {
+                    let cover = self.rv_as_odd_covers[name.as_ref()].clone();
+                    let rank = cover.tate(self)?.group(self, &cover, degree)?.rank();
+                    odd_ext::elements(self, prime, rank, MAX_ELEMENTS)?
                 }
                 Kind::ASOddDeRham(ref name, prime) => {
                     let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();

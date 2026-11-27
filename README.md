@@ -1114,6 +1114,14 @@ At $p=5$, the genus-ten curves with $f=x^6+x^3$ and $f=x^6+x^4$ both have $a$-nu
 
 Over $\mathbb F_3$, $f=x^{13}+2x^{11}+x^{10}+x$ and $f=x^{13}+x^5+x^2$ give genus-twelve curves with the same pole order, the same full primitive character polynomial, and the same $a$-number seven. Their final types differ. The example checks all thirteen primitive coefficients and reports the common zeta numerator alongside the two final types. [Equal zeta factors and distinct final types](examples/rank-as-odd-stationary.asl)
 
+#### Tate cohomology of the wild deck action
+
+Let $T$ be pullback under $y\mapsto y+1$ on `ASOddDeRham(C)`, with $\Delta=T-1$ and $N=\sum_{i=0}^{p-1}T^i=\Delta^{p-1}$. The two-periodic Tate complex has differential $\Delta$ in even cohomological degrees and $N$ in odd degrees. Use `rvASOddTateD[z](w)` on a de Rham vector `w` to apply that differential. The type `ASOddTate(C,z)` is its cohomology in signed degree `z`, with the usual vector operations `zero`, `add`, and `pscale`. Use `rvASOddTatedim[C,z];` for the dimension and `rvASOddTategen[C,z,k]` for a zero-based generator. Use `rvASOddTateClass[z](w)` to project a cycle and `rvASOddTateRep(x)` to obtain the representative selected by sparse elimination. Distinct signed degrees have distinct types even when their matrices coincide.
+
+`rvASOddTateF(x)` and `rvASOddTateV(x)` use the induced Frobenius and Verschiebung. The polarization descends to a perfect pairing across the two parities, returned as `PrimeScalar(p)` by `rvASOddTatePair(x,y)` on classes of the same cover and opposite parity. The adjoint of $\Delta$ is $T^{-1}-1$, with the same kernel and image as $\Delta$, and $N$ is self-adjoint. `rvASOddTateJordan[C];` gives the descending block lengths of $\Delta$ on de Rham cohomology, including blocks of size $p$ when present. Such blocks contribute zero in both Tate parities.
+
+For $y^3-y=x^7$, all six deck blocks have size two. Each Tate parity has dimension six, and the induced $F$ and $V$ each have rank two and square zero. The image of $F$ has dimension two while the kernel of $V$ has dimension four. The example certifies a class in $\ker V$ outside $\operatorname{im} F$ by its nonzero pairing with a class of opposite parity killed by $V$. [Wild deck Tate example](examples/rank-as-odd-tate.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

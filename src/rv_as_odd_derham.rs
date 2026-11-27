@@ -36,7 +36,7 @@ impl Operation {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Map {
+pub(crate) enum Map {
     Frobenius,
     Verschiebung,
 }
@@ -286,7 +286,7 @@ impl DeRham {
         Ok(output)
     }
 
-    fn image(
+    pub(crate) fn image(
         &self,
         model: &mut Model,
         cover: &Cover,
@@ -319,6 +319,22 @@ impl DeRham {
         Ok(result)
     }
 
+    pub(crate) fn deck(
+        &self,
+        model: &mut Model,
+        cover: &Cover,
+        scalar: u32,
+        input: &[Coordinate],
+    ) -> Result<Vec<Coordinate>> {
+        let Triple { u, v, overlap } = self.triple(model, cover, input)?;
+        let triple = Triple {
+            u: self.translate(model, &u, scalar)?,
+            v: self.translate(model, &v, scalar)?,
+            overlap: self.translate(model, &overlap, scalar)?,
+        };
+        self.decode(model, cover, triple)
+    }
+
     pub(crate) fn apply(
         &self,
         model: &mut Model,
@@ -335,13 +351,7 @@ impl DeRham {
                 if scalar == 0 {
                     return Ok(Value::OddClass(input));
                 }
-                let Triple { u, v, overlap } = self.triple(model, cover, &input)?;
-                let triple = Triple {
-                    u: self.translate(model, &u, scalar)?,
-                    v: self.translate(model, &v, scalar)?,
-                    overlap: self.translate(model, &overlap, scalar)?,
-                };
-                self.decode(model, cover, triple)?
+                self.deck(model, cover, scalar, &input)?
             }
         };
         odd_ext::persist(model, coordinates)

@@ -63,6 +63,7 @@ use crate::rv_as_derham;
 use crate::rv_as_odd::Cover as RvAsOddCover;
 use crate::rv_as_odd_cartier;
 use crate::rv_as_odd_derham;
+use crate::rv_as_odd_tate;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -411,6 +412,12 @@ enum TypedForm {
         rv_as_derham::Operation,
         Rc<RvAsCover>,
         BinaryField,
+        Box<TypedExpr>,
+    ),
+    AsOddTateOperation(
+        rv_as_odd_tate::Operation,
+        Rc<RvAsOddCover>,
+        i64,
         Box<TypedExpr>,
     ),
     AsOddDeRhamOperation(
@@ -2414,6 +2421,28 @@ impl Engine {
                         let prime = self.sheaf_prime(expr.ty);
                         sheaf::add(&mut self.model, prime, &a, &b)
                     }
+                    (BinaryOp::AsOddTatePair, Value::OddClass(a), Value::OddClass(b)) => {
+                        if a.is_empty() || b.is_empty() {
+                            return Ok(Value::PrimeScalar(0));
+                        }
+                        let Kind::ASOddTate(name, _, first) = self.model.kind(left.ty) else {
+                            unreachable!()
+                        };
+                        let Kind::ASOddTate(_, _, second) = self.model.kind(right.ty) else {
+                            unreachable!()
+                        };
+                        let (first, second) = (*first, *second);
+                        let cover = self
+                            .model
+                            .rv_as_odd_cover_named(name)
+                            .expect("registered odd Artin–Schreier cover");
+                        cover.tate(&mut self.model)?.pair(
+                            &mut self.model,
+                            &cover,
+                            (first, &a),
+                            (second, &b),
+                        )
+                    }
                     (BinaryOp::AsOddDeRhamPair, Value::OddClass(a), Value::OddClass(b)) => {
                         let Kind::ASOddDeRham(name, prime) = self.model.kind(left.ty) else {
                             unreachable!()
@@ -2444,7 +2473,8 @@ impl Engine {
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..)
                             | Kind::ASOddDiff(_, p)
-                            | Kind::ASOddDeRham(_, p) => p,
+                            | Kind::ASOddDeRham(_, p)
+                            | Kind::ASOddTate(_, p, _) => p,
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
@@ -3994,6 +4024,21 @@ impl Engine {
                 let value = self.eval(input)?;
                 rv_as_derham::apply(&mut self.model, cover, *field, *operation, value)
             }
+            TypedForm::AsOddTateOperation(operation, cover, degree, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if coordinates.is_empty() {
+                    return Ok(odd_ext::zero());
+                }
+                cover.tate(&mut self.model)?.apply(
+                    &mut self.model,
+                    cover,
+                    *degree,
+                    *operation,
+                    coordinates,
+                )
+            }
             TypedForm::AsOddDeRhamOperation(operation, cover, input) => {
                 let Value::OddClass(coordinates) = self.eval(input)? else {
                     unreachable!()
@@ -4935,6 +4980,7 @@ impl Checker<'_> {
             }
             TypeForm::ASOddDiff(cover) => self.model.rv_as_odd_diff_type(&cover),
             TypeForm::ASOddDeRham(cover) => self.model.rv_as_odd_derham_type(&cover),
+            TypeForm::ASOddTate(cover, degree) => self.model.rv_as_odd_tate_type(&cover, degree),
             TypeForm::PrimeScalar(p) => {
                 let prime = self.scalar_prime(p)?;
                 self.model.prime_scalar_type(prime)
@@ -5072,7 +5118,7 @@ impl Checker<'_> {
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
                     Kind::ASOddDiff(..) => odd_ext::zero(),
-                    Kind::ASOddDeRham(..) => odd_ext::zero(),
+                    Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
@@ -5976,7 +6022,8 @@ impl Checker<'_> {
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..)
                     | Kind::ASOddDiff(_, p)
-                    | Kind::ASOddDeRham(_, p) => p,
+                    | Kind::ASOddDeRham(_, p)
+                    | Kind::ASOddTate(_, p, _) => p,
                     Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
@@ -7640,6 +7687,49 @@ impl Checker<'_> {
                 let ty = self.model.prime_scalar_type(prime)?;
                 let value = coefficient.rem_euclid(i128::from(prime.get())) as u32;
                 Ok((ty, TypedForm::Constant(Value::PrimeScalar(value))))
+            }
+            ExprForm::AsOddTateGen(name, degree, index) => {
+                let cover = self.model.rv_as_odd_cover(&name)?;
+                let ty =
+                    self.model
+                        .rv_as_odd_tate_named(name.text.as_str().into(), &cover, degree)?;
+                let rank = cover
+                    .tate(self.model)?
+                    .group(self.model, &cover, degree)?
+                    .rank();
+                let value = self.prime_generator(ty, rank, index, span)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::AsOddTateOperation(operation, input) => {
+                use rv_as_odd_tate::Operation::*;
+                let input = self.expr(*input)?;
+                let name = operation.name();
+                let (cover, degree) = match (operation, self.model.kind(input.ty)) {
+                    (Differential(degree) | Class(degree), Kind::ASOddDeRham(cover, _)) => {
+                        (cover.clone(), degree)
+                    }
+                    (
+                        Representative | Frobenius | Verschiebung,
+                        Kind::ASOddTate(cover, _, degree),
+                    ) => (cover.clone(), *degree),
+                    (Differential(_) | Class(_), _) => {
+                        return Err(self.invalid_operand(&input, name, "an ASOddDeRham class"));
+                    }
+                    _ => return Err(self.invalid_operand(&input, name, "an ASOddTate class")),
+                };
+                let data = self
+                    .model
+                    .rv_as_odd_cover_named(&cover)
+                    .expect("registered odd Artin–Schreier cover");
+                let ty = match operation {
+                    Class(_) => self.model.rv_as_odd_tate_named(cover, &data, degree)?,
+                    Representative => self.model.rv_as_odd_derham_named(cover, &data)?,
+                    _ => input.ty,
+                };
+                Ok((
+                    ty,
+                    TypedForm::AsOddTateOperation(operation, data, degree, Box::new(input)),
+                ))
             }
             ExprForm::AsOddDeRhamGen(name, index) => {
                 let ty = self.model.rv_as_odd_derham_type(&name)?;
@@ -9639,6 +9729,7 @@ impl Checker<'_> {
                         | Kind::CurveDiff(..)
                         | Kind::ASOddDiff(..)
                         | Kind::ASOddDeRham(..)
+                        | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
@@ -9825,6 +9916,28 @@ impl Checker<'_> {
                 };
                 self.require_type(left.ty, right, op)?;
                 self.model.binary_scalar_type(field)
+            }
+            BinaryOp::AsOddTatePair => {
+                let op = "rvASOddTatePair";
+                let Kind::ASOddTate(first, prime, a) = self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(left, op, "an ASOddTate class"));
+                };
+                let Kind::ASOddTate(second, _, b) = self.model.kind(right.ty) else {
+                    return Err(self.invalid_operand(right, op, "an ASOddTate class"));
+                };
+                if first != second {
+                    return Err(Error::new(
+                        span,
+                        "rvASOddTatePair requires classes of the same cover",
+                    ));
+                }
+                if a.rem_euclid(2) == b.rem_euclid(2) {
+                    return Err(Error::new(
+                        span,
+                        "rvASOddTatePair requires opposite Tate parities",
+                    ));
+                }
+                self.model.prime_scalar_type(*prime)
             }
             BinaryOp::AsOddDeRhamPair => {
                 let op = "rvASOddDeRhamPair";
