@@ -20,6 +20,7 @@ use crate::dependent_sets;
 use crate::error::{Error, Result};
 use crate::jet_hom;
 use crate::jet_page;
+use crate::khovanov::{self, Form as KhForm};
 use crate::map_cochain;
 use crate::map_ext::{self, MapAdams};
 use crate::map_may::MapMayPage;
@@ -234,6 +235,7 @@ pub(crate) enum Kind {
     RVValMat(ValGrade),
     RVStableTree(usize),
     RVStableMarks(u32, usize),
+    Khovanov(Rc<str>, khovanov::Grade, KhForm),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -382,6 +384,8 @@ pub(crate) enum Value {
     RVValMat(Rc<ValMatroid>),
     RVStableTree(Rc<StableTree>),
     RVStableMarks(Rc<StableCurve>),
+    KhChain(khovanov::Chain),
+    KhClass(khovanov::Class),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -507,6 +511,7 @@ pub(crate) struct Model {
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     cyclotomics: HashMap<usize, rv_cyclotomic::Polynomial>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
+    kh_braids: HashMap<Rc<str>, Rc<khovanov::Braid>>,
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_periods: HashMap<String, Rc<Period>>,
@@ -580,6 +585,7 @@ impl Model {
             milnor_bases: HashMap::new(),
             cyclotomics: HashMap::new(),
             v_bars: HashMap::new(),
+            kh_braids: HashMap::new(),
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
             rv_periods: HashMap::new(),
@@ -804,6 +810,13 @@ impl Model {
             {
                 1
             }
+            Kind::Khovanov(ref braid, grade, _) => {
+                if self.kh_braids[braid].possible(grade) {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::RvTl(grade) if !grade.possible() => 1,
             Kind::QKoszul(..)
             | Kind::QExt(..)
@@ -1026,6 +1039,7 @@ impl Model {
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
                 | Kind::RVWzw(..)
+                | Kind::Khovanov(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
@@ -2628,6 +2642,38 @@ impl Model {
         self.inhabited_type(Kind::RVWzw(grade), 0)
     }
 
+    pub(crate) fn define_kh_braid(
+        &mut self,
+        name: &Label,
+        strands: usize,
+        word: &[i128],
+    ) -> Result<()> {
+        if self.kh_braids.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "Khovanov braid already defined"));
+        }
+        let braid = khovanov::Braid::new(self, strands, word)?;
+        self.kh_braids
+            .insert(name.text.as_str().into(), Rc::new(braid));
+        Ok(())
+    }
+
+    pub(crate) fn kh_braid(&self, name: &str) -> Result<Rc<khovanov::Braid>> {
+        self.kh_braids
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Khovanov braid '{name}'")))
+    }
+
+    pub(crate) fn kh_type(
+        &mut self,
+        braid: Rc<str>,
+        grade: khovanov::Grade,
+        form: KhForm,
+    ) -> Result<TypeId> {
+        self.kh_braid(&braid)?;
+        self.inhabited_type(Kind::Khovanov(braid, grade, form), 0)
+    }
+
     pub(crate) fn tl_type(&mut self, grade: rv_tl::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RvTl(grade), 0)
     }
@@ -3838,6 +3884,7 @@ impl Model {
             | Kind::RVStableMarks(..)
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
+            | Kind::Khovanov(..)
             | Kind::RvTl(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
@@ -4249,6 +4296,12 @@ impl Model {
                 "RVWzw({}, {})",
                 grade.fusion.rank, grade.fusion.level
             )),
+            Kind::Khovanov(name, grade, form) => out.push(&format!(
+                "{}({name}, {}, {})",
+                form.name(),
+                grade.i,
+                grade.j
+            )),
             Kind::RvTl(grade) => out.push(&format!(
                 "RVTL({}, {}, {})",
                 grade.level, grade.strands, grade.height
@@ -4473,6 +4526,12 @@ impl Model {
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => {
                 Ok(rv_wzw::compare(self, left, right)?.is_eq())
+            }
+            (Value::KhChain(left), Value::KhChain(right)) => {
+                Ok(khovanov::compare_chains(self, left, right)?.is_eq())
+            }
+            (Value::KhClass(left), Value::KhClass(right)) => {
+                Ok(khovanov::compare_classes(self, left, right)?.is_eq())
             }
             (Value::RvTl(left), Value::RvTl(right)) => {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
@@ -4739,6 +4798,12 @@ impl Model {
                 rv_fusion::compare(self, left, right)
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
+            (Value::KhChain(left), Value::KhChain(right)) => {
+                khovanov::compare_chains(self, left, right)
+            }
+            (Value::KhClass(left), Value::KhClass(right)) => {
+                khovanov::compare_classes(self, left, right)
+            }
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
             (Value::RVStableTree(left), Value::RVStableTree(right)) => {
@@ -4982,6 +5047,13 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a cyclotomic torus state module",
                     ))
+                }
+                Kind::Khovanov(ref name, grade, form) => {
+                    let braid = self.kh_braid(name)?;
+                    match form {
+                        KhForm::Chain => braid.chain_elements(self, grade)?,
+                        KhForm::Class => braid.group(self, grade)?.elements(self, MAX_ELEMENTS)?,
+                    }
                 }
                 Kind::RvTl(grade) => {
                     if grade.possible() {
@@ -6264,6 +6336,42 @@ impl Model {
                         out.push(", ")?;
                     }
                     out.push(&format!("{weight:?}: {coefficient:?}"))?;
+                }
+                out.push("}")
+            }
+            Value::KhChain(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, (cell, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1 + cell.xs.len() + cell.state.count_ones() as usize)?;
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    let mut state = cell.state;
+                    let mut ones = Vec::new();
+                    while state != 0 {
+                        ones.push(state.trailing_zeros());
+                        state &= state - 1;
+                    }
+                    out.push(&format!("({ones:?}, {:?}): {coefficient}", cell.xs))?;
+                }
+                out.push("}")
+            }
+            Value::KhClass(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (i, (generator, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1)?;
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("g{generator}: {coefficient}"))?;
                 }
                 out.push("}")
             }

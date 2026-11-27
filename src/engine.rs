@@ -22,6 +22,7 @@ use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::jet_hom;
 use crate::jet_page;
+use crate::khovanov::{self, Form as KhForm};
 use crate::map_bracket;
 use crate::map_cochain;
 use crate::map_ext;
@@ -497,6 +498,7 @@ enum TypedForm {
     CycloRatioNegate(Box<TypedExpr>),
     CycloRatioProduct(usize, Box<[TypedExpr; 2]>),
     CycloRatioGalois(usize, i128, Box<TypedExpr>),
+    Khovanov(khovanov::Operation, Box<TypedExpr>),
     TlOperation(rv_tl::Grade, TlOp, Box<TypedExpr>),
     TlCoordinate(rv_tl::Grade, Vec<usize>, Box<TypedExpr>),
     TlScale(rv_tl::Grade, Box<[TypedExpr; 2]>),
@@ -831,6 +833,26 @@ impl Engine {
 
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
+            StatementForm::Khovanov(command) => match *command {
+                khovanov::Command::Braid(name, strands, word) => {
+                    self.model.define_kh_braid(&name, strands, &word)?;
+                    return Ok(None);
+                }
+                khovanov::Command::Group(name, grade) => {
+                    let groups = self
+                        .model
+                        .kh_braid(&name.text)?
+                        .invariants(&mut self.model, grade)?;
+                    format!(
+                        "khGroup[{}, {}, {}] = chain={}, free={}, torsion={:?}",
+                        name.text, grade.i, grade.j, groups.chains, groups.free, groups.torsion
+                    )
+                }
+                khovanov::Command::Euler(name) => {
+                    let polynomial = self.model.kh_braid(&name.text)?.euler(&mut self.model)?;
+                    format!("khEuler[{}] = {:?}", name.text, polynomial)
+                }
+            },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
             StatementForm::UnramRing(name, p, precision, polynomial) => {
                 self.model
@@ -3894,6 +3916,17 @@ impl Engine {
                     (BinaryOp::Add, Value::RVWzw(a), Value::RVWzw(b)) => {
                         rv_wzw::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::KhChain(a), Value::KhChain(b)) => Ok(Value::KhChain(
+                        khovanov::add_chains(&mut self.model, &a, &b)?,
+                    )),
+                    (BinaryOp::Add, Value::KhClass(a), Value::KhClass(b)) => {
+                        let Kind::Khovanov(name, grade, _) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let grade = *grade;
+                        let group = self.model.kh_braid(name)?.group(&mut self.model, grade)?;
+                        Ok(Value::KhClass(group.add(&mut self.model, &a, &b)?))
+                    }
                     (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
                         rv_tl::add(&mut self.model, &a, &b)
                     }
@@ -5049,6 +5082,42 @@ impl Engine {
                     unreachable!()
                 };
                 rv_wzw::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::Khovanov(operation, input) => {
+                use khovanov::Operation;
+                let value = self.eval(input)?;
+                let Kind::Khovanov(name, grade, _) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = *grade;
+                let braid = self.model.kh_braid(name)?;
+                match (operation, value) {
+                    (Operation::Differential, Value::KhChain(chain)) => {
+                        Ok(Value::KhChain(braid.differential(&mut self.model, &chain)?))
+                    }
+                    (Operation::Project, Value::KhChain(chain)) => {
+                        let group = braid.group(&mut self.model, grade)?;
+                        Ok(Value::KhClass(group.project(&mut self.model, &chain)?))
+                    }
+                    (Operation::Representative, Value::KhClass(class)) => {
+                        let group = braid.group(&mut self.model, grade)?;
+                        Ok(Value::KhChain(
+                            group.representative(&mut self.model, &class)?,
+                        ))
+                    }
+                    (Operation::Scale(factor), Value::KhChain(chain)) => Ok(Value::KhChain(
+                        khovanov::scale_chain(&mut self.model, &chain, *factor)?,
+                    )),
+                    (Operation::Scale(factor), Value::KhClass(class)) => {
+                        let group = braid.group(&mut self.model, grade)?;
+                        Ok(Value::KhClass(group.scale(
+                            &mut self.model,
+                            &class,
+                            *factor,
+                        )?))
+                    }
+                    _ => unreachable!(),
+                }
             }
             TypedForm::TlOperation(grade, operation, input) => {
                 let Value::RvTl(state) = self.eval(input)? else {
@@ -6917,6 +6986,9 @@ impl Checker<'_> {
             TypeForm::RVWzw(rank, level) => {
                 self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
             }
+            TypeForm::Khovanov(braid, grade, form) => {
+                self.model.kh_type(braid.text.into(), grade, form)
+            }
             TypeForm::RvTl(level, strands, height) => self
                 .model
                 .tl_type(rv_tl::Grade::checked(level, strands, height)?),
@@ -7752,6 +7824,8 @@ impl Checker<'_> {
                         rv_unram::persist(self.model,ring.scalar(0))?
                     }
                     Kind::RVCycloQ(..) => rv_lens::zero(),
+                    Kind::Khovanov(_,_,KhForm::Chain) => Value::KhChain(Rc::default()),
+                    Kind::Khovanov(_,_,KhForm::Class) => Value::KhClass(Rc::default()),
                     Kind::RvTl(..) => rv_tl::zero(),
                     Kind::RVWzw(..) => rv_wzw::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -8624,6 +8698,7 @@ impl Checker<'_> {
             | ExprForm::SheafDefAppend(..)
             | ExprForm::SheafDefGauge(..)) => self.check_sheaf_deformation(form),
             ExprForm::SheafKuranishi(query) => self.sheaf_kuranishi_expression(*query),
+            ExprForm::Khovanov(query) => self.khovanov_expression(*query),
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
                 let after = self.expr(after)?;
@@ -10330,6 +10405,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Khovanov(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::Khovanov(khovanov::Operation::Scale(-1), Box::new(input)),
                     ));
                 }
                 if let Kind::RvTl(grade) = *self.model.kind(input.ty) {
@@ -13352,6 +13433,80 @@ impl Checker<'_> {
         }
     }
 
+    fn khovanov_expression(&mut self, query: khovanov::Query) -> Result<(TypeId, TypedForm)> {
+        use khovanov::{Generator, Operation, Query};
+        let (ty, value) = match query {
+            Query::Term(name, ones, xs, coefficient) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let (grade, chain) = braid.term(self.model, &ones, xs, coefficient)?;
+                let ty = self.model.kh_type(name.text.into(), grade, KhForm::Chain)?;
+                (ty, Value::KhChain(chain))
+            }
+            Query::Generator(name, grade, index, kind) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let (grade, form, value) = match kind {
+                    Generator::Basis => (
+                        grade,
+                        KhForm::Chain,
+                        Value::KhChain(braid.basis_term(self.model, grade, index)?),
+                    ),
+                    Generator::Class => {
+                        let group = braid.group(self.model, grade)?;
+                        (
+                            grade,
+                            KhForm::Class,
+                            Value::KhClass(group.generator(self.model, index)?),
+                        )
+                    }
+                    Generator::Null => {
+                        let group = braid.group(self.model, grade)?;
+                        (
+                            grade.shift(-1)?,
+                            KhForm::Chain,
+                            Value::KhChain(group.null(self.model, index)?),
+                        )
+                    }
+                };
+                (self.model.kh_type(name.text.into(), grade, form)?, value)
+            }
+            Query::EulerAt(name, level) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let (order, value) = braid.euler_at(self.model, level)?;
+                (self.model.cyclotomic_rational_type(order)?, value)
+            }
+            Query::Operation(op, input) => {
+                let input = self.expr(*input)?;
+                let Kind::Khovanov(name, grade, form) = self.model.kind(input.ty).clone() else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        op.name(),
+                        "a Khovanov chain or class",
+                    ));
+                };
+                let (grade, form) = match (op, form) {
+                    (Operation::Differential, KhForm::Chain) => (grade.shift(1)?, KhForm::Chain),
+                    (Operation::Project, KhForm::Chain) => (grade, KhForm::Class),
+                    (Operation::Representative, KhForm::Class) => (grade, KhForm::Chain),
+                    (Operation::Scale(_), form) => (grade, form),
+                    (_, _) => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            op.name(),
+                            if matches!(op, Operation::Representative) {
+                                "a Khovanov class"
+                            } else {
+                                "a Khovanov chain"
+                            },
+                        ))
+                    }
+                };
+                let ty = self.model.kh_type(name, grade, form)?;
+                return Ok((ty, TypedForm::Khovanov(op, Box::new(input))));
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
+    }
+
     fn tl_grade(&self, input: &TypedExpr, operation: &str) -> Result<rv_tl::Grade> {
         match *self.model.kind(input.ty) {
             Kind::RvTl(grade) => Ok(grade),
@@ -13632,6 +13787,7 @@ impl Checker<'_> {
                         | Kind::RVUnram(..)
                         | Kind::RVCycloQ(..)
                         | Kind::RVQpQuad(..)
+                        | Kind::Khovanov(..)
                         | Kind::RvTl(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)

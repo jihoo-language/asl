@@ -126,6 +126,7 @@ pub(crate) enum TypeForm {
     RVValMat(usize, usize, usize),
     StableTree(usize),
     StableMarks(usize, usize),
+    Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -730,6 +731,7 @@ pub(crate) enum ExprForm {
     SheafHomMap(Label),
     SheafHomIdentity(Label),
     SheafKuranishi(Box<crate::sheaf_kuranishi::Query>),
+    Khovanov(Box<crate::khovanov::Query>),
     SheafDefStart(Label),
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
@@ -1066,6 +1068,7 @@ pub(crate) enum StatementForm {
     SheafTruncate(Label, Label, usize),
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
+    Khovanov(Box<crate::khovanov::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
@@ -2247,11 +2250,103 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::SheafKuranishi(Box::new(query)), 0)
     }
 
+    fn kh_grade(&mut self) -> Result<crate::khovanov::Grade> {
+        self.expect(Token::Comma)?;
+        let i = self.signed_number("Khovanov homological degree")?;
+        self.expect(Token::Comma)?;
+        let j = self.signed_number("Khovanov quantum degree")?;
+        Ok(crate::khovanov::Grade { i, j })
+    }
+
+    fn kh_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::khovanov::Command;
+        self.advance()?;
+        let command = if command == "khbraid" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let strands = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let word = self.signed_tuple("a signed braid index", "Khovanov braid index")?;
+            Command::Braid(name, strands, word)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            if command == "khGroup" {
+                Command::Group(name, self.kh_grade()?)
+            } else {
+                Command::Euler(name)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::Khovanov(Box::new(command)))
+    }
+
+    fn kh_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::khovanov::{Generator, Operation, Query};
+        let mut depth = 0;
+        let query = if matches!(command, "khD" | "khClass" | "khRep" | "khScale") {
+            let op = match command {
+                "khD" => Operation::Differential,
+                "khClass" => Operation::Project,
+                "khRep" => Operation::Representative,
+                _ => {
+                    self.expect(Token::LBracket)?;
+                    let scale = self.signed_wide("an integer scalar", "Khovanov scalar")?;
+                    self.expect(Token::RBracket)?;
+                    Operation::Scale(scale)
+                }
+            };
+            self.expect(Token::LParen)?;
+            let input = self.expr(nest)?;
+            self.expect(Token::RParen)?;
+            depth = 1 + input.depth;
+            Query::Operation(op, Box::new(input))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            let query = match command {
+                "khTerm" => {
+                    self.expect(Token::Comma)?;
+                    let ones = self.exponents()?;
+                    self.expect(Token::Comma)?;
+                    let xs = self.exponents()?;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.signed_wide("an integer coefficient", "Khovanov coefficient")?
+                    } else {
+                        1
+                    };
+                    Query::Term(name, ones, xs, coefficient)
+                }
+                "khEulerAt" => {
+                    self.expect(Token::Comma)?;
+                    Query::EulerAt(name, self.number()?.0)
+                }
+                _ => {
+                    let grade = self.kh_grade()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    let kind = match command {
+                        "khBasis" => Generator::Basis,
+                        "khGen" => Generator::Class,
+                        _ => Generator::Null,
+                    };
+                    Query::Generator(name, grade, index, kind)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            query
+        };
+        expr(span, ExprForm::Khovanov(Box::new(query)), depth)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
             Token::Word(command @ ("shkuranishi" | "shkuranishiEq" | "shkuranishiDims")) => {
                 self.sheaf_kuranishi_statement(command)?
+            }
+            Token::Word(command @ ("khbraid" | "khGroup" | "khEuler")) => {
+                self.kh_statement(command)?
             }
             Token::Eof => return Ok(None),
             Token::Word(
@@ -5269,6 +5364,17 @@ impl<'src> Parser<'src> {
             let ring = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVUnram(ring), 0);
+        }
+        if matches!(name.text.as_str(), "KhC" | "KhH") && self.eat(Token::LParen)? {
+            let braid = self.label()?;
+            let grade = self.kh_grade()?;
+            self.expect(Token::RParen)?;
+            let form = if name.text == "KhC" {
+                crate::khovanov::Form::Chain
+            } else {
+                crate::khovanov::Form::Class
+            };
+            return ty(span, TypeForm::Khovanov(braid, grade, form), 0);
         }
         if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
@@ -8520,6 +8626,15 @@ impl<'src> Parser<'src> {
                         ExprForm::TlColoredJones(level, strands, color, word),
                         0,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "khTerm" | "khBasis" | "khGen" | "khNull" | "khEulerAt" | "khScale"
+                ) && self.token() == Token::LBracket
+                    || matches!(name.text.as_str(), "khD" | "khClass" | "khRep")
+                        && self.token() == Token::LParen
+                {
+                    return self.kh_expression(&name.text, span, nest + 1);
                 }
                 if matches!(name.text.as_str(), "rvTLTrace" | "rvTLJones")
                     && self.eat(Token::LBracket)?
