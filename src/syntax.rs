@@ -170,6 +170,7 @@ pub(crate) enum TypeForm {
     HeckeEigen(Label),
     HeckeSymbol(Label),
     MazurTate(period::mazur_tate::Spec),
+    MazurAmice(period::amice::Spec),
     MazurOrdinary(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
@@ -1081,6 +1082,7 @@ pub(crate) enum ExprForm {
     HeckeEigenperiod(period::eigenperiod::Expression),
     HeckeSymbol(period::modular_symbol::Expression),
     MazurTate(period::mazur_tate::Expression),
+    MazurAmice(period::amice::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1338,6 +1340,7 @@ pub(crate) enum StatementForm {
     PeriodPolynomial(period::Report),
     HeckeEigenperiod(period::eigenperiod::Declare),
     MazurTate(period::mazur_tate::Statement),
+    MazurAmice(period::amice::Report, Box<ParsedExpr>),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -5368,6 +5371,57 @@ impl<'src> Parser<'src> {
         Ok(period::mazur_tate::Spec(period, prime, level, index))
     }
 
+    fn amice_spec(&mut self) -> Result<period::amice::Spec> {
+        let ordinary = self.label()?;
+        self.expect(Token::Comma)?;
+        let (level, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (index, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (character, _) = self.number()?;
+        Ok(period::amice::Spec(ordinary, level, index, character))
+    }
+
+    fn amice_report(&mut self, name: &str) -> Result<StatementForm> {
+        use period::amice::Report;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let (index, _) = self.number()?;
+        self.expect(Token::RBracket)?;
+        let report = match name {
+            "rvMazurAmiceCoeff" => Report::Coefficient(index),
+            "rvMazurAmiceIwasawa" => Report::Iwasawa(index),
+            _ => Report::Character(index),
+        };
+        Ok(StatementForm::MazurAmice(
+            report,
+            Box::new(self.paren_expr(0)?),
+        ))
+    }
+
+    fn amice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use period::amice::Expression;
+        let (operation, depth) = if name == "rvMazurAmiceProject" {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Project(Box::new(input)), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            if name == "rvMazurAmice" {
+                let spec = self.amice_spec()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Transform(spec), 0)
+            } else {
+                let (index, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::GroupCoefficient(index, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::MazurAmice(operation), depth)
+    }
+
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
         use period::mazur_tate::{Embedding, Statement};
         self.advance()?;
@@ -9321,6 +9375,9 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvmazurordinary" | "rvMazurTateOrdinaryData")) => {
                 self.mazur_tate_statement(name)?
             }
+            Token::Word(
+                name @ ("rvMazurAmiceCoeff" | "rvMazurAmiceIwasawa" | "rvMazurAmiceCharacter"),
+            ) => self.amice_report(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -12899,6 +12956,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::MazurTate(spec), 0);
         }
+        if name.text == "RVMazurAmice" && self.eat(Token::LParen)? {
+            let spec = self.amice_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MazurAmice(spec), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -15520,6 +15582,14 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvMazurAmice" | "rvMazurAmiceGroupCoeff"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvMazurAmiceProject" && self.token() == Token::LParen)
+                {
+                    return self.amice_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

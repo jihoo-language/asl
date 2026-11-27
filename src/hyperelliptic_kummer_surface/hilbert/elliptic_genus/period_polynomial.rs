@@ -9,6 +9,7 @@ use crate::syntax::ParsedExpr;
 
 use super::hecke::{self, Operator};
 
+pub(crate) mod amice;
 pub(crate) mod eigenperiod;
 pub(crate) mod haberland;
 pub(crate) mod mazur_tate;

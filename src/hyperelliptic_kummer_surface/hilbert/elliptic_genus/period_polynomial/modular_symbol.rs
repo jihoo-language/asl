@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::lee_linear::Rational;
 use crate::model::{Model, Value};
 use crate::rv_ore::gcd;
+use crate::rv_unram::{add_mod, mul_mod, sub_mod};
 use crate::syntax::{Label, ParsedExpr};
 
 use super::super::eigenpacket::Element;
@@ -126,25 +127,10 @@ impl Symbol {
         &mut self,
         model: &mut Model,
         period: &Eigenperiod,
-        Cusp(mut numerator, mut denominator): Cusp,
+        cusp: Cusp,
         subtract: bool,
     ) -> Result<()> {
-        let (mut older, mut previous) = (Cusp::ZERO, Cusp::INFINITY);
-        let mut positive = true;
-        while denominator != 0 {
-            model.spend(1)?;
-            let quotient = numerator.div_euclid(denominator);
-            let remainder = numerator.rem_euclid(denominator);
-            let current = previous.next(older, quotient)?;
-            // The edge is current -> previous. The columns (previous,
-            // current) have alternating determinants, starting at +1.
-            // Negate the representative of current when necessary.
-            let (b, d) = if positive {
-                (current.0, current.1)
-            } else {
-                (negative(current.0)?, negative(current.1)?)
-            };
-            let inverse = [d, negative(b)?, negative(previous.1)?, previous.0];
+        farey_edges(model, cusp, |model, inverse| {
             let edge = substitute(model, &period.coefficients, inverse)?;
             for (target, mut value) in self.0.iter_mut().zip(edge) {
                 if !value.is_zero() {
@@ -154,11 +140,8 @@ impl Symbol {
                     *target = target.add(model, &value)?;
                 }
             }
-            (older, previous) = (previous, current);
-            (numerator, denominator) = (denominator, remainder);
-            positive = !positive;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     fn shifted_coefficient(
@@ -179,6 +162,94 @@ impl Symbol {
         }
         Ok(value)
     }
+}
+
+fn farey_edges(
+    model: &mut Model,
+    Cusp(mut numerator, mut denominator): Cusp,
+    mut accumulate: impl FnMut(&mut Model, [i128; 4]) -> Result<()>,
+) -> Result<()> {
+    let (mut older, mut previous) = (Cusp::ZERO, Cusp::INFINITY);
+    let mut positive = true;
+    while denominator != 0 {
+        model.spend(1)?;
+        let quotient = numerator.div_euclid(denominator);
+        let remainder = numerator.rem_euclid(denominator);
+        let current = previous.next(older, quotient)?;
+        // The edge is current -> previous. The columns (previous,
+        // current) have alternating determinants, starting at +1.
+        let (b, d) = if positive {
+            (current.0, current.1)
+        } else {
+            (negative(current.0)?, negative(current.1)?)
+        };
+        accumulate(model, [d, negative(b)?, negative(previous.1)?, previous.0])?;
+        (older, previous) = (previous, current);
+        (numerator, denominator) = (denominator, remainder);
+        positive = !positive;
+    }
+    Ok(())
+}
+
+pub(super) fn scaled_moment_modular(
+    model: &mut Model,
+    coefficients: &[u64],
+    level_modulus: u64,
+    r: usize,
+    residue: u64,
+    modulus: u64,
+) -> Result<u64> {
+    let cusp = Cusp::new(i128::from(residue), i128::from(level_modulus))?;
+    let top = coefficients.len() - 1;
+    let mut value = 0;
+    let mut substituted = vec![0; r + 1];
+    let mut right_power = vec![0; r + 1];
+    farey_edges(model, cusp, |model, inverse| {
+        model.spend((r + 1) * coefficients.len())?;
+        let [a, b, c, d] = inverse.map(|x| x.rem_euclid(i128::from(modulus)) as u64);
+        // Precompose the inverse edge with (X,Y) -> (X + residue*Y, level_modulus*Y).
+        // The coefficient of Y^r at X=1 is already scaled by level_modulus^r.
+        let [left, right] = [(a, b), (c, d)].map(|(constant, linear)| {
+            [
+                constant,
+                add_mod(
+                    mul_mod(constant, residue, modulus),
+                    mul_mod(linear, level_modulus, modulus),
+                    modulus,
+                ),
+            ]
+        });
+        substituted.fill(0);
+        substituted[0] = coefficients[top];
+        right_power.fill(0);
+        right_power[0] = 1;
+        for (power, &coefficient) in coefficients[..top].iter().rev().enumerate() {
+            let width = r.min(power + 1) + 1;
+            multiply_modular_linear(&mut substituted[..width], left, modulus);
+            multiply_modular_linear(&mut right_power[..width], right, modulus);
+            for (term, &right) in substituted[..width].iter_mut().zip(&right_power) {
+                *term = add_mod(*term, mul_mod(coefficient, right, modulus), modulus);
+            }
+        }
+        value = add_mod(value, substituted[r], modulus);
+        Ok(())
+    })?;
+    Ok(if (top - r).is_multiple_of(2) {
+        value
+    } else {
+        sub_mod(0, value, modulus)
+    })
+}
+
+fn multiply_modular_linear(coefficients: &mut [u64], [a, b]: [u64; 2], modulus: u64) {
+    for k in (1..coefficients.len()).rev() {
+        coefficients[k] = add_mod(
+            mul_mod(a, coefficients[k], modulus),
+            mul_mod(b, coefficients[k - 1], modulus),
+            modulus,
+        );
+    }
+    coefficients[0] = mul_mod(a, coefficients[0], modulus);
 }
 
 pub(super) fn scaled_moment(

@@ -218,7 +218,7 @@ use crate::vbock;
 use crate::{bp, bp_classes, bp_ext, bp_polynomial::Polynomial as BpPolynomial, bp_rel};
 use crate::{mixed, mixed_page};
 use crate::{sheaf_serre, sheaf_stalk, sheaf_truncate};
-use period::mazur_tate;
+use period::{amice, mazur_tate};
 
 pub(crate) struct Engine {
     model: Model,
@@ -927,6 +927,9 @@ enum TypedForm {
     HeckeSymbolCoefficient(usize, Box<TypedExpr>),
     HeckeSymbolNegate(Box<TypedExpr>),
     MazurTateCoefficient(mazur_tate::Grade, i128, Box<TypedExpr>),
+    MazurAmiceProject(amice::Grade, Box<TypedExpr>),
+    MazurAmiceGroupCoefficient(usize, Box<TypedExpr>),
+    MazurAmiceNegate(amice::Grade, Box<TypedExpr>),
     MazurTateChange(
         mazur_tate::Direction,
         mazur_tate::Grade,
@@ -2395,6 +2398,14 @@ impl Engine {
                         Ok(Some(measure.data(&name.text)))
                     }
                 };
+            }
+            StatementForm::MazurAmice(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().amice_operand(&input, report.name())?;
+                let Value::MazurAmice(transform) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return transform.report(&mut self.model, &grade, report).map(Some);
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -9445,6 +9456,13 @@ impl Engine {
                     (BinaryOp::Add, Value::MazurTate(a), Value::MazurTate(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::MazurAmice(a), Value::MazurAmice(b)) => {
+                        let Kind::MazurAmice(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let grade = grade.clone();
+                        a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => {
                         let Kind::MazurOrdinary(_, modulus) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -11683,6 +11701,28 @@ impl Engine {
                 };
                 distribution
                     .negate(&mut self.model)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurAmiceProject(grade, input) => {
+                let Value::MazurAmice(transform) = self.eval(input)? else {
+                    unreachable!()
+                };
+                transform
+                    .project(&mut self.model, grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MazurAmiceGroupCoefficient(j, input) => {
+                let Value::MazurAmice(transform) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::MazurOrdinary(transform.group_coefficient(*j)))
+            }
+            TypedForm::MazurAmiceNegate(grade, input) => {
+                let Value::MazurAmice(transform) = self.eval(input)? else {
+                    unreachable!()
+                };
+                transform
+                    .negate(&mut self.model, grade)?
                     .persist(&mut self.model)
             }
             TypedForm::MazurOrdinaryNegate(modulus, input) => {
@@ -14313,6 +14353,10 @@ impl Checker<'_> {
                 let (grade, _) = mazur_tate::Grade::resolve(self.model, spec)?;
                 self.model.mazur_tate_type(grade)
             }
+            TypeForm::MazurAmice(spec) => {
+                let (grade, _) = amice::Grade::resolve(self.model, spec)?;
+                self.model.mazur_amice_type(grade)
+            }
             TypeForm::MazurOrdinary(name) => self.model.mazur_ordinary_type(&name),
             TypeForm::HeckeSymbol(name) => self.model.hecke_symbol_type(&name),
             TypeForm::PeriodPolynomial(grade) => self.model.period_type(grade),
@@ -15392,6 +15436,7 @@ impl Checker<'_> {
                         let period = self.model.hecke_eigenperiod(&grade.label(span))?;
                         mazur_tate::Distribution::zero_for(&period).persist(self.model)?
                     }
+                    Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::HeckeSymbol(name) => {
                         let period = self.model.hecke_eigenperiod(&Label { text: name.to_string(), span })?;
@@ -17769,6 +17814,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::MazurTate(operation) => self.mazur_tate_expression(operation),
+            ExprForm::MazurAmice(operation) => self.amice_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -18611,6 +18657,12 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::MazurTate(..)) {
                     return Ok((input.ty, TypedForm::MazurTateNegate(Box::new(input))));
+                }
+                if let Kind::MazurAmice(grade) = self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
                 }
                 if let Kind::MazurOrdinary(_, modulus) = self.model.kind(input.ty) {
                     return Ok((
@@ -22448,6 +22500,7 @@ impl Checker<'_> {
                         | Kind::HeckeEigen(..)
                         | Kind::HeckeSymbol(..)
                         | Kind::MazurTate(..)
+                        | Kind::MazurAmice(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -26528,6 +26581,48 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn amice_expression(&mut self, expression: amice::Expression) -> Result<(TypeId, TypedForm)> {
+        use amice::Expression;
+        match expression {
+            Expression::Transform(spec) => {
+                let (grade, measure) = amice::Grade::resolve(self.model, spec)?;
+                let value =
+                    amice::Amice::transform(self.model, &grade, &measure)?.persist(self.model)?;
+                let ty = self.model.mazur_amice_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Project(input) => {
+                let input = self.expr(*input)?;
+                let grade = self
+                    .amice_operand(&input, "rvMazurAmiceProject")?
+                    .project()?;
+                let ty = self.model.mazur_amice_type(grade.clone())?;
+                Ok((ty, TypedForm::MazurAmiceProject(grade, Box::new(input))))
+            }
+            Expression::GroupCoefficient(j, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.amice_operand(&input, "rvMazurAmiceGroupCoeff")?;
+                let ty = self.model.mazur_ordinary_type(&grade.label(input.span))?;
+                Ok((
+                    ty,
+                    TypedForm::MazurAmiceGroupCoefficient(j, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn amice_operand(&self, input: &TypedExpr, operation: &str) -> Result<amice::Grade> {
+        if let Kind::MazurAmice(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(
+                input,
+                operation,
+                "an RVMazurAmice(O,n,r,i) group-ring element",
+            ))
+        }
     }
 
     fn mazur_tate_expression(

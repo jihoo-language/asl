@@ -14,7 +14,11 @@ use super::super::eigenpacket::{Element, Packet};
 use super::super::hecke::Operator;
 use super::super::residual_hecke::{invert_unit, lift_simple_root, power_mod, Specialization};
 use super::super::{scale_by_power, Integer, Magnitude, INTEGER_WORDS};
-use super::{binomial_table, eigenperiod::Eigenperiod, modular_symbol::scaled_moment};
+use super::{
+    binomial_table,
+    eigenperiod::Eigenperiod,
+    modular_symbol::{scaled_moment, scaled_moment_modular},
+};
 
 pub(crate) struct Spec(
     pub(crate) Label,
@@ -70,7 +74,7 @@ impl Grade {
     pub(crate) fn resolve(model: &mut Model, spec: Spec) -> Result<(Self, Rc<Eigenperiod>)> {
         let Spec(name, input_prime, level, index) = spec;
         let period = model.hecke_eigenperiod(&name)?;
-        check_index(index, &period)?;
+        check_index(index, period.grade.degree())?;
         let prime = checked_prime(model, input_prime)?;
         let modulus = prime_power(prime, level)?;
         Ok((
@@ -288,16 +292,22 @@ impl Distribution {
 }
 
 pub(crate) struct Ordinary {
-    period: Rc<Eigenperiod>,
-    embedding: Rc<Specialization>,
-    precision: usize,
+    period_coefficients: Vec<u64>,
+    pub(super) prime: Prime,
+    pub(super) precision: usize,
     pub(crate) modulus: u64,
     a_p: u64,
     alpha: u64,
     inverse_alpha: u64,
     lower_factor: u64,
     denominator_exponent: u32,
-    denominator_scale: Integer,
+}
+
+pub(super) struct PreparedLevel {
+    index: usize,
+    pub(super) modulus: u64,
+    lower_modulus: u64,
+    scale: u64,
 }
 
 impl Ordinary {
@@ -381,9 +391,18 @@ impl Ordinary {
             u128::from(p),
             u128::from(denominator_exponent),
         )?;
+        let period_coefficients = period
+            .coefficients
+            .iter()
+            .map(|value| {
+                let scaled = value.scale(model, denominator_scale, Magnitude::from_small(1))?;
+                embedding.reduce_to_modulus(model, &scaled, modulus)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        model.allocate(period_coefficients.len())?;
         Ok(Self {
-            period,
-            embedding,
+            period_coefficients,
+            prime,
             precision,
             modulus,
             a_p,
@@ -391,12 +410,11 @@ impl Ordinary {
             inverse_alpha,
             lower_factor,
             denominator_exponent,
-            denominator_scale,
         })
     }
 
     pub(crate) fn data(&self, name: &str) -> String {
-        let p = self.embedding.prime.get();
+        let p = self.prime.get();
         format!(
             "rvMazurTateOrdinaryData[{name}] = p={p}, precision={}, modulus={}, a_p={}, alpha={}, period_scale={p}^{}",
             self.precision, self.modulus, self.a_p, self.alpha, self.denominator_exponent
@@ -410,46 +428,68 @@ impl Ordinary {
         index: usize,
         representative: i128,
     ) -> Result<u64> {
+        let level = self.prepare(model, level, index)?;
+        let a = representative.rem_euclid(i128::from(level.modulus)) as u64;
+        self.measure_prepared(model, &level, a)
+    }
+
+    pub(super) fn check_index(&self, index: usize) -> Result<()> {
+        check_index(index, self.period_coefficients.len() - 1)
+    }
+
+    pub(super) fn prepare(
+        &self,
+        model: &mut Model,
+        level: usize,
+        index: usize,
+    ) -> Result<PreparedLevel> {
         if level == 0 {
             return Err(Error::plain(
                 "ordinary Mazur–Tate measure requires level at least one",
             ));
         }
-        check_index(index, &self.period)?;
-        let p = self.embedding.prime;
-        let level_modulus = prime_power(p, level)?;
-        let lower_modulus = level_modulus / u64::from(p.get());
-        let binomial = binomial_table(model, self.period.grade.degree())?;
-        let a = representative.rem_euclid(i128::from(level_modulus)) as u64;
-        let a_lower = a % lower_modulus;
-        let moment = self.reduced_moment(model, level_modulus, index, a, &binomial)?;
-        let lower = self.reduced_moment(model, lower_modulus, index, a_lower, &binomial)?;
-        let correction = mul_mod(self.lower_factor, lower, self.modulus);
-        let scale = power_mod(model, self.inverse_alpha, level as u128, self.modulus)?;
+        self.check_index(index)?;
+        let modulus = prime_power(self.prime, level)?;
+        Ok(PreparedLevel {
+            index,
+            modulus,
+            lower_modulus: modulus / u64::from(self.prime.get()),
+            scale: power_mod(model, self.inverse_alpha, level as u128, self.modulus)?,
+        })
+    }
+
+    pub(super) fn measure_prepared(
+        &self,
+        model: &mut Model,
+        level: &PreparedLevel,
+        a: u64,
+    ) -> Result<u64> {
+        let moment = self.reduced_moment(model, level.modulus, level.index, a)?;
+        let correction = if self.lower_factor == 0 {
+            0
+        } else {
+            let lower = self.reduced_moment(
+                model,
+                level.lower_modulus,
+                level.index,
+                a % level.lower_modulus,
+            )?;
+            mul_mod(self.lower_factor, lower, self.modulus)
+        };
         Ok(mul_mod(
-            scale,
+            level.scale,
             sub_mod(moment, correction, self.modulus),
             self.modulus,
         ))
     }
 
-    fn reduced_moment(
-        &self,
-        model: &mut Model,
-        modulus: u64,
-        index: usize,
-        a: u64,
-        binomial: &[Vec<i128>],
-    ) -> Result<u64> {
-        let value = scaled_moment(model, &self.period, modulus, index, a, binomial)?;
-        let scaled = value.scale(model, self.denominator_scale, Magnitude::from_small(1))?;
-        self.embedding
-            .reduce_to_modulus(model, &scaled, self.modulus)
+    fn reduced_moment(&self, model: &mut Model, m: u64, index: usize, a: u64) -> Result<u64> {
+        scaled_moment_modular(model, &self.period_coefficients, m, index, a, self.modulus)
     }
 }
 
-fn check_index(index: usize, period: &Eigenperiod) -> Result<()> {
-    if index > period.grade.degree() {
+fn check_index(index: usize, degree: usize) -> Result<()> {
+    if index > degree {
         return Err(Error::plain(
             "Mazur–Tate moment index must be between 0 and k−2",
         ));
@@ -467,7 +507,7 @@ fn checked_prime(model: &mut Model, p: usize) -> Result<Prime> {
     }
 }
 
-fn prime_power(p: Prime, level: usize) -> Result<u64> {
+pub(super) fn prime_power(p: Prime, level: usize) -> Result<u64> {
     let exponent = u32::try_from(level).map_err(|_| level_limit())?;
     u64::from(p.get())
         .checked_pow(exponent)

@@ -309,6 +309,7 @@ pub(crate) enum Kind {
     HeckeEigen(Box<str>),
     HeckeSymbol(Box<str>),
     MazurTate(period::mazur_tate::Grade),
+    MazurAmice(period::amice::Grade),
     MazurOrdinary(Box<str>, u64),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
@@ -518,6 +519,7 @@ pub(crate) enum Value {
     HeckeEigen(Rc<eigenpacket::Element>),
     HeckeSymbol(Rc<period::modular_symbol::Symbol>),
     MazurTate(Rc<period::mazur_tate::Distribution>),
+    MazurAmice(Rc<period::amice::Amice>),
     MazurOrdinary(u64),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
@@ -1275,6 +1277,7 @@ impl Model {
             Kind::KummerWeil(..) => usize::MAX,
             Kind::PeriodPolynomial(grade) if grade.is_trivial() => 1,
             Kind::MazurOrdinary(_, modulus) => usize::try_from(modulus).unwrap_or(usize::MAX),
+            Kind::MazurAmice(ref grade) => grade.cardinality(),
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -1571,6 +1574,7 @@ impl Model {
                 | Kind::HeckeEigen(..)
                 | Kind::HeckeSymbol(..)
                 | Kind::MazurTate(..)
+                | Kind::MazurAmice(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -5242,6 +5246,10 @@ impl Model {
         self.inhabited_type(Kind::MazurTate(grade), 0)
     }
 
+    pub(crate) fn mazur_amice_type(&mut self, grade: period::amice::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MazurAmice(grade), 0)
+    }
+
     pub(crate) fn mazur_ordinary_type(&mut self, name: &Label) -> Result<TypeId> {
         let modulus = self.mazur_ordinary(name)?.modulus;
         self.inhabited_type(Kind::MazurOrdinary(name.text.as_str().into(), modulus), 0)
@@ -6608,6 +6616,7 @@ impl Model {
             | Kind::HeckeEigen(..)
             | Kind::HeckeSymbol(..)
             | Kind::MazurTate(..)
+            | Kind::MazurAmice(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -7172,6 +7181,10 @@ impl Model {
                 grade.level,
                 grade.index,
             )),
+            Kind::MazurAmice(grade) => out.push(&format!(
+                "RVMazurAmice({},{},{},{})",
+                grade.ordinary, grade.level, grade.index, grade.character
+            )),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
@@ -7531,6 +7544,7 @@ impl Model {
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::MazurTate(a), Value::MazurTate(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::MazurAmice(a), Value::MazurAmice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
@@ -7900,6 +7914,7 @@ impl Model {
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => a.compare(self, b),
             (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => a.compare(self, b),
             (Value::MazurTate(a), Value::MazurTate(b)) => a.compare(self, b),
+            (Value::MazurAmice(a), Value::MazurAmice(b)) => a.compare(self, b),
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
@@ -8353,6 +8368,11 @@ impl Model {
                 Kind::MazurTate(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an exact Mazur–Tate group ring",
+                    ));
+                }
+                Kind::MazurAmice(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an Amice cyclotomic group ring",
                     ));
                 }
                 Kind::MazurOrdinary(_, modulus) => {
@@ -10145,6 +10165,17 @@ impl Model {
                     Self::write_hecke_element(out, coefficient)?;
                 }
                 out.push("}")
+            }
+            Value::MazurAmice(transform) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{[")?;
+                for (i, coefficient) in transform.coefficients().iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push("]}")
             }
             Value::MazurOrdinary(residue) => {
                 self.write_type(out, ty, 0)?;
