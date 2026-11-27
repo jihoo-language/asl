@@ -27,11 +27,11 @@ pub(crate) enum Expression {
 }
 
 pub(crate) struct Pairing {
-    basis: Rc<Basis>,
-    base: Label,
-    degree: usize,
-    ring: Residues,
-    difference: Exterior,
+    pub(super) basis: Rc<Basis>,
+    pub(super) base: Label,
+    pub(super) degree: usize,
+    pub(super) ring: Residues,
+    pub(super) difference: Exterior,
 }
 
 pub(crate) struct Change {
@@ -128,7 +128,12 @@ impl Pairing {
         Ok(vector)
     }
 
-    fn require_fixed(&self, model: &mut Model, modulus: u64, vector: Fixed) -> Result<()> {
+    pub(super) fn require_fixed(
+        &self,
+        model: &mut Model,
+        modulus: u64,
+        vector: Fixed,
+    ) -> Result<()> {
         model.spend(36)?;
         if image(&self.difference, vector, modulus) != [0; 6] {
             return Err(Error::plain(
@@ -334,7 +339,7 @@ fn scale_matrix(m: Exterior, n: u64, modulus: u64) -> Exterior {
     m.map(|row| scaled(row, n, modulus))
 }
 
-fn image(matrix: &Exterior, vector: Fixed, modulus: u64) -> Fixed {
+pub(super) fn image(matrix: &Exterior, vector: Fixed, modulus: u64) -> Fixed {
     matrix.map(|row| dot(row, vector, modulus))
 }
 
@@ -344,11 +349,11 @@ fn dot(a: Fixed, b: Fixed, modulus: u64) -> u64 {
     })
 }
 
-fn column(matrix: &Exterior, j: usize) -> Fixed {
+pub(super) fn column(matrix: &Exterior, j: usize) -> Fixed {
     std::array::from_fn(|i| matrix[i][j])
 }
 
-fn product(a: &Exterior, b: &Exterior, modulus: u64) -> Exterior {
+pub(super) fn product(a: &Exterior, b: &Exterior, modulus: u64) -> Exterior {
     a.map(|row| std::array::from_fn(|j| dot(row, column(b, j), modulus)))
 }
 

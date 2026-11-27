@@ -17,6 +17,7 @@ use crate::syntax::{Label, ParsedExpr};
 pub(crate) mod brauer;
 pub(crate) mod linking;
 pub(crate) mod richelot;
+pub(crate) mod transfers;
 
 pub(crate) enum Command {
     Define(Label, Label, usize, Box<ParsedExpr>, Vec<ParsedExpr>),

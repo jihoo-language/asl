@@ -280,6 +280,17 @@ pub(crate) fn exceptional_picard_rank(orbits: &[usize], degree: u128) -> u128 {
     orbits.iter().map(|&d| gcd(degree, d as u128)).sum()
 }
 
+pub(crate) fn rational_abelian_rank(
+    model: &mut Model,
+    q: u64,
+    weil: &[i128],
+    degree: u128,
+) -> Result<usize> {
+    Ok(usize::from(
+        abelian_picard(model, q, cross_quartic(q, weil)?, degree)?.0,
+    ))
+}
+
 fn abelian_picard(model: &mut Model, q: u64, cross: [i128; 5], degree: u128) -> Result<(u8, u8)> {
     let spectrum = abelian_spectrum(model, q, cross)?;
     let rational = 2 + spectrum

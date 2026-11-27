@@ -5,7 +5,7 @@ use crate::hw_closed::Curve;
 use crate::hyperelliptic::Residues;
 use crate::hyperelliptic_kummer_surface::k3;
 use crate::model::Model;
-use crate::rv_unram::{mul_mod, sub_mod};
+use crate::rv_unram::{add_mod, mul_mod, sub_mod};
 
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 pub(super) type Exterior = [[u64; 6]; 6];
@@ -102,13 +102,34 @@ fn twisted_exterior_square(matrix: &Matrix<u64>, modulus: u64, multiplier: u64) 
     exterior
 }
 
-fn smith_exponents(model: &mut Model, ring: Residues, mut rows: Exterior) -> Result<[usize; 6]> {
+pub(super) fn identity() -> Exterior {
+    std::array::from_fn(|i| std::array::from_fn(|j| u64::from(i == j)))
+}
+
+pub(super) struct Smith {
+    pub(super) exponents: [usize; 6],
+    pub(super) basis: Exterior,
+    pub(super) inverse: Exterior,
+}
+
+fn smith_exponents(model: &mut Model, ring: Residues, rows: Exterior) -> Result<[usize; 6]> {
+    Ok(smith_frame(model, ring, rows, 6)?.exponents)
+}
+
+pub(super) fn smith_frame(
+    model: &mut Model,
+    ring: Residues,
+    mut rows: Exterior,
+    width: usize,
+) -> Result<Smith> {
     let prime = u64::from(ring.prime.get());
     let mut result = [ring.precision; 6];
-    for (i, slot) in result.iter_mut().enumerate() {
+    let mut basis = identity();
+    let mut inverse_basis = identity();
+    for (i, slot) in result.iter_mut().enumerate().take(width) {
         let mut pivot = None;
         for (row, items) in rows.iter().enumerate().skip(i) {
-            for (col, &entry) in items.iter().enumerate().skip(i) {
+            for (col, &entry) in items.iter().enumerate().take(width).skip(i) {
                 model.spend(1)?;
                 if entry != 0 {
                     let exponent = valuation(entry, prime);
@@ -123,9 +144,11 @@ fn smith_exponents(model: &mut Model, ring: Residues, mut rows: Exterior) -> Res
         };
         *slot = exponent;
         rows.swap(i, row);
-        for row in &mut rows {
+        for (row, transform) in rows.iter_mut().zip(&mut basis) {
             row.swap(i, col);
+            transform.swap(i, col);
         }
+        inverse_basis.swap(i, col);
         let divisor = prime.pow(exponent as u32);
         let pivot_row = rows[i];
         let inverse = ring.inverse_unit(model, &(pivot_row[i] / divisor))?;
@@ -140,10 +163,37 @@ fn smith_exponents(model: &mut Model, ring: Residues, mut rows: Exterior) -> Res
             }
             row[i] = 0;
         }
-        // Column operations clear the rest of the pivot row; the entries
-        // below that pivot are zero, so these operations leave the tail.
+        // The cleared column is zero off its pivot. The column operations
+        // only change this row, and we track their domain basis and inverse.
+        for (j, &entry) in pivot_row.iter().enumerate().take(width).skip(i + 1) {
+            let quotient = mul_mod(entry / divisor, inverse, ring.modulus);
+            rows[i][j] = 0;
+            if quotient == 0 {
+                continue;
+            }
+            model.spend(12)?;
+            for row in &mut basis {
+                row[j] = sub_mod(
+                    row[j],
+                    mul_mod(quotient, row[i], ring.modulus),
+                    ring.modulus,
+                );
+            }
+            let source = inverse_basis[j];
+            for (entry, source) in inverse_basis[i].iter_mut().zip(source) {
+                *entry = add_mod(
+                    *entry,
+                    mul_mod(quotient, source, ring.modulus),
+                    ring.modulus,
+                );
+            }
+        }
     }
-    Ok(result)
+    Ok(Smith {
+        exponents: result,
+        basis,
+        inverse: inverse_basis,
+    })
 }
 
 fn valuation(mut nonzero: u64, prime: u64) -> usize {
@@ -209,5 +259,39 @@ mod tests {
             vec![1, 2]
         );
         assert!(finite_factors(&smith, 4, 3).is_err());
+    }
+
+    #[test]
+    fn the_domain_frame_recovers_mixed_torsion_and_noncoordinate_free_columns() {
+        use crate::jacobian_level::linking::{column, image, product};
+
+        let ring = Residues::new(Prime::validated(3), 4)
+            .ok()
+            .expect("modulus 81");
+        let mut defect = [[0; 6]; 6];
+        defect[2] = [9, 0, 9, 0, 0, 0];
+        defect[4] = [0, 6, 6, 0, 0, 0];
+        let mut model = Model::new();
+        let smith = smith_frame(&mut model, ring, defect, 6)
+            .ok()
+            .expect("mixed finite factors");
+        assert_eq!(smith.exponents, [1, 2, 4, 4, 4, 4]);
+        assert_eq!(
+            product(&smith.basis, &smith.inverse, ring.modulus),
+            identity()
+        );
+        assert_eq!(
+            image(&defect, column(&smith.basis, 2), ring.modulus),
+            [0; 6]
+        );
+        assert_eq!(column(&smith.basis, 2), [80, 80, 1, 0, 0, 0]);
+
+        let level = 9;
+        let coordinates = [6, 8, 7, 0, 0, 0];
+        let representative = image(&smith.basis, coordinates, level);
+        assert_eq!(image(&defect, representative, level), [0; 6]);
+        assert_eq!(image(&smith.inverse, representative, level), coordinates);
+        assert_eq!(coordinates[0] / 3, 2);
+        assert_eq!(coordinates[1], 8);
     }
 }
