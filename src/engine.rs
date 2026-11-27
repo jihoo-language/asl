@@ -84,6 +84,7 @@ use crate::jacobian_level::cm_hom::composition as cm_composition;
 use crate::jacobian_level::cm_hom::fourier as cm_abelian;
 use crate::jacobian_level::cm_hom::fourier::period as cm_period;
 use crate::jacobian_level::cm_hom::fourier::theta as cm_theta;
+use crate::jacobian_level::cm_hom::fourier::theta::metaplectic as cm_meta;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -711,6 +712,24 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+struct TypedCMMeta {
+    space: cm_meta::Space,
+    operation: CMMetaOperation,
+}
+
+enum CMMetaOperation {
+    Named(cm_meta::Named),
+    Basis(usize),
+    Lift(u64, Box<TypedExpr>),
+    Automorphism(Box<[TypedExpr; 4]>),
+    Projector(Vec<TypedExpr>),
+    Vector(Vec<TypedExpr>),
+    Unary(cm_meta::Unary, Box<TypedExpr>),
+    Binary(cm_meta::Binary, Box<[TypedExpr; 2]>),
+    Entry([usize; 2], Box<TypedExpr>),
+    Coefficient(usize, Box<TypedExpr>),
+}
+
 struct TypedCMTheta {
     kernel: Rc<cm_theta::Kernel>,
     operation: CMThetaOperation,
@@ -1032,6 +1051,7 @@ enum TypedForm {
     CMAbelian(Box<TypedCMAbelian>),
     CMPeriod(Box<TypedCMPeriod>),
     CMTheta(Box<TypedCMTheta>),
+    CMMeta(Box<TypedCMMeta>),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
@@ -8185,6 +8205,10 @@ impl Engine {
     fn cm_theta_statement(&mut self, statement: cm_theta::Statement) -> Result<Option<String>> {
         use cm_theta::{ElementReport, NamedReport, Statement};
         let result = match statement {
+            Statement::Metaplectic(cm_meta::Statement::Verify(name)) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                cm_meta::Space::new(&kernel)?.verify(&mut self.model)?
+            }
             Statement::Define(name, input) => {
                 let input = self.checker().expr(*input)?;
                 let (_, surface) = self.checker().cm_abelian_operand(&input)?;
@@ -8663,6 +8687,125 @@ impl Engine {
                 pairing.form(&mut self.model, &name.text).map(Some)
             }
         }
+    }
+
+    fn eval_cm_meta(&mut self, plan: &TypedCMMeta) -> Result<Value> {
+        use cm_meta::{Binary as B, Named, Unary as U};
+        use CMMetaOperation as Op;
+        let space = plan.space;
+        let value = match &plan.operation {
+            Op::Named(item) => match *item {
+                Named::Fourier(inverse) => {
+                    Value::CMMetaMat(space.fourier(&mut self.model, inverse)?)
+                }
+                Named::Chirp(inverse) => Value::CMMetaMat(space.chirp(&mut self.model, inverse)?),
+                Named::Identity => Value::CMMetaMat(space.identity()),
+                Named::Parity => Value::CMMetaMat(space.parity()),
+                Named::Gauss(conjugate) => {
+                    Value::RVCycloQ(space.gauss(&mut self.model, conjugate)?)
+                }
+                Named::FourierAuto => Value::CMMetaAuto(space.fourier_auto()),
+                Named::ChirpAuto => Value::CMMetaAuto(space.chirp_auto()),
+            },
+            Op::Basis(index) => Value::CMMetaVec(space.basis(*index)?),
+            Op::Lift(phase, point) => {
+                let Value::CMTheta(point) = self.eval(point)? else {
+                    unreachable!()
+                };
+                Value::CMMetaLift(space.lift(point, *phase))
+            }
+            Op::Automorphism(inputs) => {
+                let mut values = Vec::with_capacity(4);
+                for input in inputs.iter() {
+                    let Value::CMMetaLift(lift) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    values.push(lift);
+                }
+                let Ok(values) = values.try_into() else {
+                    unreachable!()
+                };
+                Value::CMMetaAuto(space.automorphism(&mut self.model, values)?)
+            }
+            Op::Projector(inputs) => {
+                let mut values = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let Value::CMMetaLift(lift) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    values.push(lift);
+                }
+                Value::CMMetaMat(space.projector(&mut self.model, &values)?)
+            }
+            Op::Vector(inputs) => {
+                let mut values = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let Value::RVCycloQ(coefficient) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    values.push(coefficient);
+                }
+                Value::CMMetaVec(space.vector(values)?)
+            }
+            Op::Unary(op, input) => match (op, self.eval(input)?) {
+                (U::Heisenberg, Value::CMMetaLift(lift)) => {
+                    Value::CMMetaMat(space.heisenberg(&mut self.model, lift)?)
+                }
+                (U::Intertwine, Value::CMMetaAuto(auto)) => {
+                    Value::CMMetaMat(space.normalized(&mut self.model, auto)?)
+                }
+                (U::Trace, Value::CMMetaMat(matrix)) => {
+                    Value::RVCycloQ(space.trace(&mut self.model, &matrix)?)
+                }
+                _ => unreachable!(),
+            },
+            Op::Binary(op, args) => {
+                let [left, right] = args.as_ref();
+                match (op, self.eval(left)?, self.eval(right)?) {
+                    (B::Compose, Value::CMMetaMat(a), Value::CMMetaMat(b)) => {
+                        Value::CMMetaMat(space.multiply(&mut self.model, &a, &b)?)
+                    }
+                    (B::Apply, Value::CMMetaMat(a), Value::CMMetaVec(v)) => {
+                        Value::CMMetaVec(space.apply(&mut self.model, &a, &v)?)
+                    }
+                    (B::Scale, Value::CMMetaMat(a), Value::RVCycloQ(x)) => {
+                        Value::CMMetaMat(space.scale(&mut self.model, &a, &x)?)
+                    }
+                    (B::AutoCompose, Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => {
+                        Value::CMMetaAuto(space.compose_auto(&mut self.model, a, b)?)
+                    }
+                    (B::Cocycle, Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => {
+                        Value::RVCycloQ(space.cocycle(&mut self.model, a, b)?)
+                    }
+                    (B::LiftCompose, Value::CMMetaLift(a), Value::CMMetaLift(b)) => {
+                        Value::CMMetaLift(space.product(a, b))
+                    }
+                    (B::Image, Value::CMMetaAuto(a), Value::CMMetaLift(b)) => {
+                        Value::CMMetaLift(space.image(a, b))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Op::Entry(index, input) => {
+                let Value::CMMetaMat(matrix) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Value::RVCycloQ(space.entry(&matrix, *index)?)
+            }
+            Op::Coefficient(index, input) => {
+                let Value::CMMetaVec(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Value::RVCycloQ(space.coefficient(&vector, *index)?)
+            }
+        };
+        match &value {
+            Value::CMMetaMat(m) => cm_meta::persist(&mut self.model, &m.0)?,
+            Value::CMMetaVec(v) => cm_meta::persist(&mut self.model, &v.0)?,
+            Value::RVCycloQ(c) if !c.is_zero() => self.model.allocate(3 + 2 * c.numerator.len())?,
+            _ => {}
+        }
+        Ok(value)
     }
 
     fn eval_cm_theta(&mut self, plan: &TypedCMTheta) -> Result<Value> {
@@ -14871,6 +15014,7 @@ impl Engine {
             },
             TypedForm::CMPeriod(plan) => self.eval_cm_period(plan),
             TypedForm::CMTheta(plan) => self.eval_cm_theta(plan),
+            TypedForm::CMMeta(plan) => self.eval_cm_meta(plan),
             TypedForm::CMAbelian(plan) => self.eval_cm_abelian(plan),
             TypedForm::CMHomCoordinate(action) => {
                 use TypedCMHomCoordinate as Action;
@@ -19657,6 +19801,10 @@ impl Checker<'_> {
                 self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)
             }
             TypeForm::CMAbelianMap(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianMap),
+            TypeForm::CMMetaLift(name) => self.cm_meta_type(&name, Kind::CMMetaLift),
+            TypeForm::CMMetaAuto(name) => self.cm_meta_type(&name, Kind::CMMetaAuto),
+            TypeForm::CMMetaMat(name) => self.cm_meta_type(&name, Kind::CMMetaMat),
+            TypeForm::CMMetaVec(name) => self.cm_meta_type(&name, Kind::CMMetaVec),
             TypeForm::CMTheta(name) => self.model.cm_theta_type(&name, Kind::CMTheta),
             TypeForm::CMThetaOp(name) => self.model.cm_theta_type(&name, Kind::CMThetaOp),
             TypeForm::CMThetaSubgroup(name) => {
@@ -35768,6 +35916,209 @@ impl Checker<'_> {
         ))
     }
 
+    fn cm_meta_operand(&self, input: &TypedExpr) -> Result<(Label, cm_meta::Space)> {
+        let (Kind::CMMetaLift(name)
+        | Kind::CMMetaAuto(name)
+        | Kind::CMMetaMat(name)
+        | Kind::CMMetaVec(name)) = self.model.kind(input.ty)
+        else {
+            return Err(Error::new(
+                input.span,
+                "expected a nominal CM metaplectic value",
+            ));
+        };
+        let label = Label {
+            text: name.to_string(),
+            span: input.span,
+        };
+        let kernel = self.model.cm_theta(name)?;
+        Ok((label, cm_meta::Space::new(&kernel)?))
+    }
+
+    fn cm_meta_type(&mut self, name: &Label, kind: fn(Rc<str>) -> Kind) -> Result<TypeId> {
+        let kernel = self.model.cm_theta(&name.text)?;
+        cm_meta::Space::new(&kernel)?;
+        self.model.cm_theta_type(name, kind)
+    }
+
+    fn cm_meta_expression(
+        &mut self,
+        expression: cm_meta::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_meta::{Binary as B, Expression, Named, Unary as U};
+        use CMMetaOperation as Op;
+        type MetaKind = fn(Rc<str>) -> Kind;
+        let (ty, space, operation) = match expression {
+            Expression::Named(op, name) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                let ty = match op {
+                    Named::Gauss(_) => self.model.cyclotomic_rational_type(space.conductor)?,
+                    Named::FourierAuto | Named::ChirpAuto => {
+                        self.model.cm_theta_type(&name, Kind::CMMetaAuto)?
+                    }
+                    _ => self.model.cm_theta_type(&name, Kind::CMMetaMat)?,
+                };
+                (ty, space, Op::Named(op))
+            }
+            Expression::Basis(name, index) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                (
+                    self.model.cm_theta_type(&name, Kind::CMMetaVec)?,
+                    space,
+                    Op::Basis(index),
+                )
+            }
+            Expression::Lift(phase, input) => {
+                let input = self.expr(*input)?;
+                let (name, kernel) = self.cm_theta_operand(&input, Kind::CMTheta)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                (
+                    self.model.cm_theta_type(&name, Kind::CMMetaLift)?,
+                    space,
+                    Op::Lift(phase, Box::new(input)),
+                )
+            }
+            Expression::Automorphism(name, inputs) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                let [a, b, c, d] = *inputs;
+                let [a, b, c, d] = [self.expr(a)?, self.expr(b)?, self.expr(c)?, self.expr(d)?];
+                let expected = self.model.cm_theta_type(&name, Kind::CMMetaLift)?;
+                let values = Box::new([a, b, c, d]);
+                for input in values.iter() {
+                    self.require_type(expected, input, "CM metaplectic generator image")?;
+                }
+                (
+                    self.model.cm_theta_type(&name, Kind::CMMetaAuto)?,
+                    space,
+                    Op::Automorphism(values),
+                )
+            }
+            Expression::Projector(name, inputs) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                let expected = self.model.cm_theta_type(&name, Kind::CMMetaLift)?;
+                let mut values = Vec::with_capacity(inputs.len());
+                for untyped in inputs {
+                    let input = self.expr(untyped)?;
+                    self.require_type(expected, &input, "CM metaplectic projector generator")?;
+                    values.push(input);
+                }
+                (
+                    self.model.cm_theta_type(&name, Kind::CMMetaMat)?,
+                    space,
+                    Op::Projector(values),
+                )
+            }
+            Expression::Vector(name, inputs) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let space = cm_meta::Space::new(&kernel)?;
+                let expected = self.model.cyclotomic_rational_type(space.conductor)?;
+                let mut values = Vec::with_capacity(inputs.len());
+                for untyped in inputs {
+                    let input = self.expr(untyped)?;
+                    self.require_type(expected, &input, "CM metaplectic vector coefficient")?;
+                    values.push(input);
+                }
+                (
+                    self.model.cm_theta_type(&name, Kind::CMMetaVec)?,
+                    space,
+                    Op::Vector(values),
+                )
+            }
+            Expression::Unary(op, input) => {
+                let input = self.expr(*input)?;
+                let (name, space) = self.cm_meta_operand(&input)?;
+                let kind: MetaKind = match op {
+                    U::Heisenberg => Kind::CMMetaLift,
+                    U::Intertwine => Kind::CMMetaAuto,
+                    U::Trace => Kind::CMMetaMat,
+                };
+                let expected = self.model.cm_theta_type(&name, kind)?;
+                self.require_type(expected, &input, "CM metaplectic operator input")?;
+                let ty = match op {
+                    U::Trace => self.model.cyclotomic_rational_type(space.conductor)?,
+                    _ => self.model.cm_theta_type(&name, Kind::CMMetaMat)?,
+                };
+                (ty, space, Op::Unary(op, Box::new(input)))
+            }
+            Expression::Binary(op, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (name, space) = self.cm_meta_operand(&a)?;
+                let (left, right, target): (MetaKind, Option<MetaKind>, Option<MetaKind>) = match op
+                {
+                    B::Compose => (
+                        Kind::CMMetaMat,
+                        Some(Kind::CMMetaMat),
+                        Some(Kind::CMMetaMat),
+                    ),
+                    B::Apply => (
+                        Kind::CMMetaMat,
+                        Some(Kind::CMMetaVec),
+                        Some(Kind::CMMetaVec),
+                    ),
+                    B::Scale => (Kind::CMMetaMat, None, Some(Kind::CMMetaMat)),
+                    B::AutoCompose => (
+                        Kind::CMMetaAuto,
+                        Some(Kind::CMMetaAuto),
+                        Some(Kind::CMMetaAuto),
+                    ),
+                    B::Cocycle => (Kind::CMMetaAuto, Some(Kind::CMMetaAuto), None),
+                    B::LiftCompose => (
+                        Kind::CMMetaLift,
+                        Some(Kind::CMMetaLift),
+                        Some(Kind::CMMetaLift),
+                    ),
+                    B::Image => (
+                        Kind::CMMetaAuto,
+                        Some(Kind::CMMetaLift),
+                        Some(Kind::CMMetaLift),
+                    ),
+                };
+                let expected = self.model.cm_theta_type(&name, left)?;
+                self.require_type(expected, &a, "CM metaplectic first argument")?;
+                let mut resolve = |kind| match kind {
+                    Some(kind) => self.model.cm_theta_type(&name, kind),
+                    None => self.model.cyclotomic_rational_type(space.conductor),
+                };
+                let expected = resolve(right)?;
+                let ty = resolve(target)?;
+                self.require_type(expected, &b, "CM metaplectic second argument")?;
+                (ty, space, Op::Binary(op, Box::new([a, b])))
+            }
+            Expression::Entry(indices, input) => {
+                let input = self.expr(*input)?;
+                let (name, space) = self.cm_meta_operand(&input)?;
+                let expected = self.model.cm_theta_type(&name, Kind::CMMetaMat)?;
+                self.require_type(expected, &input, "CM metaplectic matrix entry")?;
+                (
+                    self.model.cyclotomic_rational_type(space.conductor)?,
+                    space,
+                    Op::Entry(indices, Box::new(input)),
+                )
+            }
+            Expression::Coefficient(index, input) => {
+                let input = self.expr(*input)?;
+                let (name, space) = self.cm_meta_operand(&input)?;
+                let expected = self.model.cm_theta_type(&name, Kind::CMMetaVec)?;
+                self.require_type(expected, &input, "CM metaplectic vector coefficient")?;
+                (
+                    self.model.cyclotomic_rational_type(space.conductor)?,
+                    space,
+                    Op::Coefficient(index, Box::new(input)),
+                )
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::CMMeta(Box::new(TypedCMMeta { space, operation })),
+        ))
+    }
+
     fn cm_theta_operand(
         &self,
         input: &TypedExpr,
@@ -35797,6 +36148,7 @@ impl Checker<'_> {
         use cm_theta::Expression;
         use CMThetaOperation as Op;
         let (ty, kernel, operation) = match expression {
+            Expression::Metaplectic(expression) => return self.cm_meta_expression(*expression),
             Expression::Element(name, coordinates, lattice) => {
                 let kernel = self.model.cm_theta(&name.text)?;
                 let ty = self.model.cm_theta_type(&name, Kind::CMTheta)?;

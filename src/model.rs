@@ -335,6 +335,10 @@ pub(crate) enum Kind {
     CMAbelianMukai(Rc<str>),
     CMAbelianMap(Rc<str>),
     CMTheta(Rc<str>),
+    CMMetaLift(Rc<str>),
+    CMMetaAuto(Rc<str>),
+    CMMetaMat(Rc<str>),
+    CMMetaVec(Rc<str>),
     CMThetaOp(Rc<str>),
     CMThetaSubgroup(Rc<str>),
     CMPeriod(Rc<str>),
@@ -603,6 +607,10 @@ pub(crate) enum Value {
     CMAbelianMukai(Rc<cm_hom::fourier::Mukai>),
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
     CMTheta(cm_hom::fourier::theta::Point),
+    CMMetaLift(cm_hom::fourier::theta::metaplectic::Lift),
+    CMMetaAuto(cm_hom::fourier::theta::metaplectic::Auto),
+    CMMetaMat(cm_hom::fourier::theta::metaplectic::Matrix),
+    CMMetaVec(cm_hom::fourier::theta::metaplectic::Vector),
     CMThetaOp(cm_hom::fourier::theta::Operator),
     CMThetaSubgroup(Rc<cm_hom::fourier::theta::Subgroup>),
     CMPeriod(Rc<cm_hom::fourier::period::Period>),
@@ -1719,6 +1727,10 @@ impl Model {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
             }
             Kind::CMTheta(ref name) => self.cm_theta[name.as_ref()].cardinality_bound(),
+            Kind::CMMetaLift(..)
+            | Kind::CMMetaAuto(..)
+            | Kind::CMMetaMat(..)
+            | Kind::CMMetaVec(..) => usize::MAX,
             Kind::CMThetaOp(..) | Kind::CMThetaSubgroup(..) => usize::MAX,
             Kind::CMHomCoordinate(..)
             | Kind::CMAbelianDiv(..)
@@ -2097,6 +2109,10 @@ impl Model {
                 | Kind::CMAbelianDiv(..)
                 | Kind::CMAbelianMukai(..)
                 | Kind::CMAbelianMap(..)
+                | Kind::CMMetaLift(..)
+                | Kind::CMMetaAuto(..)
+                | Kind::CMMetaMat(..)
+                | Kind::CMMetaVec(..)
                 | Kind::CMThetaOp(..)
                 | Kind::CMThetaSubgroup(..)
                 | Kind::CMPeriod(..)
@@ -8145,6 +8161,10 @@ impl Model {
             | Kind::CMAbelianMukai(..)
             | Kind::CMAbelianMap(..)
             | Kind::CMTheta(..)
+            | Kind::CMMetaLift(..)
+            | Kind::CMMetaAuto(..)
+            | Kind::CMMetaMat(..)
+            | Kind::CMMetaVec(..)
             | Kind::CMThetaOp(..)
             | Kind::CMThetaSubgroup(..)
             | Kind::CMPeriod(..)
@@ -8744,6 +8764,10 @@ impl Model {
             Kind::CMAbelianDiv(name) => out.push(&format!("RVCMAbelianDiv({name})")),
             Kind::CMAbelianMukai(name) => out.push(&format!("RVCMAbelianMukai({name})")),
             Kind::CMAbelianMap(name) => out.push(&format!("RVCMAbelianMap({name})")),
+            Kind::CMMetaLift(name) => out.push(&format!("RVCMMetaLift({name})")),
+            Kind::CMMetaAuto(name) => out.push(&format!("RVCMMetaAuto({name})")),
+            Kind::CMMetaMat(name) => out.push(&format!("RVCMMetaMat({name})")),
+            Kind::CMMetaVec(name) => out.push(&format!("RVCMMetaVec({name})")),
             Kind::CMTheta(name) => out.push(&format!("RVCMTheta({name})")),
             Kind::CMThetaOp(name) => out.push(&format!("RVCMThetaOp({name})")),
             Kind::CMThetaSubgroup(name) => out.push(&format!("RVCMThetaSubgroup({name})")),
@@ -9244,6 +9268,10 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a == b),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a == b),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a == b),
+            (Value::CMMetaLift(a), Value::CMMetaLift(b)) => Ok(a == b),
+            (Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => Ok(a == b),
+            (Value::CMMetaMat(a), Value::CMMetaMat(b)) => Ok(a == b),
+            (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a == b),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a == b),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a == b),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a == b),
@@ -9705,6 +9733,10 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a.cmp(b)),
+            (Value::CMMetaLift(a), Value::CMMetaLift(b)) => Ok(a.cmp(b)),
+            (Value::CMMetaAuto(a), Value::CMMetaAuto(b)) => Ok(a.cmp(b)),
+            (Value::CMMetaMat(a), Value::CMMetaMat(b)) => Ok(a.cmp(b)),
+            (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a.cmp(b)),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a.cmp(b)),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a.cmp(b)),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a.cmp(b)),
@@ -10204,6 +10236,12 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate exact CM abelian correspondences",
                     ));
+                }
+                Kind::CMMetaLift(..)
+                | Kind::CMMetaAuto(..)
+                | Kind::CMMetaMat(..)
+                | Kind::CMMetaVec(..) => {
+                    return Err(Error::plain("cannot enumerate CM metaplectic values"));
                 }
                 Kind::CMTheta(ref name) => self
                     .cm_theta(name)?
@@ -12205,6 +12243,37 @@ impl Model {
             Value::CMAbelianMap(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMMetaLift(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!(
+                    "{{point={:?}, phase={}}}",
+                    value.point, value.phase
+                ))
+            }
+            Value::CMMetaAuto(value) => {
+                self.write_type(out, ty, 0)?;
+                let images = value.0.map(|lift| (lift.point, lift.phase));
+                out.push(&format!("{{images={images:?}}}"))
+            }
+            Value::CMMetaMat(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{entries={}}}", value.0.len()))
+            }
+            Value::CMMetaVec(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, coordinate) in value.0.iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    self.spend(coordinate.numerator.len())?;
+                    out.push(&format!(
+                        "{:?}/{}",
+                        coordinate.numerator, coordinate.denominator
+                    ))?;
+                }
+                out.push("}")
             }
             Value::CMTheta(value) => {
                 self.write_type(out, ty, 0)?;

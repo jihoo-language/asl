@@ -179,6 +179,10 @@ pub(crate) enum TypeForm {
     CMAbelianMap(Label),
     CMPeriod(Label),
     CMTheta(Label),
+    CMMetaLift(Label),
+    CMMetaAuto(Label),
+    CMMetaMat(Label),
+    CMMetaVec(Label),
     CMThetaOp(Label),
     CMThetaSubgroup(Label),
     CMCharge(Label),
@@ -3339,6 +3343,136 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::CMHom(Box::new(result)))
     }
 
+    fn cm_meta_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                theta::{
+                    metaplectic::{Binary, Expression, Named, Unary},
+                    Expression as Theta,
+                },
+                Expression as Abelian,
+            },
+            Expression as Hom,
+        };
+        let (operation, depth) = match command {
+            "rvCMMetaHeis" | "rvCMMetaIntertwine" | "rvCMMetaTrace" => {
+                let op = match command {
+                    "rvCMMetaHeis" => Unary::Heisenberg,
+                    "rvCMMetaIntertwine" => Unary::Intertwine,
+                    _ => Unary::Trace,
+                };
+                let value = Box::new(self.paren_expr(nest)?);
+                let depth = 1 + value.depth;
+                (Expression::Unary(op, value), depth)
+            }
+            "rvCMMetaCompose"
+            | "rvCMMetaApply"
+            | "rvCMMetaScale"
+            | "rvCMMetaAutoCompose"
+            | "rvCMMetaCocycle"
+            | "rvCMMetaLiftCompose"
+            | "rvCMMetaImage" => {
+                let op = match command {
+                    "rvCMMetaCompose" => Binary::Compose,
+                    "rvCMMetaApply" => Binary::Apply,
+                    "rvCMMetaScale" => Binary::Scale,
+                    "rvCMMetaAutoCompose" => Binary::AutoCompose,
+                    "rvCMMetaLiftCompose" => Binary::LiftCompose,
+                    "rvCMMetaImage" => Binary::Image,
+                    _ => Binary::Cocycle,
+                };
+                let values = Box::new(self.paren_pair(nest)?);
+                let depth = 1 + values[0].depth.max(values[1].depth);
+                (Expression::Binary(op, values), depth)
+            }
+            "rvCMMetaLift" => {
+                self.expect(Token::LBracket)?;
+                let phase = self.cm_theta_number()?;
+                self.expect(Token::RBracket)?;
+                let value = Box::new(self.paren_expr(nest)?);
+                let depth = 1 + value.depth;
+                (Expression::Lift(phase, value), depth)
+            }
+            "rvCMMetaEntry" | "rvCMMetaCoeff" => {
+                self.expect(Token::LBracket)?;
+                let i = self.number()?.0;
+                let j = if command == "rvCMMetaEntry" {
+                    self.expect(Token::Comma)?;
+                    Some(self.number()?.0)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = 1 + input.depth;
+                let op = match j {
+                    Some(j) => Expression::Entry([i, j], input),
+                    None => Expression::Coefficient(i, input),
+                };
+                (op, depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                if command == "rvCMMetaBasis" {
+                    self.expect(Token::Comma)?;
+                    let i = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    (Expression::Basis(name, i), 0)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    match command {
+                        "rvCMMetaAuto" => {
+                            let inputs = Box::new(self.paren_arguments(nest)?);
+                            let depth = 1 + inputs.iter().map(|x| x.depth).max().unwrap_or(0);
+                            (Expression::Automorphism(name, inputs), depth)
+                        }
+                        "rvCMMetaProjector" | "rvCMMetaVector" => {
+                            self.expect(Token::LBrace)?;
+                            let mut values = Vec::new();
+                            while self.token() != Token::RBrace {
+                                values.push(self.expr(nest + 1)?);
+                                if !self.eat(Token::Comma)? {
+                                    break;
+                                }
+                            }
+                            self.expect(Token::RBrace)?;
+                            let depth = 1 + values.iter().map(|x| x.depth).max().unwrap_or(0);
+                            let expression = if command == "rvCMMetaProjector" {
+                                Expression::Projector(name, values)
+                            } else {
+                                Expression::Vector(name, values)
+                            };
+                            (expression, depth)
+                        }
+                        _ => {
+                            let item = match command {
+                                "rvCMMetaF" => Named::Fourier(false),
+                                "rvCMMetaFInv" => Named::Fourier(true),
+                                "rvCMMetaT" => Named::Chirp(false),
+                                "rvCMMetaTInv" => Named::Chirp(true),
+                                "rvCMMetaParity" => Named::Parity,
+                                "rvCMMetaGauss" => Named::Gauss(false),
+                                "rvCMMetaGaussBar" => Named::Gauss(true),
+                                "rvCMMetaFAuto" => Named::FourierAuto,
+                                "rvCMMetaTAuto" => Named::ChirpAuto,
+                                _ => Named::Identity,
+                            };
+                            (Expression::Named(item, name), 0)
+                        }
+                    }
+                }
+            }
+        };
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Theta(Box::new(
+                Theta::Metaplectic(Box::new(operation)),
+            )))))),
+            depth,
+        )
+    }
+
     fn cm_theta_number(&mut self) -> Result<u64> {
         let span = self.span();
         u64::try_from(self.wide_unsigned("CM theta index")?)
@@ -3355,6 +3489,16 @@ impl<'src> Parser<'src> {
         };
         self.advance()?;
         let statement = match command {
+            "rvCMMetaVerify" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Metaplectic(
+                    crate::jacobian_level::cm_hom::fourier::theta::metaplectic::Statement::Verify(
+                        name,
+                    ),
+                )
+            }
             "rvcmthetakernel" => Statement::Define(self.label()?, Box::new(self.paren_expr(0)?)),
             "rvCMThetaData" | "rvCMThetaLagrangians" | "rvCMThetaElements" => {
                 self.expect(Token::LBracket)?;
@@ -13879,7 +14023,8 @@ impl<'src> Parser<'src> {
                 | "rvCMThetaPair"
                 | "rvCMThetaAction"
                 | "rvCMThetaSubgroupData"
-                | "rvCMThetaTorsion"),
+                | "rvCMThetaTorsion"
+                | "rvCMMetaVerify"),
             ) => self.cm_theta_statement(name)?,
             Token::Word(
                 name @ ("rvCMPeriodData" | "rvCMChargeRay" | "rvCMPeriodWallData"
@@ -18063,6 +18208,21 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
+            "RVCMMetaLift" | "RVCMMetaAuto" | "RVCMMetaMat" | "RVCMMetaVec"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            let form = match name.text.as_str() {
+                "RVCMMetaLift" => TypeForm::CMMetaLift(label),
+                "RVCMMetaAuto" => TypeForm::CMMetaAuto(label),
+                "RVCMMetaMat" => TypeForm::CMMetaMat(label),
+                _ => TypeForm::CMMetaVec(label),
+            };
+            return ty(span, form, 0);
+        }
+        if matches!(
+            name.text.as_str(),
             "RVCMTheta" | "RVCMThetaOp" | "RVCMThetaSubgroup"
         ) && self.eat(Token::LParen)?
         {
@@ -20803,6 +20963,42 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMMetaF"
+                        | "rvCMMetaFInv"
+                        | "rvCMMetaT"
+                        | "rvCMMetaTInv"
+                        | "rvCMMetaParity"
+                        | "rvCMMetaIdentity"
+                        | "rvCMMetaGauss"
+                        | "rvCMMetaGaussBar"
+                        | "rvCMMetaFAuto"
+                        | "rvCMMetaTAuto"
+                        | "rvCMMetaBasis"
+                        | "rvCMMetaLift"
+                        | "rvCMMetaAuto"
+                        | "rvCMMetaProjector"
+                        | "rvCMMetaVector"
+                        | "rvCMMetaEntry"
+                        | "rvCMMetaCoeff"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCMMetaCompose"
+                            | "rvCMMetaApply"
+                            | "rvCMMetaScale"
+                            | "rvCMMetaAutoCompose"
+                            | "rvCMMetaCocycle"
+                            | "rvCMMetaHeis"
+                            | "rvCMMetaIntertwine"
+                            | "rvCMMetaTrace"
+                            | "rvCMMetaLiftCompose"
+                            | "rvCMMetaImage"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cm_meta_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

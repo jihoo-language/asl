@@ -16,7 +16,10 @@ use crate::rv_qp_quad::{Element, Wide};
 use crate::rv_unram::{add_mod, mul_mod, sub_mod};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod metaplectic;
+
 pub(crate) enum Statement {
+    Metaplectic(metaplectic::Statement),
     Define(Label, Box<ParsedExpr>),
     Named(NamedReport, Label),
     Element(ElementReport, Box<ParsedExpr>),
@@ -38,6 +41,7 @@ pub(crate) enum ElementReport {
 }
 
 pub(crate) enum Expression {
+    Metaplectic(Box<metaplectic::Expression>),
     Element(Label, [i128; 4], bool),
     Operator(u64, Box<ParsedExpr>),
     Multiply(Box<[ParsedExpr; 2]>),
