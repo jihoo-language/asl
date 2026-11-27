@@ -138,6 +138,7 @@ pub(crate) enum TypeForm {
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Grade),
+    RVPartitionHom(crate::partition_algebra::fiber::gabriel::derived::auslander::Grade),
     RVKaroubiMap([Label; 2]),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
@@ -895,6 +896,7 @@ pub(crate) enum ExprForm {
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
     PartitionExt(Box<crate::partition_algebra::fiber::gabriel::derived::Expression>),
+    PartitionHom(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::Expression>),
     Karoubi(Box<crate::partition_algebra::karoubi::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
@@ -1467,6 +1469,7 @@ pub(crate) enum StatementForm {
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
     PartitionExtReport(crate::partition_algebra::fiber::gabriel::derived::Report),
+    PartitionHomReport(crate::partition_algebra::fiber::gabriel::derived::auslander::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -8484,6 +8487,77 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_hom_grade(
+        &mut self,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::auslander::Grade> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::Grade;
+        let parameter = self.partition_parameter()?;
+        let source = self.partition_indices()?;
+        let target = self.partition_indices()?;
+        Ok(Grade {
+            parameter,
+            source,
+            target,
+        })
+    }
+
+    fn partition_hom_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::Expression;
+        let (operation, depth) = match name {
+            "rvPartitionHomBasis" => {
+                self.expect(Token::LBracket)?;
+                let grade = self.partition_hom_grade()?;
+                let [shift] = self.partition_indices()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(grade, shift), 0)
+            }
+            "rvPartitionHomCompose" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Compose(Box::new(inputs)), depth)
+            }
+            "rvPartitionHomScale" => {
+                let (n, d) = self.partition_scalar(span)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(n, d, Box::new(input)), depth)
+            }
+            "rvPartitionHomPath" => {
+                self.expect(Token::LBracket)?;
+                let layer = self.wide_unsigned("partition module layer")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Apply(layer, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let parameter = self.partition_parameter()?;
+                let operation = match name {
+                    "rvPartitionAuslanderArrow" => {
+                        let [index] = self.partition_indices()?;
+                        Expression::Arrow(parameter, index)
+                    }
+                    "rvPartitionAuslanderRadicalBasis" => {
+                        Expression::Radical(parameter, self.partition_indices()?)
+                    }
+                    "rvPartitionModulePath" => {
+                        Expression::ModulePath(parameter, self.partition_indices()?)
+                    }
+                    _ => Expression::MeshMap(parameter, self.partition_indices()?),
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::PartitionHom(Box::new(operation)), depth)
+    }
+
     fn partition_ext_grade(
         &mut self,
     ) -> Result<crate::partition_algebra::fiber::gabriel::derived::Grade> {
@@ -12930,6 +13004,47 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvPartitionIndecomposables"
+                | "rvPartitionAuslander"
+                | "rvPartitionAR"
+                | "rvPartitionHomDim"
+                | "rvPartitionHomApply"
+                | "rvPartitionAuslanderRadicalContains"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::auslander::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let report = match name {
+                    "rvPartitionHomApply" | "rvPartitionAuslanderRadicalContains" => {
+                        let index =
+                            self.wide_unsigned("partition Hom layer or Auslander radical power")?;
+                        self.expect(Token::RBracket)?;
+                        let input = Box::new(self.paren_expr(0)?);
+                        if name == "rvPartitionHomApply" {
+                            Report::Apply(index, input)
+                        } else {
+                            Report::RadicalContains(index, input)
+                        }
+                    }
+                    "rvPartitionHomDim" => {
+                        let grade = self.partition_hom_grade()?;
+                        self.expect(Token::RBracket)?;
+                        Report::HomDim(grade)
+                    }
+                    _ => {
+                        let parameter = self.partition_parameter()?;
+                        let report = match name {
+                            "rvPartitionIndecomposables" => Report::Indecomposables(parameter),
+                            "rvPartitionAuslander" => Report::Algebra(parameter),
+                            _ => Report::Mesh(parameter, self.partition_indices()?),
+                        };
+                        self.expect(Token::RBracket)?;
+                        report
+                    }
+                };
+                StatementForm::PartitionHomReport(report)
+            }
+            Token::Word(
                 name @ ("rvPartitionExtDim"
                 | "rvPartitionBarExtDim"
                 | "rvPartitionResolution"
@@ -15897,6 +16012,11 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionHom" && self.eat(Token::LParen)? {
+            let grade = self.partition_hom_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionHom(grade), 0);
         }
         if name.text == "RVPartitionExt" && self.eat(Token::LParen)? {
             let grade = self.partition_ext_grade()?;
@@ -20753,6 +20873,19 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionHomBasis"
+                        | "rvPartitionHomCompose"
+                        | "rvPartitionHomScale"
+                        | "rvPartitionHomPath"
+                        | "rvPartitionAuslanderArrow"
+                        | "rvPartitionAuslanderRadicalBasis"
+                        | "rvPartitionModulePath"
+                        | "rvPartitionARMap"
+                ) {
+                    return self.partition_hom_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

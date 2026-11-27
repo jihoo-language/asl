@@ -1,0 +1,15 @@
+rvPartitionIndecomposables[2,0];
+rvPartitionAuslander[2,0];
+rvPartitionAR[2,0,2,2];
+let f1 = rvPartitionARMap[2,0,2,2,0,0];
+let f2 = rvPartitionARMap[2,0,2,2,0,1];
+let g1 = rvPartitionARMap[2,0,2,2,1,0];
+let g2 = rvPartitionARMap[2,0,2,2,1,1];
+let u = rvPartitionHomCompose(g1,f1);
+let v = rvPartitionHomCompose(g2,f2);
+assert u == rvPartitionHomBasis[2,0,0,2,2,2,1];
+assert add(u,v) == zero[RVPartitionHom(2,0,0,2,2,2)];
+assert rvPartitionHomPath[0](u) == rvPartitionModulePath[2,0,2,2,1];
+rvPartitionHomApply[0](u);
+rvPartitionHomApply[0](v);
+rvPartitionAuslanderRadicalContains[2](u);

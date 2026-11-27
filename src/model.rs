@@ -283,6 +283,10 @@ pub(crate) enum Kind {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionHom(
+        crate::partition_algebra::fiber::gabriel::derived::auslander::Grade,
+        bool,
+    ),
     RVPartitionExt(
         crate::partition_algebra::fiber::gabriel::derived::Grade,
         bool,
@@ -520,6 +524,7 @@ pub(crate) enum Value {
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
     RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class),
+    RVPartitionHom(Rc<crate::partition_algebra::fiber::gabriel::derived::auslander::Map>),
     RVKaroubiMap(Rc<crate::partition_algebra::karoubi::Map>),
     PeriodState(rv_period::State),
     PeriodResidue(u128),
@@ -1625,7 +1630,7 @@ impl Model {
             }
             Kind::RVUnram(ref name) => self.rv_unram_rings[name.as_ref()].count(),
             Kind::RVPartitionFiber(grade) if grade.is_zero_ring() => 1,
-            Kind::RVPartitionExt(_, false) => 1,
+            Kind::RVPartitionExt(_, false) | Kind::RVPartitionHom(_, false) => 1,
             Kind::RVQGr(..)
             | Kind::RVQGrP(..)
             | Kind::RVOre
@@ -1636,6 +1641,7 @@ impl Model {
             | Kind::RVPartitionLocal(..)
             | Kind::RVPartitionFiber(..)
             | Kind::RVPartitionExt(..)
+            | Kind::RVPartitionHom(..)
             | Kind::RVKaroubiMap(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -1835,6 +1841,7 @@ impl Model {
                 | Kind::RVPartitionLocal(..)
                 | Kind::RVPartitionFiber(..)
                 | Kind::RVPartitionExt(..)
+                | Kind::RVPartitionHom(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -3865,6 +3872,18 @@ impl Model {
 
     pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn partition_hom_type(
+        &mut self,
+        grade: crate::partition_algebra::fiber::gabriel::derived::auslander::Grade,
+    ) -> Result<TypeId> {
+        let algebra = self
+            .partition_fiber(grade.parameter)?
+            .nakayama(self)?
+            .auslander(self)?;
+        let nonzero = algebra.dimension(grade)? != 0;
+        self.inhabited_type(Kind::RVPartitionHom(grade, nonzero), 0)
     }
 
     pub(crate) fn partition_ext_type(
@@ -7338,6 +7357,7 @@ impl Model {
             | Kind::RVPartitionLocal(..)
             | Kind::RVPartitionFiber(..)
             | Kind::RVPartitionExt(..)
+            | Kind::RVPartitionHom(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -8079,6 +8099,7 @@ impl Model {
             Kind::RVPartitionLocal(rank) => out.push(&format!("RVPartitionLocal({rank})")),
             Kind::RVPartitionFiber(grade) => out.push(&grade.render()),
             Kind::RVPartitionExt(grade, _) => out.push(&grade.render()),
+            Kind::RVPartitionHom(grade, _) => out.push(&grade.render()),
             Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
@@ -8372,6 +8393,7 @@ impl Model {
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a == b),
+            (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8842,6 +8864,7 @@ impl Model {
             (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a.compare(self, b),
             (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => a.compare(self, b),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a.cmp(b)),
+            (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
                 a.compare(self, b)
@@ -9553,6 +9576,15 @@ impl Model {
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
+                }
+                Kind::RVPartitionHom(grade, false) => vec![
+                    crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(grade)
+                        .persist(self)?,
+                ],
+                Kind::RVPartitionHom(_, true) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a nonzero rational partition Hom group",
+                    ))
                 }
                 Kind::RVPartitionExt(grade, false) => vec![Value::RVPartitionExt(
                     crate::partition_algebra::fiber::gabriel::derived::Class::zero(grade),
@@ -11489,6 +11521,7 @@ impl Model {
             Value::RVPartitionLocal(value) => out.push(&value.render()),
             Value::RVPartitionFiber(value) => out.push(&value.render()),
             Value::RVPartitionExt(value) => out.push(&value.render()),
+            Value::RVPartitionHom(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
                 out.push("RVOre{")?;

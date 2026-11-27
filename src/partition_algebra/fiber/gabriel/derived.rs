@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::rc::Rc;
 
 use crate::error::{Error, Result};
 use crate::lee_linear::Rational;
@@ -9,6 +11,7 @@ use crate::syntax::ParsedExpr;
 use super::super::{add, multiply, ratio, Coordinates, Element, Fiber, Mode, Parameter};
 use super::Gabriel;
 
+pub(crate) mod auslander;
 mod bar;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -118,6 +121,8 @@ pub(crate) struct Nakayama {
     parameter: Parameter,
     paths: Vec<Vec<LiftedPath>>,
     arrow_paths: Vec<Path>,
+    simple_dimensions: Vec<usize>,
+    auslander: RefCell<Option<Rc<auslander::Auslander>>>,
     resolutions: BTreeMap<State, Resolution>,
 }
 
@@ -191,6 +196,8 @@ impl Nakayama {
             parameter: fiber.parameter,
             paths,
             arrow_paths,
+            simple_dimensions: data.groups.iter().map(Vec::len).collect(),
+            auslander: RefCell::default(),
             resolutions: BTreeMap::new(),
         };
         algebra.certify_products(model, fiber)?;
@@ -211,6 +218,15 @@ impl Nakayama {
                 .sum(),
         )?;
         Ok(algebra)
+    }
+
+    pub(crate) fn auslander(&self, model: &mut Model) -> Result<Rc<auslander::Auslander>> {
+        if let Some(data) = self.auslander.borrow().as_ref() {
+            return Ok(data.clone());
+        }
+        let data = Rc::new(auslander::Auslander::new(model, self)?);
+        *self.auslander.borrow_mut() = Some(data.clone());
+        Ok(data)
     }
 
     fn certify_products(&self, model: &mut Model, fiber: &Fiber) -> Result<()> {

@@ -951,6 +951,9 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionHomCompose(Box<[TypedExpr; 2]>),
+    PartitionHomScale(i128, i128, Box<TypedExpr>),
+    PartitionHomApply(u128, Box<TypedExpr>),
     PartitionYoneda(Box<[TypedExpr; 2]>),
     PartitionExtScale(i128, i128, Box<TypedExpr>),
     PartitionFiberSpecialize(crate::partition_algebra::fiber::Parameter, Box<TypedExpr>),
@@ -2342,6 +2345,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionHomReport(report) => {
+                return self.partition_hom_report(report).map(Some);
             }
             StatementForm::PartitionExtReport(report) => {
                 return self.partition_ext_report(report).map(Some);
@@ -10491,6 +10497,59 @@ impl Engine {
         }
     }
 
+    fn partition_hom_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::auslander::Report,
+    ) -> Result<String> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::Report;
+        let parameter = match &report {
+            Report::Indecomposables(p) | Report::Algebra(p) | Report::Mesh(p, _) => *p,
+            Report::HomDim(grade) => grade.parameter,
+            Report::Apply(layer, _) | Report::RadicalContains(layer, _) => {
+                let apply = matches!(report, Report::Apply(..));
+                let layer = *layer;
+                let (Report::Apply(_, input) | Report::RadicalContains(_, input)) = report else {
+                    unreachable!()
+                };
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().partition_hom_operand(&input)?;
+                let value = self.eval_partition_hom(&input)?;
+                let algebra = self
+                    .model
+                    .partition_fiber(grade.parameter)?
+                    .nakayama(&mut self.model)?;
+                let category = algebra.auslander(&mut self.model)?;
+                return if apply {
+                    category.apply_report(&mut self.model, &algebra, &value, layer)
+                } else {
+                    category.contains(&value, layer)
+                };
+            }
+        };
+        let category = self
+            .model
+            .partition_fiber(parameter)?
+            .nakayama(&mut self.model)?
+            .auslander(&mut self.model)?;
+        match report {
+            Report::Indecomposables(_) => Ok(category.indecomposables()),
+            Report::Algebra(_) => Ok(category.algebra_report()),
+            Report::Mesh(_, key) => category.mesh_report(key),
+            Report::HomDim(grade) => category.hom_dimension(grade),
+            _ => unreachable!(),
+        }
+    }
+
+    fn eval_partition_hom(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::auslander::Map>> {
+        let Value::RVPartitionHom(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_ext_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::Report,
@@ -11447,6 +11506,9 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => {
                         Ok(Value::RVPartitionExt(a.add(b)?))
                     }
@@ -14340,6 +14402,31 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionHomCompose(inputs) => {
+                let g = self.eval_partition_hom(&inputs[0])?;
+                let f = self.eval_partition_hom(&inputs[1])?;
+                let category = self
+                    .model
+                    .partition_fiber(f.grade.parameter)?
+                    .nakayama(&mut self.model)?
+                    .auslander(&mut self.model)?;
+                category
+                    .compose(&mut self.model, &g, &f)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionHomScale(n, d, input) => self
+                .eval_partition_hom(input)?
+                .scale(&mut self.model, *n, *d)?
+                .persist(&mut self.model),
+            TypedForm::PartitionHomApply(layer, input) => {
+                let value = self.eval_partition_hom(input)?;
+                let fiber = self.model.partition_fiber(value.grade.parameter)?;
+                let algebra = fiber.nakayama(&mut self.model)?;
+                algebra
+                    .auslander(&mut self.model)?
+                    .apply_path(&mut self.model, &algebra, &fiber, &value, *layer)?
+                    .persist(&mut self.model)
+            }
             TypedForm::PartitionYoneda(inputs) => {
                 let beta = self.eval_partition_ext(&inputs[0])?;
                 let alpha = self.eval_partition_ext(&inputs[1])?;
@@ -16912,6 +16999,7 @@ impl Checker<'_> {
             TypeForm::RVPartitionLocal(rank) => self.model.partition_local_type(rank),
             TypeForm::RVPartitionFiber(grade) => self.model.partition_fiber_type(grade),
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
+            TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVKaroubiMap([source, target]) => {
                 self.model.karoubi_map_type(&source, &target)
             }
@@ -18031,6 +18119,7 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionHom(grade, _) => crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(*grade).persist(self.model)?,
                     Kind::RVPartitionExt(grade, _) => Value::RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class::zero(*grade)),
                     Kind::RVPartitionFiber(grade) => {
                         let grade = *grade;
@@ -20231,6 +20320,7 @@ impl Checker<'_> {
             ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
             ExprForm::PartitionFiber(expression) => self.partition_fiber_expression(*expression),
             ExprForm::PartitionExt(expression) => self.partition_ext_expression(*expression),
+            ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -21428,6 +21518,12 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVKaroubiMap(..)) {
                     return Ok((input.ty, TypedForm::KaroubiNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionHom(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PartitionHomScale(-1, 1, Box::new(input)),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionExt(..)) {
                     return Ok((
@@ -25327,6 +25423,7 @@ impl Checker<'_> {
                         | Kind::RVPartitionLocal(..)
                         | Kind::RVPartitionFiber(..)
                         | Kind::RVPartitionExt(..)
+                        | Kind::RVPartitionHom(..)
                         | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
@@ -27752,6 +27849,93 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_hom_expression(
+        &mut self,
+        operation: crate::partition_algebra::fiber::gabriel::derived::auslander::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::auslander::{Expression, Grade};
+        match operation {
+            Expression::Compose(inputs) => {
+                let [g, f] = *inputs;
+                let g = self.expr(g)?;
+                let f = self.expr(f)?;
+                let grade = Grade::compose(
+                    self.partition_hom_operand(&g)?,
+                    self.partition_hom_operand(&f)?,
+                )?;
+                let ty = self.model.partition_hom_type(grade)?;
+                Ok((ty, TypedForm::PartitionHomCompose(Box::new([g, f]))))
+            }
+            Expression::Scale(n, d, input) => {
+                let input = self.expr(*input)?;
+                self.partition_hom_operand(&input)?;
+                Ok((
+                    input.ty,
+                    TypedForm::PartitionHomScale(n, d, Box::new(input)),
+                ))
+            }
+            Expression::Apply(layer, input) => {
+                use crate::partition_algebra::fiber::{Grade, Mode};
+                let input = self.expr(*input)?;
+                let parameter = self.partition_hom_operand(&input)?.parameter;
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                Ok((ty, TypedForm::PartitionHomApply(layer, Box::new(input))))
+            }
+            Expression::ModulePath(parameter, key) => {
+                use crate::partition_algebra::fiber::{Grade, Mode};
+                let fiber = self.model.partition_fiber(parameter)?;
+                let algebra = fiber.nakayama(self.model)?;
+                let path = algebra
+                    .auslander(self.model)?
+                    .module_path(&algebra, &fiber, key)?;
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                Ok((ty, TypedForm::Constant(path.persist(self.model)?)))
+            }
+            other => {
+                let parameter = match &other {
+                    Expression::Basis(grade, _) => grade.parameter,
+                    Expression::Arrow(p, _)
+                    | Expression::Radical(p, _)
+                    | Expression::MeshMap(p, _) => *p,
+                    _ => unreachable!(),
+                };
+                let category = self
+                    .model
+                    .partition_fiber(parameter)?
+                    .nakayama(self.model)?
+                    .auslander(self.model)?;
+                let value = match other {
+                    Expression::Basis(grade, layer) => category.hom(grade, layer)?,
+                    Expression::Arrow(_, i) => category.arrow(i)?,
+                    Expression::Radical(_, key) => category.radical_basis(key)?,
+                    Expression::MeshMap(_, key) => category.mesh_map(self.model, key)?,
+                    _ => unreachable!(),
+                };
+                let ty = self.model.partition_hom_type(value.grade)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+        }
+    }
+
+    fn partition_hom_operand(
+        &self,
+        input: &TypedExpr,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::auslander::Grade> {
+        match *self.model.kind(input.ty) {
+            Kind::RVPartitionHom(grade, _) => Ok(grade),
+            _ => Err(Error::new(
+                input.span,
+                "partition Hom operation requires an RVPartitionHom map",
+            )),
         }
     }
 
