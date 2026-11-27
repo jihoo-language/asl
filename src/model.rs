@@ -257,6 +257,7 @@ pub(crate) enum Kind {
     KummerDisc(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
+    Mukai(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -425,6 +426,7 @@ pub(crate) enum Value {
     KummerDisc(u8),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
+    Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -982,7 +984,7 @@ impl Model {
                 usize::MAX
             }
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
-            Kind::K3Lattice(..) => usize::MAX,
+            Kind::K3Lattice(..) | Kind::Mukai(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1199,6 +1201,7 @@ impl Model {
                 | Kind::KummerDisc(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
+                | Kind::Mukai(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3795,6 +3798,15 @@ impl Model {
         self.inhabited_type(Kind::K3Lattice(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn mukai_type(&mut self, name: &Label) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "Mukai lattices require a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::Mukai(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -4918,6 +4930,7 @@ impl Model {
             | Kind::KummerDisc(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
+            | Kind::Mukai(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5421,6 +5434,7 @@ impl Model {
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5703,6 +5717,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::Mukai(a), Value::Mukai(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6031,6 +6046,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
+            (Value::Mukai(a), Value::Mukai(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6351,6 +6367,7 @@ impl Model {
                 Kind::K3Lattice(..) => {
                     return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
+                Kind::Mukai(..) => return Err(Error::plain("cannot enumerate a Mukai lattice")),
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
                         "an elliptic rational morphism type cannot be enumerated",
@@ -7790,6 +7807,14 @@ impl Model {
                 let (w, b) = vector.coordinates();
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{w={w:?}, b={b:?}}}"))
+            }
+            Value::Mukai(vector) => {
+                let (w, b) = vector.c.coordinates();
+                self.write_type(out, ty, 0)?;
+                out.push(&format!(
+                    "{{r={}, w={w:?}, b={b:?}, s={}}}",
+                    vector.r, vector.s
+                ))
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

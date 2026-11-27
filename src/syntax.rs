@@ -128,6 +128,7 @@ pub(crate) enum TypeForm {
     KummerDisc(Label),
     KummerDiv(Label),
     K3Lattice(Label),
+    Mukai(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -971,6 +972,7 @@ pub(crate) enum ExprForm {
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
+    Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1155,6 +1157,7 @@ pub(crate) enum StatementForm {
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
+    Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -2896,6 +2899,69 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
 
+    fn mukai_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::Command;
+        self.advance()?;
+        let command = if name == "rvMukaiPair" {
+            Command::Pair(Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let n = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let j = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Command::Fujiki(n, j, Box::new(self.paren_pair(0)?))
+        };
+        Ok(StatementForm::Mukai(Box::new(command)))
+    }
+
+    fn mukai_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::Expression;
+        let (expression, depth) = match name {
+            "rvMukai" => {
+                self.expect(Token::LBracket)?;
+                let r = self.signed_wide("a signed Mukai rank", "Mukai rank")?;
+                self.expect(Token::Comma)?;
+                let s = self.signed_wide("a signed Mukai degree", "Mukai degree")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Vector(r, s, Box::new(input)), depth)
+            }
+            "rvMukaiIdeal" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.wide_unsigned("ideal sheaf length")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Ideal(basis, length), 0)
+            }
+            "rvMukaiTensor" | "rvMukaiTwist" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                let expression = if name == "rvMukaiTensor" {
+                    Expression::Tensor(Box::new(inputs))
+                } else {
+                    Expression::Twist(Box::new(inputs))
+                };
+                (expression, depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let input = Box::new(input);
+                let expression = match name {
+                    "rvK3FromKummerDiv" => Expression::FromDivisor(input),
+                    "rvK3ToKummerDiv" => Expression::ToDivisor(input),
+                    "rvMukaiC" => Expression::Center(input),
+                    _ => Expression::Line(input),
+                };
+                (expression, depth)
+            }
+        };
+        expr(span, ExprForm::Mukai(Box::new(expression)), depth)
+    }
+
     fn k3_lattice_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::unimodular::Command;
         self.advance()?;
@@ -4305,6 +4371,9 @@ impl<'src> Parser<'src> {
                 | "rvKummerHilbChar"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word(name @ ("rvMukaiPair" | "rvMukaiHilbFujiki")) => {
+                self.mukai_statement(name)?
+            }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
             }
@@ -7568,7 +7637,13 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc" | "RVKummerDiv" | "RVK3Lattice"
+            "RVJac"
+                | "RVKummer"
+                | "RVKummerK3"
+                | "RVKummerDisc"
+                | "RVKummerDiv"
+                | "RVK3Lattice"
+                | "RVMukai"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -7578,6 +7653,7 @@ impl<'src> Parser<'src> {
                 "RVKummer" => TypeForm::Kummer(endpoint),
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
+                "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
                 _ => TypeForm::K3Lattice(endpoint),
             };
@@ -9566,6 +9642,20 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvK3Reflect" && self.token() == Token::LParen)
                 {
                     return self.k3_lattice_expression(&name.text, span, nest);
+                }
+                if (matches!(name.text.as_str(), "rvMukai" | "rvMukaiIdeal")
+                    && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvK3FromKummerDiv"
+                            | "rvK3ToKummerDiv"
+                            | "rvMukaiC"
+                            | "rvMukaiLine"
+                            | "rvMukaiTensor"
+                            | "rvMukaiTwist"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.mukai_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

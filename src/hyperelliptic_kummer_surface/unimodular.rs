@@ -11,7 +11,7 @@ pub(crate) const RANK: usize = 22;
 const GLUE_DIMENSION: usize = QUADRATIC.len() + AFFINE.len();
 // A pairing sums at most 22 products of two i128 coordinates. A reflection
 // then multiplies its half by one more i128 coordinate, below 2^386.
-type Integer = Wide<13>;
+pub(crate) type Integer = Wide<13>;
 
 pub(crate) enum Expression {
     Literal(Label, Box<([i128; 6], [i128; 16])>),
@@ -84,7 +84,7 @@ impl Vector {
             .ok_or_else(|| Error::plain("K3 lattice pairing exceeds the signed i128 range"))
     }
 
-    fn wide_pair(&self, model: &mut Model, rhs: &Self) -> Result<Integer> {
+    pub(crate) fn wide_pair(&self, model: &mut Model, rhs: &Self) -> Result<Integer> {
         model.spend(30 * RANK)?;
         let mut sum = Integer::from_i128(0);
         // Complementary wedge pairs, with orientation making e02+e13 positive.
@@ -114,10 +114,14 @@ impl Vector {
             return Err(Error::plain("rvK3Reflect requires a root of square −2"));
         }
         let pairing = self.wide_pair(model, root)?;
+        self.add_scaled(model, root, pairing)
+    }
+
+    pub(crate) fn add_scaled(&self, model: &mut Model, rhs: &Self, scale: Integer) -> Result<Self> {
         model.spend(70 * RANK)?;
         self.map(|i, value| {
             Integer::from_i128(value)
-                .add(pairing.multiply(root.coordinate(i))?)?
+                .add(scale.multiply(rhs.coordinate(i))?)?
                 .signed()
                 .ok_or_else(coordinate_range)
         })

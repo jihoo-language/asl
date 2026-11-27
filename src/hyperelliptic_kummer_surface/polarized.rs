@@ -213,40 +213,51 @@ impl Fujiki {
                 "Kummer Fujiki dimension parameter n must be positive",
             ));
         }
-        let top = n.checked_mul(2).ok_or_else(work_limit)?;
-        let Some(left) = top.checked_sub(j) else {
-            return Err(Error::plain(
-                "Kummer Fujiki exponent j must lie between zero and 2n",
-            ));
-        };
+        let left = fujiki_left_exponent(n, j)?;
         if n == 1 && (k != 0 || l != 0) {
             return Err(Error::plain("Kummer Fujiki shifts must be zero for n=1"));
         }
-        let (a, b, x, y, k, l) = if left >= j {
-            (left, j, x, y, k, l)
-        } else {
-            (j, left, y, x, l, k)
+        let pairing = |model: &mut Model, x: &Divisor, y: &Divisor, k, l| {
+            let correction = Intersection::product(k, l).multiply(2 * (n as i128 - 1))?;
+            x.intersection(model, y)?.add(correction.negate())
         };
-        let width = b.checked_add(1).ok_or_else(work_limit)?;
-        let work = a
-            .checked_add(1)
-            .and_then(|rows| rows.checked_mul(width))
-            .and_then(|cells| cells.checked_mul(FUJIKI_LIMBS))
-            .ok_or_else(work_limit)?;
-        model.spend(work).map_err(|_| work_limit())?;
-        crate::hw_algebra::storage(3 * width, FUJIKI_LIMBS + 2)?;
-        let pairing =
-            |model: &mut Model, x: &Divisor, y: &Divisor, k, l| -> Result<FujikiInteger> {
-                let correction = Intersection::product(k, l).multiply(2 * (n as i128 - 1))?;
-                x.intersection(model, y)?.add(correction.negate())?.resize()
-            };
         let xx = pairing(model, x, x, k, k)?;
         let xy = pairing(model, x, y, k, l)?;
         let yy = pairing(model, y, y, l, l)?;
-        pairings(a, b, xx, xy, yy)
-            .and_then(FujikiInteger::signed)
-            .ok_or_else(top_overflow)
+        fujiki_pairings(model, left, j, xx, xy, yy)
     }
+}
+
+pub(crate) fn fujiki_left_exponent(n: usize, j: usize) -> Result<usize> {
+    let top = n.checked_mul(2).ok_or_else(work_limit)?;
+    top.checked_sub(j)
+        .ok_or_else(|| Error::plain("Kummer Fujiki exponent j must lie between zero and 2n"))
+}
+
+pub(crate) fn fujiki_pairings<const N: usize>(
+    model: &mut Model,
+    left: usize,
+    j: usize,
+    xx: Wide<N>,
+    xy: Wide<N>,
+    yy: Wide<N>,
+) -> Result<i128> {
+    let (a, b, xx, yy) = if left >= j {
+        (left, j, xx, yy)
+    } else {
+        (j, left, yy, xx)
+    };
+    let width = b.checked_add(1).ok_or_else(work_limit)?;
+    let work = a
+        .checked_add(1)
+        .and_then(|rows| rows.checked_mul(width))
+        .and_then(|cells| cells.checked_mul(FUJIKI_LIMBS))
+        .ok_or_else(work_limit)?;
+    model.spend(work).map_err(|_| work_limit())?;
+    crate::hw_algebra::storage(3 * width, FUJIKI_LIMBS + 2)?;
+    pairings(a, b, xx.resize()?, xy.resize()?, yy.resize()?)
+        .and_then(FujikiInteger::signed)
+        .ok_or_else(top_overflow)
 }
 
 fn work_limit() -> Error {

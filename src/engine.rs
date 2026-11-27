@@ -32,6 +32,7 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::mukai;
 use crate::hyperelliptic_kummer_surface::{
     self as kummer_surface, nikulin, polarized as kummer_div, unimodular, Point as KummerPoint,
 };
@@ -536,6 +537,17 @@ enum KummerDivAction {
     ),
 }
 
+enum MukaiAction {
+    FromDivisor(Box<TypedExpr>),
+    ToDivisor(Rc<jacobian_level::Basis>, Box<TypedExpr>),
+    Build(i128, i128, Box<TypedExpr>),
+    Center(Box<TypedExpr>),
+    Line(Box<TypedExpr>),
+    Tensor(Box<[TypedExpr; 2]>),
+    Twist(Box<[TypedExpr; 2]>),
+    Negate(Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -615,6 +627,7 @@ enum TypedForm {
     K3LatticeReflect(Box<[TypedExpr; 2]>),
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
     K3LatticeNegate(Box<TypedExpr>),
+    Mukai(MukaiAction),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1597,6 +1610,7 @@ impl Engine {
             StatementForm::K3Lattice(command) => {
                 return self.k3_lattice_command(*command).map(Some)
             }
+            StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
@@ -5208,6 +5222,92 @@ impl Engine {
         }
     }
 
+    fn mukai_command(&mut self, command: mukai::Command) -> Result<String> {
+        let (inputs, hilbert, name) = match command {
+            mukai::Command::Pair(inputs) => (inputs, None, "rvMukaiPair"),
+            mukai::Command::Fujiki(n, j, inputs) => (inputs, Some((n, j)), "rvMukaiHilbFujiki"),
+        };
+        let [left, right] = *inputs;
+        let checker = &mut self.checker();
+        let left = checker.expr(left)?;
+        let right = checker.expr(right)?;
+        checker.mukai_operand(&left, name)?;
+        checker.require_type(left.ty, &right, name)?;
+        let (Value::Mukai(left), Value::Mukai(right)) = (self.eval(&left)?, self.eval(&right)?)
+        else {
+            unreachable!()
+        };
+        if let Some((n, j)) = hilbert {
+            let value = left.hilbert_fujiki(&mut self.model, &right, n, j)?;
+            Ok(format!("{name}[{n}, {j}] = {value}"))
+        } else {
+            Ok(format!("{name} = {}", left.pair(&mut self.model, &right)?))
+        }
+    }
+
+    fn eval_mukai(&mut self, action: &MukaiAction) -> Result<Value> {
+        match action {
+            MukaiAction::FromDivisor(input) => {
+                let Value::KummerDiv(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                mukai::from_divisor(&mut self.model, &divisor)?.persist(&mut self.model)
+            }
+            MukaiAction::ToDivisor(basis, input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                mukai::to_divisor(&mut self.model, basis, &vector)?.persist(&mut self.model)
+            }
+            MukaiAction::Build(r, s, input) => {
+                let Value::K3Lattice(c) = self.eval(input)? else {
+                    unreachable!()
+                };
+                mukai::Vector { r: *r, c, s: *s }.persist(&mut self.model)
+            }
+            MukaiAction::Center(input) => {
+                let Value::Mukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::K3Lattice(Rc::clone(&vector.c)))
+            }
+            MukaiAction::Line(input) => {
+                let Value::KummerDiv(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                mukai::Vector::line(&mut self.model, &divisor)?.persist(&mut self.model)
+            }
+            MukaiAction::Tensor(inputs) => {
+                let [vector, divisor] = inputs.as_ref();
+                let (Value::Mukai(vector), Value::KummerDiv(divisor)) =
+                    (self.eval(vector)?, self.eval(divisor)?)
+                else {
+                    unreachable!()
+                };
+                vector
+                    .tensor(&mut self.model, &divisor)?
+                    .persist(&mut self.model)
+            }
+            MukaiAction::Twist(inputs) => {
+                let [root, vector] = inputs.as_ref();
+                let (Value::Mukai(root), Value::Mukai(vector)) =
+                    (self.eval(root)?, self.eval(vector)?)
+                else {
+                    unreachable!()
+                };
+                vector
+                    .twist(&mut self.model, &root)?
+                    .persist(&mut self.model)
+            }
+            MukaiAction::Negate(input) => {
+                let Value::Mukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector.negate(&mut self.model)?.persist(&mut self.model)
+            }
+        }
+    }
+
     fn eval_kummer_divisor(&mut self, action: &KummerDivAction) -> Result<Value> {
         let input = match action {
             KummerDivAction::Scale(_, input) | KummerDivAction::Frobenius(_, _, _, input) => input,
@@ -5882,6 +5982,9 @@ impl Engine {
                         Ok(Value::KummerDisc(a ^ b))
                     }
                     (BinaryOp::Add, Value::K3Lattice(a), Value::K3Lattice(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
@@ -7319,6 +7422,7 @@ impl Engine {
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
+            TypedForm::Mukai(action) => self.eval_mukai(action),
             TypedForm::K3LatticeReflect(inputs) => {
                 let (Value::K3Lattice(root), Value::K3Lattice(vector)) =
                     (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
@@ -9674,6 +9778,7 @@ impl Checker<'_> {
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::Mukai(name) => self.model.mukai_type(&name),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -10713,6 +10818,7 @@ impl Checker<'_> {
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
+                    Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -12845,6 +12951,7 @@ impl Checker<'_> {
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
+            ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -13524,6 +13631,12 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
                     return Ok((input.ty, TypedForm::K3LatticeNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Mukai(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::Mukai(MukaiAction::Negate(Box::new(input))),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
                     return Ok((input.ty, input.kind));
@@ -17245,6 +17358,7 @@ impl Checker<'_> {
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
                         | Kind::K3Lattice(..)
+                        | Kind::Mukai(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -18738,12 +18852,102 @@ impl Checker<'_> {
         }
     }
 
-    fn k3_lattice_operand(&self, input: &TypedExpr, operation: &str) -> Result<()> {
-        if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
-            Ok(())
+    fn k3_lattice_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {
+        if let Kind::K3Lattice(name) = self.model.kind(input.ty) {
+            Ok(name)
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
         }
+    }
+
+    fn mukai_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {
+        let Kind::Mukai(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVMukai vector"));
+        };
+        Ok(name)
+    }
+
+    fn mukai_expression(&mut self, expression: mukai::Expression) -> Result<(TypeId, TypedForm)> {
+        use mukai::Expression;
+        let label = |name: &str, span| Label {
+            text: name.into(),
+            span,
+        };
+        let line = matches!(&expression, Expression::Line(_));
+        let (ty, action) = match expression {
+            Expression::FromDivisor(input) | Expression::Line(input) => {
+                let input = self.expr(*input)?;
+                let name = if line {
+                    "rvMukaiLine"
+                } else {
+                    "rvK3FromKummerDiv"
+                };
+                let Kind::KummerDiv(marking) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, name, "an RVKummerDiv class"));
+                };
+                let marking = label(marking, input.span);
+                if line {
+                    (
+                        self.model.mukai_type(&marking)?,
+                        MukaiAction::Line(Box::new(input)),
+                    )
+                } else {
+                    (
+                        self.model.k3_lattice_type(&marking)?,
+                        MukaiAction::FromDivisor(Box::new(input)),
+                    )
+                }
+            }
+            Expression::ToDivisor(input) => {
+                let input = self.expr(*input)?;
+                let marking = label(
+                    self.k3_lattice_operand(&input, "rvK3ToKummerDiv")?,
+                    input.span,
+                );
+                let ty = self.model.kummer_divisor_type(&marking)?;
+                let basis = kummer_div::basis(self.model, &marking)?;
+                (ty, MukaiAction::ToDivisor(basis, Box::new(input)))
+            }
+            Expression::Vector(r, s, input) => {
+                let input = self.expr(*input)?;
+                let marking = label(self.k3_lattice_operand(&input, "rvMukai")?, input.span);
+                (
+                    self.model.mukai_type(&marking)?,
+                    MukaiAction::Build(r, s, Box::new(input)),
+                )
+            }
+            Expression::Center(input) => {
+                let input = self.expr(*input)?;
+                let marking = label(self.mukai_operand(&input, "rvMukaiC")?, input.span);
+                (
+                    self.model.k3_lattice_type(&marking)?,
+                    MukaiAction::Center(Box::new(input)),
+                )
+            }
+            Expression::Ideal(marking, length) => {
+                let ty = self.model.mukai_type(&marking)?;
+                let value = mukai::Vector::ideal(length)?;
+                return Ok((ty, TypedForm::Constant(value.persist(self.model)?)));
+            }
+            Expression::Tensor(inputs) => {
+                let [vector, divisor] = *inputs;
+                let vector = self.expr(vector)?;
+                let marking = label(self.mukai_operand(&vector, "rvMukaiTensor")?, vector.span);
+                let required = self.model.kummer_divisor_type(&marking)?;
+                let divisor = self.expr(divisor)?;
+                self.require_type(required, &divisor, "rvMukaiTensor divisor")?;
+                (vector.ty, MukaiAction::Tensor(Box::new([vector, divisor])))
+            }
+            Expression::Twist(inputs) => {
+                let [root, vector] = *inputs;
+                let root = self.expr(root)?;
+                self.mukai_operand(&root, "rvMukaiTwist")?;
+                let vector = self.expr(vector)?;
+                self.require_type(root.ty, &vector, "rvMukaiTwist vector")?;
+                (root.ty, MukaiAction::Twist(Box::new([root, vector])))
+            }
+        };
+        Ok((ty, TypedForm::Mukai(action)))
     }
 
     fn kummer_disc_expression(
