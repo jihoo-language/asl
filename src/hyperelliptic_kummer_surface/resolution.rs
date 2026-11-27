@@ -8,6 +8,8 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::model::{Model, Value};
 
+mod jets;
+mod node_projection;
 mod switch;
 
 pub(crate) struct ResolvedPoint {
@@ -38,12 +40,7 @@ impl ResolvedPoint {
             return Err(Error::plain("rvKummerExceptional requires a Kummer node"));
         }
         let field = field(curve);
-        let pivot = pivot(&base);
-        let shift = direction[pivot].clone();
-        for (coordinate, base_coordinate) in direction.iter_mut().zip(base.coordinates()) {
-            let correction = field.multiply(model, &shift, base_coordinate)?;
-            *coordinate = field.subtract(model, coordinate, &correction)?;
-        }
+        remove_radial_component(model, field, &base, &mut direction)?;
         let first = direction
             .iter()
             .find(|coordinate| !poly::zero(coordinate))
@@ -199,6 +196,20 @@ fn pivot(base: &Point) -> usize {
         .expect("normalized projective point")
 }
 
+fn remove_radial_component(
+    model: &mut Model,
+    field: Field<'_>,
+    base: &Point,
+    direction: &mut [Scalar; 4],
+) -> Result<()> {
+    let shift = direction[pivot(base)].clone();
+    for (coordinate, base_coordinate) in direction.iter_mut().zip(base.coordinates()) {
+        let correction = field.multiply(model, &shift, base_coordinate)?;
+        *coordinate = field.subtract(model, coordinate, &correction)?;
+    }
+    Ok(())
+}
+
 type QuarticTerm = ([usize; 4], Scalar);
 
 const W: usize = 0;
@@ -303,6 +314,15 @@ impl TangentCone {
         field: Field<'_>,
         direction: [&Scalar; 3],
     ) -> Result<bool> {
+        Ok(field.is_zero(&self.evaluate(model, field, direction)?))
+    }
+
+    fn evaluate(
+        &self,
+        model: &mut Model,
+        field: Field<'_>,
+        direction: [&Scalar; 3],
+    ) -> Result<Scalar> {
         let mut value = field.zero();
         model.spend(6)?;
         for (i, row) in self.coefficients.iter().enumerate() {
@@ -314,7 +334,7 @@ impl TangentCone {
                 }
             }
         }
-        Ok(field.is_zero(&value))
+        Ok(value)
     }
 }
 

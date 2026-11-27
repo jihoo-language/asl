@@ -497,6 +497,7 @@ enum ResolvedThetaAction {
 enum KummerAction {
     Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
     Exceptional(Rc<hw_closed::Curve>, Box<TypedExpr>, Box<[TypedExpr; 4]>),
+    NodeInvolution(Rc<hw_closed::Curve>, Box<[TypedExpr; 2]>),
     DifferentialAdd(Rc<hw_closed::Curve>, Box<[TypedExpr; 3]>),
     Richelot(
         Box<crate::richelot::correspondence::Correspondence>,
@@ -5355,6 +5356,17 @@ impl Engine {
                     direction,
                 )?
                 .persist(&mut self.model)
+            }
+            KummerAction::NodeInvolution(curve, inputs) => {
+                let [center, point] = inputs.as_ref();
+                let (Value::Kummer(center), Value::KummerK3(point)) =
+                    (self.eval(center)?, self.eval(point)?)
+                else {
+                    unreachable!()
+                };
+                point
+                    .node_involution(&mut self.model, curve, center)?
+                    .persist(&mut self.model)
             }
             KummerAction::DifferentialAdd(curve, inputs) => {
                 let [left, right, difference] = inputs.as_ref();
@@ -19094,6 +19106,26 @@ impl Checker<'_> {
                 }
                 let ty = self.model.kummer_type(name.text.into())?;
                 (ty, KummerAction::Coordinates(curve, Box::new(inputs)))
+            }
+            Expression::NodeInvolution(inputs) => {
+                let [center, point] = *inputs;
+                let center = self.expr(center)?;
+                let Kind::Kummer(name) = self.model.kind(center.ty) else {
+                    return Err(self.invalid_operand(
+                        &center,
+                        "rvKummerNodeInvolution center",
+                        "an RVKummer point",
+                    ));
+                };
+                let name = name.clone();
+                let curve = self.model.kummer_curve(&name)?;
+                let ty = self.model.kummer_k3_type(name)?;
+                let point = self.expr(point)?;
+                self.require_type(ty, &point, "rvKummerNodeInvolution point")?;
+                (
+                    ty,
+                    KummerAction::NodeInvolution(curve, Box::new([center, point])),
+                )
             }
             Expression::Exceptional(base, inputs) => {
                 let base = self.expr(*base)?;

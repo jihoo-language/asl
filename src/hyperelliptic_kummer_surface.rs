@@ -24,6 +24,7 @@ pub(crate) mod unimodular;
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
     Exceptional(Box<ParsedExpr>, Box<[ParsedExpr; 4]>),
+    NodeInvolution(Box<[ParsedExpr; 2]>),
     DifferentialAdd(Box<[ParsedExpr; 3]>),
     Richelot(Label, Box<ParsedExpr>),
     RichelotDescend(Label, Box<ParsedExpr>),

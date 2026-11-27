@@ -3444,6 +3444,10 @@ impl<'src> Parser<'src> {
                 Expression::Exceptional(Box::new(base), Box::new(inputs)),
                 depth,
             )
+        } else if name == "rvKummerNodeInvolution" {
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            (Expression::NodeInvolution(Box::new(inputs)), depth)
         } else if matches!(name, "rvKummerRichelot" | "rvKummerRichelotDesc") {
             self.expect(Token::LBracket)?;
             let target = self.label()?;
@@ -9610,6 +9614,7 @@ impl<'src> Parser<'src> {
                             | "rvKummerBlowdown"
                             | "rvKummerIsExceptional"
                             | "rvKummerSwitch"
+                            | "rvKummerNodeInvolution"
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);
