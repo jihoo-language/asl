@@ -30,13 +30,14 @@ pub(crate) enum Expression {
     LiftDifference(Label, Box<[ParsedExpr; 3]>),
 }
 
+pub(super) type Arrows = Vec<Vec<Option<usize>>>;
 type Rows = Vec<Vec<Coordinate>>;
 
 pub(crate) struct Flat {
     pub(crate) base: TypeId,
     pub(crate) post_name: Rc<str>,
     pub(crate) post: Rc<Postnikov>,
-    arrows: Vec<Vec<Option<usize>>>,
+    arrows: Arrows,
     chains: [Vec<Simplex>; 5],
     rows: [Rows; 4],
     d0: Basis,
@@ -113,31 +114,16 @@ impl Flat {
         let mut rows: [Rows; 4] = Default::default();
         let mut all_columns = Vec::with_capacity(4);
         let p = post.prime;
-        let minus = p.negate(1);
         for (degree, d) in rows.iter_mut().enumerate() {
             chains[degree + 1] = complex.extend(model, &chains[degree])?;
-            let mut columns = vec![Vec::new(); chains[degree].len()];
-            for_each_boundary(
+            let (faces, columns) = twisted_differential(
                 model,
+                post.as_ref(),
+                &arrows,
                 &chains[degree],
                 &chains[degree + 1],
-                |_, index, faces| {
-                    let simplex = &chains[degree + 1][index];
-                    let g = arrows[simplex[0]][simplex[1]].expect("strict edge");
-                    let mut row = Vec::with_capacity(faces.len());
-                    for (i, coordinate) in faces.into_iter().enumerate() {
-                        let coefficient = match i {
-                            0 => post.action[g],
-                            i if i.is_multiple_of(2) => 1,
-                            _ => minus,
-                        };
-                        row.push((coordinate, coefficient));
-                        columns[coordinate].push((index, coefficient));
-                    }
-                    d.push(row);
-                    Ok(())
-                },
             )?;
+            *d = faces;
             all_columns.push(columns);
         }
         let [cols0, cols1, cols2, cols3]: [Rows; 4] =
@@ -262,19 +248,14 @@ impl Flat {
         degree: usize,
         input: &Cochain,
     ) -> Result<Cochain> {
-        model.spend(self.size(degree) * degree)?;
-        let mut result = Vec::new();
-        let mut labels = [0; 3];
-        for (i, chain) in self.chains[degree].iter().enumerate() {
-            for (j, edge) in chain.windows(2).enumerate() {
-                labels[j] = self.arrows[edge[0]][edge[1]].expect("strict edge");
-            }
-            let value = self.post.coefficient(model, input, &labels[..degree])?;
-            if value != 0 {
-                result.push((i, value));
-            }
-        }
-        Ok(Cochain(result))
+        pullback_layer(
+            model,
+            &self.post,
+            &self.arrows,
+            &self.chains[degree],
+            degree,
+            input,
+        )
     }
 
     pub(crate) fn coboundary(
@@ -445,6 +426,58 @@ impl Flat {
             "rvFlatObstruction[{name}] = obstructed={obstructed}, pulled_support={pulled_support}, reduced={rest:?}, lift_classes={classes}, fixed_cardinality={card}"
         ))
     }
+}
+
+pub(super) fn twisted_differential(
+    model: &mut Model,
+    post: &Postnikov,
+    arrows: &Arrows,
+    source: &[Simplex],
+    target: &[Simplex],
+) -> Result<(Rows, Rows)> {
+    let mut rows = Vec::with_capacity(target.len());
+    let mut columns = vec![Vec::new(); source.len()];
+    let minus = post.prime.negate(1);
+    for_each_boundary(model, source, target, |_, index, faces| {
+        let simplex = &target[index];
+        let g = arrows[simplex[0]][simplex[1]].expect("strict edge");
+        let mut row = Vec::with_capacity(faces.len());
+        for (i, coordinate) in faces.into_iter().enumerate() {
+            let coefficient = match i {
+                0 => post.action[g],
+                i if i.is_multiple_of(2) => 1,
+                _ => minus,
+            };
+            row.push((coordinate, coefficient));
+            columns[coordinate].push((index, coefficient));
+        }
+        rows.push(row);
+        Ok(())
+    })?;
+    Ok((rows, columns))
+}
+
+pub(super) fn pullback_layer(
+    model: &mut Model,
+    post: &Postnikov,
+    arrows: &Arrows,
+    chains: &[Simplex],
+    degree: usize,
+    input: &Cochain,
+) -> Result<Cochain> {
+    model.spend(chains.len() * degree)?;
+    let mut result = Vec::new();
+    let mut labels = [0; 3];
+    for (i, chain) in chains.iter().enumerate() {
+        for (j, edge) in chain.windows(2).enumerate() {
+            labels[j] = arrows[edge[0]][edge[1]].expect("strict edge");
+        }
+        let value = post.coefficient(model, input, &labels[..degree])?;
+        if value != 0 {
+            result.push((i, value));
+        }
+    }
+    Ok(Cochain(result))
 }
 
 fn power_of_prime(p: u32, exponent: i64) -> String {

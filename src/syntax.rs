@@ -1177,6 +1177,7 @@ pub(crate) enum StatementForm {
     Crossed(Box<crate::rv_crossed::Command>),
     Postnikov(Box<crate::rv_crossed::postnikov::Command>),
     Flat(Box<crate::rv_crossed::flat::Command>),
+    HomotopyIntegral(Box<crate::rv_crossed::path_integral::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3464,6 +3465,38 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn homotopy_integral_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::path_integral::Command;
+        self.advance()?;
+        let command = if operation == "rvhomotopy" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let base = self.label()?;
+            self.expect(Token::Comma)?;
+            let post = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Declare(name, base, post, Box::new(self.paren_expr(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            let command = if operation == "rvHomotopyCardinality" {
+                Command::Cardinality(name)
+            } else {
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                if operation == "rvHomotopyComponent" {
+                    Command::Component(name, i)
+                } else {
+                    self.expect(Token::Comma)?;
+                    Command::Class(name, [i, self.number()?.0])
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::HomotopyIntegral(Box::new(command)))
     }
 
     fn flat_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -9594,6 +9627,12 @@ impl<'src> Parser<'src> {
                 op @ ("rvflat" | "rvFlatData" | "rvFlatEdge" | "rvFlatCoeff" | "rvFlatObstruction"
                 | "rvFlatLiftCheck" | "rvFlatCyclePair"),
             ) => self.flat_statement(op)?,
+            Token::Word(
+                op @ ("rvhomotopy"
+                | "rvHomotopyCardinality"
+                | "rvHomotopyComponent"
+                | "rvHomotopyClass"),
+            ) => self.homotopy_integral_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))

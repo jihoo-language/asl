@@ -132,7 +132,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_conformal;
-use crate::rv_crossed::{self, flat, postnikov};
+use crate::rv_crossed::{self, flat, path_integral, postnikov};
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -2357,6 +2357,9 @@ impl Engine {
             StatementForm::Crossed(command) => return self.crossed_command(*command),
             StatementForm::Postnikov(command) => return self.postnikov_command(*command),
             StatementForm::Flat(command) => return self.flat_command(*command),
+            StatementForm::HomotopyIntegral(command) => {
+                return self.homotopy_integral_command(*command)
+            }
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
             StatementForm::KSAlexander(command) => {
                 return self.ks_alexander_command(*command).map(Some)
@@ -7564,6 +7567,45 @@ impl Engine {
                 let cochain = self.eval_postnikov_cochain(&input)?;
                 let value = post.coefficient(&mut self.model, &cochain, &indices)?;
                 format!("rvPostnikovCoeff{indices:?} = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn homotopy_integral_command(
+        &mut self,
+        command: path_integral::Command,
+    ) -> Result<Option<String>> {
+        use path_integral::Command;
+        let report = match command {
+            Command::Declare(name, base, post, input) => {
+                let base = self
+                    .model
+                    .named(&base.text)
+                    .filter(|&base| self.model.poset(base).is_some())
+                    .ok_or_else(|| {
+                        Error::new(base.span, "homotopy integral requires a named finite space")
+                    })?;
+                let input = self.checker().expr(*input)?;
+                let ty = self.model.postnikov_cochain_type(&post, 3)?;
+                self.checker().require_type(ty, &input, "rvhomotopy")?;
+                let post = self.model.postnikov(&post)?;
+                let k = self.eval_postnikov_cochain(&input)?;
+                let integral = path_integral::Integral::new(&mut self.model, base, &post, &k)?;
+                self.model.define_homotopy_integral(name, integral)?;
+                return Ok(None);
+            }
+            Command::Cardinality(name) => {
+                self.model.homotopy_integral(&name)?.cardinality(&name.text)
+            }
+            Command::Component(name, i) => self
+                .model
+                .homotopy_integral(&name)?
+                .component(&name.text, i)?,
+            Command::Class(name, indices) => {
+                self.model
+                    .homotopy_integral(&name)?
+                    .class(&mut self.model, &name.text, indices)?
             }
         };
         Ok(Some(report))

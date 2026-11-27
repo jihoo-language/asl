@@ -125,6 +125,14 @@ Declare a finite group with `rvgroup E{{row0},{row1},...};` or use `rvgroup E[n]
 
 The obstruction report gives the number of lift classes and the homotopy cardinality over the specified background. For a soluble background the automorphism and higher automorphism groups of a lift are $H^1$ and $H^0$, giving $|H^2||H^0|/|H^1|$. An obstructed background has cardinality zero. Vertex gauge can change the background. In the example, the double-cover labels on $\mathbb{RP}^3$ pull back $k=u^3$ to a cocycle supported at one tetrahedron. The mod-two fundamental cycle has 192 tetrahedra and pairs with this cocycle to give one. [Runnable RP³ example](examples/postnikov-flat-lift.asl) · [Hatcher, *Algebraic Topology*, §§3.H and 4.3](https://pi.math.cornell.edu/~hatcher/AT/ATpage.html)
 
+### The finite homotopy path integral
+
+`rvhomotopy Q[X,P](k);` computes the homotopy cardinality of the space of maps from the order complex of `X` to the finite 2-type with Postnikov cocycle `k`. It sums over backgrounds of the chosen Postnikov system `P`. In each connected component the solver fixes a spanning tree of Hasse edges to the identity. It presents the fundamental group using the remaining comparable edges and the triangle relations, eliminates generators that occur once in a relation, and enumerates solutions of the resulting finite-group equations. Back substitution recovers all original edge labels. Residual vertex gauge acts by simultaneous conjugation at the root. [Hatcher, *Algebraic Topology*, §1.2](https://pi.math.cornell.edu/~hatcher/AT/ATpage.html)
+
+`rvHomotopyCardinality[Q];` gives the exact rational product of the component totals, with value one for the empty space. `rvHomotopyComponent[Q,i];` gives the tree, reduced presentation sizes, the number of normalized solutions and the number of conjugacy classes. `rvHomotopyClass[Q,i,j];` gives the representative's nonidentity edge labels, the centralizer of the image in $G$, the local Betti numbers, the obstruction, and the weight. Omitted edge labels are identities. The weight is the fixed-background homotopy cardinality divided by that centralizer order. This implements the homotopy-cardinality sum over the base groupoid of flat backgrounds. A class with orbit size $|G|/|\operatorname{Cent}(\mathrm{im})|$ is equivalent to that many normalized solutions weighted by $1/|G|$. Counts use the finite presentation and enumeration budgets and checked signed 128-bit rational arithmetic. [Baez and Dolan, *From Finite Sets to Feynman Diagrams*](https://arxiv.org/abs/math/0004133)
+
+For $\mathbb{RP}^3$ with $G=C_2$, the split associator gives total $2$ and the nonzero associator gives total $1$. Only the trivial representation of $\pi_1$ lifts in the nonsplit case. [Runnable path integral example](examples/finite-homotopy-path-integral.asl)
+
 ## Finite set families on a poset
 
 A `setfamily F[X] {x:2, y:3} {x<y:[0,2]};` gives a covariant finite set
