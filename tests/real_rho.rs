@@ -113,3 +113,92 @@ fn rho_truncation_checks_types_cutoffs_and_closure() {
         assert!(error.contains(reason), "{source}\n{error}");
     }
 }
+
+#[test]
+fn high_internal_bockstein_square_has_an_exact_witness_without_ambient_targets() {
+    for e in 17..=32 {
+        let primitive_check = if matches!(e, 17 | 31 | 32) {
+            "assert cobarD(extPrimitive(raw))==raw;"
+        } else {
+            ""
+        };
+        let source = format!(
+            "let a=extClass(rhoReduce[{e}](rmcword[0,32]{{}}));
+             let b=rhoBeta(a);
+             assert b==rmrhoextgen[{e},1,{e},{},0];
+             assert rhoBeta(b)==zero[RMRhoExt({e},2,{},{})];
+             let raw=rhoBetaRep(b);
+             let u=rhoBetaNull(b);
+             assert raw==rhoReduce[{e}](rhoConnectRep(b));
+             assert cobarD(u)==raw;
+             {primitive_check}
+             show raw;
+             show u;",
+            e - 32,
+            2 * e,
+            2 * e - 32,
+        );
+        let output = stdout(interpret(&source));
+        let mut lines = output.lines();
+        let (raw, witness) = (lines.next().unwrap(), lines.next().unwrap());
+        if e != 32 {
+            for (s, text) in [(2, raw), (1, witness)] {
+                assert!(
+                    text.starts_with(&format!(
+                        "RMRhoCobar({e}, {s}, {}, {}){{",
+                        2 * e,
+                        2 * e - 32
+                    )) && !text.ends_with("{0}"),
+                    "{text}",
+                );
+            }
+        }
+        assert!(lines.next().is_none());
+    }
+}
+
+#[test]
+fn internal_bockstein_witnesses_preserve_naturality_and_diagnose_nonboundaries() {
+    let source = r"
+        let z=extClass(rhoReduce[2](add(rmcword[0,3]{([1],[])},
+            add(rmcword[1,2]{([1],[1])},rmcword[1,2]{([],[0,1])}))));
+        let b=rhoBeta(z);
+        assert extClass(rhoBetaRep(z))==b;
+        assert rhoBeta(b)==zero[RMRhoExt(2,3,6,2)];
+        let raw=rhoBetaRep(b);
+        assert cobarD(rhoBetaNull(b))==raw;
+        show raw;
+
+        let a=extClass(rhoReduce[4](rmcword[0,4]{}));
+        let a3=rhoReduce[3](a);
+        assert rhoBeta(a3)==rhoShift[1](rhoReduce[3](rhoBeta(a)));
+        assert cobarD(rhoBetaNull(rhoBeta(a3)))==rhoBetaRep(rhoBeta(a3));
+        assert rhoBetaNull(zero[RMRhoExt(2,0,0,-2)])==zero[RMRhoCobar(2,0,2,0)];
+    ";
+    let output = stdout(interpret(source));
+    assert!(output.starts_with("RMRhoCobar(2, 3, 6, 2){"), "{output}");
+    assert!(!output.ends_with("{0}\n"), "{output}");
+
+    let input = "let a=extClass(rhoReduce[1](rmcword[0,1]{}));";
+    for expression in ["rhoBetaNull(a)", "extPrimitive(rhoBetaRep(a))"] {
+        let error = diagnostic(interpret(&format!("{input} show {expression};")));
+        assert!(
+            error.contains("requires a rho-truncated cobar boundary"),
+            "{error}"
+        );
+    }
+    let error = diagnostic(interpret("show rhoBetaRep(rhoReduce[1](rmcword[0,1]{}));"));
+    assert!(error.contains("an RMRhoExt class"), "{error}");
+}
+
+#[test]
+fn internal_bockstein_null_example_returns_a_real_cochain_identity() {
+    assert_eq!(
+        stdout(example("real-rho-bockstein-null")),
+        concat!(
+            "RMRhoExt(17, 1, 17, -15){g0}\n",
+            "RMRhoCobar(17, 2, 34, 2){rmcword[14, 8]{([8], []), ([16], [])}}\n",
+            "RMRhoCobar(17, 1, 34, 2){rmcword[14, 8]{([24], [])} + rmcword[14, 8]{([0, 8], [])}}\n",
+        ),
+    );
+}

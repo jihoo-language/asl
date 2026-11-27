@@ -372,16 +372,34 @@ fn preimage<T: Clone + Eq + Hash>(
     source: &[T],
     terms: &[T],
     cells: fn(&T) -> usize,
-    mut differential: impl FnMut(&mut Model, &T) -> Result<Vec<T>>,
+    differential: impl FnMut(&mut Model, &T) -> Result<Vec<T>>,
     witness: bool,
 ) -> Result<Option<Vec<T>>> {
     let mut rows = Rows::new("cobar boundary");
-    let mut remainder = column(model, &mut rows, terms.iter().cloned(), cells)?;
+    sparse_preimage(
+        model,
+        source,
+        terms,
+        |model, terms| column(model, &mut rows, terms.iter().cloned(), cells),
+        differential,
+        witness,
+    )
+}
+
+fn sparse_preimage<T: Clone>(
+    model: &mut Model,
+    source: &[T],
+    terms: &[T],
+    mut encode: impl FnMut(&mut Model, &[T]) -> Result<Vec<usize>>,
+    mut differential: impl FnMut(&mut Model, &T) -> Result<Vec<T>>,
+    witness: bool,
+) -> Result<Option<Vec<T>>> {
+    let mut remainder = encode(model, terms)?;
     let mut coefficients = Vec::new();
     let mut span = Basis::default();
     for (index, term) in source.iter().enumerate() {
         let image = differential(model, term)?;
-        let image = column(model, &mut rows, image, cells)?;
+        let image = encode(model, &image)?;
         let incoming = if witness { vec![index] } else { Vec::new() };
         if span.insert_with_witness(model, image, incoming)?.is_none()
             && remainder.last().is_some_and(|&j| span.contains_pivot(j))
@@ -398,6 +416,113 @@ fn preimage<T: Clone + Eq + Hash>(
         }
     }
     Ok(None)
+}
+
+pub(crate) fn degree_one_beta_witness(
+    model: &mut Model,
+    grade: Grade,
+    exponent: usize,
+    visible: &[Term],
+) -> Result<Option<Vec<Term>>> {
+    // A closed lift modulo rho^(2e) suffices. These degree-one cycles
+    // have distinct leading rho levels, and there are no incoming
+    // scalar boundaries at positive topological degree.
+    let Some(cycles) = degree_one_cycles(model, grade, exponent.checked_mul(2))? else {
+        return Ok(None);
+    };
+    let mut remainder = visible.to_vec();
+    let mut tail = Vec::new();
+    for cycle in cycles {
+        let split = cycle.partition_point(|term| term.rho < exponent);
+        let (visible_part, higher_part) = cycle.split_at(split);
+        if !visible_part.is_empty() && visible_part.first() == remainder.first() {
+            remainder = real_motivic::add(model, &remainder, visible_part)?;
+            tail = real_motivic::add(model, &tail, higher_part)?;
+        }
+    }
+    if !remainder.is_empty() {
+        return Ok(None);
+    }
+    // The visible part was equal term by term, so the difference
+    // from the canonical lift is exactly the tail.
+    model.spend(tail.len())?;
+    for term in &mut tail {
+        term.rho -= exponent;
+    }
+    tail.truncate(tail.partition_point(|term| term.rho < exponent));
+    Ok(Some(tail))
+}
+
+pub(crate) fn truncated_preimage(
+    model: &mut Model,
+    grade: Grade,
+    exponent: usize,
+    terms: &[Term],
+    alternate: impl FnOnce(&mut Model) -> Result<Option<Vec<Term>>>,
+) -> Result<Option<Vec<Term>>> {
+    if terms.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(previous) = grade.previous() else {
+        return Ok(None);
+    };
+    // A normalized real term has rho exponent at most t - 2w.
+    let width = grade
+        .t
+        .saturating_sub(2 * i128::from(grade.w))
+        .saturating_add(1);
+    let cutoff = exponent.min(usize::try_from(width.max(0)).unwrap_or(usize::MAX));
+    if cutoff == 0 {
+        return Ok(None);
+    }
+    let first = terms[0].rho;
+    if first > 0 {
+        // Solve the first nonzero associated-graded layer cheaply. Its
+        // primitive is accepted only if it lifts against the full target.
+        let front = &terms[..terms.partition_point(|term| term.rho == first)];
+        let source = real_motivic::basis_window(model, previous, first..=first, MAX_BASIS)?;
+        if let Some(witness) = truncated_columns(model, source, front, first + 1)? {
+            let image = real_motivic::differential_below(model, &witness, cutoff as u128)?;
+            if real_motivic::compare(model, &image, terms)?.is_eq() {
+                return Ok(Some(witness));
+            }
+        }
+    }
+    if let Some(witness) = alternate(model)? {
+        return Ok(Some(witness));
+    }
+    let source = real_motivic::basis_window(model, previous, 0..=cutoff - 1, MAX_BASIS)?;
+    truncated_columns(model, source, terms, cutoff)
+}
+
+fn truncated_columns(
+    model: &mut Model,
+    mut source: Vec<Term>,
+    terms: &[Term],
+    cutoff: usize,
+) -> Result<Option<Vec<Term>>> {
+    if source.is_empty() {
+        return Ok(None);
+    }
+    // Higher-filtration columns have fewer potentially nonzero rho layers.
+    model.spend(source.len())?;
+    source.reverse();
+    let mut rows = real_motivic::Rows::default();
+    let mut witness = sparse_preimage(
+        model,
+        &source,
+        terms,
+        |model, terms| rows.column(model, terms),
+        |model, term| {
+            real_motivic::differential_below(model, std::slice::from_ref(term), cutoff as u128)
+        },
+        true,
+    )?;
+    if let Some(witness) = &mut witness {
+        model.spend(witness.len())?;
+        witness.reverse();
+    }
+    Ok(witness)
 }
 
 pub(crate) fn real_preimage(

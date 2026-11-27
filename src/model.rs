@@ -2081,6 +2081,10 @@ impl Model {
         self.inhabited_type(Kind::RMTriple(grade), 0)
     }
 
+    pub(crate) fn has_real_ext(&self, ty: TypeId) -> bool {
+        self.real_ext.contains_key(&ty)
+    }
+
     pub(crate) fn real_ext(&mut self, ty: TypeId) -> Result<Rc<real_ext::Group>> {
         if let Some(group) = self.real_ext.get(&ty) {
             return Ok(group.clone());

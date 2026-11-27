@@ -6790,6 +6790,8 @@ impl<'src> Parser<'src> {
                     "rhoConnect" => Some(RealRhoOp::Connect),
                     "rhoConnectRep" => Some(RealRhoOp::ConnectRep),
                     "rhoBeta" => Some(RealRhoOp::Beta),
+                    "rhoBetaRep" => Some(RealRhoOp::BetaRep),
+                    "rhoBetaNull" => Some(RealRhoOp::BetaNull),
                     _ => None,
                 };
                 if let Some(op) = real_rho.filter(|_| self.token() == Token::LParen) {

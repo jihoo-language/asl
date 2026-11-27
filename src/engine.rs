@@ -3926,7 +3926,11 @@ impl Engine {
                         real_ext::representative(&mut self.model, input.ty, &coords)
                     }
                     (
-                        RealRhoOp::Connect | RealRhoOp::ConnectRep | RealRhoOp::Beta,
+                        RealRhoOp::Connect
+                        | RealRhoOp::ConnectRep
+                        | RealRhoOp::Beta
+                        | RealRhoOp::BetaRep
+                        | RealRhoOp::BetaNull,
                         Value::Class(coords),
                     ) => real_rho::connecting(&mut self.model, *op, input.ty, &coords, expr.ty),
                     _ => unreachable!(),
@@ -4438,8 +4442,12 @@ impl Engine {
                     Ok(Value::Cobar(words.into()))
                 }
                 (CobarOp::Primitive, Value::RMCobar(terms)) => {
-                    let grade = self.model.kind(input.ty).real_grade().unwrap();
-                    real_ext::primitive(&mut self.model, grade, &terms)
+                    if let Kind::RMRhoCobar(grade) = *self.model.kind(input.ty) {
+                        real_rho::primitive(&mut self.model, grade, &terms, "extPrimitive")
+                    } else {
+                        let grade = self.model.kind(input.ty).real_grade().unwrap();
+                        real_ext::primitive(&mut self.model, grade, &terms)
+                    }
                 }
                 (CobarOp::Primitive, Value::PCobar(terms)) => {
                     if terms.is_empty() {
@@ -11935,6 +11943,16 @@ impl Checker<'_> {
                 chain: grade.connecting()?,
                 ..grade
             })?,
+            RealRhoOp::BetaRep | RealRhoOp::BetaNull => {
+                let mut chain = grade.connecting()?;
+                if matches!(op, RealRhoOp::BetaNull) {
+                    chain = chain
+                        .previous()
+                        .expect("connecting differential increases length");
+                }
+                self.model
+                    .real_rho_cobar_type(real_rho::Grade { chain, ..grade })?
+            }
             RealRhoOp::Reduce(..) => unreachable!(),
         };
         Ok((ty, grade.chain))
@@ -12005,6 +12023,14 @@ impl Checker<'_> {
                     return self.model.real_rho_cobar_type(grade.differential()?)
                 }
                 CobarOp::Class => return self.model.real_rho_ext_type(grade),
+                CobarOp::Primitive => {
+                    let chain = grade.chain.previous().ok_or_else(|| {
+                        Error::new(span, "extPrimitive requires positive cobar length")
+                    })?;
+                    return self
+                        .model
+                        .real_rho_cobar_type(real_rho::Grade { chain, ..grade });
+                }
                 _ => {}
             }
         }
