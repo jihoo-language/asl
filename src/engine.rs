@@ -1470,6 +1470,7 @@ impl Engine {
                 }
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
+            StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
             StatementForm::EllipticCM(command) => {
                 let ec_cm::Command::Certify(family, input) = *command;

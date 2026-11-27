@@ -94,6 +94,7 @@ mod rho_bock;
 mod rho_frobenius;
 mod rho_localized;
 mod rho_minimal;
+mod richelot;
 mod rv_arithmetic;
 mod rv_as_cartier;
 mod rv_as_characters;

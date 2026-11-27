@@ -1224,6 +1224,14 @@ The example gives $P(T)=T^4-2T^2+9$ and independently counts eight classes over 
 
 `rvJacWeil2(T,U)` computes the Weil pairing on two classes killed by 2. `rvJacTate2(T,D)` computes the reduced quadratic Tate pairing with any divisor class `D` and a class `T` killed by 2. The two arguments must be on the same named curve. Both expressions return $1$ or $-1$ in its named `RVUnram` field. The Weil sign comes from the parity of the intersection of the even subsets of branch points, including infinity. The Tate pairing evaluates the function $u_T$ using polynomial resultants and its local leading unit at shared branch points, then takes the quadratic character of the field. The example over $\mathbb F_7$ checks both pairings and includes overlapping support in genus two. [Quadratic Jacobian pairings example](examples/hyperelliptic-pairings.asl)
 
+#### Richelot isogeny targets
+
+`rvrichelot D[C]{G1}{G2}{G3};` registers a genus-two Richelot target over the same named odd finite field as `C`. The source curve has precision one and a smooth quintic or sextic equation $y^2=f(x)$. Each brace lists the coefficients of one factor as bracketed signed field coordinates in ascending degree, as in `rvjac`. The product must equal $f$ exactly. Each factor is quadratic, with one linear factor allowed for a quintic. The linear factor accounts for the branch point at infinity.
+
+Let $\Delta$ be the determinant of the three ascending coefficient rows, with a zero quadratic coefficient for a linear factor. For cyclic $(i,j,k)$ put $B_i=G'_jG_k-G_jG'_k$. The target equation is $Y^2=B_1B_2B_3/\Delta$. The declaration rejects a zero determinant, for which the quotient is a product of elliptic curves over the algebraic closure. `rvRichelotData[D];` shows the source name, determinant, target polynomial, and stored splitting $(B_1/\Delta,B_2,B_3)$. `rvrichelotdual E[D];` applies the same construction to that splitting and gives $Y^2=4f(x)$, which identifies with the original curve by $(x,y)\mapsto(x,2y)$. The dual declaration also stores a splitting, so it can be iterated.
+
+The example starts with a quintic over $\mathbb F_7$ and obtains a sextic target. The two curves have Frobenius trace $-2$ and Weil polynomial $T^4+2T^3-2T^2+14T+49$. The second target has the same Weil polynomial. [Richelot example](examples/hyperelliptic-richelot.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

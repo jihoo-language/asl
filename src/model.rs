@@ -583,6 +583,7 @@ pub(crate) struct Model {
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
+    richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -673,6 +674,7 @@ impl Model {
             elliptic_isogenies: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
+            richelot_isogenies: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -3457,6 +3459,30 @@ impl Model {
                 Error::new(
                     name.span,
                     format!("unknown unramified hyperelliptic curve '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn define_richelot(
+        &mut self,
+        target: Label,
+        ring: &Label,
+        coefficients: Vec<Vec<u64>>,
+        isogeny: crate::richelot::Isogeny,
+    ) -> Result<()> {
+        self.define_hww_curve(target.clone(), ring, coefficients)?;
+        self.richelot_isogenies.insert(target.text, Rc::new(isogeny));
+        Ok(())
+    }
+
+    pub(crate) fn richelot(&self, target: &Label) -> Result<Rc<crate::richelot::Isogeny>> {
+        self.richelot_isogenies
+            .get(&target.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    target.span,
+                    format!("curve '{}' has no stored Richelot splitting", target.text),
                 )
             })
     }

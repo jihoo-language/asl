@@ -1133,6 +1133,7 @@ pub(crate) enum StatementForm {
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
+    Richelot(Box<crate::richelot::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
@@ -2826,6 +2827,39 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Jacobian(Box::new(command)))
     }
 
+    fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::richelot::Command;
+        self.advance()?;
+        let command = if name == "rvRichelotData" {
+            self.expect(Token::LBracket)?;
+            let target = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Data(target)
+        } else {
+            let target = self.label()?;
+            self.expect(Token::LBracket)?;
+            let source = self.label()?;
+            self.expect(Token::RBracket)?;
+            if name == "rvrichelotdual" {
+                Command::Dual(target, source)
+            } else {
+                let coefficient = |parser: &mut Self| {
+                    parser.signed_tuple(
+                        "a signed residue coordinate",
+                        "Richelot coefficient coordinate",
+                    )
+                };
+                let factors = [
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                ];
+                Command::Define(target, source, factors)
+            }
+        };
+        Ok(StatementForm::Richelot(Box::new(command)))
+    }
+
     fn jacobian_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_jacobian::{Expression, Operation, Pairing};
         if matches!(name, "rvJacWeil2" | "rvJacTate2") {
@@ -3326,6 +3360,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose"),
             ) => self.jacobian_statement(command)?,
+            Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
+                self.richelot_statement(command)?
+            }
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
