@@ -84,6 +84,7 @@ pub(crate) enum TypeForm {
     DoubleCentralMap(Label, usize),
     DoubleTube(Label),
     DoubleTubeRotation(Label),
+    DoubleSurface(Label, [usize; 2]),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -823,6 +824,7 @@ pub(crate) enum ExprForm {
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Expression>),
     DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Expression>),
+    DoubleSurface(Box<crate::rv_crossed::drinfeld_double::surface::Expression>),
     DoubleTubeModular(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
@@ -1337,6 +1339,7 @@ pub(crate) enum StatementForm {
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Command>),
     DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Command>),
+    DoubleSurface(Box<crate::rv_crossed::drinfeld_double::surface::Command>),
     DoubleTubeModular(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
@@ -5033,6 +5036,148 @@ impl<'src> Parser<'src> {
             (entry, depth)
         };
         expr(span, ExprForm::DoubleDefectSixJ(Box::new(form)), depth + 1)
+    }
+
+    fn surface_move(&mut self) -> Result<crate::rv_crossed::drinfeld_double::surface::Move> {
+        use crate::rv_crossed::drinfeld_double::surface::Move;
+        let op = self.label()?;
+        let movement = match op.text.as_str() {
+            "T" | "TInv" | "S" | "SInv" => {
+                let [i] = self.following_indices()?;
+                match op.text.as_str() {
+                    "T" => Move::T(i, false),
+                    "TInv" => Move::T(i, true),
+                    "S" => Move::S(i, false),
+                    _ => Move::S(i, true),
+                }
+            }
+            "Slide" | "SlideInv" | "Swap" => {
+                let handles = self.following_indices()?;
+                if op.text == "Swap" {
+                    Move::Swap(handles)
+                } else {
+                    Move::Slide(handles, op.text == "SlideInv")
+                }
+            }
+            _ => return Err(Error::new(op.span, "unknown integral surface marking move")),
+        };
+        self.expect(Token::RBracket)?;
+        Ok(movement)
+    }
+
+    fn surface_marks(&mut self) -> Result<Vec<usize>> {
+        self.expect(Token::LBrace)?;
+        self.unsigned_list(Token::RBrace)
+    }
+
+    fn surface_statement(&mut self, op: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::surface::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let form = if op == "rvDoubleSurfaceChain" {
+            self.expect(Token::Comma)?;
+            let movement = self.surface_move()?;
+            Command::Chain(name, movement, self.surface_marks()?)
+        } else {
+            let command = match op {
+                "rvDoubleSurfaceDimensions" => {
+                    let [g] = self.following_indices()?;
+                    Command::Dimensions(name, g)
+                }
+                "rvDoubleSurfaceSewing" => Command::Sewing(name, self.following_indices()?),
+                "rvDoubleSurfaceCharge" => {
+                    self.expect(Token::RBracket)?;
+                    return Ok(StatementForm::DoubleSurface(Box::new(Command::Charge(
+                        name,
+                        self.surface_marks()?,
+                    ))));
+                }
+                _ => Command::Modular(name),
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::DoubleSurface(Box::new(form)))
+    }
+
+    fn surface_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::surface::Expression;
+        let (form, depth) = match op {
+            "rvDoubleSurfaceAdd" | "rvDoubleSurfaceScale" | "rvDoubleSurfaceSew" => {
+                let args = Box::new(self.paren_pair(nest)?);
+                let depth = args[0].depth.max(args[1].depth) + 1;
+                let form = match op {
+                    "rvDoubleSurfaceAdd" => Expression::Add(args),
+                    "rvDoubleSurfaceScale" => Expression::Scale(args),
+                    _ => Expression::Sew(args),
+                };
+                (form, depth)
+            }
+            "rvDoubleSurfaceCoefficient" | "rvDoubleSurfaceFromTube" => {
+                let marks = if op == "rvDoubleSurfaceCoefficient" {
+                    Some(self.surface_marks()?)
+                } else {
+                    None
+                };
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                let form = if let Some(marks) = marks {
+                    Expression::Coefficient(marks, input)
+                } else {
+                    Expression::FromTube(input)
+                };
+                (form, depth)
+            }
+            "rvDoubleSurfaceMove" => {
+                self.expect(Token::LBracket)?;
+                let movement = self.surface_move()?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::Move(movement, input), depth)
+            }
+            "rvDoubleSurfaceCut" => {
+                let key = self.relative_indices()?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::Cut(key, input), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                match op {
+                    "rvDoubleSurfaceZero" => {
+                        let key = self.following_indices()?;
+                        self.expect(Token::RBracket)?;
+                        (Expression::Zero(name, key), 0)
+                    }
+                    "rvDoubleSurfaceBasis" => {
+                        let [q] = self.following_indices()?;
+                        self.expect(Token::RBracket)?;
+                        (Expression::Basis(name, q, self.surface_marks()?), 0)
+                    }
+                    "rvDoubleSurfaceGauge" => {
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        let phases = self.signed_list(
+                            Token::RBrace,
+                            "a signed root exponent",
+                            "surface gauge root exponent",
+                        )?;
+                        let input = Box::new(self.paren_expr(nest)?);
+                        let depth = input.depth + 1;
+                        (Expression::Gauge(name, phases, input), depth)
+                    }
+                    _ => {
+                        self.expect(Token::RBracket)?;
+                        let input = Box::new(self.paren_expr(nest)?);
+                        let depth = input.depth + 1;
+                        (Expression::ToTube(name, input), depth)
+                    }
+                }
+            }
+        };
+        expr(span, ExprForm::DoubleSurface(Box::new(form)), depth)
     }
 
     fn tube_modular_statement(&mut self, op: &str) -> Result<StatementForm> {
@@ -15374,6 +15519,13 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
             Token::Word(
+                op @ ("rvDoubleSurfaceDimensions"
+                | "rvDoubleSurfaceSewing"
+                | "rvDoubleSurfaceCharge"
+                | "rvDoubleSurfaceChain"
+                | "rvDoubleSurfaceModular"),
+            ) => self.surface_statement(op)?,
+            Token::Word(
                 op @ ("rvDoubleTubeModular"
                 | "rvDoubleTubeIndicatorPeriod"
                 | "rvDoubleTubeRotationData"),
@@ -20009,6 +20161,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleSurface" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let g = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let q = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleSurface(name, [g, q]), 0);
+        }
         if name.text == "RVDoubleTubeRotation" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -23430,6 +23591,26 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LBracket)
                 {
                     return self.tube_modular_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvDoubleSurfaceAdd"
+                        | "rvDoubleSurfaceScale"
+                        | "rvDoubleSurfaceSew"
+                        | "rvDoubleSurfaceFromTube"
+                ) && self.token() == Token::LParen)
+                    || (name.text == "rvDoubleSurfaceCoefficient" && self.token() == Token::LBrace)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvDoubleSurfaceBasis"
+                            | "rvDoubleSurfaceZero"
+                            | "rvDoubleSurfaceMove"
+                            | "rvDoubleSurfaceCut"
+                            | "rvDoubleSurfaceGauge"
+                            | "rvDoubleSurfaceToTube"
+                    ) && self.token() == Token::LBracket)
+                {
+                    return self.surface_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

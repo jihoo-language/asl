@@ -85,6 +85,29 @@ impl Tube {
         Ok(values)
     }
 
+    pub(crate) fn extract_center(&self, model: &mut Model, x: &Element) -> Result<Vec<Rational>> {
+        self.center(&mut Field::new(model, self.conductor), x)
+    }
+
+    pub(crate) fn lift_center(&self, model: &mut Model, values: &[Rational]) -> Result<Element> {
+        self.central_element(&mut Field::new(model, self.conductor), values)
+    }
+
+    fn central_element(&self, field: &mut Field<'_>, values: &[Rational]) -> Result<Element> {
+        if values.len() != self.blocks.len() {
+            return Err(Error::plain(
+                "tube center coordinate count disagrees with its bulk colors",
+            ));
+        }
+        let mut result = vec![Rational::zero(); self.forms.len()];
+        for (x, b) in values.iter().zip(&self.blocks) {
+            for r in 0..b.size() {
+                result[b.index(r, r)] = x.clone();
+            }
+        }
+        self.transform(field, &self.inverse, &Element::from_dense(result))
+    }
+
     pub(crate) fn modular_word(
         &self,
         model: &mut Model,
@@ -95,13 +118,7 @@ impl Tube {
         let mut field = Field::new(model, self.conductor);
         let values = self.center(&mut field, x)?;
         let values = torus.act(&mut field, values, steps)?;
-        let mut result = vec![Rational::zero(); self.forms.len()];
-        for (i, b) in self.blocks.iter().enumerate() {
-            for r in 0..b.size() {
-                result[b.index(r, r)] = values[i].clone();
-            }
-        }
-        self.transform(&mut field, &self.inverse, &Element::from_dense(result))
+        self.central_element(&mut field, &values)
     }
 
     pub(crate) fn indicator(

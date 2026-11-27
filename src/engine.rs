@@ -916,6 +916,23 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+struct SurfaceAction {
+    double: Rc<dd::Double>,
+    op: SurfaceOp,
+}
+
+enum SurfaceOp {
+    Coefficient(Vec<usize>, Box<TypedExpr>),
+    Move(dd::surface::Move, usize, Box<TypedExpr>),
+    Cut([usize; 2], Box<TypedExpr>),
+    Gauge(Rc<dd::Double>, Vec<i128>, Box<TypedExpr>),
+    ToTube(Rc<dd::defects::relative::tube::Tube>, Box<TypedExpr>),
+    FromTube(Rc<dd::defects::relative::tube::Tube>, Box<TypedExpr>),
+    Add(Box<[TypedExpr; 2]>),
+    Scale(Box<[TypedExpr; 2]>),
+    Sew(Box<[TypedExpr; 2]>),
+}
+
 struct TubeAction {
     algebra: Rc<dd::defects::relative::tube::Tube>,
     op: TubeOp,
@@ -1009,6 +1026,7 @@ enum TypedForm {
     DoubleDefectSixJ(SixJAction),
     DoubleCentral(CentralAction),
     DoubleTube(TubeAction),
+    DoubleSurface(SurfaceAction),
     DoubleTubeRotationEntry(Option<[usize; 2]>, Box<TypedExpr>),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
@@ -2827,6 +2845,9 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleSurface(command) => {
+                return self.surface_command(*command).map(Some)
+            }
             StatementForm::DoubleTubeModular(command) => {
                 return self.tube_modular_command(*command).map(Some)
             }
@@ -10197,6 +10218,89 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn surface_command(&mut self, command: dd::surface::Command) -> Result<String> {
+        use dd::surface::Command;
+        match command {
+            Command::Dimensions(name, g) => self
+                .model
+                .drinfeld_double(&name)?
+                .surface_dimensions(&mut self.model, g),
+            Command::Sewing(name, key) => self
+                .model
+                .drinfeld_double(&name)?
+                .surface_sewing(&mut self.model, key),
+            Command::Charge(name, m) => self
+                .model
+                .drinfeld_double(&name)?
+                .surface_charge(&mut self.model, &m),
+            Command::Chain(name, op, m) => {
+                self.model
+                    .drinfeld_double(&name)?
+                    .surface_chain(&mut self.model, op, &m)
+            }
+            Command::Modular(name) => self
+                .model
+                .drinfeld_double(&name)?
+                .surface_verify_modular(&mut self.model),
+        }
+    }
+
+    fn eval_surface_state(&mut self, input: &TypedExpr) -> Result<Rc<dd::surface::State>> {
+        let Value::DoubleSurface(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn eval_surface(&mut self, action: &SurfaceAction) -> Result<Value> {
+        let double = &action.double;
+        let value = match &action.op {
+            SurfaceOp::Coefficient(m, x) => {
+                let value = self.eval_surface_state(x)?.coefficient(m);
+                return rv_lens::rational_value(&mut self.model, value);
+            }
+            SurfaceOp::Move(op, q, x) => {
+                self.eval_surface_state(x)?
+                    .moved(&mut self.model, double, *op, *q)?
+            }
+            SurfaceOp::Cut(key, x) => {
+                self.eval_surface_state(x)?
+                    .cut(&mut self.model, double, *key)?
+            }
+            SurfaceOp::Gauge(to, phases, x) => {
+                self.eval_surface_state(x)?
+                    .gauge(&mut self.model, double, to, phases)?
+            }
+            SurfaceOp::ToTube(tube, x) => {
+                let state = self.eval_surface_state(x)?;
+                return double
+                    .surface_to_tube(&mut self.model, tube, &state)?
+                    .persist(&mut self.model);
+            }
+            SurfaceOp::FromTube(tube, x) => {
+                let x = self.eval_tube_element(x)?;
+                double.surface_from_tube(&mut self.model, tube, &x)?
+            }
+            SurfaceOp::Add(args) | SurfaceOp::Sew(args) => {
+                let x = self.eval_surface_state(&args[0])?;
+                let y = self.eval_surface_state(&args[1])?;
+                if matches!(action.op, SurfaceOp::Add(_)) {
+                    x.add(&mut self.model, &y)?
+                } else {
+                    x.sewn(&mut self.model, double, &y)?
+                }
+            }
+            SurfaceOp::Scale(args) => {
+                let Value::RVCycloQ(s) = self.eval(&args[0])? else {
+                    unreachable!()
+                };
+                let x = self.eval_surface_state(&args[1])?;
+                x.scale(&mut self.model, double, &s)?
+            }
+        };
+        value.persist(&mut self.model)
+    }
+
     fn tube_modular_command(
         &mut self,
         command: dd::defects::relative::tube::modular::Command,
@@ -16443,6 +16547,7 @@ impl Engine {
             TypedForm::DoubleDefectSixJ(action) => self.eval_sixj(action),
             TypedForm::DoubleCentral(action) => self.eval_central(action),
             TypedForm::DoubleTube(action) => self.eval_tube(action),
+            TypedForm::DoubleSurface(action) => self.eval_surface(action),
             TypedForm::DoubleTubeRotationEntry(key, input) => {
                 let Value::DoubleTubeRotation(rotation) = self.eval(input)? else {
                     unreachable!()
@@ -21276,6 +21381,7 @@ impl Checker<'_> {
             TypeForm::DoubleDefectSixJ(name, n) => self.model.double_sixj_type(&name, n),
             TypeForm::DoubleCentralMap(name, n) => self.model.double_central_type(&name, n),
             TypeForm::DoubleTube(name) => self.model.double_tube_type(&name),
+            TypeForm::DoubleSurface(name, grade) => self.model.double_surface_type(&name, grade),
             TypeForm::DoubleTubeRotation(name) => self.model.double_tube_rotation_type(&name),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
@@ -22179,6 +22285,7 @@ impl Checker<'_> {
             ExprForm::DoubleDefectSixJ(expression) => self.sixj_expression(*expression),
             ExprForm::DoubleCentral(expression) => self.central_expression(*expression),
             ExprForm::DoubleTube(expression) => self.tube_expression(*expression),
+            ExprForm::DoubleSurface(expression) => self.surface_expression(*expression),
             ExprForm::DoubleTubeModular(expression) => self.tube_modular_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
@@ -35046,6 +35153,146 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn surface_operand(&self, input: &TypedExpr) -> Result<(Label, [usize; 2], Rc<dd::Double>)> {
+        let Kind::DoubleSurface(name, grade) = self.model.kind(input.ty) else {
+            return Err(Error::new(
+                input.span,
+                "operation requires a marked cyclotomic surface state",
+            ));
+        };
+        let name = Label {
+            text: name.to_string(),
+            span: input.span,
+        };
+        let double = self.model.drinfeld_double(&name)?;
+        Ok((name, *grade, double))
+    }
+
+    fn surface_expression(&mut self, expr: dd::surface::Expression) -> Result<(TypeId, TypedForm)> {
+        use dd::surface::{self, Expression};
+        let (ty, double, op) = match expr {
+            Expression::Basis(name, q, marks) => {
+                let double = self.model.drinfeld_double(&name)?;
+                let ty = self
+                    .model
+                    .double_surface_type(&name, [marks.len() / 2, q])?;
+                let value =
+                    surface::State::basis(self.model, &double, q, marks)?.persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Zero(name, grade) => {
+                let ty = self.model.double_surface_type(&name, grade)?;
+                let value = surface::State::zero().persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Coefficient(m, x) => {
+                let x = self.expr(*x)?;
+                let (_, [g, q], double) = self.surface_operand(&x)?;
+                if m.len() != 2 * g {
+                    return Err(Error::new(
+                        x.span,
+                        "surface coefficient has the wrong number of handles",
+                    ));
+                }
+                double.surface_require_marking(self.model, q, &m)?;
+                (
+                    self.model.cyclotomic_rational_type(double.conductor)?,
+                    double,
+                    SurfaceOp::Coefficient(m, Box::new(x)),
+                )
+            }
+            Expression::Move(op, x) => {
+                let x = self.expr(*x)?;
+                let (_, [g, q], double) = self.surface_operand(&x)?;
+                op.check(g)?;
+                (x.ty, double, SurfaceOp::Move(op, q, Box::new(x)))
+            }
+            Expression::Cut([k, q], x) => {
+                let x = self.expr(*x)?;
+                let (_, [g, charge], double) = self.surface_operand(&x)?;
+                if k > g || charge != 0 {
+                    return Err(Error::new(
+                        x.span,
+                        "surface cut requires a valid separating cut of a neutral surface",
+                    ));
+                }
+                double.surface_check_charge(q)?;
+                (x.ty, double, SurfaceOp::Cut([k, q], Box::new(x)))
+            }
+            Expression::Gauge(target, word, x) => {
+                let x = self.expr(*x)?;
+                let (_, grade, double) = self.surface_operand(&x)?;
+                let new = self.model.drinfeld_double(&target)?;
+                (
+                    self.model.double_surface_type(&target, grade)?,
+                    double,
+                    SurfaceOp::Gauge(new, word, Box::new(x)),
+                )
+            }
+            Expression::ToTube(name, x) => {
+                let x = self.expr(*x)?;
+                let (_, grade, double) = self.surface_operand(&x)?;
+                let tube = self.model.double_tube(&name)?;
+                let (bulk, _) = self.model.tube_geometry(&tube)?;
+                if grade != [1, 0] || !Rc::ptr_eq(&bulk, &double) {
+                    return Err(Error::new(x.span,"tube Fourier transform requires the neutral torus over the identical nominal bulk"));
+                }
+                (
+                    self.model.double_tube_type(&name)?,
+                    double,
+                    SurfaceOp::ToTube(tube, Box::new(x)),
+                )
+            }
+            Expression::FromTube(x) => {
+                let x = self.expr(*x)?;
+                let tube = self.tube_operand(&x)?;
+                let (double, category) = self.model.tube_geometry(&tube)?;
+                let label = Label {
+                    text: category.boundaries[0].double_name.to_string(),
+                    span: x.span,
+                };
+                (
+                    self.model.double_surface_type(&label, [1, 0])?,
+                    double,
+                    SurfaceOp::FromTube(tube, Box::new(x)),
+                )
+            }
+            Expression::Add(args) => {
+                let [x, y] = *args;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                let (_, _, double) = self.surface_operand(&x)?;
+                self.require_type(x.ty, &y, "rvDoubleSurfaceAdd")?;
+                (x.ty, double, SurfaceOp::Add(Box::new([x, y])))
+            }
+            Expression::Scale(args) => {
+                let [s, x] = *args;
+                let s = self.expr(s)?;
+                let x = self.expr(x)?;
+                let (_, _, double) = self.surface_operand(&x)?;
+                let scalar = self.model.cyclotomic_rational_type(double.conductor)?;
+                self.require_type(scalar, &s, "rvDoubleSurfaceScale")?;
+                (x.ty, double, SurfaceOp::Scale(Box::new([s, x])))
+            }
+            Expression::Sew(args) => {
+                let [x, y] = *args;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                let (name, [g, q], double) = self.surface_operand(&x)?;
+                let (target, [h, r], _) = self.surface_operand(&y)?;
+                if name.text != target.text || double.surface_inverse_charge(self.model, q)? != r {
+                    return Err(Error::new(y.span,"surface sewing requires inverse electric charges over the identical nominal bulk"));
+                }
+                (
+                    self.model.double_surface_type(&name, [g + h, 0])?,
+                    double,
+                    SurfaceOp::Sew(Box::new([x, y])),
+                )
+            }
+        };
+        Ok((ty, TypedForm::DoubleSurface(SurfaceAction { double, op })))
     }
 
     fn tube_rotation_operand(

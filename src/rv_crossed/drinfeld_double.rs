@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -17,6 +18,7 @@ pub(crate) mod defects;
 pub(crate) mod fusion_symbols;
 mod matrix;
 mod representations;
+pub(crate) mod surface;
 
 const MAX_SIMPLES: usize = 256;
 
@@ -110,6 +112,7 @@ pub(crate) struct Double {
     twists: Vec<usize>,
     duals: Vec<usize>,
     flux_offsets: Vec<usize>,
+    surface: OnceCell<surface::Catalog>,
 }
 
 impl Double {
@@ -203,6 +206,7 @@ impl Double {
             twists,
             duals: Vec::new(),
             flux_offsets,
+            surface: OnceCell::new(),
         };
         double.duals = double.certify(model)?;
         let count = double.simples.len();
