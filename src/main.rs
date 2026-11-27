@@ -70,6 +70,7 @@ mod real_transfer;
 mod restriction_transfer;
 mod rho_bock;
 mod rho_localized;
+mod rho_minimal;
 mod rv_arithmetic;
 mod rv_as_cartier;
 mod rv_as_cover;

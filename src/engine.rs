@@ -57,6 +57,7 @@ use crate::real_transfer;
 use crate::restriction_transfer;
 use crate::rho_bock;
 use crate::rho_localized;
+use crate::rho_minimal::{self, Operation as RhoMinOp};
 use crate::rv_arithmetic;
 use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
@@ -448,6 +449,7 @@ enum TypedForm {
     RealTripleClass(Option<usize>, Box<TypedExpr>),
     RhoOperation(RhoOp, Box<TypedExpr>),
     RhoLocOperation(RhoLocOp, Box<TypedExpr>),
+    RhoMinOperation(RhoMinOp, motivic::Grade, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
     MapWord(Generator, Generator, Box<TypedExpr>),
     Equator,
@@ -2425,6 +2427,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RhoLoc(a), Value::RhoLoc(b)) => {
                         rho_localized::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RhoMin(a), Value::RhoMin(b)) => {
+                        rho_minimal::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RMCobar(a), Value::RMCobar(b)) => {
                         let terms = real_motivic::add(&mut self.model, &a, &b)?;
                         real_motivic::persist(&mut self.model, terms)
@@ -2793,9 +2798,31 @@ impl Engine {
             },
             TypedForm::RhoShift(power, input) => match self.eval(input)? {
                 Value::RMCobar(terms) => real_motivic::rho_shift(&mut self.model, &terms, *power),
+                Value::RhoMin(terms) => rho_minimal::shift(&mut self.model, &terms, *power),
                 Value::Class(coords) if *power == 0 => Ok(Value::Class(coords)),
                 Value::Class(coords) => {
                     real_ext::shift(&mut self.model, input.ty, &coords, expr.ty, *power)
+                }
+                _ => unreachable!(),
+            },
+            TypedForm::RhoMinOperation(op, grade, input) => match (op, self.eval(input)?) {
+                (RhoMinOp::Inject(f), Value::Class(coords)) => {
+                    rho_minimal::inject(&mut self.model, *f, &coords)
+                }
+                (RhoMinOp::Coefficient(f), Value::RhoMin(terms)) => {
+                    rho_minimal::coefficient(&mut self.model, &terms, *f)
+                }
+                (RhoMinOp::Differential, Value::RhoMin(terms)) => {
+                    rho_minimal::differential(&mut self.model, *grade, &terms)
+                }
+                (RhoMinOp::Lift, Value::RhoMin(terms)) => {
+                    rho_minimal::lift(&mut self.model, *grade, &terms)
+                }
+                (RhoMinOp::Project, Value::RMCobar(terms)) => {
+                    rho_minimal::project(&mut self.model, *grade, &terms)
+                }
+                (RhoMinOp::Homotopy, Value::RMCobar(terms)) => {
+                    rho_minimal::homotopy(&mut self.model, *grade, &terms)
                 }
                 _ => unreachable!(),
             },
@@ -4804,6 +4831,7 @@ impl Checker<'_> {
             TypeForm::RMCobar(grade) => self.model.real_cobar_type(grade),
             TypeForm::RhoBock(grade) => self.model.rho_page_type(grade),
             TypeForm::RhoLoc(grade) => self.model.rho_loc_type(grade),
+            TypeForm::RhoMin(grade) => self.model.rho_min_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
             TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
             TypeForm::SheafComplex(form, name, degree) => {
@@ -5128,6 +5156,7 @@ impl Checker<'_> {
                         odd_ext::zero(),
                     Kind::RhoBock(..) | Kind::RMExt(..) => cohomology::zero(),
                     Kind::RhoLoc(..) => rho_localized::zero(),
+                    Kind::RhoMin(..) => rho_minimal::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
                     Kind::PExt(..) | Kind::PExtAn(..) | Kind::PMay(..) | Kind::PMayAn(..) | Kind::PCeAn(..) | Kind::BPPage(..) | Kind::BPModExt(..) | Kind::BPVPage(..) => odd_ext::zero(),
                     Kind::MapCobar(..) => Value::MapCobar([].into()),
@@ -5317,6 +5346,11 @@ impl Checker<'_> {
                 };
                 Ok((ty, TypedForm::RhoOperation(operation, Box::new(input))))
             }
+            ExprForm::RhoMinOperation(op, input) => {
+                let input = self.expr(*input)?;
+                let (grade, ty) = self.rho_min_result(op, &input)?;
+                Ok((ty, TypedForm::RhoMinOperation(op, grade, Box::new(input))))
+            }
             ExprForm::RhoShift(power, input) => {
                 let input = self.expr(*input)?;
                 if let Kind::RhoLoc(grade) = *self.model.kind(input.ty) {
@@ -5324,6 +5358,15 @@ impl Checker<'_> {
                         .model
                         .rho_loc_type(rho_localized::shift(grade, power)?)?;
                     return Ok((ty, TypedForm::MotivicCast(Box::new(input))));
+                }
+                if let Kind::RhoMin(grade) = *self.model.kind(input.ty) {
+                    let power = usize::try_from(power).map_err(|_| {
+                        Error::plain("rhoShift on RhoMin requires an unsigned exponent")
+                    })?;
+                    let ty = self
+                        .model
+                        .rho_min_type(real_motivic::shifted(grade, power)?)?;
+                    return Ok((ty, TypedForm::RhoShift(power, Box::new(input))));
                 }
                 let grade = self.real_grade(&input, "rhoShift")?;
                 let power = usize::try_from(power).map_err(|_| {
@@ -9209,12 +9252,52 @@ impl Checker<'_> {
     fn real_grade(&self, input: &TypedExpr, operation: &str) -> Result<motivic::Grade> {
         self.model.kind(input.ty).real_grade().ok_or_else(|| {
             let expected = if operation == "rhoShift" {
-                "an RMCobar cochain, an RMExt class, or a RhoLoc cochain"
+                "an RMCobar cochain, an RMExt class, or a RhoLoc cochain or RhoMin polynomial"
             } else {
                 "an RMCobar cochain or RMExt class"
             };
             self.invalid_operand(input, operation, expected)
         })
+    }
+
+    fn rho_min_result(
+        &mut self,
+        op: RhoMinOp,
+        input: &TypedExpr,
+    ) -> Result<(motivic::Grade, TypeId)> {
+        let kind = self.model.kind(input.ty);
+        let grade = match (kind, op) {
+            (Kind::MExt(grade), RhoMinOp::Inject(_))
+            | (Kind::RMCobar(grade), RhoMinOp::Project | RhoMinOp::Homotopy)
+            | (
+                Kind::RhoMin(grade),
+                RhoMinOp::Coefficient(_) | RhoMinOp::Differential | RhoMinOp::Lift,
+            ) => *grade,
+            _ => {
+                let expected = match op {
+                    RhoMinOp::Inject(_) => "an MExt class",
+                    RhoMinOp::Project | RhoMinOp::Homotopy => "an RMCobar cochain",
+                    _ => "a RhoMin polynomial",
+                };
+                return Err(self.invalid_operand(input, op.name(), expected));
+            }
+        };
+        let ty = match op {
+            RhoMinOp::Inject(f) => self.model.rho_min_type(real_motivic::shifted(grade, f)?)?,
+            RhoMinOp::Coefficient(f) => self
+                .model
+                .mext_type(rho_minimal::coefficient_grade(grade, f)?)?,
+            RhoMinOp::Differential => self.model.rho_min_type(grade.differential()?)?,
+            RhoMinOp::Lift => self.model.real_cobar_type(grade)?,
+            RhoMinOp::Project => self.model.rho_min_type(grade)?,
+            RhoMinOp::Homotopy => {
+                let previous = grade
+                    .previous()
+                    .ok_or_else(|| Error::plain("rhoMinH requires positive cobar length"))?;
+                self.model.real_cobar_type(previous)?
+            }
+        };
+        Ok((grade, ty))
     }
 
     fn rm_triple_grade(&self, input: &TypedExpr, operation: &str) -> Result<motivic::Grade> {
@@ -9782,6 +9865,7 @@ impl Checker<'_> {
                         | Kind::RMCobar(..)
                         | Kind::RhoBock(..)
                         | Kind::RhoLoc(..)
+                        | Kind::RhoMin(..)
                         | Kind::MExt(..)
                         | Kind::MixedChain(..)
                         | Kind::MixedMinimum(..)

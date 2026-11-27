@@ -44,6 +44,7 @@ use crate::real_massey;
 use crate::real_motivic;
 use crate::rho_bock;
 use crate::rho_localized;
+use crate::rho_minimal;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_as_odd::Cover as RvAsOddCover;
 use crate::rv_bar;
@@ -154,6 +155,7 @@ pub(crate) enum Kind {
     RMCobar(motivic::Grade),
     RhoBock(rho_bock::Grade),
     RhoLoc(motivic::Grade),
+    RhoMin(motivic::Grade),
     MExt(motivic::Grade),
     RMExt(motivic::Grade),
     RMTriple(motivic::Grade),
@@ -304,6 +306,7 @@ pub(crate) enum Value {
     RMCobar(real_motivic::Cochain),
     RMTriple(Rc<real_massey::Coset>),
     RhoLoc(rho_localized::Cochain),
+    RhoMin(rho_minimal::Support),
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
     PrimeScalar(u32),
@@ -665,6 +668,7 @@ impl Model {
             | Kind::MCobar(..)
             | Kind::RMCobar(..)
             | Kind::RhoLoc(..)
+            | Kind::RhoMin(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
@@ -827,6 +831,7 @@ impl Model {
                 | Kind::MCobar(..)
                 | Kind::RMCobar(..)
                 | Kind::RhoLoc(..)
+                | Kind::RhoMin(..)
                 | Kind::PCobar(..)
                 | Kind::PCobarAn(..)
                 | Kind::PExt(..)
@@ -1589,6 +1594,10 @@ impl Model {
 
     pub(crate) fn real_cobar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RMCobar(grade), 0)
+    }
+
+    pub(crate) fn rho_min_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RhoMin(grade), 0)
     }
 
     pub(crate) fn rho_loc_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
@@ -2832,6 +2841,7 @@ impl Model {
             | Kind::MCobar(..)
             | Kind::RMCobar(..)
             | Kind::RhoLoc(..)
+            | Kind::RhoMin(..)
             | Kind::Ext(..)
             | Kind::ExtAn(..)
             | Kind::MExt(..)
@@ -3049,6 +3059,9 @@ impl Model {
             &Kind::Cobar(s, t) => out.push(&format!("Cobar({s}, {t})")),
             &Kind::MCobar(motivic::Grade { s, t, w }) => {
                 out.push(&format!("MCobar({s}, {t}, {w})"))
+            }
+            &Kind::RhoMin(motivic::Grade { s, t, w }) => {
+                out.push(&format!("RhoMin({s}, {t}, {w})"))
             }
             &Kind::RhoLoc(motivic::Grade { s, t, w }) => {
                 out.push(&format!("RhoLoc({s}, {t}, {w})"))
@@ -3365,6 +3378,10 @@ impl Model {
             (Value::Cobar(left), Value::Cobar(right)) => Ok(
                 Rc::ptr_eq(left, right) || cobar::compare(self, left, right)? == Ordering::Equal
             ),
+            (Value::RhoMin(left), Value::RhoMin(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(Rc::ptr_eq(left, right) || left == right)
+            }
             (Value::RhoLoc(left), Value::RhoLoc(right)) => Ok(Rc::ptr_eq(left, right)
                 || rho_localized::compare(self, left, right)? == Ordering::Equal),
             (Value::RMCobar(left), Value::RMCobar(right)) => Ok(Rc::ptr_eq(left, right)
@@ -3530,6 +3547,10 @@ impl Model {
                 } else {
                     cobar::compare(self, left, right)
                 }
+            }
+            (Value::RhoMin(left), Value::RhoMin(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.cmp(right))
             }
             (Value::RhoLoc(left), Value::RhoLoc(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -4159,6 +4180,12 @@ impl Model {
                     odd_ext::elements(self, data.filtered().prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
+                Kind::RhoMin(grade) => {
+                    let basis = rho_minimal::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
+                    self.enumerate_supports(0, basis.len(), |support| {
+                        Value::RhoMin(support.iter().map(|&index| basis[index]).collect())
+                    })?
+                }
                 Kind::RhoLoc(grade) => {
                     let basis = rho_localized::basis(self, grade, MAX_ELEMENTS.ilog2() as usize)?;
                     self.enumerate_supports(0, basis.len(), |support| {
@@ -4717,6 +4744,21 @@ impl Model {
                     } else {
                         write_cobar_word(out, word)?;
                     }
+                }
+                out.push("}")
+            }
+            Value::RhoMin(terms) => {
+                self.spend(terms.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                if terms.is_empty() {
+                    out.push("0")?;
+                }
+                for (index, (f, i)) in terms.iter().enumerate() {
+                    if index > 0 {
+                        out.push(" + ")?;
+                    }
+                    out.push(&format!("rho^{f}*g{i}"))?;
                 }
                 out.push("}")
             }

@@ -13,6 +13,7 @@ use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
 use crate::rho_bock;
 use crate::rho_localized;
+use crate::rho_minimal::Operation as RhoMinOp;
 use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
@@ -66,6 +67,7 @@ pub(crate) enum TypeForm {
     RMCobar(MotivicGrade),
     RhoBock(rho_bock::Grade),
     RhoLoc(MotivicGrade),
+    RhoMin(MotivicGrade),
     MExt(MotivicGrade),
     RMExt(MotivicGrade),
     RMTriple(MotivicGrade),
@@ -565,6 +567,7 @@ pub(crate) enum ExprForm {
     RhoOperation(RhoOp, Box<ParsedExpr>),
     RhoLocWord(i128, usize, Vec<rho_localized::FactorLiteral>),
     RhoLocOperation(RhoLocOp, Box<ParsedExpr>),
+    RhoMinOperation(RhoMinOp, Box<ParsedExpr>),
     TauShift(usize, Box<ParsedExpr>),
     RhoShift(i128, Box<ParsedExpr>),
     RealComplex(Box<ParsedExpr>),
@@ -3342,7 +3345,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RMTriple" | "RhoLoc"
+            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RMTriple" | "RhoLoc" | "RhoMin"
         ) && self.eat(Token::LParen)?
         {
             let grade = self.motivic_grade()?;
@@ -3353,6 +3356,7 @@ impl<'src> Parser<'src> {
                 "RMExt" => TypeForm::RMExt(grade),
                 "RMTriple" => TypeForm::RMTriple(grade),
                 "RhoLoc" => TypeForm::RhoLoc(grade),
+                "RhoMin" => TypeForm::RhoMin(grade),
                 _ => TypeForm::MExt(grade),
             };
             return ty(span, form, 0);
@@ -5214,6 +5218,32 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::TauShift(power, Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "rhoMin" | "rhoMinCoef")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (f, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let op = if name.text == "rhoMin" {
+                        RhoMinOp::Inject(f)
+                    } else {
+                        RhoMinOp::Coefficient(f)
+                    };
+                    return expr(span, ExprForm::RhoMinOperation(op, Box::new(input)), depth);
+                }
+                let rho_minimal = match name.text.as_str() {
+                    "rhoMinD" => Some(RhoMinOp::Differential),
+                    "rhoMinI" => Some(RhoMinOp::Lift),
+                    "rhoMinP" => Some(RhoMinOp::Project),
+                    "rhoMinH" => Some(RhoMinOp::Homotopy),
+                    _ => None,
+                };
+                if let Some(op) = rho_minimal.filter(|_| self.token() == Token::LParen) {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RhoMinOperation(op, Box::new(input)), depth);
                 }
                 if name.text == "rhoShift" && self.eat(Token::LBracket)? {
                     let power = self.signed_wide("a signed rho exponent", "rho exponent")?;

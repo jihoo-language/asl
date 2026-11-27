@@ -337,6 +337,14 @@ The transfer uses a trigraded contraction over $\mathbb F_2$. For the linear sec
 
 When the two adjacent products vanish, the chosen $m_3$ lies in the coset computed by `rmTriple`. The example checks both the coset with positive indeterminacy and the singleton $\langle[\tau_0^4],\rho^4,[\tau_0^4]\rangle$. With the stated contraction, $m_4(\rho,h_0,\rho,h_0^2)$ and $m_5(\rho,h_0,h_0,h_1,h_0^2)$ are nonzero. These values depend on the contraction. [Real-motivic transfer example](examples/real-motivic-transfer.asl)
 
+### The rho-linear minimal complex
+
+`RhoMin(s,t,w)` represents a sparse graded polynomial $\sum_f \rho^f x_f$ with $x_f$ in `MExt(s,t+f,w+f)`. Use `rhoMin[f](x)` to insert a coefficient and `rhoMinCoef[f](x)` to extract it. `zero`, `add` and `rhoShift` act on these polynomials. The differential `rhoMinD` increases $s$ by one and strictly increases filtration. Its homology is real-motivic Ext. The module uses the normal-word section from the complex cobar and extends the complex-motivic cohomology contraction coefficientwise over $\mathbb F_2[\rho]$.
+
+Write $d_R=d_0+Q$, where $d_0$ preserves $\rho$ exponent and $Q$ strictly raises it. With the complex contraction $i,p,h$, the minimal differential is $\Delta=pQ(1+hQ)^{-1}i$. `rhoMinI` and `rhoMinP` are the corrected inclusion and projection, $(1+hQ)^{-1}i$ and $p(1+Qh)^{-1}$. `rhoMinH` on positive-length real cochains gives $H=h(1+Qh)^{-1}$. The sums terminate at fixed tridegree. They satisfy $\Delta^2=0$, $PI=1$, $I\Delta=d_RI$, $\Delta P=Pd_R$ and $d_RH+Hd_R=1+IP$, with $H^2=HI=PH=0$.
+
+A coefficient of $\Delta$ gives a page differential only after the lower-filtration obstructions have been removed. The example compares the actual $d_6$ and $d_7$ with the images of corrected real lifts. In tridegree $(3,3,-4)$ a term at filtration seven cancels a differential component at filtration eight, leaving the length-seven differential from filtration three to filtration ten. The same example computes the sole $\rho^{32}$ coefficient of $\Delta(\tau^{32})$ and lifts it to the actual real boundary. [Rho-linear minimal complex example](examples/rho-minimal.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.
