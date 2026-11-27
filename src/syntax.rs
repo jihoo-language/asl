@@ -1236,6 +1236,7 @@ pub(crate) enum StatementForm {
     SiegelChamber(
         Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::farey::Command>,
     ),
+    Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -4054,6 +4055,28 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::SiegelMaass(Box::new(command)))
     }
 
+    fn hurwitz_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let query = if name == "rvHeckeTrace" {
+            let weight = self.wide_unsigned("cusp form weight")?;
+            self.expect(Token::Comma)?;
+            Query::Trace(weight, self.wide_unsigned("Hecke index")?)
+        } else {
+            let n = self.signed_wide("a signed Hurwitz index", "Hurwitz index")?;
+            if name == "rvHurwitzClass" {
+                Query::Class(n)
+            } else {
+                self.expect(Token::Comma)?;
+                let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+                Query::Jacobi(n, r)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::Hurwitz(Box::new(query)))
+    }
+
     fn igusa_inverse_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hilbert::{
             elliptic_genus::{
@@ -6429,6 +6452,9 @@ impl<'src> Parser<'src> {
                 | "rvIgusaChamberCoeff"
                 | "rvIgusaChamberPath"),
             ) => self.siegel_chamber_statement(name)?,
+            Token::Word(name @ ("rvHurwitzClass" | "rvHurwitzJacobi" | "rvHeckeTrace")) => {
+                self.hurwitz_statement(name)?
+            }
             Token::Word("rvSiegelDelta5") => {
                 use crate::hyperelliptic_kummer_surface::hilbert::{
                     elliptic_genus::Query, Command,

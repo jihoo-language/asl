@@ -9,7 +9,7 @@ use crate::syntax::Label;
 use super::super::Magnitude;
 use super::{
     add, coefficient, decimal, eta_product, jacobi_minus_two, jacobi_zero, multiply, overflow,
-    storage, Cutoff, Index, Integer, INTEGER_WORDS, MAX_PIVOT_CELLS,
+    scale_by_power, storage, Cutoff, Index, Integer, INTEGER_WORDS, MAX_PIVOT_CELLS,
 };
 
 const ZERO: Integer = Integer {
@@ -309,29 +309,4 @@ fn convolve(
         }
     }
     Ok(out)
-}
-
-fn scale_by_power(
-    model: &mut Model,
-    mut value: Integer,
-    base: u128,
-    mut exponent: u128,
-) -> Result<Integer> {
-    if base == 1 {
-        return Ok(value);
-    }
-    let mut power = Integer {
-        magnitude: Magnitude::from_small(base),
-        negative: false,
-    };
-    while exponent != 0 {
-        if exponent % 2 == 1 {
-            value = multiply(model, value, power)?;
-        }
-        exponent /= 2;
-        if exponent != 0 {
-            power = multiply(model, power, power)?;
-        }
-    }
-    Ok(value)
 }

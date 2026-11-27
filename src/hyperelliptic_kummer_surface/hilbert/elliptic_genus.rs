@@ -8,11 +8,12 @@ use crate::model::Model;
 use crate::siegel::Weight as SiegelWeight;
 use crate::syntax::Label;
 
-use super::Integer;
+use super::{Integer, Magnitude};
 use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
 
 mod cyclic;
 pub(crate) mod farey;
+pub(crate) mod hurwitz;
 pub(crate) mod inverse;
 pub(crate) mod maass;
 mod mock;
@@ -509,6 +510,31 @@ fn add<K: Ord>(
 fn multiply(model: &mut Model, a: Integer, b: Integer) -> Result<Integer> {
     model.spend(1 + a.magnitude.bits().div_ceil(32) * b.magnitude.bits().div_ceil(32))?;
     a.multiply_wide(b).map_err(|_| overflow())
+}
+
+fn scale_by_power(
+    model: &mut Model,
+    mut value: Integer,
+    base: u128,
+    mut exponent: u128,
+) -> Result<Integer> {
+    if base == 1 {
+        return Ok(value);
+    }
+    let mut power = Integer {
+        magnitude: Magnitude::from_small(base),
+        negative: false,
+    };
+    while exponent != 0 {
+        if exponent % 2 == 1 {
+            value = multiply(model, value, power)?;
+        }
+        exponent /= 2;
+        if exponent != 0 {
+            power = multiply(model, power, power)?;
+        }
+    }
+    Ok(value)
 }
 
 pub(crate) fn decimal(value: Integer) -> String {

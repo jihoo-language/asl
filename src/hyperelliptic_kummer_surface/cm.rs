@@ -203,12 +203,12 @@ impl Reduced {
 
     pub(crate) fn class_number(&self, model: &mut Model) -> Result<usize> {
         let (_, discriminant) = self.order_data(model)?;
-        proper_class_number(model, discriminant)
+        let d = discriminant.small().ok_or_else(class_number_limit)?;
+        primitive_class_number(model, d)
     }
 }
 
-fn proper_class_number(model: &mut Model, discriminant: Magnitude) -> Result<usize> {
-    let d = discriminant.small().ok_or_else(class_number_limit)?;
+pub(super) fn primitive_class_number(model: &mut Model, d: u128) -> Result<usize> {
     let mut count = 0;
     each_primitive_reduced(model, d, |_| {
         count += 1;

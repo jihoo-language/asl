@@ -1330,6 +1330,18 @@ The $s=0$ term uses the named chamber. The other terms use positive powers of $q
 
 `rvIgusaFinite[m,n,r];` gives the chamber-independent coefficient of the holomorphic-in-$z$ part $\psi_m^{\mathrm F}=\psi_m-\psi_m^{\mathrm P}$. It uses the elliptic law $(n,r)\mapsto(n+\lambda r+m\lambda^2,r+2m\lambda)$ and evenness in $r$ to reduce to $0\le r\le m$. The polar coefficient vanishes there in the `outside` expansion. `rvIgusaMockWeight2[m,n,r];` gives the corresponding coefficient of $\Delta\psi_m^{\mathrm F}$, of mock Jacobi weight two. The commands compute these Fourier coefficients with checked 512-bit integer arithmetic. In the example, the full coefficients 315255 and 327 reduce to the same finite coefficient 3 after the polar subtraction. [Dabholkar–Murthy–Zagier, equations (128), (249), and (404)](https://arxiv.org/abs/1208.4074) · [Runnable example](examples/igusa-mock-jacobi.asl)
 
+#### Hurwitz class numbers and level-one Hecke traces
+
+`rvHurwitzClass[N];` gives the exact rational Hurwitz number $H(N)$. For $N>0$ it sums $2h(-N/d^2)/w(-N/d^2)$ over square divisors $d^2\mid N$ for which $-N/d^2$ is a quadratic-order discriminant. Here $h$ counts proper primitive classes and $w$ is the order of the unit group, equal to 6 at $-3$, 4 at $-4$, and 2 otherwise. The square divisors include the imprimitive forms. The convention is $H(0)=-1/12$, with zero for negative $N$ or $N\equiv1,2\pmod4$. `rvHurwitzJacobi[n,r];` evaluates $H(4n-r^2)$, the $q^ny^r$ coefficient of Zagier's index-one mock Jacobi series $\mathcal H$. The discriminant is computed exactly before enumerating the classes. This series enters $\Delta\psi_1^{\mathrm F}=3E_4\phi_{-2,1}-648\mathcal H$. [Zagier, Utrecht lectures, §6.1](https://people.mpim-bonn.mpg.de/zagier/files/tex/UtrechtLectures/UtBook.pdf) · [Dabholkar–Murthy–Zagier, equations (128), (168), and (249)](https://arxiv.org/abs/1208.4074)
+
+`rvHeckeTrace[k,n];` gives the trace of the classical $T_n$ on $S_k(\operatorname{SL}_2(\mathbb Z))$ for even $k\ge2$ and $n\ge1$. The normalization sends the $j$th Fourier coefficient $a(j)$ to $\sum_{d\mid\gcd(n,j)}d^{k-1}a(nj/d^2)$. ASL evaluates the Eichler–Selberg formula
+
+$$
+-\frac12\sum_{t^2\le4n}P_{k-2}(t,n)H(4n-t^2)-\frac12\sum_{dd'=n}\min(d,d')^{k-1}+\mathbf1_{k=2}\sigma_1(n),
+$$
+
+where $P_0=1$, $P_1=t$, and $P_j=tP_{j-1}-nP_{j-2}$. It uses binary doubling for the recurrence and checked 512-bit integers for the trace sum. The example gives $\operatorname{Tr}(T_5\mid S_{12})=4830$ and $\operatorname{Tr}(T_2\mid S_{24})=1080$. [Zagier, Utrecht lectures, §6.3](https://people.mpim-bonn.mpg.de/zagier/files/tex/UtrechtLectures/UtBook.pdf) · [Runnable example](examples/hurwitz-eichler-selberg.asl)
+
 #### Integral period chambers and Farey wall crossing
 
 `rvsiegelchamber H[A,B,C];` names the open chamber containing the positive definite imaginary-period ray with matrix $Y=\left(\begin{smallmatrix}A&B\\B&C\end{smallmatrix}\right)$. The coordinates are signed integers. An integral change of basis that makes $Y$ diagonal places the ray on a separating wall, so the declaration requires an open chamber. The reference chamber has $0<B<\min(A,C)$. Projectivizing the cone identifies it with the upper half-plane by $(B+i\sqrt{AC-B^2})/A$, where the reference chamber is the ideal Farey triangle with vertices $0,1,\infty$. [Cheng–Verlinde, §2 and Appendix A](https://arxiv.org/abs/0806.2337)
