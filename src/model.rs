@@ -615,6 +615,7 @@ pub(crate) struct Model {
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
+    nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     hilbert_square_form: Option<Rc<hilbert_square::Form>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
@@ -715,6 +716,7 @@ impl Model {
             enriques_quotients: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             nakajima_gram: None,
+            nakajima_inverse_gram: None,
             hilbert_square_form: None,
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
@@ -3933,6 +3935,16 @@ impl Model {
         let gram = Rc::new(nakajima::Gram::new(self)?);
         self.nakajima_gram = Some(gram.clone());
         Ok(gram)
+    }
+
+    pub(crate) fn nakajima_inverse_gram(&mut self) -> Result<Rc<nakajima::Gram>> {
+        if let Some(gram) = &self.nakajima_inverse_gram {
+            return Ok(gram.clone());
+        }
+        let gram = self.nakajima_gram()?;
+        let inverse = Rc::new(gram.inverse(self)?);
+        self.nakajima_inverse_gram = Some(inverse.clone());
+        Ok(inverse)
     }
 
     pub(crate) fn hilbert_square_type(&mut self, name: &Label, degree: i128) -> Result<TypeId> {

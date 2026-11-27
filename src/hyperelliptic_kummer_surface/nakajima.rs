@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 use super::unimodular;
 
+mod virasoro;
 mod wick;
 
 pub(crate) const COLORS: usize = unimodular::RANK + 2;
@@ -89,6 +90,7 @@ pub(crate) enum Operation {
     Create(Mode),
     Annihilate(Mode),
     Scale(i128),
+    Virasoro(i128),
 }
 
 impl Operation {
@@ -97,6 +99,7 @@ impl Operation {
             Self::Create(_) => "rvNakajimaCreate",
             Self::Annihilate(_) => "rvNakajimaAnn",
             Self::Scale(_) => "rvNakajimaScale",
+            Self::Virasoro(_) => "rvVirasoro",
         }
     }
 
@@ -105,6 +108,14 @@ impl Operation {
             Self::Create(mode) => (mode, 1),
             Self::Annihilate(mode) => (mode, -1),
             Self::Scale(_) => return Ok((source.length, source.degree)),
+            Self::Virasoro(index) => {
+                let length = source.length.checked_sub(index).ok_or_else(grade_range)?;
+                let degree = Integer::from_i128(source.degree)
+                    .add(Integer::product(-2, index))?
+                    .signed()
+                    .ok_or_else(grade_range)?;
+                return Ok((length, degree));
+            }
         };
         let length = source
             .length
@@ -287,12 +298,7 @@ impl State {
             .iter()
             .map(|(key, &coefficient)| {
                 let mut key = key.clone();
-                match key.binary_search_by_key(&mode, |f| f.mode) {
-                    Ok(i) => {
-                        key[i].exponent = key[i].exponent.checked_add(1).ok_or_else(grade_range)?
-                    }
-                    Err(i) => key.insert(i, Factor { mode, exponent: 1 }),
-                }
+                insert_factor(&mut key, mode)?;
                 Ok((key, coefficient))
             })
             .collect::<Result<_>>()?;
@@ -301,8 +307,7 @@ impl State {
 
     pub(crate) fn annihilate(&self, model: &mut Model, gram: &Gram, mode: Mode) -> Result<Self> {
         model.spend(self.cells())?;
-        let mut contracted = BTreeMap::<Monomial, Integer>::new();
-        let mut cells = 0;
+        let mut contracted = Accumulator::default();
         for (monomial, &coefficient) in &self.terms {
             let start = monomial.partition_point(|f| f.mode.length < mode.length);
             for (index, f) in monomial
@@ -317,41 +322,73 @@ impl State {
                 }
                 model.spend(1 + monomial.len() + LIMBS)?;
                 let mut key = monomial.clone();
-                if f.exponent == 1 {
-                    key.remove(index);
-                } else {
-                    key[index].exponent -= 1;
-                }
+                remove_factor(&mut key, index);
                 let contribution = Integer::product(coefficient, mode.length)
                     .multiply(f.exponent as i128)
                     .and_then(|value| value.multiply(pair))
                     .map_err(|_| coordinate_range())?;
-                match contracted.entry(key) {
-                    Entry::Occupied(mut entry) => {
-                        *entry.get_mut() = entry
-                            .get()
-                            .add(contribution)
-                            .map_err(|_| coordinate_range())?;
-                    }
-                    Entry::Vacant(entry) => {
-                        cells += LIMBS + 6 + 5 * entry.key().len();
-                        check_cells(cells)?;
-                        entry.insert(contribution);
-                    }
-                }
+                contracted.add(key, contribution)?;
             }
         }
-        let mut terms = BTreeMap::new();
-        for (key, coefficient) in contracted {
-            if !coefficient.is_zero() {
-                terms.insert(key, coefficient.signed().ok_or_else(coordinate_range)?);
-            }
-        }
-        Ok(Self { terms })
+        contracted.finish()
     }
 
     pub(crate) fn pair(&self, model: &mut Model, gram: &Gram, rhs: &Self) -> Result<i128> {
         wick::pair(model, gram, self, rhs)
+    }
+}
+
+fn insert_factor(key: &mut Monomial, mode: Mode) -> Result<()> {
+    match key.binary_search_by_key(&mode, |factor| factor.mode) {
+        Ok(index) => {
+            let count = &mut key[index].exponent;
+            *count = count.checked_add(1).ok_or_else(grade_range)?;
+        }
+        Err(index) => key.insert(index, Factor { mode, exponent: 1 }),
+    }
+    Ok(())
+}
+
+fn remove_factor(key: &mut Monomial, index: usize) {
+    if key[index].exponent == 1 {
+        key.remove(index);
+    } else {
+        key[index].exponent -= 1;
+    }
+}
+
+#[derive(Default)]
+struct Accumulator {
+    terms: BTreeMap<Monomial, Integer>,
+    cells: usize,
+}
+
+impl Accumulator {
+    fn add(&mut self, key: Monomial, contribution: Integer) -> Result<()> {
+        match self.terms.entry(key) {
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() = entry
+                    .get()
+                    .add(contribution)
+                    .map_err(|_| coordinate_range())?;
+            }
+            Entry::Vacant(entry) => {
+                self.cells += LIMBS + 6 + 5 * entry.key().len();
+                check_cells(self.cells)?;
+                entry.insert(contribution);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<State> {
+        let mut terms = BTreeMap::new();
+        for (key, coefficient) in self.terms {
+            if !coefficient.is_zero() {
+                terms.insert(key, coefficient.signed().ok_or_else(coordinate_range)?);
+            }
+        }
+        Ok(State { terms })
     }
 }
 

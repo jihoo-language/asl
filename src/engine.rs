@@ -7730,16 +7730,23 @@ impl Engine {
                     .persist(&mut self.model)
             }
             TypedForm::Nakajima(operation, input) => {
-                let Value::Nakajima(input) = self.eval(input)? else {
+                let Value::Nakajima(state) = self.eval(input)? else {
                     unreachable!();
                 };
                 let output = match *operation {
-                    nakajima::Operation::Create(mode) => input.create(&mut self.model, mode)?,
+                    nakajima::Operation::Create(mode) => state.create(&mut self.model, mode)?,
                     nakajima::Operation::Annihilate(mode) => {
                         let gram = self.model.nakajima_gram()?;
-                        input.annihilate(&mut self.model, &gram, mode)?
+                        state.annihilate(&mut self.model, &gram, mode)?
                     }
-                    nakajima::Operation::Scale(scalar) => input.scale(&mut self.model, scalar)?,
+                    nakajima::Operation::Scale(scalar) => state.scale(&mut self.model, scalar)?,
+                    nakajima::Operation::Virasoro(index) => {
+                        let Kind::Nakajima(grade) = self.model.kind(input.ty) else {
+                            unreachable!();
+                        };
+                        let length = grade.length;
+                        state.virasoro(&mut self.model, index, length)?
+                    }
                 };
                 output.persist(&mut self.model)
             }

@@ -3233,6 +3233,9 @@ impl<'src> Parser<'src> {
                 let operation = match name {
                     "rvNakajimaCreate" => Operation::Create(self.nakajima_mode()?),
                     "rvNakajimaAnn" => Operation::Annihilate(self.nakajima_mode()?),
+                    "rvVirasoro" => Operation::Virasoro(
+                        self.signed_wide("a signed Virasoro index", "Virasoro index")?,
+                    ),
                     _ => Operation::Scale(
                         self.signed_wide("a signed Nakajima scalar", "Nakajima scalar")?,
                     ),
@@ -10060,6 +10063,7 @@ impl<'src> Parser<'src> {
                         | "rvNakajimaCreate"
                         | "rvNakajimaAnn"
                         | "rvNakajimaScale"
+                        | "rvVirasoro"
                 ) && self.token() == Token::LBracket
                 {
                     return self.nakajima_expression(&name.text, span, nest);

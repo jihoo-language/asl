@@ -1,0 +1,30 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zeroW = rvUnramElem[W]{};
+let oneW = rvUnramElem[W]{1};
+let a = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zeroW,zeroW);
+let r1 = rvJacPoint[L](oneW,zeroW);
+let r2 = rvJacPoint[L](neg(oneW),zeroW);
+let ra = rvJacPoint[L](a,zeroW);
+rvjactorsionbasis B[L,2](neg(oneW)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),ra)};
+
+let v = rvNakajimaVac[B];
+assert rvVirasoro[-1](v) == zero[RVNakajima(B,1,2)];
+let delta = rvVirasoro[-2](v);
+assert rvNakajimaAnn[1,1](delta) == rvNakajimaCreate[1,1](v);
+let central2 = rvVirasoro[2](delta);
+let central3 = rvVirasoro[3](rvVirasoro[-3](v));
+assert central2 == rvNakajimaScale[12](v);
+assert central3 == rvNakajimaScale[48](v);
+rvNakajimaPair(central2,v);
+rvNakajimaPair(central3,v);
+
+let x = rvNakajimaMonomial[B]{(1,1,2),(3,2,1)};
+let left = rvVirasoro[2](rvVirasoro[-2](x));
+let right = rvVirasoro[-2](rvVirasoro[2](x));
+assert add(left,neg(right)) == rvNakajimaScale[32](x);
