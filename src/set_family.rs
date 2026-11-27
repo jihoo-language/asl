@@ -156,7 +156,10 @@ impl Diagram {
         })
     }
 
-    fn site_orders(model: &mut Model, site: &Poset) -> Result<(Vec<usize>, Vec<Vec<usize>>)> {
+    pub(crate) fn site_orders(
+        model: &mut Model,
+        site: &Poset,
+    ) -> Result<(Vec<usize>, Vec<Vec<usize>>)> {
         let n = site.names.len();
         let mut lower = vec![0; n];
         let mut uppers = vec![Vec::new(); n];

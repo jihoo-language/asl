@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod flat;
 pub(crate) mod postnikov;
 
 const MAX_ORDER: usize = 128;

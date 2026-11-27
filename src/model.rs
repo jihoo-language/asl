@@ -86,7 +86,7 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
-use crate::rv_crossed::{self, postnikov};
+use crate::rv_crossed::{self, flat, postnikov};
 use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
@@ -198,6 +198,7 @@ pub(crate) enum Kind {
     Space(String),
     FiniteGroup(Rc<str>),
     PostnikovCochain(Rc<str>, usize),
+    FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
     SetNat(Rc<str>, Rc<str>),
     QModule(String),
@@ -444,6 +445,7 @@ pub(crate) enum Value {
     Point(usize),
     GroupElement(usize),
     PostnikovCochain(Rc<postnikov::Cochain>),
+    FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
     Pair(Rc<(Value, Value)>),
     Map(Rc<[Value]>),
@@ -635,6 +637,7 @@ pub(crate) struct Model {
     types: Vec<TypeInfo>,
     finite_groups: HashMap<Rc<str>, Rc<rv_crossed::Group>>,
     crossed_modules: HashMap<Rc<str>, Rc<rv_crossed::Crossed>>,
+    flat_backgrounds: HashMap<Rc<str>, Rc<flat::Flat>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -778,6 +781,7 @@ impl Model {
             finite_groups: HashMap::new(),
             crossed_modules: HashMap::new(),
             postnikov_systems: HashMap::new(),
+            flat_backgrounds: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1017,6 +1021,38 @@ impl Model {
         self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn define_flat(&mut self, name: Label, background: flat::Flat) -> Result<()> {
+        if self.flat_backgrounds.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "flat background is already defined"));
+        }
+        self.flat_backgrounds
+            .insert(name.text.into(), Rc::new(background));
+        Ok(())
+    }
+
+    pub(crate) fn flat(&self, name: &Label) -> Result<Rc<flat::Flat>> {
+        self.flat_backgrounds
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown flat background '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn flat_cochain_type(&mut self, name: &Label, degree: usize) -> Result<TypeId> {
+        self.flat(name)?;
+        if degree > 4 {
+            return Err(Error::new(
+                name.span,
+                "flat cochain degree must be between 0 and 4",
+            ));
+        }
+        self.inhabited_type(Kind::FlatCochain(name.text.as_str().into(), degree), 0)
+    }
+
     pub(crate) fn reset_work(&mut self) {
         self.work = MAX_WORK;
     }
@@ -1051,6 +1087,10 @@ impl Model {
             Kind::PostnikovCochain(ref name, degree) => {
                 let post = &self.postnikov_systems[name.as_ref()];
                 (post.prime.get() as usize).saturating_pow(post.size(degree) as u32)
+            }
+            Kind::FlatCochain(ref name, degree) => {
+                let background = &self.flat_backgrounds[name.as_ref()];
+                (background.prime().get() as usize).saturating_pow(background.size(degree) as u32)
             }
             Kind::PostnikovCell(ref name) => {
                 let post = &self.postnikov_systems[name.as_ref()];
@@ -1561,6 +1601,7 @@ impl Model {
                 | Kind::KSNomizu(..)
                 | Kind::FiniteGroup(..)
                 | Kind::PostnikovCochain(..)
+                | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
                 | Kind::KSEnd(..)
                 | Kind::QZ
@@ -6617,6 +6658,7 @@ impl Model {
             | Kind::KSNomizu(..)
             | Kind::FiniteGroup(..)
             | Kind::PostnikovCochain(..)
+            | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
             | Kind::KSEnd(..)
             | Kind::QZ
@@ -6790,6 +6832,7 @@ impl Model {
             Kind::PostnikovCochain(name, degree) => {
                 out.push(&format!("RVPostnikovCochain({name},{degree})"))
             }
+            Kind::FlatCochain(name, degree) => out.push(&format!("RVFlatCochain({name},{degree})")),
             Kind::PostnikovCell(name) => out.push(&format!("RVPostnikovCell({name})")),
             Kind::SetNat(source, target) => out.push(&format!("SetNat({source}, {target})")),
             Kind::MixedHomology(grade) => out.push(&format!(
@@ -7354,7 +7397,8 @@ impl Model {
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a == b),
             (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a == b),
-            (Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
+            (Value::PostnikovCochain(a), Value::PostnikovCochain(b))
+            | (Value::FlatCochain(a), Value::FlatCochain(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a == b)
             }
@@ -7659,7 +7703,8 @@ impl Model {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a.cmp(b)),
             (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a.cmp(b)),
-            (Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
+            (Value::PostnikovCochain(a), Value::PostnikovCochain(b))
+            | (Value::FlatCochain(a), Value::FlatCochain(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a.cmp(b))
             }
@@ -8101,10 +8146,22 @@ impl Model {
                         })
                         .collect()
                 }
-                Kind::PostnikovCochain(ref name, degree) => {
-                    let post = self.postnikov_systems[name.as_ref()].clone();
-                    let dimension = post.size(degree);
-                    let prime = post.prime.get() as usize;
+                Kind::PostnikovCochain(..) | Kind::FlatCochain(..) => {
+                    let (dimension, prime, local) = match self.kind(ty) {
+                        Kind::PostnikovCochain(ref name, degree) => {
+                            let post = &self.postnikov_systems[name.as_ref()];
+                            (post.size(*degree), post.prime.get() as usize, false)
+                        }
+                        Kind::FlatCochain(ref name, degree) => {
+                            let background = &self.flat_backgrounds[name.as_ref()];
+                            (
+                                background.size(*degree),
+                                background.prime().get() as usize,
+                                true,
+                            )
+                        }
+                        _ => unreachable!(),
+                    };
                     let count = self.types[ty.0].cardinality_bound;
                     self.check_element_limit(count)?;
                     self.spend(dimension * count)?;
@@ -8118,7 +8175,12 @@ impl Model {
                                     values.push((j, residue));
                                 }
                             }
-                            postnikov::Cochain(values).persist(self)
+                            let cochain = postnikov::Cochain(values);
+                            if local {
+                                flat::persist(self, cochain)
+                            } else {
+                                cochain.persist(self)
+                            }
                         })
                         .collect::<Result<Vec<_>>>()?
                 }
@@ -9378,7 +9440,7 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", cell.object, cell.coordinate))
             }
-            Value::PostnikovCochain(cochain) => {
+            Value::FlatCochain(cochain) | Value::PostnikovCochain(cochain) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 self.spend(cochain.0.len())?;

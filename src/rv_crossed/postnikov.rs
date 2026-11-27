@@ -41,7 +41,7 @@ impl Cochain {
         Ok(Value::PostnikovCochain(Rc::new(self)))
     }
 
-    fn at(&self, i: usize) -> u32 {
+    pub(super) fn at(&self, i: usize) -> u32 {
         self.0
             .binary_search_by_key(&i, |&(key, _)| key)
             .map_or(0, |j| self.0[j].1)
@@ -55,9 +55,9 @@ pub(crate) struct Cell {
 }
 
 pub(crate) struct Postnikov {
-    crossed: Rc<Crossed>,
+    pub(super) crossed: Rc<Crossed>,
     pub(crate) prime: Prime,
-    action: Vec<u32>,
+    pub(super) action: Vec<u32>,
     kernel_coordinates: Vec<Option<u32>>,
     canonical: Rc<Cochain>,
     boundaries: Basis,
@@ -266,7 +266,7 @@ impl Postnikov {
         })
     }
 
-    fn require_cocycle(&self, model: &mut Model, cochain: &Cochain) -> Result<()> {
+    pub(super) fn require_cocycle(&self, model: &mut Model, cochain: &Cochain) -> Result<()> {
         if cochain.0.is_empty() {
             return Ok(());
         }

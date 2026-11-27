@@ -72,6 +72,7 @@ pub(crate) enum TypeForm {
     Name(Label),
     FiniteGroup(Label),
     PostnikovCochain(Label, usize),
+    FlatCochain(Label, usize),
     PostnikovCell(Label),
     SetNat(Label, Label),
     Star(Box<ParsedType>, Label),
@@ -724,6 +725,7 @@ pub(crate) struct MapGenerator {
 pub(crate) enum ExprForm {
     Crossed(Box<crate::rv_crossed::Expression>),
     Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
+    Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
         crate::set_topology::Operation,
         Label,
@@ -1168,6 +1170,7 @@ pub(crate) struct Statement {
 pub(crate) enum StatementForm {
     Crossed(Box<crate::rv_crossed::Command>),
     Postnikov(Box<crate::rv_crossed::postnikov::Command>),
+    Flat(Box<crate::rv_crossed::flat::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3372,6 +3375,117 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn flat_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::flat::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvflat" => {
+                let flat = self.label()?;
+                self.expect(Token::LBracket)?;
+                let site = self.label()?;
+                self.expect(Token::Comma)?;
+                let post = self.label()?;
+                self.expect(Token::RBracket)?;
+                let transitions = self.set_named_rows(|parser| {
+                    let source = parser.label()?;
+                    parser.expect(Token::Less)?;
+                    let target = parser.label()?;
+                    parser.expect(Token::Colon)?;
+                    Ok((source, target, parser.number()?.0))
+                })?;
+                Command::Declare(flat, site, post, transitions)
+            }
+            "rvFlatCyclePair" => {
+                let input = self.paren_expr(0)?;
+                self.expect(Token::LBrace)?;
+                Command::CyclePair(Box::new(input), self.unsigned_list(Token::RBrace)?)
+            }
+            "rvFlatCoeff" => {
+                self.expect(Token::LBracket)?;
+                let mut points = vec![self.label()?];
+                while self.eat(Token::Comma)? {
+                    points.push(self.label()?);
+                }
+                self.expect(Token::RBracket)?;
+                Command::Coefficient(points, Box::new(self.paren_expr(0)?))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                if operation == "rvFlatEdge" {
+                    self.expect(Token::Comma)?;
+                    let x = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let y = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    Command::Edge(name, x, y)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    match operation {
+                        "rvFlatData" => Command::Data(name),
+                        "rvFlatObstruction" => {
+                            Command::Obstruction(name, Box::new(self.paren_expr(0)?))
+                        }
+                        _ => Command::Check(name, Box::new(self.paren_pair(0)?)),
+                    }
+                }
+            }
+        };
+        Ok(StatementForm::Flat(Box::new(command)))
+    }
+
+    fn flat_expression(&mut self, operation: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::flat::Expression;
+        let (operation, depth) =
+            if matches!(operation, "rvFlatCoboundary" | "rvFlatBoundaryWitness") {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let input = Box::new(input);
+                let operation = if operation == "rvFlatCoboundary" {
+                    Expression::Coboundary(input)
+                } else {
+                    Expression::BoundaryWitness(input)
+                };
+                (operation, depth)
+            } else {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                match operation {
+                    "rvFlatCochain" | "rvFlatH2Basis" => {
+                        self.expect(Token::Comma)?;
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        let operation = if operation == "rvFlatCochain" {
+                            self.expect(Token::LBrace)?;
+                            Expression::Literal(name, index, self.unsigned_list(Token::RBrace)?)
+                        } else {
+                            Expression::H2Basis(name, index)
+                        };
+                        (operation, 0)
+                    }
+                    "rvFlatLiftDifference" => {
+                        self.expect(Token::RBracket)?;
+                        let inputs = self.paren_triple(nest)?;
+                        let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
+                        (Expression::LiftDifference(name, Box::new(inputs)), depth)
+                    }
+                    _ => {
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = 1 + input.depth;
+                        let input = Box::new(input);
+                        let operation = if operation == "rvFlatPullback" {
+                            Expression::Pullback(name, input)
+                        } else {
+                            Expression::Lift(name, input)
+                        };
+                        (operation, depth)
+                    }
+                }
+            };
+        expr(span, ExprForm::Flat(Box::new(operation)), depth)
     }
 
     fn crossed_expression(
@@ -9219,6 +9333,10 @@ impl<'src> Parser<'src> {
             Token::Word(
                 op @ ("rvpostnikov" | "rvPostnikovData" | "rvPostnikovClass" | "rvPostnikovCoeff"),
             ) => self.postnikov_statement(op)?,
+            Token::Word(
+                op @ ("rvflat" | "rvFlatData" | "rvFlatEdge" | "rvFlatCoeff" | "rvFlatObstruction"
+                | "rvFlatLiftCheck" | "rvFlatCyclePair"),
+            ) => self.flat_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -12922,7 +13040,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVGroup" | "RVPostnikovCochain" | "RVPostnikovCell"
+            "RVGroup" | "RVPostnikovCochain" | "RVPostnikovCell" | "RVFlatCochain"
         ) && self.eat(Token::LParen)?
         {
             let label = self.label()?;
@@ -12931,7 +13049,12 @@ impl<'src> Parser<'src> {
                 "RVPostnikovCell" => TypeForm::PostnikovCell(label),
                 _ => {
                     self.expect(Token::Comma)?;
-                    TypeForm::PostnikovCochain(label, self.number()?.0)
+                    let degree = self.number()?.0;
+                    if name.text == "RVFlatCochain" {
+                        TypeForm::FlatCochain(label, degree)
+                    } else {
+                        TypeForm::PostnikovCochain(label, degree)
+                    }
                 }
             };
             self.expect(Token::RParen)?;
@@ -15468,6 +15591,21 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.postnikov_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvFlatCochain"
+                        | "rvFlatPullback"
+                        | "rvFlatLift"
+                        | "rvFlatH2Basis"
+                        | "rvFlatLiftDifference"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvFlatCoboundary" | "rvFlatBoundaryWitness"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.flat_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

@@ -130,7 +130,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_conformal;
-use crate::rv_crossed::{self, postnikov};
+use crate::rv_crossed::{self, flat, postnikov};
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -728,6 +728,19 @@ enum CrossedAction {
     KernelAct(Rc<rv_crossed::Crossed>, usize, Box<TypedExpr>),
 }
 
+enum FlatUnary {
+    Neg,
+    Pullback(usize),
+    Coboundary(usize),
+    BoundaryWitness(usize),
+    Lift,
+}
+
+enum FlatAction {
+    Unary(Rc<flat::Flat>, FlatUnary, Box<TypedExpr>),
+    LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
+}
+
 enum PostnikovAction {
     Neg(Rc<postnikov::Postnikov>, Box<TypedExpr>),
     Coboundary(Rc<postnikov::Postnikov>, Box<TypedExpr>),
@@ -739,6 +752,7 @@ enum PostnikovAction {
 enum TypedForm {
     Crossed(CrossedAction),
     Postnikov(PostnikovAction),
+    Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
         reflection: Rc<set_topology::Reflection>,
@@ -2307,6 +2321,7 @@ impl Engine {
             StatementForm::KSNomizu(command) => return self.ks_nomizu_command(*command).map(Some),
             StatementForm::Crossed(command) => return self.crossed_command(*command),
             StatementForm::Postnikov(command) => return self.postnikov_command(*command),
+            StatementForm::Flat(command) => return self.flat_command(*command),
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
             StatementForm::KSAlexander(command) => {
                 return self.ks_alexander_command(*command).map(Some)
@@ -7415,6 +7430,140 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn flat_command(&mut self, command: flat::Command) -> Result<Option<String>> {
+        use flat::Command;
+        let report = match command {
+            Command::Declare(name, base, post_name, transitions) => {
+                let base = self
+                    .model
+                    .named(&base.text)
+                    .filter(|&base| self.model.poset(base).is_some())
+                    .ok_or_else(|| {
+                        Error::new(base.span, "flat background requires a named finite space")
+                    })?;
+                let post = self.model.postnikov(&post_name)?;
+                let background = flat::Flat::new(
+                    &mut self.model,
+                    base,
+                    post_name.text.into(),
+                    post,
+                    transitions,
+                )?;
+                self.model.define_flat(name, background)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self.model.flat(&name)?.data(&name.text),
+            Command::Edge(name, x, y) => {
+                let background = self.model.flat(&name)?;
+                let g = background.edge(
+                    self.model.point(background.base, &x)?,
+                    self.model.point(background.base, &y)?,
+                )?;
+                format!("rvFlatEdge[{},{},{}] = {g}", name.text, x.text, y.text)
+            }
+            Command::Obstruction(name, input) => {
+                let op = "rvFlatObstruction";
+                let background = self.model.flat(&name)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_flat_post(&background, &input, 3, op)?;
+                let k = self.eval_postnikov_cochain(&input)?;
+                background.obstruction_report(&mut self.model, &name.text, &k)?
+            }
+            Command::Check(name, inputs) => {
+                let op = "rvFlatLiftCheck";
+                let background = self.model.flat(&name)?;
+                let [k, b] = *inputs;
+                let (k, b) = (self.checker().expr(k)?, self.checker().expr(b)?);
+                self.checker().require_flat_post(&background, &k, 3, op)?;
+                let b_ty = self.model.flat_cochain_type(&name, 2)?;
+                self.checker().require_type(b_ty, &b, op)?;
+                let (k, b) = (
+                    self.eval_postnikov_cochain(&k)?,
+                    self.eval_flat_cochain(&b)?,
+                );
+                background.check_lift(&mut self.model, &k, &b)?;
+                format!("rvFlatLiftCheck[{}] = true", name.text)
+            }
+            Command::Coefficient(points, input) => {
+                let op = "rvFlatCoeff";
+                let input = self.checker().expr(*input)?;
+                let (name, degree) = self.checker().flat_operand(&input, op)?;
+                if points.len() != degree + 1 {
+                    return Err(Error::new(
+                        input.span,
+                        format!("{op} requires {} vertices", degree + 1),
+                    ));
+                }
+                let background = self.model.flat(&name)?;
+                let vertices = points
+                    .iter()
+                    .map(|x| self.model.point(background.base, x))
+                    .collect::<Result<Vec<_>>>()?;
+                let input = self.eval_flat_cochain(&input)?;
+                let value = background.coefficient(&mut self.model, &input, &vertices)?;
+                let chain = points
+                    .iter()
+                    .map(|x| x.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{op}[{chain}] = {value}")
+            }
+            Command::CyclePair(input, dense) => {
+                let input = self.checker().expr(*input)?;
+                let (name, degree) = self.checker().flat_operand(&input, "rvFlatCyclePair")?;
+                let background = self.model.flat(&name)?;
+                let input = self.eval_flat_cochain(&input)?;
+                let value = background.cycle_pair(&mut self.model, degree, &input, dense)?;
+                format!("rvFlatCyclePair = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_flat_cochain(&mut self, input: &TypedExpr) -> Result<Rc<postnikov::Cochain>> {
+        let Value::FlatCochain(cochain) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(cochain)
+    }
+
+    fn eval_flat(&mut self, action: &FlatAction) -> Result<Value> {
+        let cochain = match action {
+            FlatAction::Unary(background, operation, input) => match operation {
+                FlatUnary::Pullback(degree) => {
+                    let input = self.eval_postnikov_cochain(input)?;
+                    background.pullback(&mut self.model, *degree, &input)?
+                }
+                FlatUnary::Lift => {
+                    let input = self.eval_postnikov_cochain(input)?;
+                    background.lift(&mut self.model, &input)?
+                }
+                FlatUnary::Neg => {
+                    let input = self.eval_flat_cochain(input)?;
+                    background.post.neg(&mut self.model, &input)?
+                }
+                FlatUnary::Coboundary(degree) => {
+                    let input = self.eval_flat_cochain(input)?;
+                    background.coboundary(&mut self.model, *degree, &input)?
+                }
+                FlatUnary::BoundaryWitness(degree) => {
+                    let input = self.eval_flat_cochain(input)?;
+                    background.boundary_witness(&mut self.model, *degree, &input)?
+                }
+            },
+            FlatAction::LiftDifference(background, inputs) => {
+                let (k, a, b) = (
+                    self.eval_postnikov_cochain(&inputs[0])?,
+                    self.eval_flat_cochain(&inputs[1])?,
+                    self.eval_flat_cochain(&inputs[2])?,
+                );
+                background.lift_difference(&mut self.model, &k, &a, &b)?
+            }
+        };
+        flat::persist(&mut self.model, cochain)
+    }
+
     fn eval_group_element(&mut self, input: &TypedExpr) -> Result<usize> {
         let Value::GroupElement(index) = self.eval(input)? else {
             unreachable!()
@@ -9414,6 +9563,17 @@ impl Engine {
                         })?;
                         post.add(&mut self.model, &a, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::FlatCochain(a), Value::FlatCochain(b)) => {
+                        let Kind::FlatCochain(name, _) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let background = self.model.flat(&Label {
+                            text: name.to_string(),
+                            span: expr.span,
+                        })?;
+                        let cochain = background.post.add(&mut self.model, &a, &b)?;
+                        flat::persist(&mut self.model, cochain)
+                    }
                     (BinaryOp::Add, Value::KSEnd(a), Value::KSEnd(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11308,6 +11468,7 @@ impl Engine {
             TypedForm::KSNomizu(action) => self.eval_ks_nomizu(action, expr.span),
             TypedForm::Crossed(action) => self.eval_crossed(action),
             TypedForm::Postnikov(action) => self.eval_postnikov(action),
+            TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
                 .eval_ks_link(action, expr.span)?
@@ -14341,6 +14502,7 @@ impl Checker<'_> {
             TypeForm::PostnikovCochain(name, degree) => {
                 self.model.postnikov_cochain_type(&name, degree)
             }
+            TypeForm::FlatCochain(name, degree) => self.model.flat_cochain_type(&name, degree),
             TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::QZ => self.model.qz_type(),
@@ -15153,6 +15315,7 @@ impl Checker<'_> {
             }
             ExprForm::Crossed(expression) => self.crossed_expression(*expression),
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
+            ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
                 let name: Rc<str> = name.text.into();
@@ -15425,6 +15588,7 @@ impl Checker<'_> {
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
                     Kind::PostnikovCochain(..) => postnikov::Cochain::zero().persist(self.model)?,
+                    Kind::FlatCochain(..) => flat::persist(self.model, postnikov::Cochain::zero())?,
                     Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
                     Kind::QZ => qz::Scalar::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
@@ -18568,6 +18732,18 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::KSNomizu(KSNomizuAction::Scale(-1, 1, Box::new(input))),
+                    ));
+                }
+                if let Kind::FlatCochain(..) = self.model.kind(input.ty) {
+                    let (name, _) = self.flat_operand(&input, "neg")?;
+                    let background = self.model.flat(&name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::Flat(FlatAction::Unary(
+                            background,
+                            FlatUnary::Neg,
+                            Box::new(input),
+                        )),
                     ));
                 }
                 if let Kind::PostnikovCochain(name, _) = self.model.kind(input.ty) {
@@ -22489,6 +22665,7 @@ impl Checker<'_> {
                         | Kind::KSExterior(..)
                         | Kind::KSNomizu(..)
                         | Kind::PostnikovCochain(..)
+                        | Kind::FlatCochain(..)
                         | Kind::KSEnd(..)
                         | Kind::QZ
                         | Kind::K3Spinor(..)
@@ -25742,6 +25919,105 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Crossed(action)))
+    }
+
+    fn flat_operand(&self, input: &TypedExpr, op: &str) -> Result<(Label, usize)> {
+        let Kind::FlatCochain(name, degree) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, op, "a flat local cochain"));
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            *degree,
+        ))
+    }
+
+    fn require_flat_post(
+        &mut self,
+        background: &flat::Flat,
+        input: &TypedExpr,
+        degree: usize,
+        op: &str,
+    ) -> Result<()> {
+        let name = Label {
+            text: background.post_name.to_string(),
+            span: input.span,
+        };
+        let ty = self.model.postnikov_cochain_type(&name, degree)?;
+        self.require_type(ty, input, op)
+    }
+
+    fn flat_expression(&mut self, expression: flat::Expression) -> Result<(TypeId, TypedForm)> {
+        use flat::Expression;
+        let lift = matches!(expression, Expression::Lift(..));
+        let witness = matches!(expression, Expression::BoundaryWitness(..));
+        let (ty, action) = match expression {
+            Expression::Literal(name, degree, dense) => {
+                let ty = self.model.flat_cochain_type(&name, degree)?;
+                let value = self.model.flat(&name)?.literal(self.model, degree, dense)?;
+                return Ok((ty, TypedForm::Constant(flat::persist(self.model, value)?)));
+            }
+            Expression::H2Basis(name, index) => {
+                let ty = self.model.flat_cochain_type(&name, 2)?;
+                let value = self.model.flat(&name)?.h2_basis(self.model, index)?;
+                return Ok((ty, TypedForm::Constant(flat::persist(self.model, value)?)));
+            }
+            Expression::Pullback(name, input) | Expression::Lift(name, input) => {
+                let bg = self.model.flat(&name)?;
+                let input = self.expr(*input)?;
+                let op = if lift { "rvFlatLift" } else { "rvFlatPullback" };
+                let degree = match self.model.kind(input.ty) {
+                    Kind::PostnikovCochain(_, degree) if !lift => *degree,
+                    _ => 3,
+                };
+                self.require_flat_post(&bg, &input, degree, op)?;
+                let ty = self
+                    .model
+                    .flat_cochain_type(&name, if lift { 2 } else { degree })?;
+                let unary = if lift {
+                    FlatUnary::Lift
+                } else {
+                    FlatUnary::Pullback(degree)
+                };
+                (ty, FlatAction::Unary(bg, unary, Box::new(input)))
+            }
+            Expression::Coboundary(input) | Expression::BoundaryWitness(input) => {
+                let input = self.expr(*input)?;
+                let op = if witness {
+                    "rvFlatBoundaryWitness"
+                } else {
+                    "rvFlatCoboundary"
+                };
+                let (name, degree) = self.flat_operand(&input, op)?;
+                let bg = self.model.flat(&name)?;
+                let (target, unary) = if witness && (1..=3).contains(&degree) {
+                    (degree - 1, FlatUnary::BoundaryWitness(degree))
+                } else if !witness && degree < 4 {
+                    (degree + 1, FlatUnary::Coboundary(degree))
+                } else {
+                    return Err(Error::new(
+                        input.span,
+                        format!("{op} does not support degree {degree}"),
+                    ));
+                };
+                let ty = self.model.flat_cochain_type(&name, target)?;
+                (ty, FlatAction::Unary(bg, unary, Box::new(input)))
+            }
+            Expression::LiftDifference(name, inputs) => {
+                let bg = self.model.flat(&name)?;
+                let op = "rvFlatLiftDifference";
+                let [k, a, b] = *inputs;
+                let (k, a, b) = (self.expr(k)?, self.expr(a)?, self.expr(b)?);
+                let ty = self.model.flat_cochain_type(&name, 2)?;
+                self.require_flat_post(&bg, &k, 3, op)?;
+                self.require_type(ty, &a, op)?;
+                self.require_type(ty, &b, op)?;
+                (ty, FlatAction::LiftDifference(bg, Box::new([k, a, b])))
+            }
+        };
+        Ok((ty, TypedForm::Flat(action)))
     }
 
     fn postnikov_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
