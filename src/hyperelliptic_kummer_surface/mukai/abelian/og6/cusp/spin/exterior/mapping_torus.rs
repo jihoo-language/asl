@@ -96,14 +96,7 @@ impl Algebra {
         } else {
             GroupSpectrum::new(Spectrum::zero(0), m)
         };
-        let fiber_invariants = if m == 0 || degree == 0 || degree >= EVEN_RANK {
-            exterior_dimension(degree)
-        } else {
-            let rank = self.action(model, limit)?.smith(model)?.len();
-            let weights = character(model, rank, degree)?;
-            // Every sl₂ string contributes either to relative weight zero or one.
-            weights[rank] + weights.get(rank + 1).unwrap_or(&0)
-        };
+        let fiber_invariants = self.rational_fiber_invariants(model, limit, m, degree)?;
         let fiber_coinvariants_free = coinvariants.divided.free();
         let free = fiber_invariants + fiber_coinvariants_free;
         let base = decimal(coinvariants.divided.base);
@@ -112,5 +105,21 @@ impl Algebra {
         Ok(format!(
             "rvKSMappingTorus[{label},{m},{degree}] = free={free}, fiber_invariants={fiber_invariants}, fiber_coinvariants_free={fiber_coinvariants_free}, common_base={base}, cover_base={cover}, torsion=[{torsion}]"
         ))
+    }
+
+    pub(super) fn rational_fiber_invariants(
+        &self,
+        model: &mut Model,
+        limit: &Limit,
+        m: i128,
+        degree: usize,
+    ) -> Result<u128> {
+        if m == 0 || degree == 0 || degree >= EVEN_RANK {
+            return Ok(exterior_dimension(degree));
+        }
+        let rank = self.action(model, limit)?.smith(model)?.len();
+        let weights = character(model, rank, degree)?;
+        // Every sl₂ string contributes either to relative weight zero or one.
+        Ok(weights[rank] + weights.get(rank + 1).unwrap_or(&0))
     }
 }

@@ -37,6 +37,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynom
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::residual_hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
 use crate::hyperelliptic_kummer_surface::qz;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
@@ -285,6 +286,7 @@ pub(crate) enum Kind {
     K3Clifford(Rc<str>, u8),
     OG6Clifford(Rc<str>, u8),
     KSExterior(Rc<str>, i128),
+    KSNomizu(Rc<str>, i128, i128),
     KSEnd(Rc<str>),
     QZ,
     K3Spinor(Rc<str>, u8),
@@ -485,6 +487,7 @@ pub(crate) enum Value {
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
     KSExterior(Rc<ks_exterior::Form>),
+    KSNomizu(Rc<nomizu::Cochain>),
     KSEnd(Rc<ks_projector::End>),
     QZ(qz::Scalar),
     K3Spinor(Rc<spinor::Element>),
@@ -1163,6 +1166,8 @@ impl Model {
             Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::KSExterior(_, 0..=64) => usize::MAX,
             Kind::KSExterior(..) => 1,
+            Kind::KSNomizu(_, _, 0..=65) => usize::MAX,
+            Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
@@ -1405,6 +1410,7 @@ impl Model {
                 | Kind::K3Clifford(..)
                 | Kind::OG6Clifford(..)
                 | Kind::KSExterior(..)
+                | Kind::KSNomizu(..)
                 | Kind::KSEnd(..)
                 | Kind::QZ
                 | Kind::K3Spinor(..)
@@ -4536,6 +4542,11 @@ impl Model {
         self.inhabited_type(Kind::KSExterior(name.text.as_str().into(), degree), 0)
     }
 
+    pub(crate) fn ks_nomizu_type(&mut self, name: &Label, m: i128, degree: i128) -> Result<TypeId> {
+        self.og6_nilpotent(name)?;
+        self.inhabited_type(Kind::KSNomizu(name.text.as_str().into(), m, degree), 0)
+    }
+
     pub(crate) fn ks_end_type(&mut self, name: &Label) -> Result<TypeId> {
         self.og6_cusp(name)?;
         self.inhabited_type(Kind::KSEnd(name.text.as_str().into()), 0)
@@ -6221,6 +6232,7 @@ impl Model {
             | Kind::K3Clifford(..)
             | Kind::OG6Clifford(..)
             | Kind::KSExterior(..)
+            | Kind::KSNomizu(..)
             | Kind::KSEnd(..)
             | Kind::QZ
             | Kind::K3Spinor(..)
@@ -6760,6 +6772,9 @@ impl Model {
             Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
             Kind::OG6Clifford(name, parity) => out.push(&format!("RVOG6Clifford({name},{parity})")),
             Kind::KSExterior(name, degree) => out.push(&format!("RVKSExterior({name},{degree})")),
+            Kind::KSNomizu(name, m, degree) => {
+                out.push(&format!("RVKSNomizu({name},{m},{degree})"))
+            }
             Kind::KSEnd(name) => out.push(&format!("RVKSEnd({name})")),
             Kind::QZ => out.push("RVQZ"),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
@@ -7105,6 +7120,7 @@ impl Model {
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KSExterior(a), Value::KSExterior(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::KSNomizu(a), Value::KSNomizu(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KSEnd(a), Value::KSEnd(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::QZ(a), Value::QZ(b)) => Ok(a.compare(self, *b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -7464,6 +7480,7 @@ impl Model {
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => a.compare(self, b),
             (Value::KSExterior(a), Value::KSExterior(b)) => a.compare(self, b),
+            (Value::KSNomizu(a), Value::KSNomizu(b)) => a.compare(self, b),
             (Value::KSEnd(a), Value::KSEnd(b)) => a.compare(self, b),
             (Value::QZ(a), Value::QZ(b)) => a.compare(self, *b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
@@ -7908,6 +7925,12 @@ impl Model {
                     ));
                 }
                 Kind::KSExterior(..) => vec![ks_exterior::Form::zero().persist(self)?],
+                Kind::KSNomizu(_, _, 0..=65) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational Kuga–Satake Nomizu cochain space",
+                    ))
+                }
+                Kind::KSNomizu(..) => vec![nomizu::Cochain::zero().persist(self)?],
                 Kind::KSEnd(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kuga–Satake endomorphism space",
@@ -9546,6 +9569,7 @@ impl Model {
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::OG6Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::KSExterior(form) => self.write_sparse_rational(out, ty, form.as_ref()),
+            Value::KSNomizu(form) => self.write_sparse_rational(out, ty, form.as_ref()),
             Value::KSEnd(end) => self.write_sparse_rational(out, ty, end.as_ref()),
             Value::QZ(scalar) => out.push(&format!("RVQZ({})", scalar.text())),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),

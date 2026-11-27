@@ -14,6 +14,7 @@ use crate::syntax::{Label, ParsedExpr};
 pub(crate) mod alexander;
 pub(crate) mod linking;
 mod mapping_torus;
+pub(crate) mod nomizu;
 mod smith;
 
 pub(crate) enum Expression {

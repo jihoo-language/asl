@@ -148,6 +148,7 @@ pub(crate) enum TypeForm {
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
+    KSNomizu(Label, i128, i128),
     KSEnd(Label),
     QZ,
     K3Spinor(Label, u8),
@@ -1025,6 +1026,7 @@ pub(crate) enum ExprForm {
     KSExterior(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Expression>,
     ),
+    KSNomizu(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu::Expression>),
     KSEnd(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Expression>,
     ),
@@ -1272,6 +1274,7 @@ pub(crate) enum StatementForm {
     KSEnd(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Command>,
     ),
+    KSNomizu(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu::Command>),
     KSLinkCertificate(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification>),
     QZOrder(Box<ParsedExpr>),
     KSAlexander(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander::Command>),
@@ -3231,6 +3234,102 @@ impl<'src> Parser<'src> {
             bounds: [d, e],
             inputs,
         })
+    }
+
+    fn ks_nomizu_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvKSNomizuClosed" => Command::Closed(Box::new(self.paren_expr(0)?)),
+            "rvKSNomizuMasseyCertificate" => Command::Certificate(Box::new(self.paren_expr(0)?)),
+            "rvKSNomizuCohomEqual" => Command::CohomEqual(Box::new(self.paren_triple(0)?)),
+            "rvKSNomizuData" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let m = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Data(name, m, degree)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let mask = self.ks_exterior_mask()?;
+                self.expect(Token::Comma)?;
+                let (eta, span) = self.number()?;
+                if eta > 1 {
+                    return Err(Error::new(span, "Nomizu eta exponent must be 0 or 1"));
+                }
+                self.expect(Token::RBracket)?;
+                Command::Coefficient(mask, eta == 1, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::KSNomizu(Box::new(command)))
+    }
+
+    fn ks_nomizu_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu::Expression;
+        let (expression, depth) = match operation {
+            "rvKSNomizuFiber" | "rvKSNomizuEta" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let m = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+                self.expect(Token::RBracket)?;
+                if operation == "rvKSNomizuEta" {
+                    (Expression::Eta(name, m), 0)
+                } else {
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    (Expression::Fiber(name, m, Box::new(input)), depth)
+                }
+            }
+            "rvKSNomizuScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator = self.signed_wide("a signed integer", "Nomizu scalar numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wide_unsigned("Nomizu scalar denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (
+                    Expression::Scale(numerator, denominator, Box::new(input)),
+                    depth,
+                )
+            }
+            "rvKSNomizuCup" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Cup(Box::new(inputs)), depth)
+            }
+            "rvKSNomizuMassey" => {
+                self.expect(Token::LParen)?;
+                let inputs: Box<[ParsedExpr; 5]> = self.exact_arguments(
+                    nest,
+                    span,
+                    operation,
+                    "three cochains and two nullhomotopies",
+                )?;
+                let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
+                (Expression::Massey(inputs), depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                if operation == "rvKSNomizuD" {
+                    (Expression::Differential(Box::new(input)), depth)
+                } else {
+                    (Expression::EtaMassey(Box::new(input)), depth)
+                }
+            }
+        };
+        expr(span, ExprForm::KSNomizu(Box::new(expression)), depth)
     }
 
     fn ks_alexander_field(&mut self) -> Result<Option<usize>> {
@@ -8352,6 +8451,13 @@ impl<'src> Parser<'src> {
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
             }
             Token::Word(
+                operation @ ("rvKSNomizuClosed"
+                | "rvKSNomizuCohomEqual"
+                | "rvKSNomizuCoeff"
+                | "rvKSNomizuData"
+                | "rvKSNomizuMasseyCertificate"),
+            ) => self.ks_nomizu_statement(operation)?,
+            Token::Word(
                 operation @ ("rvKSAlexander" | "rvKSAlexanderJets" | "rvKSAlexanderWitness"),
             ) => self.ks_alexander_statement(operation)?,
             Token::Word(
@@ -11994,6 +12100,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::KSEnd(cusp), 0);
         }
+        if name.text == "RVKSNomizu" && self.eat(Token::LParen)? {
+            let limit = self.label()?;
+            self.expect(Token::Comma)?;
+            let m = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+            self.expect(Token::Comma)?;
+            let degree =
+                self.signed_wide("a signed cohomological degree", "Kuga–Satake Nomizu degree")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KSNomizu(limit, m, degree), 0);
+        }
         if name.text == "RVKSExterior" && self.eat(Token::LParen)? {
             let cusp = self.label()?;
             self.expect(Token::Comma)?;
@@ -14407,6 +14523,20 @@ impl<'src> Parser<'src> {
                         .max()
                         .unwrap_or(0);
                     return expr(span, ExprForm::KSLink(Box::new(spec)), depth);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKSNomizuFiber" | "rvKSNomizuEta" | "rvKSNomizuScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKSNomizuCup"
+                            | "rvKSNomizuD"
+                            | "rvKSNomizuEtaMassey"
+                            | "rvKSNomizuMassey"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ks_nomizu_expression(&name.text, span, nest);
                 }
                 if matches!(name.text.as_str(), "rvQZ" | "rvQZScale")
                     && self.eat(Token::LBracket)?

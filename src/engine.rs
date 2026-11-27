@@ -52,6 +52,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking;
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::nomizu;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
@@ -621,6 +622,24 @@ struct KSLinkAction {
     inputs: Box<[TypedExpr; 4]>,
 }
 
+fn nomizu_degree_error() -> Error {
+    Error::plain("Kuga–Satake Nomizu degree exceeds the signed i128 range")
+}
+
+enum KSNomizuAction {
+    Fiber(Box<TypedExpr>),
+    Cup(Box<[TypedExpr; 2]>),
+    Scale(i128, u128, Box<TypedExpr>),
+    Differential(Rc<og6::cusp::nilpotent::Limit>, i128, Box<TypedExpr>),
+    Massey(
+        Rc<og6::cusp::nilpotent::Limit>,
+        i128,
+        i128,
+        Box<[TypedExpr; 5]>,
+    ),
+    EtaMassey(Rc<og6::cusp::nilpotent::Limit>, i128, Box<TypedExpr>),
+}
+
 enum KSExteriorAction {
     Embed(Box<TypedExpr>),
     ToSpin(Box<TypedExpr>),
@@ -784,6 +803,7 @@ enum TypedForm {
     NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
     OG6Clifford(OG6CliffordAction),
     KSExterior(KSExteriorAction),
+    KSNomizu(KSNomizuAction),
     KSEnd(KSEndAction),
     KSLink(Box<KSLinkAction>),
     QZScale(i128, Box<TypedExpr>),
@@ -2143,6 +2163,7 @@ impl Engine {
             StatementForm::KSExterior(command) => {
                 return self.ks_exterior_command(*command).map(Some)
             }
+            StatementForm::KSNomizu(command) => return self.ks_nomizu_command(*command).map(Some),
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
             StatementForm::KSAlexander(command) => {
                 return self.ks_alexander_command(*command).map(Some)
@@ -6875,6 +6896,161 @@ impl Engine {
             .torsion_link(&mut self.model, &action.limit, action.cover, left, right)
     }
 
+    fn nomizu_algebra<'a>(
+        &mut self,
+        limit: &'a og6::cusp::nilpotent::Limit,
+        span: Span,
+    ) -> Result<&'a og6::cusp::spin::Algebra> {
+        let lattice = self.og6_spin_lattice(&limit.cusp, span)?;
+        limit.cusp.spin_algebra(&mut self.model, &lattice)
+    }
+
+    fn eval_nomizu_value(&mut self, input: &TypedExpr) -> Result<Rc<nomizu::Cochain>> {
+        let Value::KSNomizu(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn eval_ks_nomizu(&mut self, action: &KSNomizuAction, span: Span) -> Result<Value> {
+        let value = match action {
+            KSNomizuAction::Fiber(input) => {
+                let Value::KSExterior(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                nomizu::Cochain::fiber(&mut self.model, &input)?
+            }
+            KSNomizuAction::Cup(inputs) => {
+                let (left, right) = (
+                    self.eval_nomizu_value(&inputs[0])?,
+                    self.eval_nomizu_value(&inputs[1])?,
+                );
+                left.cup(&mut self.model, &right)?
+            }
+            KSNomizuAction::Scale(n, d, input) => {
+                self.eval_nomizu_value(input)?
+                    .scale(&mut self.model, *n, *d)?
+            }
+            KSNomizuAction::Differential(limit, m, input) => {
+                let input = self.eval_nomizu_value(input)?;
+                self.nomizu_algebra(limit, span)?.nomizu_differential(
+                    &mut self.model,
+                    limit,
+                    *m,
+                    &input,
+                )?
+            }
+            KSNomizuAction::Massey(limit, m, degree, inputs) => {
+                let [a, b, c, x, y] = inputs.as_ref();
+                let (a, b, c, x, y) = (
+                    self.eval_nomizu_value(a)?,
+                    self.eval_nomizu_value(b)?,
+                    self.eval_nomizu_value(c)?,
+                    self.eval_nomizu_value(x)?,
+                    self.eval_nomizu_value(y)?,
+                );
+                self.nomizu_algebra(limit, span)?.nomizu_massey(
+                    &mut self.model,
+                    limit,
+                    *m,
+                    *degree,
+                    [&a, &b, &c, &x, &y],
+                )?
+            }
+            KSNomizuAction::EtaMassey(limit, m, input) => {
+                let input = self.eval_nomizu_value(input)?;
+                self.nomizu_algebra(limit, span)?.nomizu_eta_massey(
+                    &mut self.model,
+                    limit,
+                    *m,
+                    &input,
+                )?
+            }
+        };
+        value.persist(&mut self.model)
+    }
+
+    fn ks_nomizu_command(&mut self, command: nomizu::Command) -> Result<String> {
+        use nomizu::Command;
+        match command {
+            Command::Data(name, m, degree) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                self.nomizu_algebra(&limit, name.span)?.nomizu_data(
+                    &mut self.model,
+                    &name.text,
+                    &limit,
+                    m,
+                    degree,
+                )
+            }
+            Command::Coefficient(mask, eta, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().nomizu_operand(&input, "rvKSNomizuCoeff")?;
+                let value = self
+                    .eval_nomizu_value(&input)?
+                    .entry(&mut self.model, mask, eta)?;
+                Ok(format!(
+                    "rvKSNomizuCoeff[{mask},{}] = {value}",
+                    u8::from(eta)
+                ))
+            }
+            Command::Closed(input) => {
+                let input = self.checker().expr(*input)?;
+                let (name, m, _) = self.checker().nomizu_operand(&input, "rvKSNomizuClosed")?;
+                let value = self.eval_nomizu_value(&input)?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                let closed = self.nomizu_algebra(&limit, input.span)?.nomizu_is_closed(
+                    &mut self.model,
+                    &limit,
+                    m,
+                    &value,
+                )?;
+                Ok(format!("rvKSNomizuClosed = {closed}"))
+            }
+            Command::Certificate(input) => {
+                let input = self.checker().expr(*input)?;
+                let op = "rvKSNomizuMasseyCertificate";
+                let (name, m, _) = self.checker().nomizu_operand(&input, op)?;
+                self.checker()
+                    .require_nomizu_grade(&input, &name, m, 1, op)?;
+                let value = self.eval_nomizu_value(&input)?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                self.nomizu_algebra(&limit, input.span)?.nomizu_certificate(
+                    &mut self.model,
+                    &limit,
+                    m,
+                    &value,
+                )
+            }
+            Command::CohomEqual(inputs) => {
+                let [a, b, pre] = *inputs;
+                let op = "rvKSNomizuCohomEqual";
+                let [a, b, pre] = {
+                    let mut checker = self.checker();
+                    [checker.expr(a)?, checker.expr(b)?, checker.expr(pre)?]
+                };
+                let (name, m, degree) = self.checker().nomizu_operand(&a, op)?;
+                self.checker().require_type(a.ty, &b, op)?;
+                let lower = degree.checked_sub(1).ok_or_else(nomizu_degree_error)?;
+                self.checker()
+                    .require_nomizu_grade(&pre, &name, m, lower, op)?;
+                let (a, b, pre) = (
+                    self.eval_nomizu_value(&a)?,
+                    self.eval_nomizu_value(&b)?,
+                    self.eval_nomizu_value(&pre)?,
+                );
+                let limit = self.model.og6_nilpotent(&name)?;
+                let valid = self.nomizu_algebra(&limit, name.span)?.nomizu_cohom_equal(
+                    &mut self.model,
+                    &limit,
+                    m,
+                    [&a, &b, &pre],
+                )?;
+                Ok(format!("rvKSNomizuCohomEqual = witness_valid={valid}"))
+            }
+        }
+    }
+
     fn ks_alexander_command(&mut self, command: alexander::Command) -> Result<String> {
         let (name, cover, degree, length, prime) = match command {
             alexander::Command::Data(name, cover, degree, prime) => {
@@ -8699,6 +8875,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::KSExterior(a), Value::KSExterior(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::KSNomizu(a), Value::KSNomizu(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::KSEnd(a), Value::KSEnd(b)) => {
@@ -10558,6 +10737,7 @@ impl Engine {
             }
             TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
             TypedForm::KSExterior(action) => self.eval_ks_exterior(action, expr.span),
+            TypedForm::KSNomizu(action) => self.eval_ks_nomizu(action, expr.span),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
                 .eval_ks_link(action, expr.span)?
@@ -13399,6 +13579,7 @@ impl Checker<'_> {
             }
             TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
             TypeForm::KSExterior(name, degree) => self.model.ks_exterior_type(&name, degree),
+            TypeForm::KSNomizu(name, m, degree) => self.model.ks_nomizu_type(&name, m, degree),
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::QZ => self.model.qz_type(),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
@@ -14464,6 +14645,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
+                    Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
                     Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
                     Kind::QZ => qz::Scalar::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
@@ -16662,6 +16844,7 @@ impl Checker<'_> {
             }
             ExprForm::OG6Clifford(expression) => self.og6_clifford_expression(*expression),
             ExprForm::KSExterior(expression) => self.ks_exterior_expression(*expression),
+            ExprForm::KSNomizu(expression) => self.ks_nomizu_expression(*expression),
             ExprForm::KSEnd(expression) => self.ks_end_expression(*expression),
             ExprForm::KSLink(specification) => {
                 let action = self.ks_link_action(*specification, "rvKSLink")?;
@@ -17560,6 +17743,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::KSExterior(KSExteriorAction::Scale(-1, Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KSNomizu(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KSNomizu(KSNomizuAction::Scale(-1, 1, Box::new(input))),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KSEnd(..)) {
@@ -21437,6 +21626,7 @@ impl Checker<'_> {
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
+                        | Kind::KSNomizu(..)
                         | Kind::KSEnd(..)
                         | Kind::QZ
                         | Kind::K3Spinor(..)
@@ -24285,6 +24475,123 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KSEnd(action)))
+    }
+
+    fn nomizu_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, i128, i128)> {
+        let Kind::KSNomizu(name, m, degree) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVKSNomizu cochain"));
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            *m,
+            *degree,
+        ))
+    }
+
+    fn require_nomizu_grade(
+        &mut self,
+        input: &TypedExpr,
+        name: &Label,
+        m: i128,
+        degree: i128,
+        op: &str,
+    ) -> Result<()> {
+        let expected = self.model.ks_nomizu_type(name, m, degree)?;
+        self.require_type(expected, input, op)
+    }
+
+    fn ks_nomizu_expression(
+        &mut self,
+        expression: nomizu::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use nomizu::{Cochain, Expression};
+        let (ty, action) = match expression {
+            Expression::Eta(name, m) => {
+                let ty = self.model.ks_nomizu_type(&name, m, 1)?;
+                return Ok((ty, TypedForm::Constant(Cochain::eta().persist(self.model)?)));
+            }
+            Expression::Fiber(name, m, input) => {
+                let input = self.expr(*input)?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                let (_, degree) = self.ks_exterior_operand(&input, "rvKSNomizuFiber")?;
+                let cusp = Label {
+                    text: limit.cusp.name.to_string(),
+                    span: input.span,
+                };
+                let expected = self.model.ks_exterior_type(&cusp, degree)?;
+                self.require_type(expected, &input, "rvKSNomizuFiber")?;
+                let ty = self.model.ks_nomizu_type(&name, m, degree)?;
+                (ty, KSNomizuAction::Fiber(Box::new(input)))
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let op = "rvKSNomizuCup";
+                let (name, m, p) = self.nomizu_operand(&left, op)?;
+                let (_, _, q) = self.nomizu_operand(&right, op)?;
+                self.require_nomizu_grade(&right, &name, m, q, op)?;
+                let degree = p.checked_add(q).ok_or_else(nomizu_degree_error)?;
+                let ty = self.model.ks_nomizu_type(&name, m, degree)?;
+                (ty, KSNomizuAction::Cup(Box::new([left, right])))
+            }
+            Expression::Scale(n, d, input) => {
+                let input = self.expr(*input)?;
+                self.nomizu_operand(&input, "rvKSNomizuScale")?;
+                (input.ty, KSNomizuAction::Scale(n, d, Box::new(input)))
+            }
+            Expression::Differential(input) => {
+                let input = self.expr(*input)?;
+                let (name, m, degree) = self.nomizu_operand(&input, "rvKSNomizuD")?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                let degree = degree.checked_add(1).ok_or_else(nomizu_degree_error)?;
+                let ty = self.model.ks_nomizu_type(&name, m, degree)?;
+                (ty, KSNomizuAction::Differential(limit, m, Box::new(input)))
+            }
+            Expression::EtaMassey(input) => {
+                let input = self.expr(*input)?;
+                let op = "rvKSNomizuEtaMassey";
+                let (name, m, _) = self.nomizu_operand(&input, op)?;
+                self.require_nomizu_grade(&input, &name, m, 1, op)?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                let ty = self.model.ks_nomizu_type(&name, m, 2)?;
+                (ty, KSNomizuAction::EtaMassey(limit, m, Box::new(input)))
+            }
+            Expression::Massey(inputs) => {
+                let [a, b, c, x, y] = *inputs;
+                let [a, b, c, x, y] = [
+                    self.expr(a)?,
+                    self.expr(b)?,
+                    self.expr(c)?,
+                    self.expr(x)?,
+                    self.expr(y)?,
+                ];
+                let op = "rvKSNomizuMassey";
+                let (name, m, p) = self.nomizu_operand(&a, op)?;
+                let (_, _, q) = self.nomizu_operand(&b, op)?;
+                let (_, _, r) = self.nomizu_operand(&c, op)?;
+                self.require_nomizu_grade(&b, &name, m, q, op)?;
+                self.require_nomizu_grade(&c, &name, m, r, op)?;
+                let xy = |a: i128, b: i128| {
+                    a.checked_add(b)
+                        .and_then(|sum| sum.checked_sub(1))
+                        .ok_or_else(nomizu_degree_error)
+                };
+                self.require_nomizu_grade(&x, &name, m, xy(p, q)?, op)?;
+                self.require_nomizu_grade(&y, &name, m, xy(q, r)?, op)?;
+                let degree = xy(p, q)?.checked_add(r).ok_or_else(nomizu_degree_error)?;
+                let ty = self.model.ks_nomizu_type(&name, m, degree)?;
+                let limit = self.model.og6_nilpotent(&name)?;
+                (
+                    ty,
+                    KSNomizuAction::Massey(limit, m, p, Box::new([a, b, c, x, y])),
+                )
+            }
+        };
+        Ok((ty, TypedForm::KSNomizu(action)))
     }
 
     fn ks_exterior_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, i128)> {
