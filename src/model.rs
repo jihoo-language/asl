@@ -84,6 +84,7 @@ use crate::rv_res_space::{self, Grade as ResGrade, Space as ResSpace};
 use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_tl;
+use crate::rv_unram::{self, Ring as UnramRing};
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
@@ -226,6 +227,7 @@ pub(crate) enum Kind {
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
+    RVUnram(Rc<str>),
     RVCycloQ(usize),
     RVQpQuad(Rc<str>),
     RVResSpace(ResGrade),
@@ -373,6 +375,7 @@ pub(crate) enum Value {
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
+    RVUnram(rv_unram::Coordinates),
     RVCycloQ(rv_lens::Rational),
     RVQpQuad(QuadElement),
     RVResSpace(Rc<ResSpace>),
@@ -512,6 +515,7 @@ pub(crate) struct Model {
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
+    rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
@@ -582,6 +586,7 @@ impl Model {
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
+            rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
@@ -816,6 +821,7 @@ impl Model {
             Kind::RVValMat(..) => usize::MAX,
             Kind::RVStableTree(3) | Kind::RVStableMarks(_, 3) => 1,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
+            Kind::RVUnram(ref name) => self.rv_unram_rings[name.as_ref()].count(),
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -1008,6 +1014,7 @@ impl Model {
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
+                | Kind::RVUnram(..)
                 | Kind::RVCycloQ(..)
                 | Kind::RVQpQuad(..)
                 | Kind::RVResSpace(..)
@@ -2725,6 +2732,43 @@ impl Model {
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
     }
 
+    pub(crate) fn register_rv_unram(
+        &mut self,
+        name: Label,
+        p: usize,
+        precision: usize,
+        polynomial: Vec<i128>,
+    ) -> Result<()> {
+        if self.rv_unram_rings.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("unramified ring '{}' is already defined", name.text),
+            ));
+        }
+        let ring =
+            UnramRing::new(self, p, precision, polynomial).map_err(|error| error.at(name.span))?;
+        self.rv_unram_rings.insert(name.text, Rc::new(ring));
+        Ok(())
+    }
+
+    pub(crate) fn rv_unram_named(&self, name: &str) -> Option<Rc<UnramRing>> {
+        self.rv_unram_rings.get(name).cloned()
+    }
+
+    pub(crate) fn rv_unram(&self, name: &Label) -> Result<Rc<UnramRing>> {
+        self.rv_unram_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown unramified ring '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn rv_unram_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.rv_unram(name)?;
+        self.inhabited_type(Kind::RVUnram(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn rv_witt_tower(&self, name: &Label) -> Result<Rc<RvWittTower>> {
         self.rv_witt_towers
             .get(&name.text)
@@ -3721,6 +3765,7 @@ impl Model {
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::RVUnram(..)
             | Kind::RVCycloQ(..)
             | Kind::RVResSpace(..)
             | Kind::RVValMat(..)
@@ -4157,6 +4202,7 @@ impl Model {
                 grade.prime, grade.ground, grade.rank
             )),
             Kind::RVQpQuad(name) => out.push(&format!("RVQpQuad({name})")),
+            Kind::RVUnram(name) => out.push(&format!("RVUnram({name})")),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVCTState(grade) => out.push(&format!(
@@ -4378,6 +4424,9 @@ impl Model {
             }
             (Value::RVValMat(left), Value::RVValMat(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
+            (Value::RVUnram(left), Value::RVUnram(right)) => {
+                Ok(rv_unram::compare(self, left, right)?.is_eq())
             }
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => {
                 Ok(rv_lens::compare(self, left, right)?.is_eq())
@@ -4655,6 +4704,7 @@ impl Model {
                     left.compare(self, right)
                 }
             }
+            (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
@@ -4902,6 +4952,14 @@ impl Model {
                 }
                 Kind::RVQpQuad(..) => {
                     return Err(Error::plain("cannot enumerate a quadratic field"));
+                }
+                Kind::RVUnram(ref name) => {
+                    let ring = self
+                        .rv_unram_named(name)
+                        .expect("registered unramified ring");
+                    let count = ring.count();
+                    self.check_element_limit(count)?;
+                    rv_unram::enumerate(self, &ring, count)?
                 }
                 Kind::RVCycloQ(..) => {
                     return Err(Error::plain("cannot enumerate a rational cyclotomic field"))
@@ -6195,6 +6253,10 @@ impl Model {
             Value::RVQpQuad(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}, {}}}", value.a, value.b, value.c))
+            }
+            Value::RVUnram(values) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{values:?}"))
             }
             Value::RVCycloQ(ratio) => {
                 self.spend(ratio.numerator.len())?;

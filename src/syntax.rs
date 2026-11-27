@@ -119,6 +119,7 @@ pub(crate) enum TypeForm {
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
+    RVUnram(Label),
     RVCycloQ(usize),
     RVQpQuad(Label),
     RVResSpace(usize, usize),
@@ -535,6 +536,7 @@ pub(crate) enum BinaryOp {
     RvKoszulProduct,
     RvTorProduct,
     BpMultiply,
+    UnramMultiply,
     BpCup,
     ResSum,
     ResIntersection,
@@ -572,6 +574,7 @@ impl BinaryOp {
             "rvkProd" => Some(Self::RvKoszulProduct),
             "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
+            "rvUnramMul" => Some(Self::UnramMultiply),
             "bpCup" => Some(Self::BpCup),
             "rvResSum" => Some(Self::ResSum),
             "rvResIntersection" => Some(Self::ResIntersection),
@@ -913,6 +916,9 @@ pub(crate) enum ExprForm {
     CrystalEO(Label),
     CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
+    UnramElement(Label, Vec<i128>),
+    UnramUnary(crate::rv_unram::Unary, Box<ParsedExpr>),
+    LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
     ResSpace(usize, usize, Vec<Vec<i128>>),
     ResSpecialize(usize, usize, Vec<i64>, Vec<Vec<(i128, i128)>>),
@@ -1054,6 +1060,9 @@ pub(crate) enum StatementForm {
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
     Legendre(crate::legendre::Query),
+    UnramRing(Label, usize, usize, Vec<i128>),
+    UnramValuation(ParsedExpr),
+    LegendreClosedReport(crate::legendre_closed::Query, ParsedExpr),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
@@ -2448,6 +2457,34 @@ impl<'src> Parser<'src> {
             ) => {
                 self.advance()?;
                 StatementForm::Legendre(self.legendre_query(command)?)
+            }
+            Token::Word("rvunram") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let (p, s) = self.bidegree()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let h = self.signed_list(
+                    Token::RBrace,
+                    "a signed polynomial coefficient",
+                    "unramified modulus",
+                )?;
+                StatementForm::UnramRing(name, p, s, h)
+            }
+            Token::Word("rvUnramVal") => {
+                self.advance()?;
+                StatementForm::UnramValuation(self.paren_expr(0)?)
+            }
+            Token::Word("rvLegendreData" | "rvLegendreTrace" | "rvLegendreHensel") => {
+                use crate::legendre_closed::Query;
+                let query = match self.token() {
+                    Token::Word("rvLegendreData") => Query::Data,
+                    Token::Word("rvLegendreTrace") => Query::Trace,
+                    _ => Query::Hensel,
+                };
+                self.advance()?;
+                StatementForm::LegendreClosedReport(query, self.paren_expr(0)?)
             }
             Token::Word("qmodule") => {
                 self.advance()?;
@@ -5139,6 +5176,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVQpQuad(field), 0);
         }
+        if name.text == "RVUnram" && self.eat(Token::LParen)? {
+            let ring = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVUnram(ring), 0);
+        }
         if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
             self.expect(Token::RParen)?;
@@ -6726,6 +6768,79 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
+                    let ring = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let coefficients = self.signed_list(
+                        Token::RBrace,
+                        "a signed coefficient",
+                        "unramified element",
+                    )?;
+                    return expr(span, ExprForm::UnramElement(ring, coefficients), 0);
+                }
+                if matches!(name.text.as_str(), "rvUnramFrob" | "rvUnramPow")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::rv_unram::Unary;
+                    let k = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let operation = if name.text == "rvUnramFrob" {
+                        Unary::Frobenius(k)
+                    } else {
+                        Unary::Power(k as u64)
+                    };
+                    return expr(
+                        span,
+                        ExprForm::UnramUnary(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvUnramInv" | "rvUnramTeich" | "rvUnramTrace" | "rvUnramNorm"
+                ) && self.token() == Token::LParen
+                {
+                    use crate::rv_unram::Unary;
+                    let operation = match name.text.as_str() {
+                        "rvUnramInv" => Unary::Inverse,
+                        "rvUnramTeich" => Unary::Teichmuller,
+                        "rvUnramTrace" => Unary::Trace,
+                        _ => Unary::Norm,
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::UnramUnary(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvLegendreParameter" | "rvLegendreUnit" | "rvLegendreFactor"
+                ) {
+                    use crate::legendre_closed::Operation;
+                    let operation = match name.text.as_str() {
+                        "rvLegendreParameter" => Operation::Parameter,
+                        "rvLegendreUnit" => Operation::Unit,
+                        _ => {
+                            self.expect(Token::LBracket)?;
+                            let i = self.number()?.0;
+                            self.expect(Token::RBracket)?;
+                            Operation::Factor(i)
+                        }
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::LegendreClosed(operation, Box::new(input)),
                         depth,
                     );
                 }

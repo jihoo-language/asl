@@ -301,6 +301,20 @@ fn inverse(model: &mut Model, value: u64, modulus: u64) -> Result<u64> {
 }
 
 fn hensel(model: &mut Model, modulus: &Modulus, trace: i64) -> Result<Option<u64>> {
+    unit_hensel(model, modulus, trace, modulus.prime)
+}
+
+pub(crate) fn closed_point_hensel(
+    model: &mut Model,
+    prime: u64,
+    precision: usize,
+    trace: i64,
+    q: u64,
+) -> Result<Option<u64>> {
+    unit_hensel(model, &Modulus::new(prime, precision)?, trace, q)
+}
+
+fn unit_hensel(model: &mut Model, modulus: &Modulus, trace: i64, norm: u64) -> Result<Option<u64>> {
     let p = modulus.prime;
     let a = trace.rem_euclid(p as i64) as u64;
     if a == 0 {
@@ -314,7 +328,7 @@ fn hensel(model: &mut Model, modulus: &Modulus, trace: i64) -> Result<Option<u64
         let trace = i128::from(trace).rem_euclid(i128::from(next)) as u64;
         let square = multiply(root, root, next);
         let linear = multiply(trace, root, next);
-        let defect = add(subtract(square, linear, next), p, next);
+        let defect = add(subtract(square, linear, next), norm % next, next);
         let digit = multiply(subtract(0, defect / old, p), slope_inverse, p);
         root += digit * old;
     }
@@ -371,6 +385,33 @@ fn split_prime(mut value: u64, prime: u64) -> (u64, usize) {
     (value, count)
 }
 
+pub(crate) fn period_coefficients(
+    model: &mut Model,
+    prime: u64,
+    precision: usize,
+    apply: impl FnMut(&mut Model, u64, u64) -> Result<()>,
+) -> Result<()> {
+    let modulus = Modulus::new(prime, precision)?;
+    for_each_coefficient(model, &modulus, modulus.value(), apply)
+}
+
+fn for_each_coefficient(
+    model: &mut Model,
+    modulus: &Modulus,
+    terms: u64,
+    mut apply: impl FnMut(&mut Model, u64, u64) -> Result<()>,
+) -> Result<()> {
+    admit_terms(model, terms)?;
+    let mut binomial = Binomial::new();
+    for next in 1..=terms {
+        apply(model, next, binomial.square(modulus))?;
+        if next != terms {
+            binomial.advance(model, modulus, next)?;
+        }
+    }
+    Ok(())
+}
+
 fn periods(
     model: &mut Model,
     modulus: &Modulus,
@@ -378,22 +419,20 @@ fn periods(
     terms: u64,
     prefix: u64,
 ) -> Result<(u64, u64)> {
-    admit_terms(model, terms)?;
-    let mut binomial = Binomial::new();
     let value = modulus.value();
     let mut total = 0;
     let mut partial = 0;
     let mut x = 1;
-    for next in 1..=terms {
-        total = add(total, multiply(binomial.square(modulus), x, value), value);
+    for_each_coefficient(model, modulus, terms, |_, next, coefficient| {
+        total = add(total, multiply(coefficient, x, value), value);
         if next == prefix {
             partial = total;
         }
         if next != terms {
             x = multiply(x, z, value);
-            binomial.advance(model, modulus, next)?;
         }
-    }
+        Ok(())
+    })?;
     Ok((total, partial))
 }
 

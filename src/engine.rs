@@ -120,6 +120,7 @@ use crate::rv_t_system;
 use crate::rv_t_transfer;
 use crate::rv_tl;
 use crate::rv_tree;
+use crate::rv_unram::{self, Ring as UnramRing};
 use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
@@ -442,6 +443,12 @@ enum TypedForm {
     QRestrict(Box<TypedExpr>),
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
+    UnramUnary(crate::rv_unram::Unary, Rc<UnramRing>, Box<TypedExpr>),
+    LegendreClosed(
+        crate::legendre_closed::Operation,
+        Rc<UnramRing>,
+        Box<TypedExpr>,
+    ),
     HeckeNegate(Box<TypedExpr>),
     QpQuadUnary(QuadField, QuadUnary, Box<TypedExpr>),
     ResSpecializeQuad(ResGrade, QuadField, Vec<i64>, Vec<Vec<TypedExpr>>),
@@ -819,6 +826,32 @@ impl Engine {
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
+            StatementForm::UnramRing(name, p, precision, polynomial) => {
+                self.model
+                    .register_rv_unram(name, p, precision, polynomial)?;
+                return Ok(None);
+            }
+            StatementForm::UnramValuation(input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, "rvUnramVal")?;
+                let Value::RVUnram(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let valuation = ring.valuation(&mut self.model, &value)?;
+                if valuation == ring.precision() {
+                    format!("rvUnramVal = >={valuation}")
+                } else {
+                    format!("rvUnramVal = {valuation}")
+                }
+            }
+            StatementForm::LegendreClosedReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, query.name())?;
+                let Value::RVUnram(lambda) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                query.report(&mut self.model, &ring, &lambda)?
+            }
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
                 return Ok(None);
@@ -3789,6 +3822,25 @@ impl Engine {
                         };
                         rv_qp_quad::persist(&mut self.model, value)
                     }
+                    (
+                        op @ (BinaryOp::Add | BinaryOp::UnramMultiply),
+                        Value::RVUnram(a),
+                        Value::RVUnram(b),
+                    ) => {
+                        let Kind::RVUnram(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let ring = self
+                            .model
+                            .rv_unram_named(name)
+                            .expect("registered unramified ring");
+                        let value = if matches!(op, BinaryOp::Add) {
+                            ring.add(&mut self.model, &a, &b)?
+                        } else {
+                            ring.multiply(&mut self.model, &a, &b)?
+                        };
+                        rv_unram::persist(&mut self.model, value)
+                    }
                     (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
                         rv_lens::add(&mut self.model, &a, &b)
                     }
@@ -4801,6 +4853,20 @@ impl Engine {
                 };
                 let value = operation.apply(&mut self.model, *field, value)?;
                 rv_qp_quad::persist(&mut self.model, value)
+            }
+            TypedForm::UnramUnary(operation, ring, input) => {
+                let Value::RVUnram(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = operation.apply(&mut self.model, ring, &value)?;
+                rv_unram::persist(&mut self.model, value)
+            }
+            TypedForm::LegendreClosed(operation, ring, input) => {
+                let Value::RVUnram(lambda) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = operation.apply(&mut self.model, ring, &lambda)?;
+                rv_unram::persist(&mut self.model, value)
             }
             TypedForm::HeckeNegate(input) => match self.eval(input)? {
                 Value::RVIwHecke(value) => rv_iwhecke::neg(&mut self.model, &value),
@@ -6753,6 +6819,7 @@ impl Checker<'_> {
                 self.model.rv_valuated_matroid_type(grade)
             }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
+            TypeForm::RVUnram(ring) => self.model.rv_unram_type(&ring),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
@@ -7536,6 +7603,10 @@ impl Checker<'_> {
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVResSpace(grade) => ResSpace::zero(*grade).persist(self.model)?,
                     Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
+                    Kind::RVUnram(name) => {
+                        let ring = self.model.rv_unram_named(name).expect("registered unramified ring");
+                        rv_unram::persist(self.model,ring.scalar(0))?
+                    }
                     Kind::RVCycloQ(..) => rv_lens::zero(),
                     Kind::RvTl(..) => rv_tl::zero(),
                     Kind::RVWzw(..) => rv_wzw::zero(),
@@ -9407,6 +9478,31 @@ impl Checker<'_> {
                     TypedForm::QpQuadUnary(field, operation, Box::new(input)),
                 ))
             }
+            ExprForm::UnramElement(name, coefficients) => {
+                let ring = self.model.rv_unram(&name)?;
+                let ty = self.model.rv_unram_type(&name)?;
+                let value = ring.literal(self.model, coefficients)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(rv_unram::persist(self.model, value)?),
+                ))
+            }
+            ExprForm::UnramUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::UnramUnary(operation, ring, Box::new(input)),
+                ))
+            }
+            ExprForm::LegendreClosed(operation, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::LegendreClosed(operation, ring, Box::new(input)),
+                ))
+            }
             ExprForm::EOOddCover(name) => {
                 let cover = self.model.rv_as_odd_cover(&name)?;
                 let sequence = cover.derham(self.model)?.final_type(self.model, &cover)?;
@@ -10096,6 +10192,17 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::TlOperation(grade, TlOp::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVUnram(..)) {
+                    let ring = self.unram_ring(&input, "neg")?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::UnramUnary(
+                            crate::rv_unram::Unary::Negate,
+                            ring,
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVCycloQ(..)) {
@@ -13361,6 +13468,7 @@ impl Checker<'_> {
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::RVUnram(..)
                         | Kind::RVCycloQ(..)
                         | Kind::RVQpQuad(..)
                         | Kind::RvTl(..)
@@ -13593,6 +13701,11 @@ impl Checker<'_> {
             BinaryOp::QpQuadMultiply => {
                 self.qp_quad_field(left, "rvQpQuadMul")?;
                 self.require_type(left.ty, right, "rvQpQuadMul")?;
+                Ok(left.ty)
+            }
+            BinaryOp::UnramMultiply => {
+                self.unram_ring(left, "rvUnramMul")?;
+                self.require_type(left.ty, right, "rvUnramMul")?;
                 Ok(left.ty)
             }
             BinaryOp::BpCup => {
@@ -13963,6 +14076,16 @@ impl Checker<'_> {
         } else {
             Ok((right, TypedForm::Snd(Box::new(pair))))
         }
+    }
+
+    fn unram_ring(&self, input: &TypedExpr, operation: &str) -> Result<Rc<UnramRing>> {
+        let Kind::RVUnram(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVUnram element"));
+        };
+        Ok(self
+            .model
+            .rv_unram_named(name)
+            .expect("registered unramified ring"))
     }
 
     fn require_eo(&self, input: &TypedExpr, operation: &str) -> Result<()> {
