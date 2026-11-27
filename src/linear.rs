@@ -48,8 +48,18 @@ impl Basis {
     pub(crate) fn insert_with_witness(
         &mut self,
         model: &mut Model,
+        image: Vec<usize>,
+        witness: Vec<usize>,
+    ) -> Result<Option<Vec<usize>>> {
+        self.insert_traced(model, image, witness, |_, _, _| Ok(()))
+    }
+
+    pub(crate) fn insert_traced(
+        &mut self,
+        model: &mut Model,
         mut image: Vec<usize>,
         mut witness: Vec<usize>,
+        trace: impl FnOnce(&mut Model, &[usize], &[usize]) -> Result<()>,
     ) -> Result<Option<Vec<usize>>> {
         model.spend(1 + image.len() + witness.len())?;
         while let Some(&leading) = image.last() {
@@ -61,6 +71,7 @@ impl Basis {
                 if cells > MAX_PIVOT_CELLS {
                     return Err(Error::plain("linear reduction exceeds the storage limit"));
                 }
+                trace(model, &image, &witness)?;
                 self.cells = cells;
                 self.pivots.insert(
                     leading,
@@ -72,6 +83,7 @@ impl Basis {
                 return Ok(None);
             }
         }
+        trace(model, &image, &witness)?;
         Ok(Some(witness))
     }
 

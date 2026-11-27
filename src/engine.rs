@@ -109,8 +109,8 @@ use crate::syntax::RvNCSpec;
 use crate::syntax::{
     BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
     JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
-    RhoLocOp, RhoOp, RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm, TypeForm,
-    VBockSpec, Witness,
+    RealBarOp, RhoLocOp, RhoOp, RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm,
+    TypeForm, VBockSpec, Witness,
 };
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::transfer;
@@ -395,6 +395,7 @@ enum TypedForm {
     RhoShift(usize, Box<TypedExpr>),
     RealComplex(Box<TypedExpr>),
     RhoNull(usize, Box<TypedExpr>),
+    RealBar(RealBarOp, usize, i128, usize),
     RhoOperation(RhoOp, Box<TypedExpr>),
     RhoLocOperation(RhoLocOp, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
@@ -1127,6 +1128,16 @@ impl Engine {
                     f,
                 } = grade;
                 format!("rhobockdim[{r}, {s}, {t}, {w}, {f}] = {rank}")
+            }
+            StatementForm::RealBars(s, k) => {
+                let group = self.model.real_bars(s, k)?;
+                let bars = group.describe(&mut self.model)?;
+                format!("rmbars[{s}, {k}] = {bars}")
+            }
+            StatementForm::RealBarRank(s, k, t, power) => {
+                let group = self.model.real_bars(s, k)?;
+                let rank = group.shift_rank(&mut self.model, t, power)?;
+                format!("rmbarRank[{s}, {k}, {t}, {power}] = {rank}")
             }
             StatementForm::RhoOrder(input) => {
                 let input = self.checker().expr(*input)?;
@@ -2379,6 +2390,15 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::RealBar(op, s, k, index) => {
+                let group = self.model.real_bars(*s, *k)?;
+                let bar = group.get(*index)?;
+                match op {
+                    RealBarOp::Generator => bar.generator(&mut self.model, expr.ty),
+                    RealBarOp::Representative => Ok(bar.representative()),
+                    RealBarOp::Witness => bar.witness(&mut self.model),
+                }
+            }
             TypedForm::RhoNull(power, input) => {
                 let grade = self.model.kind(input.ty).real_grade().unwrap();
                 let (terms, known_cycle) = self.real_terms(input)?;
@@ -5062,6 +5082,16 @@ impl Checker<'_> {
                 let rank = self.model.odd_page(ty)?.rank();
                 let value = self.prime_generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RealBar(op, s, k, index, at) => {
+                let group = self.model.real_bars(s, k)?;
+                let bar = group.get(index).map_err(|error| error.at(at))?;
+                let ty = match op {
+                    RealBarOp::Generator => self.model.rmext_type(bar.grade(s, k)?)?,
+                    RealBarOp::Representative => self.model.real_cobar_type(bar.grade(s, k)?)?,
+                    RealBarOp::Witness => self.model.real_cobar_type(bar.witness_grade(s, k)?)?,
+                };
+                Ok((ty, TypedForm::RealBar(op, s, k, index)))
             }
             ExprForm::RMExtGenerator(grade, index, at) => {
                 let ty = self.model.rmext_type(grade)?;

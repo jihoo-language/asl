@@ -307,15 +307,12 @@ pub(crate) fn differential_below(
             continue;
         }
         if term.tau != 0 {
-            let first = Term {
-                tau: 0,
-                rho: term.rho,
-                word: std::iter::once([].into())
-                    .chain(term.word.iter().cloned())
-                    .collect(),
-            };
-            for coface in transport(model, first, 1, term.tau, cutoff)? {
+            // Transport affects only the new first slot. Reduce it
+            // before adjoining the old word.
+            let first = Term::scalar(1, term.rho, 0);
+            for mut coface in transport(model, first, 1, term.tau, cutoff)? {
                 if coface.normalized() {
+                    coface.word = cobar::join(&coface.word, &term.word);
                     toggle(model, &mut image, coface)?;
                 }
             }
@@ -339,16 +336,40 @@ fn split(
     factor: &Monomial,
     cutoff: u128,
 ) -> Result<Vec<Term>> {
-    let width = term.word.len() + 1;
-    let even_factor = factor.iter().map(|power| power & !1).collect();
-    let mut coface = Support::new();
-    for (left, right) in cobar::coproduct(model, Profile::Full, &even_factor)? {
-        let word = term.word[..slot]
+    let split_word = |left, right| {
+        term.word[..slot]
             .iter()
             .cloned()
             .chain([left, right])
             .chain(term.word[slot + 1..].iter().cloned())
-            .collect();
+            .collect()
+    };
+    // With at most one odd generator no coproduct factor can
+    // contain a tau square. The ordinary Milnor expansion is exact.
+    if cobar::odd_exponents(factor) <= 1 {
+        let mut coface = Vec::new();
+        let mut cells = 0;
+        for (left, right) in cobar::coproduct(model, Profile::Full, factor)? {
+            if left.is_empty() || right.is_empty() {
+                continue;
+            }
+            let split = Term {
+                word: split_word(left, right),
+                ..term.clone()
+            };
+            model.spend(split.cells())?;
+            cells += split.cells();
+            cobar::check_storage(cells)?;
+            coface.push(split);
+        }
+        return Ok(coface);
+    }
+
+    let width = term.word.len() + 1;
+    let even_factor = factor.iter().map(|power| power & !1).collect();
+    let mut coface = Support::new();
+    for (left, right) in cobar::coproduct(model, Profile::Full, &even_factor)? {
+        let word = split_word(left, right);
         toggle(
             model,
             &mut coface,

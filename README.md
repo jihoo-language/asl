@@ -269,6 +269,14 @@ On positive-length cochains `rhoHomotopy` gives a homotopy $H$ lowering length b
 
 At fixed $k=t-w$, a raw basis word of intrinsic degree $T$ has $\rho$ exponent $T-t$ and $\tau$ exponent $W-T+k$. Once $t\le 0$, the condition $T-t\ge0$ is automatic. Every further multiplication by $\rho$ is an isomorphism of these normalized cochain slices. Thus finite torsion is killed by exponent $\max(t,0)$. The exact tests use the incoming differential, with a direct scalar test in length one. In the example the real classes $h_0$ and $\rho h_1$ have the same tridegree and different behavior under the two comparison maps. The real class $h_0^2$ has exponent one, and the raw cochain $[\tau_0^{32}]$ has exponent 32 with witness $\tau^{32}$. [Real-motivic Ext example](examples/real-motivic-ext.asl)
 
+### Graded rho-module bars
+
+`rmbars[s,k];` decomposes real-motivic Ext as a graded $\mathbb F_2[\rho]$-module at fixed $k=t-w$. Each entry gives birth degree $B$ and length $r$, or `infinite` for a free interval. A finite interval contributes at $B-r<t\le B$, and a free interval contributes at every $t\le B$. Multiplication by $\rho$ lowers $t$ and $w$ by one. `rmbarRank[s,k,t,j];` counts intervals containing both $t$ and $t-j$, giving the rank of multiplication by $\rho^j$ in that component.
+
+The calculation uses the normalized cobar at $t=0,w=-k$. Filtering its basis by intrinsic topological degree $T\ge t$ recovers the real slice at degree $t$. The two adjacent differential matrices are reduced in decreasing order of $T$. A reduced incoming column pairs its source degree $D$ with its pivot degree $B$, giving a finite interval of length $B-D$ when that difference is positive. An outgoing dependency with unpaired leading coordinate gives a free interval. The tracked column combinations give real cocycles and nulls, with their own topological degrees.
+
+Use `rmbarGen[s,k,i]` for the bar's `RMExt` generator and `rmbarRep[s,k,i]` for its traced real cocycle. For a finite bar, `rmbarNull[s,k,i]` gives the paired cochain $u$ with $du=\rho^r z$, where $z$ is the traced representative. The null starts in filtration zero in topological degree $B-r$ and supports the differential $d_r$ to the filtration-$r$ class of $\rho^r z$. The example verifies this correspondence for length six in $(s,k)=(2,5)$ and length seven in $(3,6)$. [Real-motivic rho bars example](examples/real-motivic-bars.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

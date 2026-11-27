@@ -34,6 +34,7 @@ use crate::profile::Profile;
 use crate::q_koszul::{self, Grade, QExt};
 use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
+use crate::real_bars;
 use crate::real_ext;
 use crate::real_motivic;
 use crate::rho_bock;
@@ -408,6 +409,7 @@ pub(crate) struct Model {
     rv_bar_pages: HashMap<TypeId, Rc<rv_bar_page::Page>>,
     rho_pages: HashMap<TypeId, Rc<rho_bock::Page>>,
     real_ext: HashMap<TypeId, Rc<real_ext::Group>>,
+    real_bars: HashMap<(usize, i128), Rc<real_bars::Group>>,
     rv_bar_ids: HashMap<String, rv_bar::PathId>,
     jet_paths: Vec<(String, Rc<Path>)>,
     jet_path_ids: HashMap<String, jet_hom::PathId>,
@@ -447,6 +449,7 @@ impl Model {
             rv_bar_pages: HashMap::new(),
             rho_pages: HashMap::new(),
             real_ext: HashMap::new(),
+            real_bars: HashMap::new(),
             rv_bar_ids: HashMap::new(),
             jet_paths: Vec::new(),
             jet_path_ids: HashMap::new(),
@@ -1309,6 +1312,15 @@ impl Model {
 
     pub(crate) fn rmext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RMExt(grade), 0)
+    }
+
+    pub(crate) fn real_bars(&mut self, s: usize, k: i128) -> Result<Rc<real_bars::Group>> {
+        if let Some(group) = self.real_bars.get(&(s, k)) {
+            return Ok(group.clone());
+        }
+        let group = Rc::new(real_bars::Group::build(self, s, k)?);
+        self.real_bars.insert((s, k), group.clone());
+        Ok(group)
     }
 
     pub(crate) fn real_ext(&mut self, ty: TypeId) -> Result<Rc<real_ext::Group>> {

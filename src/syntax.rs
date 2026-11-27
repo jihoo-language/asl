@@ -284,6 +284,13 @@ pub(crate) struct JetPageSpec {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum RealBarOp {
+    Generator,
+    Representative,
+    Witness,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum RhoLocOp {
     Localize,
     Project,
@@ -588,6 +595,7 @@ pub(crate) enum ExprForm {
     ExtGenerator(usize, usize, usize, Span),
     MExtGenerator(MotivicGrade, usize, Span),
     RMExtGenerator(MotivicGrade, usize, Span),
+    RealBar(RealBarOp, usize, i128, usize, Span),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
@@ -765,6 +773,8 @@ pub(crate) enum StatementForm {
     MExtDimension(MotivicGrade),
     RMExtDimension(MotivicGrade),
     RhoOrder(Box<ParsedExpr>),
+    RealBars(usize, i128),
+    RealBarRank(usize, i128, i128, usize),
     RhoDimension(rho_bock::Grade),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
@@ -1835,6 +1845,26 @@ impl<'src> Parser<'src> {
                 let grade = self.rho_grade()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RhoDimension(grade)
+            }
+            Token::Word("rmbars" | "rmbarRank") => {
+                let is_rank = self.token() == Token::Word("rmbarRank");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (s, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let k = self.signed_wide("a signed degree t-w", "rho bar degree")?;
+                let form = if is_rank {
+                    self.expect(Token::Comma)?;
+                    let t = self
+                        .signed_wide("a signed topological degree", "rho bar topological degree")?;
+                    self.expect(Token::Comma)?;
+                    let (power, _) = self.number()?;
+                    StatementForm::RealBarRank(s, k, t, power)
+                } else {
+                    StatementForm::RealBars(s, k)
+                };
+                self.expect(Token::RBracket)?;
+                form
             }
             Token::Word("rhoorder") => {
                 self.advance()?;
@@ -4678,6 +4708,22 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PExtAnGenerator(p, n, s, t, index, at), 0);
+                }
+                if matches!(name.text.as_str(), "rmbarGen" | "rmbarRep" | "rmbarNull")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (s, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let k = self.signed_wide("a signed degree t-w", "rho bar degree")?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let op = match name.text.as_str() {
+                        "rmbarGen" => RealBarOp::Generator,
+                        "rmbarRep" => RealBarOp::Representative,
+                        _ => RealBarOp::Witness,
+                    };
+                    return expr(span, ExprForm::RealBar(op, s, k, index, at), 0);
                 }
                 if name.text == "rmextgen" && self.eat(Token::LBracket)? {
                     let grade = self.motivic_grade()?;
