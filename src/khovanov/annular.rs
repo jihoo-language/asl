@@ -441,13 +441,43 @@ impl Braid {
     }
 
     pub(crate) fn annular_check(&self, model: &mut Model) -> Result<usize> {
-        let states = state_count(self.crossings.len())?;
-        model.spend(states)?;
         let mut context = Context::with_annular(self, true);
         let slice = Some(Slice::AtMost(self.ends.len() as i64));
+        context.enhanced_cells(model, |context, model, cell| {
+            let mut first = Vec::new();
+            context.edges(model, &cell, false, slice, |_, term, sign| {
+                first.push((term, sign));
+                Ok(())
+            })?;
+            let mut output = ChainSum::default();
+            for (term, sign) in first {
+                context.edges(model, &term, false, slice, |model, target, second| {
+                    output.add(model, target, sign * second)
+                })?;
+            }
+            // The two verified degrees of d make the components
+            // of d² precisely d0², d0*d-2+d-2*d0, and d-2².
+            if !output.terms.is_empty() {
+                return Err(Error::plain(
+                    "annular Khovanov differential does not square to zero",
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
+impl Context<'_> {
+    pub(super) fn enhanced_cells(
+        &mut self,
+        model: &mut Model,
+        mut visit: impl FnMut(&mut Self, &mut Model, Cell) -> Result<()>,
+    ) -> Result<usize> {
+        let states = state_count(self.braid.crossings.len())?;
+        model.spend(states)?;
         let mut tested = 0;
         for state in 0..states {
-            let resolution = context.resolution(model, state as State)?;
+            let resolution = self.resolution(model, state as State)?;
             let circles = resolution.anchors.len();
             let labels = 1usize.checked_shl(circles as u32).ok_or_else(|| {
                 Error::plain("annular Khovanov enhanced cube exceeds the work limit")
@@ -457,28 +487,14 @@ impl Braid {
             for bits in 0..labels {
                 model.spend(circles)?;
                 let xs = (0..circles).filter(|&i| (bits & (1 << i)) != 0).collect();
-                let cell = Cell {
-                    state: state as State,
-                    xs,
-                };
-                let mut first = Vec::new();
-                context.edges(model, &cell, false, slice, |_, term, sign| {
-                    first.push((term, sign));
-                    Ok(())
-                })?;
-                let mut output = ChainSum::default();
-                for (term, sign) in first {
-                    context.edges(model, &term, false, slice, |model, target, second| {
-                        output.add(model, target, sign * second)
-                    })?;
-                }
-                // The two verified degrees of d make the components
-                // of d² precisely d0², d0*d-2+d-2*d0, and d-2².
-                if !output.terms.is_empty() {
-                    return Err(Error::plain(
-                        "annular Khovanov differential does not square to zero",
-                    ));
-                }
+                visit(
+                    self,
+                    model,
+                    Cell {
+                        state: state as State,
+                        xs,
+                    },
+                )?;
             }
         }
         Ok(tested)

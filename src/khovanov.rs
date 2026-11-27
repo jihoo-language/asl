@@ -11,7 +11,9 @@ use crate::rv_tl;
 use crate::syntax::{Label, ParsedExpr};
 
 mod annular;
+mod annular_action;
 pub(crate) use annular::{add_binary, pair};
+pub(crate) use annular_action::Action;
 
 pub(crate) enum Command {
     Braid(Label, usize, Vec<i128>),
@@ -20,6 +22,8 @@ pub(crate) enum Command {
     AnnularGroup(Label, Grade, i64),
     AnnularEuler(Label),
     AnnularCheck(Label),
+    ActionCheck(Label),
+    Irreps(Label, i64, i64),
     Kappa(Label),
 }
 
@@ -31,6 +35,7 @@ pub(crate) enum Query {
     Psi(Label),
     KappaNull(Label),
     KappaDual(Label),
+    Highest(Label, Grade, i64, usize),
     Pair(Box<[ParsedExpr; 2]>),
 }
 
@@ -44,6 +49,7 @@ pub(crate) enum Generator {
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
     Differential,
+    Action(Action),
     AnnularDifferential(i64),
     AnnularPart(i64),
     ForgetK,
@@ -57,6 +63,7 @@ impl Operation {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Differential => "khD",
+            Self::Action(action) => action.name(),
             Self::AnnularDifferential(0) => "khD0",
             Self::AnnularDifferential(_) => "khDMinus2",
             Self::AnnularPart(_) => "khAnnular",
@@ -737,7 +744,12 @@ impl<'a> Context<'a> {
                     } else {
                         old_k - new_k
                     };
-                    if !matches!(drop, 0 | 2) {
+                    let allowed = match saddle {
+                        Saddle::Khovanov => matches!(drop, 0 | 2),
+                        Saddle::Perturbation => matches!(drop, -2 | 0),
+                        Saddle::Lee => matches!(drop, -2 | 0 | 2),
+                    };
+                    if !allowed {
                         return Err(Error::plain(
                             "Khovanov saddle changes annular degree by an invalid amount",
                         ));

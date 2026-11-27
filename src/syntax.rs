@@ -2324,6 +2324,11 @@ impl<'src> Parser<'src> {
                 "khAnnularGroup" => Command::AnnularGroup(name, self.kh_grade()?, self.kh_k()?),
                 "khAnnularEuler" => Command::AnnularEuler(name),
                 "khAnnularCheck" => Command::AnnularCheck(name),
+                "khActionCheck" => Command::ActionCheck(name),
+                "khIrreps" => {
+                    let grade = self.kh_grade()?;
+                    Command::Irreps(name, grade.i, grade.j)
+                }
                 "khKappa" => Command::Kappa(name),
                 _ => Command::Euler(name),
             }
@@ -2492,9 +2497,17 @@ impl<'src> Parser<'src> {
     }
 
     fn kh_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
-        use crate::khovanov::{Generator, Operation, Query};
+        use crate::khovanov::{Action, Generator, Operation, Query};
         let operation = match command {
             "khD" => Some(Operation::Differential),
+            "khE" => Some(Operation::Action(Action::E)),
+            "khF" => Some(Operation::Action(Action::F)),
+            "khH" => Some(Operation::Action(Action::H)),
+            "khVMinus" => Some(Operation::Action(Action::Minus)),
+            "khVZero" => Some(Operation::Action(Action::Zero)),
+            "khWPlus" => Some(Operation::Action(Action::PlusTwice)),
+            "khLee0" => Some(Operation::Action(Action::LeeZero)),
+            "khLeePlus" => Some(Operation::Action(Action::LeePlus)),
             "khD0" => Some(Operation::AnnularDifferential(0)),
             "khDMinus2" => Some(Operation::AnnularDifferential(-2)),
             "khForgetK" => Some(Operation::ForgetK),
@@ -2555,6 +2568,12 @@ impl<'src> Parser<'src> {
                 "khPsi" => Query::Psi(name),
                 "khKappaNull" => Query::KappaNull(name),
                 "khKappaDual" => Query::KappaDual(name),
+                "khHighest" => {
+                    let grade = self.kh_grade()?;
+                    let weight = self.kh_k()?;
+                    self.expect(Token::Comma)?;
+                    Query::Highest(name, grade, weight, self.number()?.0)
+                }
                 _ => {
                     let grade = self.kh_grade()?;
                     let annular = matches!(command, "khABasis" | "khAGen" | "khANull")
@@ -3002,7 +3021,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 command @ ("khbraid" | "khGroup" | "khEuler" | "khAnnularGroup" | "khAnnularEuler"
-                | "khAnnularCheck" | "khKappa"),
+                | "khAnnularCheck" | "khActionCheck" | "khIrreps" | "khKappa"),
             ) => self.kh_statement(command)?,
             Token::Word(
                 command @ ("rvhyperelliptic" | "rvHWStatus" | "rvHWPoints" | "rvHWWeil"
@@ -9704,10 +9723,25 @@ impl<'src> Parser<'src> {
                         | "khPsi"
                         | "khKappaNull"
                         | "khKappaDual"
+                        | "khHighest"
                 ) && self.token() == Token::LBracket
                     || matches!(
                         name.text.as_str(),
-                        "khD" | "khD0" | "khDMinus2" | "khForgetK" | "khClass" | "khRep" | "khPair"
+                        "khD"
+                            | "khD0"
+                            | "khDMinus2"
+                            | "khForgetK"
+                            | "khClass"
+                            | "khRep"
+                            | "khPair"
+                            | "khE"
+                            | "khF"
+                            | "khH"
+                            | "khVMinus"
+                            | "khVZero"
+                            | "khWPlus"
+                            | "khLee0"
+                            | "khLeePlus"
                     ) && self.token() == Token::LParen
                 {
                     return self.kh_expression(&name.text, span, nest + 1);

@@ -1042,6 +1042,23 @@ impl Engine {
                         name.text
                     )
                 }
+                khovanov::Command::ActionCheck(name) => {
+                    let tested = self
+                        .model
+                        .kh_braid(&name.text)?
+                        .action_check(&mut self.model)?;
+                    format!(
+                        "khActionCheck[{}] = verified ({tested} enhanced states)",
+                        name.text
+                    )
+                }
+                khovanov::Command::Irreps(name, i, difference) => {
+                    let irreps =
+                        self.model
+                            .kh_braid(&name.text)?
+                            .irreps(&mut self.model, i, difference)?;
+                    format!("khIrreps[{}, {i}, {difference}] = {irreps:?}", name.text)
+                }
                 khovanov::Command::Kappa(name) => {
                     let result = self
                         .model
@@ -5903,6 +5920,18 @@ impl Engine {
                             braid.differential(&mut self.model, &chain, None)?
                         };
                         Ok(Value::KhChain(chain))
+                    }
+                    (Operation::Action(action), Value::KhChain(chain)) => Ok(Value::KhChain(
+                        braid.action_chain(&mut self.model, *action, &chain)?,
+                    )),
+                    (Operation::Action(action), Value::KhClass(class)) => {
+                        Ok(Value::KhClass(braid.action_class(
+                            &mut self.model,
+                            *action,
+                            grade,
+                            form.annular().unwrap(),
+                            &class,
+                        )?))
                     }
                     (Operation::AnnularDifferential(delta), Value::KhChain(chain)) => {
                         let k = form.annular().unwrap().checked_add(*delta).unwrap();
@@ -14769,6 +14798,23 @@ impl Checker<'_> {
                 };
                 (self.model.kh_type(name.text.into(), grade, form)?, value)
             }
+            Query::Highest(name, difference, k, index) => {
+                let grade = khovanov::Grade {
+                    i: difference.i,
+                    j: difference
+                        .j
+                        .checked_add(k)
+                        .ok_or_else(|| Error::plain("Khovanov quantum degree is out of range"))?,
+                };
+                let cycle = self
+                    .model
+                    .kh_braid(&name.text)?
+                    .highest(self.model, grade, k, index)?;
+                let ty = self
+                    .model
+                    .kh_type(name.text.into(), grade, KhForm::AnnularChain(k))?;
+                (ty, Value::KhChain(cycle))
+            }
             Query::Psi(name) => {
                 let (grade, k, cycle) = self.model.kh_braid(&name.text)?.psi(self.model)?;
                 let ty = self
@@ -14835,6 +14881,7 @@ impl Checker<'_> {
                     ));
                 };
                 let (grade, form) = match (op, form) {
+                    (Operation::Action(action), form) => action.target(grade, form)?,
                     (Operation::Differential, KhForm::Chain | KhForm::AnnularChain(_)) => {
                         (grade.shift(1)?, KhForm::Chain)
                     }
