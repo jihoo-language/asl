@@ -113,7 +113,7 @@ impl Ambient<'_> {
         self.neg(self.double.cocycle_phase([x, y, z]) * (self.conductor / self.double.conductor))
     }
 
-    fn mu(&self, boundary: usize, x: usize, y: usize) -> usize {
+    pub(super) fn mu(&self, boundary: usize, x: usize, y: usize) -> usize {
         let t = &self.boundaries[boundary];
         t.phases[t.local(x)][t.local(y)]
     }

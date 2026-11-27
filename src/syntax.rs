@@ -81,6 +81,7 @@ pub(crate) enum TypeForm {
     DoubleDefect(Label),
     DoubleRelative(Label),
     DoubleDefectSixJ(Label, usize),
+    DoubleCentralMap(Label, usize),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -794,6 +795,7 @@ pub(crate) enum ExprForm {
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Expression>),
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Expression>),
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression>),
+    DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1293,6 +1295,7 @@ pub(crate) enum StatementForm {
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Command>),
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Command>),
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command>),
+    DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4559,8 +4562,7 @@ impl<'src> Parser<'src> {
         Ok(output)
     }
 
-    fn sixj_labels<const N: usize>(&mut self) -> Result<[Label; N]> {
-        self.expect(Token::LBracket)?;
+    fn fixed_labels<const N: usize>(&mut self) -> Result<[Label; N]> {
         let mut labels = Vec::with_capacity(N);
         for i in 0..N {
             if i != 0 {
@@ -4568,7 +4570,6 @@ impl<'src> Parser<'src> {
             }
             labels.push(self.label()?);
         }
-        self.expect(Token::RBracket)?;
         Ok(labels.try_into().unwrap_or_else(|_| unreachable!()))
     }
 
@@ -4578,7 +4579,10 @@ impl<'src> Parser<'src> {
         let command = if op == "rvDoubleDefectSixJData" {
             Command::Data(Box::new(self.paren_expr(0)?))
         } else {
-            Command::Pentagon(self.sixj_labels()?, Box::new(self.paren_arguments(0)?))
+            self.expect(Token::LBracket)?;
+            let labels = self.fixed_labels()?;
+            self.expect(Token::RBracket)?;
+            Command::Pentagon(labels, Box::new(self.paren_arguments(0)?))
         };
         Ok(StatementForm::DoubleDefectSixJ(Box::new(command)))
     }
@@ -4586,7 +4590,9 @@ impl<'src> Parser<'src> {
     fn sixj_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression;
         let (form, depth) = if op == "rvDoubleDefectSixJ" {
-            let labels = self.sixj_labels()?;
+            self.expect(Token::LBracket)?;
+            let labels = self.fixed_labels()?;
+            self.expect(Token::RBracket)?;
             let inputs = Box::new(self.paren_arguments(nest)?);
             let depth = inputs.iter().map(|input| input.depth).max().unwrap();
             (Expression::Assemble(labels, inputs), depth)
@@ -4602,6 +4608,81 @@ impl<'src> Parser<'src> {
             (entry, depth)
         };
         expr(span, ExprForm::DoubleDefectSixJ(Box::new(form)), depth + 1)
+    }
+
+    fn central_statement(&mut self, op: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::central::Command;
+        self.advance()?;
+        let command = match op {
+            "rvDoubleCentralData" => Command::Data(Box::new(self.paren_expr(0)?)),
+            "rvDoubleCentralBasis" => {
+                Command::Basis(self.relative_indices()?, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleCentralImage" => {
+                Command::Image(self.relative_indices()?, Box::new(self.paren_expr(0)?))
+            }
+            "rvDoubleCentralWhisker" => {
+                self.expect(Token::LBracket)?;
+                let labels = self.fixed_labels()?;
+                let [a] = self.following_indices()?;
+                self.expect(Token::RBracket)?;
+                Command::Whisker(labels, a, Box::new(self.paren_pair(0)?))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let command = match op {
+                    "rvDoubleBulkBoundaryValidate" => Command::Validate(name, None),
+                    "rvDoubleBulkBoundaryFusion" => {
+                        Command::Validate(name, Some(self.following_indices()?))
+                    }
+                    _ => {
+                        let [a] = self.following_indices()?;
+                        Command::Unit(name, a)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::DoubleCentral(Box::new(command)))
+    }
+
+    fn central_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::central::Expression;
+        let (form, depth) = match op {
+            "rvDoubleBulkBoundary" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let [a] = self.following_indices()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Induce(name, a), 0)
+            }
+            "rvDoubleCentralMove" => {
+                self.expect(Token::LBracket)?;
+                let names = self.fixed_labels()?;
+                let [a] = self.following_indices()?;
+                let conductor = if self.eat(Token::Comma)? {
+                    Some(self.number()?.0)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::Move(names, a, conductor, input), depth)
+            }
+            _ => {
+                let key = self.relative_indices()?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (
+                    Expression::Entry(key, op == "rvDoubleCentralInvEntry", input),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::DoubleCentral(Box::new(form)), depth)
     }
 
     fn relative_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -13431,6 +13512,15 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFuse"
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
+            Token::Word(
+                op @ ("rvDoubleBulkBoundaryValidate"
+                | "rvDoubleBulkBoundaryFusion"
+                | "rvDoubleCentralUnit"
+                | "rvDoubleCentralWhisker"
+                | "rvDoubleCentralData"
+                | "rvDoubleCentralBasis"
+                | "rvDoubleCentralImage"),
+            ) => self.central_statement(op)?,
             Token::Word(op @ ("rvDoubleDefectSixJData" | "rvDoubleDefectPentagon")) => {
                 self.sixj_statement(op)?
             }
@@ -17841,6 +17931,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleCentralMap" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let conductor = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleCentralMap(name, conductor), 0);
+        }
         if name.text == "RVDoubleDefectSixJ" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::Comma)?;
@@ -20969,6 +21066,16 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.sixj_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDoubleBulkBoundary"
+                        | "rvDoubleCentralMove"
+                        | "rvDoubleCentralEntry"
+                        | "rvDoubleCentralInvEntry"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.central_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

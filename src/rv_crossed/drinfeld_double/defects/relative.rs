@@ -10,6 +10,7 @@ use super::super::representations::{self, IntertwinerOrbit};
 use super::{Category, Double, Image};
 
 mod associator;
+pub(crate) mod central;
 pub(crate) use associator::associate;
 mod graded;
 pub(crate) mod sixj;
@@ -121,14 +122,27 @@ impl Relative {
         let n = b.module(model, &ambient, right)?;
         let product = Balanced::new(model, &ambient, &m, &n)?;
         let homs = decompose(model, &ambient, target, &product.module)?;
-        let mut module = product.module;
-        module.ends = [0, 1];
-        Ok(Self {
-            conductor: ambient.conductor,
-            module,
-            bases: product.bases,
+        Ok(Self::from_graded(
+            ambient.conductor,
+            product.module,
+            product.bases,
             homs,
-        })
+        ))
+    }
+
+    fn from_graded(
+        conductor: usize,
+        mut module: Module,
+        bases: Vec<Vec<Pair>>,
+        homs: Vec<Hom>,
+    ) -> Self {
+        module.ends = [0, 1];
+        Self {
+            conductor,
+            module,
+            bases,
+            homs,
+        }
     }
 
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {

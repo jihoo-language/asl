@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::error::{Error, Result};
 use crate::model::Model;
 
@@ -56,11 +58,11 @@ impl<'a> Tree<'a> {
     pub(super) fn build(
         model: &mut Model,
         ambient: &Ambient<'_>,
-        inputs: &'a [Module],
+        inputs: &'a [impl Borrow<Module>],
         shape: &Shape,
     ) -> Result<Self> {
         let (interval, node) = match *shape {
-            Shape::Leaf(i) => ([i, i + 1], Node::Leaf(i, &inputs[i])),
+            Shape::Leaf(i) => ([i, i + 1], Node::Leaf(i, inputs[i].borrow())),
             Shape::Join(l, r) => {
                 let left = Self::build(model, ambient, inputs, l)?;
                 let right = Self::build(model, ambient, inputs, r)?;
@@ -135,7 +137,7 @@ impl<'a> Tree<'a> {
 pub(super) fn rotation(
     model: &mut Model,
     ambient: &Ambient<'_>,
-    inputs: &[Module],
+    inputs: &[impl Borrow<Module>],
     from: &Tree<'_>,
     to: &Tree<'_>,
     [a, b, c, d]: [usize; 4],
@@ -178,7 +180,7 @@ pub(super) fn rotation(
     }
     let count = inputs
         .iter()
-        .try_fold(1usize, |n, m| n.checked_mul(m.dimension()))
+        .try_fold(1usize, |n, m| n.checked_mul(m.borrow().dimension()))
         .ok_or_else(|| {
             Error::plain("boundary recoupling raw tensor size exceeds the computation limit")
         })?;
@@ -211,7 +213,7 @@ pub(super) fn rotation(
 }
 
 fn all_raw(
-    rest: &[Module],
+    rest: &[impl Borrow<Module>],
     raw: &mut Raw,
     action: &mut impl FnMut(&Raw) -> Result<()>,
 ) -> Result<()> {
@@ -219,7 +221,7 @@ fn all_raw(
         return action(raw);
     };
     let i = rest.len();
-    for (g, &dim) in module.fibers.iter().enumerate() {
+    for (g, &dim) in module.borrow().fibers.iter().enumerate() {
         raw.grades[i] = g;
         for k in 0..dim {
             raw.columns[i] = k;
@@ -229,7 +231,7 @@ fn all_raw(
     Ok(())
 }
 
-fn check_actions(
+pub(super) fn check_actions(
     model: &mut Model,
     ambient: &Ambient<'_>,
     from: &Module,

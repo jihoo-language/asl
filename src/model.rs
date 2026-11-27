@@ -30,7 +30,7 @@ use crate::elliptic::{
     self, Curve as EllipticCurve, Isogeny, Kernel as ECKernel, Point as ECPoint,
 };
 use crate::elliptic_end_order::level as ec_level;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, Span};
 use crate::hw_algebra::Matrix as HWMatrix;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
@@ -218,6 +218,7 @@ pub(crate) enum Kind {
     DoubleDefect(Rc<str>),
     DoubleRelative(Rc<str>),
     DoubleDefectSixJ(Rc<str>, usize),
+    DoubleCentralMap(Rc<str>, usize),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -523,6 +524,7 @@ pub(crate) enum Value {
     DoubleDefect(usize),
     DoubleRelative(Rc<dd::defects::relative::Relative>),
     DoubleDefectSixJ(Rc<dd::defects::relative::sixj::SixJ>),
+    DoubleCentralMap(Rc<dd::defects::relative::central::CentralMap>),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -1240,6 +1242,26 @@ impl Model {
         self.inhabited_type(Kind::DoubleRelative(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn defect_bulk(
+        &self,
+        category: &dd::defects::Category,
+        span: Span,
+    ) -> Result<Rc<dd::Double>> {
+        self.drinfeld_double(&Label {
+            text: category.boundaries[0].double_name.to_string(),
+            span,
+        })
+    }
+
+    pub(crate) fn double_central_type(&mut self, name: &Label, conductor: usize) -> Result<TypeId> {
+        self.double_defects(name)?;
+        self.cyclotomic_rational_type(conductor)?;
+        self.inhabited_type(
+            Kind::DoubleCentralMap(name.text.as_str().into(), conductor),
+            0,
+        )
+    }
+
     pub(crate) fn double_sixj_type(&mut self, name: &Label, conductor: usize) -> Result<TypeId> {
         self.double_defects(name)?;
         self.cyclotomic_rational_type(conductor)?;
@@ -1782,7 +1804,8 @@ impl Model {
             | Kind::DoubleSector(..)
             | Kind::DoubleBraid(..)
             | Kind::DoubleRelative(..)
-            | Kind::DoubleDefectSixJ(..) => usize::MAX,
+            | Kind::DoubleDefectSixJ(..)
+            | Kind::DoubleCentralMap(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -2080,6 +2103,7 @@ impl Model {
                 | Kind::DoubleDefect(..)
                 | Kind::DoubleRelative(..)
                 | Kind::DoubleDefectSixJ(..)
+                | Kind::DoubleCentralMap(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -8053,6 +8077,7 @@ impl Model {
             | Kind::DoubleDefect(..)
             | Kind::DoubleRelative(..)
             | Kind::DoubleDefectSixJ(..)
+            | Kind::DoubleCentralMap(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -8242,6 +8267,7 @@ impl Model {
                 out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
             }
             Kind::DoubleRelative(name) => out.push(&format!("RVDoubleRelative({name})")),
+            Kind::DoubleCentralMap(name, n) => out.push(&format!("RVDoubleCentralMap({name},{n})")),
             Kind::DoubleDefectSixJ(name, n) => out.push(&format!("RVDoubleDefectSixJ({name},{n})")),
             Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
             Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
@@ -8924,6 +8950,7 @@ impl Model {
             }
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a == b),
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a == b),
+            (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a == b),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -9300,6 +9327,7 @@ impl Model {
             }
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a.cmp(b)),
+            (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -10330,6 +10358,9 @@ impl Model {
                         "cannot enumerate a double braid operator type",
                     ));
                 }
+                Kind::DoubleCentralMap(..) => {
+                    return Err(Error::plain("cannot enumerate a bulk central map type"));
+                }
                 Kind::DoubleDefectSixJ(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a boundary recoupling matrix type",
@@ -11335,6 +11366,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleCentralMap(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", value.data()))
             }
             Value::DoubleDefectSixJ(value) => {
                 self.write_type(out, ty, 0)?;

@@ -853,6 +853,21 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+struct CentralMove {
+    double: Rc<dd::Double>,
+    boundaries: [Rc<dd::defects::Category>; 2],
+    names: [Rc<str>; 2],
+    defect: Rc<dd::defects::Category>,
+    color: [usize; 2],
+    input: TypedExpr,
+}
+
+enum CentralAction {
+    Induce(Rc<dd::Double>, Rc<dd::defects::Category>, usize),
+    Move(Box<CentralMove>),
+    Entry([usize; 3], bool, Box<TypedExpr>),
+}
+
 struct SixJAssemble {
     double: Rc<dd::Double>,
     categories: [Rc<dd::defects::Category>; 4],
@@ -915,6 +930,7 @@ enum TypedForm {
     DoubleDefect(DoubleDefectAction),
     DoubleRelative(RelativeAction),
     DoubleDefectSixJ(SixJAction),
+    DoubleCentral(CentralAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2681,6 +2697,9 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleCentral(command) => {
+                return self.central_command(*command).map(Some)
+            }
             StatementForm::DoubleDefectSixJ(command) => {
                 return self.sixj_command(*command).map(Some)
             }
@@ -9436,6 +9455,98 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn central_command(
+        &mut self,
+        command: dd::defects::relative::central::Command,
+    ) -> Result<String> {
+        use dd::defects::relative::central::{self, Command};
+        match command {
+            Command::Validate(cat, pair) => {
+                let category = self.model.double_defects(&cat)?;
+                let double = self.model.defect_bulk(&category, cat.span)?;
+                central::validate_branching(&mut self.model, &double, &category, pair)
+            }
+            Command::Unit(cat, simple) => {
+                let category = self.model.double_defects(&cat)?;
+                let double = self.model.defect_bulk(&category, cat.span)?;
+                central::unit(&mut self.model, &double, &category, simple)
+            }
+            Command::Whisker([h, k, l, out], bulk, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                let op = "rvDoubleCentralWhisker";
+                let m = self.checker().relative_operand(&a, op)?;
+                let n = self.checker().relative_operand(&b, op)?;
+                let h = self.model.double_defects(&h)?;
+                let k = self.model.double_defects(&k)?;
+                let l = self.model.double_defects(&l)?;
+                let output = self.model.double_defects(&out)?;
+                let double = self.model.defect_bulk(&output, out.span)?;
+                central::check_path(&[&h, &k, &l], &[&m, &n])?;
+                let i = self.eval_relative_operand(&a)?;
+                let j = self.eval_relative_operand(&b)?;
+                central::whisker(
+                    &mut self.model,
+                    &double,
+                    [&h, &k, &l],
+                    &output,
+                    [(&m, i), (&n, j)],
+                    bulk,
+                )
+            }
+            other => {
+                enum Query {
+                    Data,
+                    Image([usize; 2]),
+                    Basis([usize; 3]),
+                }
+                let (input, query) = match other {
+                    Command::Data(x) => (x, Query::Data),
+                    Command::Image(key, x) => (x, Query::Image(key)),
+                    Command::Basis(key, x) => (x, Query::Basis(key)),
+                    _ => unreachable!(),
+                };
+                let input = self.checker().expr(*input)?;
+                self.checker().central_operand(&input)?;
+                let Value::DoubleCentralMap(matrix) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match query {
+                    Query::Data => Ok(matrix.data()),
+                    Query::Image(key) => matrix.image(key),
+                    Query::Basis(key) => matrix.basis(key),
+                }
+            }
+        }
+    }
+
+    fn eval_central(&mut self, action: &CentralAction) -> Result<Value> {
+        use dd::defects::relative::central;
+        match action {
+            CentralAction::Induce(double, category, simple) => {
+                central::induction(&mut self.model, double, category, *simple)
+            }
+            CentralAction::Move(movement) => {
+                let index = self.eval_relative_operand(&movement.input)?;
+                central::movement(
+                    &mut self.model,
+                    &movement.double,
+                    movement.boundaries.each_ref().map(Rc::as_ref),
+                    (&movement.defect, index),
+                    movement.color,
+                    movement.names.clone(),
+                )
+            }
+            CentralAction::Entry(key, inverse, input) => {
+                let Value::DoubleCentralMap(matrix) = self.eval(input)? else {
+                    unreachable!()
+                };
+                matrix.entry(&mut self.model, *inverse, *key)
+            }
+        }
+    }
+
     fn sixj_command(&mut self, command: dd::defects::relative::sixj::Command) -> Result<String> {
         use dd::defects::relative::sixj::{self, Command};
         match command {
@@ -15000,6 +15111,7 @@ impl Engine {
             TypedForm::DoubleDefect(action) => self.eval_double_defect(action),
             TypedForm::DoubleRelative(action) => self.eval_relative(action),
             TypedForm::DoubleDefectSixJ(action) => self.eval_sixj(action),
+            TypedForm::DoubleCentral(action) => self.eval_central(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -19375,6 +19487,7 @@ impl Checker<'_> {
             TypeForm::DoubleDefect(name) => self.model.double_defect_type(&name),
             TypeForm::DoubleRelative(name) => self.model.double_relative_type(&name),
             TypeForm::DoubleDefectSixJ(name, n) => self.model.double_sixj_type(&name, n),
+            TypeForm::DoubleCentralMap(name, n) => self.model.double_central_type(&name, n),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -20248,6 +20361,7 @@ impl Checker<'_> {
             ExprForm::DoubleDefect(expression) => self.double_defect_expression(*expression),
             ExprForm::DoubleRelative(expression) => self.relative_expression(*expression),
             ExprForm::DoubleDefectSixJ(expression) => self.sixj_expression(*expression),
+            ExprForm::DoubleCentral(expression) => self.central_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -32488,6 +32602,89 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn central_operand(&self, input: &TypedExpr) -> Result<usize> {
+        let Kind::DoubleCentralMap(_, n) = self.model.kind(input.ty) else {
+            return Err(Error::new(
+                input.span,
+                "central map query requires a bulk central map",
+            ));
+        };
+        Ok(*n)
+    }
+
+    fn central_expression(
+        &mut self,
+        expr: dd::defects::relative::central::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::relative::central::{self, Expression};
+        let (ty, action) = match expr {
+            Expression::Induce(name, simple) => {
+                let category = self.model.double_defects(&name)?;
+                central::self_boundary(&category)?;
+                let double = self.model.defect_bulk(&category, name.span)?;
+                double.check_index(simple)?;
+                (
+                    self.model.double_relative_type(&name)?,
+                    CentralAction::Induce(double, category, simple),
+                )
+            }
+            Expression::Move([h, k], simple, specified, input) => {
+                let input = self.expr(*input)?;
+                let defect = self.relative_operand(&input, "rvDoubleCentralMove")?;
+                let (Kind::DoubleDefect(name) | Kind::DoubleRelative(name)) =
+                    self.model.kind(input.ty)
+                else {
+                    unreachable!()
+                };
+                let target = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let double = self.model.defect_bulk(&defect, input.span)?;
+                double.check_index(simple)?;
+                let boundaries = [
+                    self.model.double_defects(&h)?,
+                    self.model.double_defects(&k)?,
+                ];
+                let base = central::move_conductor(
+                    self.model,
+                    &double,
+                    boundaries.each_ref().map(Rc::as_ref),
+                    &defect,
+                )?;
+                let conductor = match specified {
+                    Some(n) if n != 0 && n % base == 0 => n,
+                    Some(_) => return Err(Error::new(input.span, "central map conductor must be a positive multiple of the boundary conductor")),
+                    None if matches!(self.model.kind(input.ty), Kind::DoubleRelative(..)) => {
+                        return Err(Error::new(input.span, "a graded central move requires an explicit conductor"));
+                    }
+                    None => base,
+                };
+                let ty = self.model.double_central_type(&target, conductor)?;
+                (
+                    ty,
+                    CentralAction::Move(Box::new(CentralMove {
+                        double,
+                        boundaries,
+                        names: [h.text.into(), k.text.into()],
+                        defect,
+                        color: [simple, conductor],
+                        input,
+                    })),
+                )
+            }
+            Expression::Entry(key, inverse, input) => {
+                let input = self.expr(*input)?;
+                let n = self.central_operand(&input)?;
+                (
+                    self.model.cyclotomic_rational_type(n)?,
+                    CentralAction::Entry(key, inverse, Box::new(input)),
+                )
+            }
+        };
+        Ok((ty, TypedForm::DoubleCentral(action)))
     }
 
     fn sixj_operand(&self, input: &TypedExpr, op: &str) -> Result<usize> {
