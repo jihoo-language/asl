@@ -124,11 +124,19 @@ impl Group {
         let mut cells = 0;
         let incoming = if let Some(previous) = grade.previous() {
             let source = stable_basis(model, previous)?;
+            let target = middle
+                .iter()
+                .enumerate()
+                .map(|(index, term)| {
+                    model.spend(term.cells())?;
+                    Ok((term, index))
+                })
+                .collect::<Result<HashMap<_, _>>>()?;
             reduce_columns(
                 model,
                 &source,
-                &middle,
                 None,
+                |model, image| coordinates(model, &target, image),
                 |model, index, image, witness| {
                     let Some(&pivot) = image.last() else {
                         return Ok(());
@@ -158,14 +166,16 @@ impl Group {
             Basis::default()
         };
 
-        let next = stable_basis(model, grade.differential()?)?;
         // Each incoming pivot already has a cycle with that leading
         // coordinate. Its outgoing image is in the earlier span.
+        // Only dependence among the ordered source columns is needed here,
+        // so the outgoing rows can be numbered in encounter order.
+        let mut rows = real_motivic::Rows::default();
         reduce_columns(
             model,
             &middle,
-            &next,
             Some(&incoming),
+            |model, image| rows.column(model, image),
             |model, index, image, witness| {
                 if image.is_empty() {
                     let birth = middle[index].rho;
@@ -264,26 +274,18 @@ fn stable_basis(model: &mut Model, grade: Grade) -> Result<Vec<Term>> {
 fn reduce_columns(
     model: &mut Model,
     source: &[Term],
-    target: &[Term],
     paired: Option<&Basis>,
+    mut encode: impl FnMut(&mut Model, &[Term]) -> Result<Vec<usize>>,
     mut use_column: impl FnMut(&mut Model, usize, &[usize], &[usize]) -> Result<()>,
 ) -> Result<Basis> {
     let mut pivots = Basis::default();
-    let target = target
-        .iter()
-        .enumerate()
-        .map(|(index, term)| {
-            model.spend(term.cells())?;
-            Ok((term, index))
-        })
-        .collect::<Result<HashMap<_, _>>>()?;
     for (index, term) in source.iter().enumerate() {
         model.spend(1)?;
         if paired.is_some_and(|incoming| incoming.contains_pivot(index)) {
             continue;
         }
         let image = real_motivic::differential_support(model, std::slice::from_ref(term))?;
-        let column = coordinates(model, &target, &image)?;
+        let column = encode(model, &image)?;
         pivots.insert_traced(model, column, vec![index], |model, image, witness| {
             use_column(model, index, image, witness)
         })?;

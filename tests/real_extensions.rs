@@ -70,6 +70,35 @@ fn living_bar_coordinates_are_first_class_and_division_omits_dying_bars() {
 }
 
 #[test]
+fn compact_real_rows_compute_the_depth_four_product_and_its_null() {
+    let source = r"
+        let t4 = extClass(rmcword[0,0]{([],[4])});
+        let t8 = extClass(rmcword[0,0]{([],[8])});
+        rhohidden(t4,t8);
+        let p = yoneda(t4,t8);
+        rmbars[2,12];
+        let q = rhoDivide[4](p);
+        assert rhoShift[4](q) == p;
+        let witness = rhoProductNull[4](t4,t8);
+        let reconstructed = rhoShift[4](rmbarLift(rmbarCoords(q)));
+        assert cobarD(witness) == add(concat(extRep(t4),extRep(t8)),reconstructed);
+        rhodepth(p);
+        rhoorder(p);
+        rhoorder(q);
+    ";
+    assert_eq!(
+        stdout(interpret(source)),
+        concat!(
+            "rhohidden = hidden (0 + 0 < 4)\n",
+            "rmbars[2, 12] = [(2, 1), (4, 2), (16, 8), (20, 4)]\n",
+            "rhodepth = 4\n",
+            "rhoorder = 4\n",
+            "rhoorder = 8\n",
+        )
+    );
+}
+
+#[test]
 fn extensions_validate_depth_stability_and_types() {
     for (source, reason) in [
         ("show rmbarTerm[1,0,-1,0];", "rho bar does not live"),

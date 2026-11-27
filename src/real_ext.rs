@@ -33,11 +33,11 @@ impl Group {
                 boundaries.insert(model, column)?;
             }
         }
-        let mut rows = Rows::new("real-motivic cobar");
+        let mut rows = real_motivic::Rows::default();
         let quotient = QuotientBasis::build(model, boundaries, terms.len(), |model, index| {
             let image =
                 real_motivic::differential_support(model, std::slice::from_ref(&terms[index]))?;
-            column(model, &mut rows, image, Term::cells)
+            rows.column(model, &image)
         })?;
         Ok(Self { terms, quotient })
     }

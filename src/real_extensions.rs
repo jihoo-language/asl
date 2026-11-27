@@ -10,6 +10,7 @@ use crate::real_motivic::{self, Term};
 use crate::rho_bock;
 
 pub(crate) type Input<'a> = (TypeId, &'a [usize]);
+const MAX_BASIS: usize = 32_768;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -87,6 +88,46 @@ pub(crate) fn decompose(model: &mut Model, input: Input<'_>) -> Result<Value> {
     Ok(Value::Class(support.into()))
 }
 
+// For a known cycle, the living bar basis and the incoming boundaries
+// span the cycles. Its bar coordinates need no outgoing quotient.
+fn cycle_coordinates(model: &mut Model, grade: Grade, cycle: &[Term]) -> Result<Vec<usize>> {
+    if cycle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rows = real_motivic::Rows::default();
+    let mut span = Basis::default();
+    if let Some(previous) = grade.previous() {
+        for term in real_motivic::basis(model, previous, MAX_BASIS)? {
+            let image = real_motivic::differential_support(model, &[term])?;
+            let column = rows.column(model, &image)?;
+            span.insert(model, column)?;
+        }
+    }
+    let column = rows.column(model, cycle)?;
+    let column = span.reduce(model, column)?;
+    if column.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bars = bars(model, grade)?;
+    for index in bars.living(model, grade.t)? {
+        let lift = bars.get(index)?.lift_at(model, grade.t)?;
+        let column = rows.column(model, &lift)?;
+        if span
+            .insert_with_witness(model, column, vec![index])?
+            .is_some()
+        {
+            return Err(Error::plain("living rho bars are linearly dependent"));
+        }
+    }
+    let (remainder, support) = span.reduce_with_witness(model, column, Vec::new())?;
+    if !remainder.is_empty() {
+        return Err(Error::plain(
+            "closed real cochain is outside its rho bar span",
+        ));
+    }
+    Ok(support)
+}
+
 fn raw_lift(model: &mut Model, grade: Grade, support: &[usize]) -> Result<Vec<Term>> {
     if support.is_empty() {
         return Ok(Vec::new());
@@ -152,16 +193,25 @@ fn requested_quotient(
     power: usize,
 ) -> Result<(Grade, Vec<usize>)> {
     let grade = grade(model, input.0);
-    let quotient = quotient_grade(grade, power)?;
     let support = coordinates(model, input)?;
-    if let Some(depth) = depth_of_support(model, grade, &support)? {
+    let quotient = division_grade(model, grade, &support, power)?;
+    Ok((quotient, support))
+}
+
+fn division_grade(
+    model: &mut Model,
+    grade: Grade,
+    support: &[usize],
+    power: usize,
+) -> Result<Grade> {
+    if let Some(depth) = depth_of_support(model, grade, support)? {
         if power > depth {
             return Err(Error::plain(format!(
                 "class has rho depth {depth} and cannot be divided by rho^{power}"
             )));
         }
     }
-    Ok((quotient, support))
+    quotient_grade(grade, power)
 }
 
 pub(crate) fn divide(
@@ -257,18 +307,10 @@ pub(crate) fn product_null(
     right: Input<'_>,
     power: usize,
 ) -> Result<Value> {
-    if left.1.is_empty() || right.1.is_empty() {
-        return Ok(real_motivic::zero());
-    }
     let g = grade(model, left.0).product(grade(model, right.0))?;
-    let a = model.real_ext(left.0)?.representative(model, left.1)?;
-    let b = model.real_ext(right.0)?.representative(model, right.1)?;
-    let product = real_motivic::concat_support(model, &a, &b)?;
-    let ty = model.rmext_type(g)?;
-    let Value::Class(class) = real_ext::class(model, ty, &product)? else {
-        unreachable!()
-    };
-    let (quotient, support) = requested_quotient(model, (ty, &class), power)?;
+    let product = raw_product(model, left, right)?;
+    let support = cycle_coordinates(model, g, &product)?;
+    let quotient = division_grade(model, g, &support, power)?;
     let rep = raw_lift(model, quotient, &support)?;
     let shifted = real_motivic::shift_support(model, &rep, power)?;
     let difference = real_motivic::add(model, &product, &shifted)?;
@@ -277,11 +319,9 @@ pub(crate) fn product_null(
 
 pub(crate) fn hidden(model: &mut Model, left: Input<'_>, right: Input<'_>) -> Result<String> {
     let g = grade(model, left.0).product(grade(model, right.0))?;
-    let ty = model.rmext_type(g)?;
-    let Value::Class(class) = real_ext::yoneda(model, left, right, ty)? else {
-        unreachable!()
-    };
-    let Some(actual) = depth(model, (ty, &class))? else {
+    let product = raw_product(model, left, right)?;
+    let support = cycle_coordinates(model, g, &product)?;
+    let Some(actual) = depth_of_support(model, g, &support)? else {
         return Ok("rhohidden = zero".to_owned());
     };
     let (Some(a), Some(b)) = (depth(model, left)?, depth(model, right)?) else {
@@ -300,4 +340,13 @@ pub(crate) fn hidden(model: &mut Model, left: Input<'_>, right: Input<'_>) -> Re
     } else {
         format!("rhohidden = visible ({a} + {b} = {actual})")
     })
+}
+
+fn raw_product(model: &mut Model, left: Input<'_>, right: Input<'_>) -> Result<Vec<Term>> {
+    if left.1.is_empty() || right.1.is_empty() {
+        return Ok(Vec::new());
+    }
+    let a = model.real_ext(left.0)?.representative(model, left.1)?;
+    let b = model.real_ext(right.0)?.representative(model, right.1)?;
+    real_motivic::concat_support(model, &a, &b)
 }

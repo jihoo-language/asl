@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::{hash_map::Entry, HashMap};
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 
@@ -18,6 +19,56 @@ pub(crate) struct Term {
 }
 
 pub(crate) type Cochain = Rc<[Term]>;
+
+// At a fixed tridegree the word determines both scalar exponents. Encode
+// its factors once, and keep only their indices in each sparse row key.
+#[derive(Default)]
+pub(crate) struct Rows {
+    factors: HashMap<Monomial, usize>,
+    words: HashMap<Box<[usize]>, usize>,
+    cells: usize,
+}
+
+impl Rows {
+    pub(crate) fn column(&mut self, model: &mut Model, terms: &[Term]) -> Result<Vec<usize>> {
+        let mut support = Vec::with_capacity(terms.len());
+        for term in terms {
+            support.push(self.coordinate(model, &term.word)?);
+        }
+        crate::may::sort_support(model, &mut support)?;
+        Ok(support)
+    }
+
+    fn coordinate(&mut self, model: &mut Model, word: &Word) -> Result<usize> {
+        let size = 1 + word.len();
+        model.spend(size)?;
+        let mut key = Vec::with_capacity(word.len());
+        for factor in word.iter() {
+            model.spend(1 + factor.len())?;
+            let next = self.factors.len();
+            let index = match self.factors.entry(factor.clone()) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    let cells = self.cells + 2 + factor.len();
+                    cobar::check_storage(cells)?;
+                    self.cells = cells;
+                    *entry.insert(next)
+                }
+            };
+            key.push(index);
+        }
+        let next = self.words.len();
+        match self.words.entry(key.into_boxed_slice()) {
+            Entry::Occupied(entry) => Ok(*entry.get()),
+            Entry::Vacant(entry) => {
+                let cells = self.cells + size;
+                cobar::check_storage(cells)?;
+                self.cells = cells;
+                Ok(*entry.insert(next))
+            }
+        }
+    }
+}
 
 impl Term {
     fn scalar(s: usize, rho: usize, tau: usize) -> Self {
