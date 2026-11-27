@@ -8,6 +8,8 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::model::{Model, Value};
 
+mod switch;
+
 pub(crate) struct ResolvedPoint {
     base: Rc<Point>,
     direction: Option<[Scalar; 4]>,

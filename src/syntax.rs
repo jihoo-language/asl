@@ -3488,6 +3488,7 @@ impl<'src> Parser<'src> {
                 "rvKummerSmooth" => Operation::Smooth,
                 "rvKummerBlowdown" => Operation::Blowdown,
                 "rvKummerIsExceptional" => Operation::IsExceptional,
+                "rvKummerSwitch" => Operation::Switch,
                 _ => Operation::Lift,
             };
             let input = self.paren_expr(nest)?;
@@ -9500,6 +9501,7 @@ impl<'src> Parser<'src> {
                             | "rvKummerExceptional"
                             | "rvKummerBlowdown"
                             | "rvKummerIsExceptional"
+                            | "rvKummerSwitch"
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);

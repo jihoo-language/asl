@@ -5397,6 +5397,9 @@ impl Engine {
                         })?;
                         rv_unram::persist(&mut self.model, direction[*index].clone())
                     }
+                    (Operation::Switch, Value::KummerK3(point)) => point
+                        .gauss_switch(&mut self.model, curve)?
+                        .persist(&mut self.model),
                     _ => unreachable!(),
                 }
             }
@@ -19071,7 +19074,10 @@ impl Checker<'_> {
                 let project = matches!(operation, Operation::Project);
                 let resolved = matches!(
                     operation,
-                    Operation::Blowdown | Operation::IsExceptional | Operation::Direction(_)
+                    Operation::Blowdown
+                        | Operation::IsExceptional
+                        | Operation::Direction(_)
+                        | Operation::Switch
                 );
                 let name = match self.model.kind(input.ty) {
                     Kind::Jacobian(name) if project => name.clone(),
@@ -19102,7 +19108,7 @@ impl Checker<'_> {
                     }
                     Operation::Lift => self.model.jacobian_type(name)?,
                     Operation::Smooth => self.model.kummer_k3_type(name)?,
-                    Operation::Scale(_) => input.ty,
+                    Operation::Scale(_) | Operation::Switch => input.ty,
                 };
                 (ty, KummerAction::Apply(curve, operation, Box::new(input)))
             }

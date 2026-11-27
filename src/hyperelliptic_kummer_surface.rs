@@ -75,6 +75,7 @@ pub(crate) enum Operation {
     Blowdown,
     IsExceptional,
     Direction(usize),
+    Switch,
 }
 
 impl Operation {
@@ -89,6 +90,7 @@ impl Operation {
             Self::Blowdown => "rvKummerBlowdown",
             Self::IsExceptional => "rvKummerIsExceptional",
             Self::Direction(_) => "rvKummerDirection",
+            Self::Switch => "rvKummerSwitch",
         }
     }
 }
