@@ -6,6 +6,7 @@ use super::{
 };
 
 mod complex;
+pub(crate) mod eulerian;
 mod maps;
 mod mixed;
 use complex::Complex;

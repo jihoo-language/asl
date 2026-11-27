@@ -72,7 +72,12 @@ fn raw_map(model: &mut Model, operation: Operation, input: &Chain) -> Result<Cha
     Ok(result)
 }
 
-fn boundary(model: &mut Model, algebra: &Algebra, grade: &Grade, input: &Chain) -> Result<Chain> {
+pub(super) fn boundary(
+    model: &mut Model,
+    algebra: &Algebra,
+    grade: &Grade,
+    input: &Chain,
+) -> Result<Chain> {
     let mut result = Chain::default();
     for (key, &coefficient) in &input.entries {
         differential_terms(model, algebra, grade.flavor, key, |model, key, value| {

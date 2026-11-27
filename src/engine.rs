@@ -4,6 +4,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbits
 use hochschild::cyclic as verbitsky_cyclic;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use verbitsky_cyclic::eulerian;
 use verbitsky_resolution::deformation;
 
 use crate::adams;
@@ -1021,6 +1022,7 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    VerbitskyEulerian(eulerian::Operation, Box<TypedExpr>),
     VerbitskyCyclicApply(verbitsky_cyclic::Operation, Box<TypedExpr>),
     VerbitskyCyclicScale(hodge_wick::Entry, Box<TypedExpr>),
     VerbitskyHHScale(hodge_wick::Entry, Box<TypedExpr>),
@@ -2690,6 +2692,23 @@ impl Engine {
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
+            }
+            StatementForm::VerbitskyEulerian(command) => {
+                let eulerian::Command(grade, index) = *command;
+                let grade = verbitsky_cyclic::Grade::from(grade);
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let dim = form.cyclic_hodge_dimension(&mut self.model, &grade, index)?;
+                return Ok(Some(format!(
+                    "rvVerbitskyHodgeDim[{}, {}, {}, {}, {}, {index}] = {dim}",
+                    grade.basis,
+                    grade.length,
+                    grade.flavor.name(),
+                    grade.degree,
+                    grade.weight
+                )));
+            }
+            StatementForm::MonomialCICotangent(command) => {
+                return command.execute(&mut self.model).map(Some)
             }
             StatementForm::VerbitskyCyclic(command) => {
                 return self.verbitsky_cyclic_command(*command).map(Some)
@@ -14085,6 +14104,44 @@ impl Engine {
                     .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
             }
+            TypedForm::VerbitskyEulerian(operation, input) => {
+                let value = self.eval(input)?;
+                if matches!(operation, eulerian::Operation::Adams(1)) {
+                    return Ok(value);
+                }
+                match (self.model.kind(input.ty), value) {
+                    (Kind::VerbitskyCyclic(grade, class), Value::VerbitskyCyclic(chain)) => {
+                        let grade = grade.clone();
+                        let class = *class;
+                        let form = self.model.hodge_wick(&grade.basis)?;
+                        form.cyclic_hodge_operator(
+                            &mut self.model,
+                            &grade,
+                            *operation,
+                            class,
+                            &chain,
+                        )?
+                        .persist(&mut self.model)
+                    }
+                    (
+                        Kind::VerbitskyHochschild(grade, class),
+                        Value::VerbitskyHochschild(cochain),
+                    ) => {
+                        let grade = grade.clone();
+                        let class = *class;
+                        let form = self.model.hodge_wick(&grade.basis)?;
+                        form.hochschild_hodge_operator(
+                            &mut self.model,
+                            &grade,
+                            *operation,
+                            class,
+                            &cochain,
+                        )?
+                        .persist(&mut self.model)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::VerbitskyCyclicApply(operation, input) => {
                 let Kind::VerbitskyCyclic(grade, class) = self.model.kind(input.ty) else {
                     unreachable!()
@@ -21282,6 +21339,26 @@ impl Checker<'_> {
                 let ty = self.model.verbitsky_hh_type(grade, class)?;
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::VerbitskyEulerian(expression) => {
+                let eulerian::Expression(operation, input) = *expression;
+                let input = self.expr(*input)?;
+                let flavor = match self.model.kind(input.ty) {
+                    Kind::VerbitskyCyclic(grade, _) => grade.flavor,
+                    Kind::VerbitskyHochschild(..) => verbitsky_cyclic::Flavor::Hochschild,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "a Verbitsky Hochschild cochain or a cyclic chain or class",
+                        ))
+                    }
+                };
+                operation.check(flavor)?;
+                Ok((
+                    input.ty,
+                    TypedForm::VerbitskyEulerian(operation, Box::new(input)),
+                ))
             }
             ExprForm::VerbitskyCyclic(expression) => self.verbitsky_cyclic_expression(*expression),
             ExprForm::VerbitskyHochschild(expression) => self.verbitsky_hh_expression(*expression),

@@ -1095,6 +1095,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
+    VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Expression>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
@@ -1373,6 +1374,8 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
+    VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Command>),
+    MonomialCICotangent(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
@@ -8307,6 +8310,81 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_eulerian_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let grade = self.verbitsky_cyclic_grade()?;
+        self.expect(Token::Comma)?;
+        let index = self.signed_wide("a Hodge index", "Eulerian Hodge index")?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::VerbitskyEulerian(Box::new(Command(
+            grade, index,
+        ))))
+    }
+
+    fn monomial_ci_variables(&mut self) -> Result<Vec<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Variable>>{
+        self.set_named_rows(|parser| {
+            parser.expect(Token::LBracket)?;
+            let exponent = parser.wide_unsigned("complete intersection relation exponent")?;
+            parser.expect(Token::Comma)?;
+            let weight = parser.wide_unsigned("complete intersection variable weight")?;
+            parser.expect(Token::RBracket)?;
+            Ok((exponent, weight))
+        })
+    }
+
+    fn monomial_ci_cotangent_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command;
+        self.advance()?;
+        let command = if name == "rvMonomialCICotangentDim" {
+            self.expect(Token::LBracket)?;
+            let degree = self.signed_wide("a Hochschild degree", "cotangent Hochschild degree")?;
+            self.expect(Token::Comma)?;
+            let index = self.signed_wide("a Hodge index", "exterior cotangent degree")?;
+            self.expect(Token::Comma)?;
+            let weight = self.signed_wide("an internal weight", "cotangent internal weight")?;
+            self.expect(Token::RBracket)?;
+            let variables = self.monomial_ci_variables()?;
+            Command::Dimension(degree, index, weight, variables)
+        } else {
+            let variables = self.monomial_ci_variables()?;
+            let powers = self
+                .set_named_rows(|parser| parser.wide_unsigned("coefficient monomial exponent"))?;
+            let divided =
+                self.set_named_rows(|parser| parser.wide_unsigned("divided-power exponent"))?;
+            let wedge = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+            Command::Differential(variables, powers, divided, wedge)
+        };
+        Ok(StatementForm::MonomialCICotangent(Box::new(command)))
+    }
+
+    fn verbitsky_eulerian_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::{
+            Expression, Operation,
+        };
+        self.expect(Token::LBracket)?;
+        let index = self.signed_wide("an integer index", "Eulerian operation index")?;
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(nest)?;
+        let depth = input.depth + 1;
+        let operation = if name == "rvVerbitskyAdams" {
+            Operation::Adams(index)
+        } else {
+            Operation::Project(index)
+        };
+        expr(
+            span,
+            ExprForm::VerbitskyEulerian(Box::new(Expression(operation, Box::new(input)))),
+            depth,
+        )
+    }
+
     fn verbitsky_cyclic_grade(
         &mut self,
     ) -> Result<
@@ -12065,6 +12143,10 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word("rvVerbitskyHodgeDim") => self.verbitsky_eulerian_statement()?,
+            Token::Word(command @ ("rvMonomialCICotangentDim" | "rvMonomialCICotangentDiff")) => {
+                self.monomial_ci_cotangent_statement(command)?
+            }
             Token::Word(
                 command @ ("rvVerbitskyCyclicDims" | "rvVerbitskySBI" | "rvVerbitskyHHChainPair"),
             ) => self.verbitsky_cyclic_statement(command)?,
@@ -18591,6 +18673,13 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyAdams" | "rvVerbitskyHodgeProject"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.verbitsky_eulerian_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

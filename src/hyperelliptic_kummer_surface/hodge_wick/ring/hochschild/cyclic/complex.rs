@@ -8,7 +8,7 @@ use super::{
 pub(super) struct Axis(Vec<Key>);
 
 impl Axis {
-    fn new(model: &mut Model, algebra: &Algebra, grade: &Grade) -> Result<Self> {
+    pub(super) fn new(model: &mut Model, algebra: &Algebra, grade: &Grade) -> Result<Self> {
         if !grade.possible() {
             return Ok(Self::default());
         }
@@ -53,6 +53,10 @@ impl Axis {
             )?;
         }
         Ok(Self(keys))
+    }
+
+    pub(super) fn keys(&self) -> &[Key] {
+        &self.0
     }
 
     pub(super) fn len(&self) -> usize {
