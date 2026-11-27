@@ -381,6 +381,24 @@ With `shdiskrealize G[P,j,apex,a,b,c,d];` the named open embedding `j` exhibits 
 
 The example has two quivers with $T=I$ and the same stalk and costalk ranks. One has a vanishing transvection and the other has $S=I$, which distinguishes the extensions. It also verifies the factorization through the middle image, duality on a non-endomorphism, the actual relative costalk differential, and the braid relation between two rank-one Picard–Lefschetz monodromies. [Perverse disk example](examples/sheaf-disk.asl)
 
+### Hurwitz moves and parabolic cohomology
+
+`shdiskseq S[P,Q,...];` declares an ordered tuple of disk quivers over the same prime field, with one common based nearby space $V$. The vanishing spaces may differ. `shdiskprod[S];` reports the ordered product of the nearby monodromies. `shhurwitz H[S] [1,-2,...];` acts successively from left to right by the indicated signed braid generators, numbered from one. A positive generator takes $(P,Q)$ to $(Q,P')$, with $u_{P'}=u_P T_Q$ and $v_{P'}=T_Q^{-1}v_P$. The product is preserved and the corresponding vanishing monodromies are permuted. `shdiskpoint R[H,i];` gives the quiver at zero-based strand $i$. `shdiskseqsame[S,H];` compares the based quivers, and `shdiskmonosame[S,H];` compares the ordered based nearby matrices.
+
+`shdiskseqmap f[S,T]{f0,f1,...};` takes one native `ShDiskHom` morphism per strand. All must have the same nearby linear map. If `HS` and `HT` apply the same signed word to `S` and `T`, `shdiskseqmapbraid fh[HS,HT,f];` transports the entire map to the new quivers. `shdiskseqmapat[fh,i];` reports both of its matrices at the specified strand.
+
+If the product is the identity, `ShPar(S)` is the parabolic cohomology of the punctured sphere. Define
+$$
+V\xrightarrow{\partial}\bigoplus_i\operatorname{im}(I-T_i)\xrightarrow{\Sigma} V,\qquad
+\partial x=((I-T_i)x)_i,\qquad
+\Sigma(a)=\sum_i T_1\cdots T_{i-1}a_i .
+$$
+The middle cohomology is $\ker\Sigma/\operatorname{im}\partial$. Write a nearby vector with `shParVec[S][entries]` or a raw tuple with `shParRaw[S]{[entries at strand 0],...}`. Each tuple entry is given in the common nearby basis and must lie in its local image. The types are `ShParVec(S)` and `ShParRaw(S)`. Use `shParBoundary` and `shParSum` for the two arrows, `shParClass` on a cocycle, and `shParRep` for the chosen representative. `shParPrimitive` gives an actual nearby vector whose boundary is the input tuple, or diagnoses failure. `shparrank[S];` gives the cohomology dimension, `shParGen[S,i]` a basis class, and `shparrows(x);` and `shparvector(w);` report ambient coordinates. All three types support ordinary finite functions, `zero`, `add`, and `pscale`.
+
+`shParBraid[H](x)` takes vectors, raw tuples, or classes from the declared source of `H` to `H`. On an adjacent pair the positive move sends $(a,b)$ to $(b,T_Q^{-1}(a+(T_P-I)b))$. This preserves the transported sum and takes each coupled boundary to the boundary of the same nearby vector. `shParMap[f](x)` uses the common nearby matrix of a sequence map. `shParIdentify[T](x)` uses the identity on ambient coordinates when the ordered based monodromies are equal.
+
+For four scalar monodromies $-1$ over $\mathbb F_5$, the example checks the explicit action on a two-dimensional parabolic group. The first two generators both have order five and satisfy the braid relation, their product cubed is $-I$, and they do not commute. The example constructs the vanishing-basis isomorphism that returns the first braided tuple to its source. [Parabolic Hurwitz example](examples/sheaf-parabolic-hurwitz.asl)
+
 ### Extraordinary inverse image and local supports
 
 `shextra K[i,F];` and `shextracomplex K[i,A];` construct $Ri^!$ of an ordinary sheaf `F` or a bounded complex `A` on the named target of $i:Z\to X$. The map must be injective, reflect the order, and have downward-closed image. At $z$ let $U$ be the principal open above $i(z)$ and let $U^\circ$ be its complement of the image of $Z$. The stalk model consists of Roos cochains on $U$ supported on chains meeting $Z$. Since $Z$ is closed, these chains begin in $Z$. The differential includes the signed stalk differential of the coefficients. Restrictions keep the same chains on smaller opens. The resulting complex on $Z$ has components `K__0`, `K__1`, and so on, and `shcohomology H[K,n];` takes its cohomology sheaf.

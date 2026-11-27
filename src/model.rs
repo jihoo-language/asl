@@ -105,6 +105,10 @@ use crate::set_topology;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_deform;
+use crate::sheaf_disk::{
+    braid::{Sequence as DiskSequence, SequenceMap as DiskSequenceMap},
+    parabolic::{Form as ParabolicForm, Parabolic},
+};
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
 use crate::sheaf_kuranishi;
@@ -180,6 +184,7 @@ pub(crate) enum Kind {
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
     SheafDeformation(Rc<str>, usize),
+    Parabolic(ParabolicForm, Rc<str>, Prime),
     DiskHom(Rc<str>, Rc<str>, Prime),
     SheafHom(SheafForm, SheafEnds, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
@@ -534,6 +539,9 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    disk_sequences: HashMap<Rc<str>, Rc<DiskSequence>>,
+    disk_sequence_maps: HashMap<Rc<str>, Rc<DiskSequenceMap>>,
+    parabolic_groups: HashMap<Rc<str>, Rc<Parabolic>>,
     disk_quivers: HashMap<Rc<str>, Rc<crate::sheaf_disk::Disk>>,
     disk_homs: HashMap<(Rc<str>, Rc<str>), Rc<crate::sheaf_disk::Hom>>,
     disk_realizations: HashMap<Rc<str>, Rc<crate::sheaf_disk::Realization>>,
@@ -619,6 +627,9 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            disk_sequences: HashMap::new(),
+            disk_sequence_maps: HashMap::new(),
+            parabolic_groups: HashMap::new(),
             disk_quivers: HashMap::new(),
             disk_homs: HashMap::new(),
             disk_realizations: HashMap::new(),
@@ -743,6 +754,10 @@ impl Model {
                 if !grade.has_leading(self.sheaf_complexes[name.as_ref()].filtered()) =>
             {
                 1
+            }
+            Kind::Parabolic(form, ref name, prime) => {
+                let dimension = self.parabolic_groups[name].dimension(form);
+                (prime.get() as usize).saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
             }
             Kind::DiskHom(ref from, ref to, prime) => {
                 let rank = self.disk_homs[&(from.clone(), to.clone())].rank();
@@ -1066,6 +1081,7 @@ impl Model {
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
                 | Kind::SheafDeformation(..)
+                | Kind::Parabolic(..)
                 | Kind::DiskHom(..)
                 | Kind::SheafHom(..)
                 | Kind::SheafPage(..)
@@ -1598,7 +1614,71 @@ impl Model {
     }
 
     pub(crate) fn define_disk(&mut self, name: String, disk: crate::sheaf_disk::Disk) {
-        self.disk_quivers.insert(name.into(), Rc::new(disk));
+        self.define_disk_shared(name, Rc::new(disk));
+    }
+
+    pub(crate) fn define_disk_shared(&mut self, name: String, disk: Rc<crate::sheaf_disk::Disk>) {
+        self.disk_quivers.insert(name.into(), disk);
+    }
+
+    pub(crate) fn disk_sequence(&self, name: &str) -> Result<Rc<DiskSequence>> {
+        self.disk_sequences
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown disk sequence '{name}'")))
+    }
+
+    pub(crate) fn disk_sequence_map(&self, name: &str) -> Result<Rc<DiskSequenceMap>> {
+        self.disk_sequence_maps
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown disk sequence map '{name}'")))
+    }
+
+    pub(crate) fn check_new_disk_sequence(&self, name: &Label, map: bool) -> Result<()> {
+        let exists = if map {
+            self.disk_sequence_maps.contains_key(name.text.as_str())
+        } else {
+            self.disk_sequences.contains_key(name.text.as_str())
+        };
+        if exists {
+            let item = if map {
+                "disk sequence map"
+            } else {
+                "disk sequence"
+            };
+            return Err(Error::new(
+                name.span,
+                format!("{item} '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_disk_sequence(&mut self, name: String, sequence: DiskSequence) {
+        self.disk_sequences.insert(name.into(), Rc::new(sequence));
+    }
+
+    pub(crate) fn define_disk_sequence_map(&mut self, name: String, map: DiskSequenceMap) {
+        self.disk_sequence_maps.insert(name.into(), Rc::new(map));
+    }
+
+    pub(crate) fn parabolic_type(
+        &mut self,
+        name: Rc<str>,
+        form: ParabolicForm,
+    ) -> Result<(TypeId, Rc<Parabolic>)> {
+        let data = if let Some(group) = self.parabolic_groups.get(&name) {
+            group.clone()
+        } else {
+            let sequence = self.disk_sequence(&name)?;
+            let group = Rc::new(Parabolic::build(self, sequence)?);
+            self.allocate(1)?;
+            self.parabolic_groups.insert(name.clone(), group.clone());
+            group
+        };
+        let ty = self.inhabited_type(Kind::Parabolic(form, name, data.sequence.prime), 0)?;
+        Ok((ty, data))
     }
 
     pub(crate) fn disk_hom_type(
@@ -4357,6 +4437,7 @@ impl Model {
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
             | Kind::SheafDeformation(..)
+            | Kind::Parabolic(..)
             | Kind::DiskHom(..)
             | Kind::SheafHom(..)
             | Kind::SheafPage(..)
@@ -4599,6 +4680,7 @@ impl Model {
                 out.push(&format!("{}({name}, {degree})", form.name()))
             }
             Kind::SheafDeformation(name, order) => out.push(&format!("ShDef({name}, {order})")),
+            Kind::Parabolic(form, name, _) => out.push(&format!("{}({name})", form.name())),
             Kind::DiskHom(from, to, _) => out.push(&format!("ShDiskHom({from}, {to})")),
             Kind::SheafHom(form, ends, degree) => {
                 let name = match form {
@@ -6169,6 +6251,10 @@ impl Model {
                 Kind::SheafDeformation(ref name, order) => {
                     let hom = self.sheaf_hom(&SheafEnds::endomorphisms(name.clone()));
                     sheaf_deform::elements(self, &hom, order, MAX_ELEMENTS)?
+                }
+                Kind::Parabolic(form, ref name, prime) => {
+                    let dimension = self.parabolic_groups[name].dimension(form);
+                    odd_ext::elements(self, prime, dimension, MAX_ELEMENTS)?
                 }
                 Kind::DiskHom(ref from, ref to, prime) => {
                     let rank = self.disk_homs[&(from.clone(), to.clone())].rank();

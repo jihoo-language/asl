@@ -8,8 +8,10 @@ use crate::sheaf_hyper::{Complex, Map as SheafMap, NamedSheaf};
 use crate::sheaf_leray;
 use crate::syntax::Label;
 
+pub(crate) mod braid;
 mod hom;
 mod linear;
+pub(crate) mod parabolic;
 mod realize;
 
 pub(crate) use hom::{Hom, Pair};

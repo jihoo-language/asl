@@ -86,12 +86,23 @@ pub(super) fn rank(model: &mut Model, p: Prime, matrix: &Matrix) -> Result<usize
     Ok(basis.rank())
 }
 
+pub(super) struct Image {
+    pub(super) projection: Matrix,
+    pub(super) inclusion: Matrix,
+    pub(super) basis: Basis,
+}
+
 pub(super) fn image_factorization(
     model: &mut Model,
     p: Prime,
     width: usize,
     matrix: &Matrix,
 ) -> Result<(Matrix, Matrix, usize)> {
+    let image = image(model, p, width, matrix)?;
+    Ok((image.projection, image.inclusion, image.basis.rank()))
+}
+
+pub(super) fn image(model: &mut Model, p: Prime, width: usize, matrix: &Matrix) -> Result<Image> {
     let mut basis = Basis::default();
     let mut included = Vec::new();
     for (_, column) in matrix.columns() {
@@ -104,7 +115,11 @@ pub(super) fn image_factorization(
     }
     let quotient = coordinates(model, p, &basis, width, |j| matrix.column(j).to_vec())?;
     let inclusion = Matrix::from_columns(included)?;
-    Ok((quotient, inclusion, basis.rank()))
+    Ok(Image {
+        projection: quotient,
+        inclusion,
+        basis,
+    })
 }
 
 pub(super) fn factor_through(

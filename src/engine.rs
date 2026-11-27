@@ -671,6 +671,16 @@ enum TypedForm {
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     DiskCompose(Box<crate::sheaf_disk::Composition>, Box<[TypedExpr; 2]>),
+    ParabolicUnary(
+        Rc<crate::sheaf_disk::parabolic::Parabolic>,
+        crate::sheaf_disk::parabolic::Unary,
+        Box<TypedExpr>,
+    ),
+    ParabolicTransport(
+        Box<crate::sheaf_disk::parabolic::Transfer>,
+        crate::sheaf_disk::parabolic::Form,
+        Box<TypedExpr>,
+    ),
     DiskMap(crate::sheaf_disk::Unary, Box<TypedExpr>),
     DiskCostalkLift(Rc<crate::sheaf_disk::Realization>, usize, Box<TypedExpr>),
     SheafConeTail(Rc<crate::sheaf_cone::Cone>, usize, bool, Box<TypedExpr>),
@@ -732,6 +742,143 @@ impl Engine {
             values: Vec::new(),
             locals: Vec::new(),
         }
+    }
+
+    fn parabolic_command(
+        &mut self,
+        command: crate::sheaf_disk::parabolic::Command,
+    ) -> Result<Option<String>> {
+        use crate::sheaf_disk::{
+            braid::{Sequence, SequenceMap},
+            parabolic::{Command, Form},
+        };
+        match command {
+            Command::Sequence(name, items) => {
+                self.model.check_new_disk_sequence(&name, false)?;
+                let terms = items
+                    .iter()
+                    .map(|item| {
+                        self.model
+                            .disk_named(&item.text)
+                            .map_err(|e| e.at(item.span))
+                    })
+                    .collect::<Result<_>>()?;
+                let sequence = Sequence::build(&mut self.model, terms)?;
+                self.model.define_disk_sequence(name.text, sequence);
+            }
+            Command::Hurwitz(name, source, word) => {
+                self.model.check_new_disk_sequence(&name, false)?;
+                let sequence = self.model.disk_sequence(&source.text)?;
+                let image =
+                    Sequence::hurwitz(&mut self.model, source.text.into(), &sequence, word)?;
+                self.model.define_disk_sequence(name.text, image);
+            }
+            Command::Point(name, source, index) => {
+                self.model.check_new_disk(&name)?;
+                let sequence = self.model.disk_sequence(&source.text)?;
+                let disk = sequence.point(index)?;
+                self.model.allocate(1)?;
+                self.model.define_disk_shared(name.text, disk);
+            }
+            Command::Product(source) => {
+                let sequence = self.model.disk_sequence(&source.text)?;
+                let matrix = sequence.product_report(&mut self.model)?;
+                return Ok(Some(format!("shdiskprod[{}] = {matrix}", source.text)));
+            }
+            Command::Same([from, to], quivers) => {
+                let a = self.model.disk_sequence(&from.text)?;
+                let b = self.model.disk_sequence(&to.text)?;
+                let same = a.same_data(&mut self.model, &b, quivers)?;
+                let output = if quivers {
+                    "shdiskseqsame"
+                } else {
+                    "shdiskmonosame"
+                };
+                return Ok(Some(format!(
+                    "{output}[{}, {}] = {same}",
+                    from.text, to.text
+                )));
+            }
+            Command::Map(name, [from, to], components) => {
+                self.model.check_new_disk_sequence(&name, true)?;
+                let a = self.model.disk_sequence(&from.text)?;
+                let b = self.model.disk_sequence(&to.text)?;
+                let mut maps = Vec::with_capacity(components.len());
+                for component in components {
+                    let input = self.checker().expr(component)?;
+                    let ends = disk_ends(&self.model, input.ty)?;
+                    let (_, hom) = self.model.disk_hom_type(ends.0, ends.1)?;
+                    let Value::OddClass(value) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    let pair = hom.decode(&mut self.model, &value)?;
+                    maps.push((hom, pair));
+                }
+                let map = SequenceMap::build(
+                    &mut self.model,
+                    (from.text.into(), to.text.into()),
+                    &a,
+                    &b,
+                    maps,
+                )?;
+                self.model.define_disk_sequence_map(name.text, map);
+            }
+            Command::BraidMap(name, [from, to, map]) => {
+                self.model.check_new_disk_sequence(&name, true)?;
+                let a = self.model.disk_sequence(&from.text)?;
+                let b = self.model.disk_sequence(&to.text)?;
+                let previous = self.model.disk_sequence_map(&map.text)?;
+                let map =
+                    previous.braid(&mut self.model, (from.text.into(), to.text.into()), &a, &b)?;
+                self.model.define_disk_sequence_map(name.text, map);
+            }
+            Command::MapAt(name, index) => {
+                let map = self.model.disk_sequence_map(&name.text)?;
+                let from = self.model.disk_sequence(&map.source)?;
+                let to = self.model.disk_sequence(&map.target)?;
+                let matrices = map.report(&mut self.model, &from, &to, index)?;
+                return Ok(Some(format!(
+                    "shdiskseqmapat[{}, {index}] = {matrices}",
+                    name.text
+                )));
+            }
+            Command::Rank(name) => {
+                let (_, data) = self
+                    .model
+                    .parabolic_type(name.text.as_str().into(), Form::Class)?;
+                return Ok(Some(format!(
+                    "shparrank[{}] = {}",
+                    name.text,
+                    data.dimension(Form::Class)
+                )));
+            }
+            Command::Report(input, rows) => {
+                let input = self.checker().expr(*input)?;
+                let (form, sequence) = parabolic_type(&self.model, input.ty)?;
+                let (expected, operation) = if rows {
+                    (Form::Raw, "shparrows")
+                } else {
+                    (Form::Nearby, "shparvector")
+                };
+                if form != expected {
+                    return Err(Error::new(
+                        input.span,
+                        format!("{operation} requires {}", expected.name()),
+                    ));
+                }
+                let (_, group) = self.model.parabolic_type(sequence, form)?;
+                let Value::OddClass(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let entries = if rows {
+                    group.report_rows(&mut self.model, &value)?
+                } else {
+                    group.report_vec(&mut self.model, &value)?
+                };
+                return Ok(Some(format!("{operation} = {entries}")));
+            }
+        }
+        Ok(None)
     }
 
     fn disk_command(&mut self, command: crate::sheaf_disk::Command) -> Result<Option<String>> {
@@ -1666,6 +1813,7 @@ impl Engine {
                 self.model.define_sheaf(name.text, image);
                 return Ok(None);
             }
+            StatementForm::Parabolic(command) => return self.parabolic_command(command),
             StatementForm::Disk(command) => return self.disk_command(command),
             StatementForm::SheafConeGlue(form, [name, j, apex, source], degree, columns) => {
                 self.model.check_new_sheaf_complex(&name)?;
@@ -4704,7 +4852,8 @@ impl Engine {
                             | Kind::ASTwoDiff(_, p)
                             | Kind::ASOddDeRham(_, p)
                             | Kind::ASOddTate(_, p, _)
-                            | Kind::DiskHom(_, _, p) => p,
+                            | Kind::DiskHom(_, _, p)
+                            | Kind::Parabolic(_, _, p) => p,
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
@@ -7543,6 +7692,18 @@ impl Engine {
                 };
                 data.apply(&mut self.model, *grade, *operation, &coordinates)
             }
+            TypedForm::ParabolicUnary(group, operation, input) => {
+                let Value::OddClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                group.apply(&mut self.model, *operation, &value)
+            }
+            TypedForm::ParabolicTransport(transfer, form, input) => {
+                let Value::OddClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                transfer.apply(&mut self.model, *form, &value)
+            }
             TypedForm::DiskCompose(composition, args) => {
                 let Value::OddClass(a) = self.eval(&args[0])? else {
                     unreachable!()
@@ -8021,6 +8182,19 @@ fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
     Ok(())
 }
 
+fn parabolic_type(
+    model: &Model,
+    ty: TypeId,
+) -> Result<(crate::sheaf_disk::parabolic::Form, Rc<str>)> {
+    if let Kind::Parabolic(form, sequence, _) = model.kind(ty) {
+        return Ok((*form, sequence.clone()));
+    }
+    Err(Error::plain(format!(
+        "expected a parabolic vector, raw tuple, or class, found {}",
+        model.type_name(ty)
+    )))
+}
+
 fn disk_ends(model: &Model, ty: TypeId) -> Result<(Rc<str>, Rc<str>)> {
     match model.kind(ty) {
         Kind::DiskHom(from, to, _) => Ok((from.clone(), to.clone())),
@@ -8216,6 +8390,9 @@ impl Checker<'_> {
                 )
             }
             TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
+            TypeForm::Parabolic(form, sequence) => {
+                Ok(self.model.parabolic_type(sequence.text.into(), form)?.0)
+            }
             TypeForm::DiskHom(from, to) => Ok(self
                 .model
                 .disk_hom_type(from.text.into(), to.text.into())?
@@ -8826,6 +9003,64 @@ impl Checker<'_> {
         Ok((ty, TypedForm::SetDependent(action, input)))
     }
 
+    fn parabolic_expression(
+        &mut self,
+        expression: crate::sheaf_disk::parabolic::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::sheaf_disk::parabolic::{Expression, Form};
+        Ok(match expression {
+            Expression::Nearby(sequence, values) => {
+                let (ty, group) = self
+                    .model
+                    .parabolic_type(sequence.text.into(), Form::Nearby)?;
+                (
+                    ty,
+                    TypedForm::Constant(group.literal_vec(self.model, values)?),
+                )
+            }
+            Expression::Raw(sequence, rows) => {
+                let (ty, group) = self.model.parabolic_type(sequence.text.into(), Form::Raw)?;
+                (
+                    ty,
+                    TypedForm::Constant(group.literal_rows(self.model, rows)?),
+                )
+            }
+            Expression::Generator(sequence, index) => {
+                let (ty, group) = self
+                    .model
+                    .parabolic_type(sequence.text.into(), Form::Class)?;
+                let value =
+                    self.prime_generator(ty, group.dimension(Form::Class), index, sequence.span)?;
+                (ty, TypedForm::Constant(value))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let (actual, sequence) = parabolic_type(self.model, input.ty)?;
+                let (expected, result) = operation.forms();
+                if actual != expected {
+                    return Err(Error::new(
+                        input.span,
+                        format!("parabolic operation requires {}", expected.name()),
+                    ));
+                }
+                let (ty, group) = self.model.parabolic_type(sequence, result)?;
+                (
+                    ty,
+                    TypedForm::ParabolicUnary(group, operation, Box::new(input)),
+                )
+            }
+            Expression::Transport(operation, name, input) => {
+                let input = self.expr(*input)?;
+                let (form, sequence) = parabolic_type(self.model, input.ty)?;
+                let (ty, transfer) = operation.plan(self.model, &name, sequence, form)?;
+                (
+                    ty,
+                    TypedForm::ParabolicTransport(Box::new(transfer), form, Box::new(input)),
+                )
+            }
+        })
+    }
+
     fn disk_expression(
         &mut self,
         expression: crate::sheaf_disk::Expression,
@@ -9272,7 +9507,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
-                    Kind::DiskHom(..) => odd_ext::zero(),
+                    Kind::Parabolic(..) | Kind::DiskHom(..) => odd_ext::zero(),
                     Kind::ASOddDiff(..) | Kind::ASTwoDiff(..) => odd_ext::zero(),
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
@@ -10092,6 +10327,7 @@ impl Checker<'_> {
                     TypedForm::SheafLocalOperation(data, grade, operation, Box::new(input)),
                 ))
             }
+            ExprForm::Parabolic(expression) => self.parabolic_expression(expression),
             ExprForm::Disk(expression) => self.disk_expression(expression),
             ExprForm::SheafConeApex(name, index) => {
                 let cone = self.model.cone_gluing(&name)?;
@@ -10568,7 +10804,7 @@ impl Checker<'_> {
                     | Kind::ASOddDiff(_, p)
                     | Kind::ASTwoDiff(_, p)
                     | Kind::ASOddDeRham(_, p)
-                    | Kind::ASOddTate(_, p, _) | Kind::DiskHom(_,_,p) => p,
+                    | Kind::ASOddTate(_, p, _) | Kind::DiskHom(_,_,p) | Kind::Parabolic(_,_,p) => p,
                     Kind::MixedChain(grade, _) | Kind::MixedHomology(grade) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
@@ -15731,6 +15967,7 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
+                        | Kind::Parabolic(..)
                         | Kind::DiskHom(..)
                         | Kind::ASOddDiff(..)
                         | Kind::ASTwoDiff(..)

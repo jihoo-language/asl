@@ -74,6 +74,7 @@ pub(crate) enum TypeForm {
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
     SheafDeformation(Label, usize),
+    Parabolic(crate::sheaf_disk::parabolic::Form, Label),
     DiskHom(Label, Label),
     SheafHom(SheafForm, Label, Label, usize),
     SheafComplex(SheafForm, Label, usize),
@@ -756,6 +757,7 @@ pub(crate) enum ExprForm {
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
     SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
+    Parabolic(crate::sheaf_disk::parabolic::Expression),
     Disk(crate::sheaf_disk::Expression),
     SheafConeApex(Label, usize),
     SheafConeTail(Label, bool, Box<ParsedExpr>),
@@ -1087,6 +1089,7 @@ pub(crate) enum StatementForm {
     MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    Parabolic(crate::sheaf_disk::parabolic::Command),
     Disk(crate::sheaf_disk::Command),
     SheafConeGlue(SheafInputForm, [Label; 4], usize, Vec<ParsedExpr>),
     SheafConeHomotopy([Label; 3], Vec<ParsedExpr>),
@@ -3748,6 +3751,12 @@ impl<'src> Parser<'src> {
                 | "shdiskhomdim" | "shdiskstalk" | "shdiskcostalk" | "shdiskoperator"
                 | "shdiskrealize"),
             ) => StatementForm::Disk(self.disk_command(command)?),
+            Token::Word(
+                command @ ("shdiskseq" | "shhurwitz" | "shdiskpoint" | "shdiskprod"
+                | "shdiskseqsame" | "shdiskmonosame" | "shdiskseqmap"
+                | "shdiskseqmapbraid" | "shdiskseqmapat" | "shparrank" | "shparrows"
+                | "shparvector"),
+            ) => StatementForm::Parabolic(self.parabolic_command(command)?),
             Token::Word(op @ ("shconeglue" | "shconegluecomplex")) => {
                 let form = if op == "shconeglue" {
                     SheafInputForm::Sheaf
@@ -6262,6 +6271,13 @@ impl<'src> Parser<'src> {
             let (source, target, degree) = self.sheaf_hom_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::SheafHom(form, source, target, degree), 0);
+        }
+        if let Some(form) = crate::sheaf_disk::parabolic::Form::detect(&name.text) {
+            if self.eat(Token::LParen)? {
+                let sequence = self.label()?;
+                self.expect(Token::RParen)?;
+                return ty(span, TypeForm::Parabolic(form, sequence), 0);
+            }
         }
         if name.text == "ShDiskHom" && self.eat(Token::LParen)? {
             let from = self.label()?;
@@ -9132,6 +9148,12 @@ impl<'src> Parser<'src> {
                 {
                     return self.disk_expression(&name, span, nest);
                 }
+                if matches!(name.text.as_str(), "shParVec" | "shParRaw" | "shParGen")
+                    || crate::sheaf_disk::parabolic::Unary::detect(&name.text).is_some()
+                    || crate::sheaf_disk::parabolic::Transport::detect(&name.text).is_some()
+                {
+                    return self.parabolic_expression(&name, span, nest);
+                }
                 if name.text == "shGlueApex" && self.eat(Token::LBracket)? {
                     let cone = self.label()?;
                     self.expect(Token::Comma)?;
@@ -11132,6 +11154,110 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, form, depth)
+    }
+
+    fn disk_label_index(&mut self) -> Result<(Label, usize)> {
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let index = self.number()?.0;
+        self.expect(Token::RBracket)?;
+        Ok((name, index))
+    }
+
+    fn parabolic_command(
+        &mut self,
+        command: &str,
+    ) -> Result<crate::sheaf_disk::parabolic::Command> {
+        use crate::sheaf_disk::parabolic::Command;
+        self.advance()?;
+        Ok(match command {
+            "shdiskseq" => Command::Sequence(self.label()?, self.sheaf_chain()?),
+            "shhurwitz" => {
+                let name = self.label()?;
+                let [source] = self.disk_labels()?;
+                Command::Hurwitz(name, source, self.sheaf_matrix()?)
+            }
+            "shdiskpoint" => {
+                let name = self.label()?;
+                let (source, index) = self.disk_label_index()?;
+                Command::Point(name, source, index)
+            }
+            "shdiskprod" => {
+                let [source] = self.disk_labels()?;
+                Command::Product(source)
+            }
+            "shdiskseqsame" | "shdiskmonosame" => {
+                Command::Same(self.disk_labels()?, command == "shdiskseqsame")
+            }
+            "shdiskseqmap" => Command::Map(
+                self.label()?,
+                self.disk_labels()?,
+                self.sheaf_cone_columns()?,
+            ),
+            "shdiskseqmapbraid" => Command::BraidMap(self.label()?, self.disk_labels()?),
+            "shdiskseqmapat" => {
+                let (map, index) = self.disk_label_index()?;
+                Command::MapAt(map, index)
+            }
+            "shparrank" => {
+                let [sequence] = self.disk_labels()?;
+                Command::Rank(sequence)
+            }
+            "shparrows" | "shparvector" => {
+                Command::Report(Box::new(self.paren_expr(0)?), command == "shparrows")
+            }
+            _ => unreachable!(),
+        })
+    }
+
+    fn parabolic_expression(
+        &mut self,
+        name: &Label,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::sheaf_disk::parabolic::{Expression, Transport, Unary};
+        let (form, depth) = match name.text.as_str() {
+            "shParVec" => {
+                let [sequence] = self.disk_labels()?;
+                (Expression::Nearby(sequence, self.sheaf_matrix()?), 0)
+            }
+            "shParRaw" => {
+                let [sequence] = self.disk_labels()?;
+                self.expect(Token::LBrace)?;
+                let mut rows = Vec::new();
+                while self.token() != Token::RBrace {
+                    rows.push(self.sheaf_matrix()?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                (Expression::Raw(sequence, rows), 0)
+            }
+            "shParGen" => {
+                let (sequence, index) = self.disk_label_index()?;
+                (Expression::Generator(sequence, index), 0)
+            }
+            operation => {
+                let transport = Transport::detect(operation)
+                    .map(|kind| self.disk_labels().map(|[name]| (kind, name)))
+                    .transpose()?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let form = if let Some((kind, name)) = transport {
+                    Expression::Transport(kind, name, Box::new(input))
+                } else {
+                    Expression::Unary(
+                        Unary::detect(operation).expect("known parabolic operator"),
+                        Box::new(input),
+                    )
+                };
+                (form, depth)
+            }
+        };
+        expr(span, ExprForm::Parabolic(form), depth)
     }
 
     fn disk_command(&mut self, command: &str) -> Result<crate::sheaf_disk::Command> {

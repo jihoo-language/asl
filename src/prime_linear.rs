@@ -370,6 +370,16 @@ impl QuotientBasis {
         Ok(support)
     }
 
+    pub(crate) fn boundary_witness(
+        &self,
+        model: &mut Model,
+        prime: Prime,
+        support: Vec<Coordinate>,
+    ) -> Result<Option<Vec<Coordinate>>> {
+        let (remainder, witness) = self.boundaries.reduce_with_witness(model, prime, support)?;
+        Ok(remainder.is_empty().then_some(witness))
+    }
+
     pub(crate) fn is_boundary(
         &self,
         model: &mut Model,
