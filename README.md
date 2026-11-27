@@ -969,6 +969,22 @@ awk -v m=97 -f examples/flash-bockstein.awk | nix run path:. -- -
 
 The output is `VBock(One, Flash, [0, 1], 97, 1, 2, 97){g0}`. The generator checks the interpreter's source-size limit before emitting the program.
 
+## Dwork unit roots of Legendre elliptic curves
+
+For an odd prime $p$ and $\lambda\in\mathbb F_p\setminus\{0,1\}$, `legendreTrace[p,lambda];` counts points of $y^2=x(x-1)(x-\lambda)$ over $\mathbb F_p$ using the quadratic character and includes the point at infinity. It reports the trace $a_p=p+1-\#E$ of Frobenius on $H^1(E)$. The parameter uses its representative in $0,\ldots,p-1$.
+
+At precision $s\ge1$, put $z=\operatorname{Teich}(\lambda/16)\pmod{p^s}$ and
+$B_r(t)=\sum_{0\le n<p^r}\binom{2n}{n}^2t^n$.
+The query `legendreDwork[p,lambda,s];` evaluates both $B_s(z)$ and $B_{s-1}(z)$ modulo $p^s$. It gives the ratio and its signed Frobenius unit root $(-1)^{(p-1)/2}B_s(z)/B_{s-1}(z)$ for an ordinary curve. For a supersingular curve the output reports the two sums and the trace and marks the ratio undefined. Independently, `legendreHensel[p,lambda,s];` lifts the unit root of $T^2-a_pT+p$ obtained from the point count. The Dwork query checks equality with that lift at the requested precision.
+
+`dworkPeriod[p,z,r,s];` evaluates the raw truncation $B_r(z)$ for a signed $128$-bit integer representative $z$ and keeps truncation order $r$ separate from precision $s$. Here $B_0=1$. The central binomial recurrence splits off powers of $p$ before dividing by $n+1$. It retains the unit part when a term vanishes and reuses it when the valuation later decreases. Moduli fit in $u64$, with widened products and the normal computation limits for enumerating terms.
+
+`dworkCongruence[p,s];` checks every coefficient of
+$B_{s+1}(t)B_{s-1}(t^p)\equiv B_s(t)B_s(t^p)\pmod{p^s}$.
+The form `dworkCongruence[p,s,z];` computes and reports the actual two residues at an integer $z$, including values with $z^p\ne z$. The coefficientwise check uses the polynomial storage limit.
+
+For $p=7$ and $\lambda=3$ the example gives trace $4$, raw ratio $10$ and signed unit root $39\pmod{49}$. The unit at precision six reduces to the same residue. The change $\lambda\mapsto1-\lambda$ gives the quadratic twist by $-1$ and changes the trace to $-4$. The example also computes the unit $169738\pmod{5^8}$ for $p=5,\lambda=2$. [Legendre Dwork example](examples/legendre-dwork.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

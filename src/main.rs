@@ -28,6 +28,7 @@ mod eo;
 mod error;
 mod jet_hom;
 mod jet_page;
+mod legendre;
 mod linear;
 mod map_bracket;
 mod map_cochain;

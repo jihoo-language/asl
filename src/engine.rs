@@ -668,6 +668,7 @@ impl Engine {
 
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
+            StatementForm::Legendre(query) => query.run(&mut self.model)?,
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
                 return Ok(None);

@@ -1010,6 +1010,7 @@ pub(crate) enum StatementForm {
     SheafTruncate(Label, Label, usize),
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
+    Legendre(crate::legendre::Query),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
     Show(ParsedExpr),
@@ -1944,6 +1945,66 @@ impl<'src> Parser<'src> {
         Ok(rows)
     }
 
+    fn legendre_query(&mut self, name: &str) -> Result<crate::legendre::Query> {
+        use crate::legendre::Query;
+        self.expect(Token::LBracket)?;
+        let prime = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let query = match name {
+            "legendreTrace" => Query::Trace {
+                prime,
+                lambda: self.number()?.0,
+            },
+            "legendreHensel" | "legendreDwork" => {
+                let lambda = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let precision = self.number()?.0;
+                if name == "legendreDwork" {
+                    Query::Dwork {
+                        prime,
+                        lambda,
+                        precision,
+                    }
+                } else {
+                    Query::Hensel {
+                        prime,
+                        lambda,
+                        precision,
+                    }
+                }
+            }
+            "dworkPeriod" => {
+                let z = self.signed_wide("a signed Dwork argument", "Dwork argument")?;
+                self.expect(Token::Comma)?;
+                let order = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let precision = self.number()?.0;
+                Query::Period {
+                    prime,
+                    z,
+                    order,
+                    precision,
+                }
+            }
+            "dworkCongruence" => {
+                let precision = self.number()?.0;
+                let z = if self.eat(Token::Comma)? {
+                    Some(self.signed_wide("a signed Dwork argument", "Dwork argument")?)
+                } else {
+                    None
+                };
+                Query::Congruence {
+                    prime,
+                    precision,
+                    z,
+                }
+            }
+            _ => unreachable!(),
+        };
+        self.expect(Token::RBracket)?;
+        Ok(query)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
@@ -2141,6 +2202,13 @@ impl<'src> Parser<'src> {
                 let point = self.label()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafMapRank(name, point)
+            }
+            Token::Word(
+                command @ ("legendreTrace" | "legendreHensel" | "legendreDwork" | "dworkPeriod"
+                | "dworkCongruence"),
+            ) => {
+                self.advance()?;
+                StatementForm::Legendre(self.legendre_query(command)?)
             }
             Token::Word("qmodule") => {
                 self.advance()?;

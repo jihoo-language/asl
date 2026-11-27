@@ -1,0 +1,12 @@
+legendreTrace[7,3];
+legendreDwork[7,3,2];
+dworkPeriod[7,19,1,2];
+dworkPeriod[7,19,2,2];
+legendreHensel[7,3,2];
+legendreDwork[7,3,6];
+legendreDwork[7,5,2];
+legendreDwork[5,2,2];
+legendreDwork[5,2,8];
+legendreDwork[7,2,2];
+dworkCongruence[3,3];
+dworkCongruence[5,2,2];
