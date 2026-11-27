@@ -8,6 +8,7 @@ use crate::error::{Error, Result, Span};
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynomial as period;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::quadratic_hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::residual_hecke;
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
@@ -1289,6 +1290,7 @@ pub(crate) enum StatementForm {
     ModularHecke(hecke::Report, Box<ParsedExpr>),
     HeckeEigen(eigenpacket::Statement),
     HeckeResidual(residual_hecke::Statement),
+    HeckeQuadratic(quadratic_hecke::Query),
     PeriodPolynomial(period::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
@@ -4770,6 +4772,36 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::PeriodPolynomial(operation), depth)
     }
 
+    fn hecke_quadratic_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use quadratic_hecke::Query;
+        self.advance()?;
+        let query = if name == "rvHeckeQuadraticIntegral" {
+            Query::Integral(Box::new(self.paren_expr(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name_of_packet = self.label()?;
+            let query = match name {
+                "rvHeckeQuadraticOrder" => Query::Data(name_of_packet),
+                "rvHeckeQuadraticCoeff" => {
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("quadratic Hecke Fourier index")?;
+                    Query::Fourier(name_of_packet, index)
+                }
+                _ => {
+                    self.expect(Token::Comma)?;
+                    let span = self.span();
+                    let prime = self.wide_unsigned("quadratic Hecke local prime")?;
+                    let prime = u64::try_from(prime)
+                        .map_err(|_| Error::new(span, "quadratic Hecke local prime exceeds u64"))?;
+                    Query::Local(name_of_packet, prime)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            query
+        };
+        Ok(StatementForm::HeckeQuadratic(query))
+    }
+
     fn hecke_residual_statement(&mut self, name: &str) -> Result<StatementForm> {
         use residual_hecke::Statement;
         self.advance()?;
@@ -7680,6 +7712,12 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
             }
+            Token::Word(
+                name @ ("rvHeckeQuadraticOrder"
+                | "rvHeckeQuadraticCoeff"
+                | "rvHeckeQuadraticLocal"
+                | "rvHeckeQuadraticIntegral"),
+            ) => self.hecke_quadratic_statement(name)?,
             Token::Word(name @ ("rvPeriodDim" | "rvPeriodCoeff" | "rvPeriodHeckeMatrix")) => {
                 self.period_statement(name)?
             }

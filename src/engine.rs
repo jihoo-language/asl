@@ -44,7 +44,7 @@ use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
-    eigenpacket, hecke, period_polynomial as period, residual_hecke,
+    eigenpacket, hecke, period_polynomial as period, quadratic_hecke, residual_hecke,
 };
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
@@ -2070,6 +2070,7 @@ impl Engine {
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
             StatementForm::PeriodPolynomial(report) => return self.period_statement(report),
+            StatementForm::HeckeQuadratic(query) => return self.hecke_quadratic_statement(query),
             StatementForm::HeckeResidual(command) => return self.hecke_residual_statement(command),
             StatementForm::HeckeEigen(command) => return self.hecke_eigen_statement(command),
             StatementForm::ModularHecke(query, input) => {
@@ -5676,6 +5677,42 @@ impl Engine {
                     .map(Some)
             }
         }
+    }
+
+    fn hecke_quadratic_statement(
+        &mut self,
+        query: quadratic_hecke::Query,
+    ) -> Result<Option<String>> {
+        use quadratic_hecke::Query;
+        let report = match query {
+            Query::Data(name) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let order = packet.quadratic_order(&mut self.model)?;
+                order.data(&name.text)
+            }
+            Query::Fourier(name, index) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let order = packet.quadratic_order(&mut self.model)?;
+                order.fourier(&mut self.model, &packet, &name.text, index)?
+            }
+            Query::Local(name, prime) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let order = packet.quadratic_order(&mut self.model)?;
+                order.local(&mut self.model, &name.text, prime)?
+            }
+            Query::Integral(input) => {
+                let input = self.checker().expr(*input)?;
+                let packet = self
+                    .checker()
+                    .hecke_eigen_operand(&input, "rvHeckeQuadraticIntegral")?;
+                let order = packet.quadratic_order(&mut self.model)?;
+                let Value::HeckeEigen(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                order.integral(&mut self.model, &value)?
+            }
+        };
+        Ok(Some(report))
     }
 
     fn hecke_residual_statement(

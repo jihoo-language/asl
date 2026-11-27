@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::mem::size_of;
 use std::rc::Rc;
@@ -9,6 +10,7 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
 use super::hecke::{self, compare_integers, integer, Operator};
+use super::quadratic_hecke;
 use super::{decimal, multiply as product, Integer, Magnitude, INTEGER_WORDS};
 
 type DoubleInteger = Wide<33>;
@@ -51,6 +53,7 @@ pub(crate) struct Packet {
     polynomial: Vec<Integer>,
     moments: Vec<Integer>,
     gram: Elimination,
+    quadratic_order: OnceCell<quadratic_hecke::Order>,
 }
 
 impl Packet {
@@ -83,11 +86,20 @@ impl Packet {
             polynomial,
             moments,
             gram,
+            quadratic_order: OnceCell::new(),
         })
     }
 
     pub(super) fn polynomial(&self) -> &[Integer] {
         &self.polynomial
+    }
+
+    pub(crate) fn quadratic_order(&self, model: &mut Model) -> Result<&quadratic_hecke::Order> {
+        if let Some(order) = self.quadratic_order.get() {
+            return Ok(order);
+        }
+        let order = quadratic_hecke::Order::new(model, self)?;
+        Ok(self.quadratic_order.get_or_init(|| order))
     }
 
     pub(crate) fn degree(&self) -> usize {

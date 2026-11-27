@@ -307,7 +307,12 @@ fn p_part(mut n: u64, p: u64) -> u64 {
     original / n
 }
 
-fn power_mod(model: &mut Model, mut base: u64, mut exponent: u128, modulus: u64) -> Result<u64> {
+pub(super) fn power_mod(
+    model: &mut Model,
+    mut base: u64,
+    mut exponent: u128,
+    modulus: u64,
+) -> Result<u64> {
     let mut value = 1;
     while exponent != 0 {
         model.spend(1)?;

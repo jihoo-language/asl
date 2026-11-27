@@ -20,6 +20,7 @@ pub(crate) mod inverse;
 pub(crate) mod maass;
 mod mock;
 pub(crate) mod period_polynomial;
+pub(crate) mod quadratic_hecke;
 pub(crate) mod residual_hecke;
 
 mod generalized;

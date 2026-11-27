@@ -843,3 +843,178 @@ fn residual_maps_reject_invalid_roots_nominal_mismatches_and_precision_limits() 
         assert!(error.contains(expected), "{source}: {error}");
     }
 }
+
+#[test]
+fn quadratic_order_example_gives_integral_coordinates_and_sharp_local_depths() {
+    assert_eq!(
+        stdout(example("quadratic-hecke-orders")),
+        concat!(
+            "rvHeckeQuadraticOrder[E] = D_K=144169, omega=(1+sqrt(144169))/2, theta=(528, 24), theta_index=24, theta_discriminant=83041344, conductor=24, order_discriminant=83041344, congruence_ideal=(24*sqrt(144169)), congruence_norm=83041344\n",
+            "rvHeckeQuadraticCoeff[E, 2] = (528, 24)\n",
+            "rvHeckeQuadraticCoeff[E, 3] = (170316, -1152)\n",
+            "rvHeckeQuadraticLocal[E, 2] = split, e=1, f=1, primes=2, depth=3, first_sharp_index=2\n",
+            "rvHeckeQuadraticLocal[E, 3] = split, e=1, f=1, primes=2, depth=1, first_sharp_index=2\n",
+            "rvHeckeQuadraticLocal[E, 144169] = ramified, e=2, f=1, primes=1, depth=1, first_sharp_index=2\n",
+            "rvHeckeQuadraticOrder[F] = D_K=144169, omega=(1+sqrt(144169))/2, theta=(2647, 120), theta_index=120, theta_discriminant=2076033600, conductor=24, order_discriminant=83041344, congruence_ideal=(24*sqrt(144169)), congruence_norm=83041344\n",
+            "rvHeckeQuadraticCoeff[F, 2] = (528, 24)\n",
+        )
+    );
+}
+
+fn series_power(series: &[i128], exponent: u32, bound: usize) -> Vec<i128> {
+    let mut result = vec![0; bound + 1];
+    result[0] = 1;
+    for _ in 0..exponent {
+        result = convolve(&result, series, bound);
+    }
+    result
+}
+
+fn integral_cusp_basis(weight: u32, bound: usize) -> [Vec<i128>; 2] {
+    let delta = delta(bound);
+    let e4 = e4(bound);
+    let e6: Vec<i128> = std::iter::once(1)
+        .chain((1..=bound).map(|n| {
+            -504 * (1..=n)
+                .filter(|d| n.is_multiple_of(*d))
+                .map(|d| (d as i128).pow(5))
+                .sum::<i128>()
+        }))
+        .collect();
+    [1, 2].map(|j| {
+        let b = (weight - 12 * j) % 4 / 2;
+        let a = (weight - 12 * j - 6 * b) / 4;
+        convolve(
+            &series_power(&delta, j, bound),
+            &convolve(
+                &series_power(&e4, a, bound),
+                &series_power(&e6, b, bound),
+                bound,
+            ),
+            bound,
+        )
+    })
+}
+
+#[test]
+fn quadratic_orders_in_all_degree_two_weights_match_independent_integral_cusp_bases() {
+    let fixtures = [
+        (24, 144169, 24),
+        (28, 18209, 216),
+        (30, 51349, 192),
+        (32, 18295489, 24),
+        (34, 2356201, 144),
+        (38, 63737521, 96),
+    ];
+    let bound = 10;
+    let mut source = String::new();
+    let mut expected = String::new();
+    for (k, d, g) in fixtures {
+        let [f, h] = integral_cusp_basis(k, bound);
+        assert_eq!([f[1], h[1], h[2]], [1, 0, 1]);
+        let image_col = |form: &[i128]| {
+            let first = hecke_q_coefficient(form, k, 2, 1);
+            [first, hecke_q_coefficient(form, k, 2, 2) - f[2] * first]
+        };
+        let [_, negative_trace, norm] = characteristic_2x2([image_col(&f), image_col(&h)]);
+        let trace = -negative_trace;
+        let discriminant = trace * trace - 4 * norm;
+        assert_eq!(discriminant, g * g * d);
+        let offset = (trace - g) / 2;
+        writeln!(
+            source,
+            "rvheckepacket E{k}(rvHeckeT[{k},2]); rvHeckeQuadraticOrder[E{k}];"
+        )
+        .unwrap();
+        writeln!(expected, "rvHeckeQuadraticOrder[E{k}] = D_K={d}, omega=(1+sqrt({d}))/2, theta=({offset}, {g}), theta_index={g}, theta_discriminant={discriminant}, conductor={g}, order_discriminant={discriminant}, congruence_ideal=({g}*sqrt({d})), congruence_norm={discriminant}").unwrap();
+        for n in 0..=bound {
+            writeln!(source, "rvHeckeQuadraticCoeff[E{k},{n}];").unwrap();
+            let a = f[n] + (offset - f[2]) * h[n];
+            let b = g * h[n];
+            writeln!(expected, "rvHeckeQuadraticCoeff[E{k}, {n}] = ({a}, {b})").unwrap();
+        }
+    }
+    assert_eq!(stdout(interpret(&source)), expected);
+}
+
+#[test]
+fn field_orientation_and_coefficient_order_survive_large_generator_changes() {
+    let scale = 100_000_000_000_000_000_000_i128;
+    let program = format!(
+        "let t = rvHeckeT[24,2]; let one = rvHeckeUnit[24];
+         rvheckepacket Huge(add(rvHeckeScale[{scale}](t),rvHeckeScale[7](one)));
+         rvheckepacket Neg(add(rvHeckeScale[-5](t),rvHeckeScale[7](one)));
+         rvHeckeQuadraticOrder[Huge]; rvHeckeQuadraticOrder[Neg];
+         rvHeckeQuadraticCoeff[Huge,3]; rvHeckeQuadraticCoeff[Neg,3];
+         rvHeckeQuadraticIntegral(rvHeckeEigenCoeff[Huge,2]);
+         let x = rvHeckeEigenGenerator[Huge];
+         let a = add(x,rvHeckeEigenScalar[Huge,{},1]);
+         rvHeckeQuadraticIntegral(rvHeckeEigenMul(a,rvHeckeEigenScalar[Huge,1,{}]));",
+        -(528 * scale + 7),
+        24 * scale
+    );
+    let report = stdout(interpret(&program));
+    let lines: Vec<_> = report.lines().collect();
+    assert!(lines[0].contains(&format!("theta_index={},", 24 * scale)));
+    assert!(lines[1].contains("theta=(-2753, 120), theta_index=120,"));
+    assert!(lines[..2]
+        .iter()
+        .all(|line| line.contains("conductor=24, order_discriminant=83041344")));
+    assert_eq!(
+        lines[2..],
+        [
+            "rvHeckeQuadraticCoeff[Huge, 3] = (170316, -1152)",
+            "rvHeckeQuadraticCoeff[Neg, 3] = (169164, 1152)",
+            "rvHeckeQuadraticIntegral = (528, 24)",
+            "rvHeckeQuadraticIntegral = (0, 1)",
+        ]
+    );
+}
+
+#[test]
+fn quadratic_local_splitting_and_congruence_witnesses_handle_inert_and_ramified_primes() {
+    let report = stdout(interpret(
+        "rvheckepacket E(rvHeckeT[24,2]); rvHeckeQuadraticLocal[E,23];
+         rvHeckeQuadraticLocal[E,4294967311];
+         rvheckepacket F(rvHeckeT[28,2]); rvHeckeQuadraticLocal[F,3];
+         rvHeckeQuadraticLocal[F,131]; rvHeckeQuadraticLocal[F,139];
+         rvheckepacket G(rvHeckeT[30,2]); rvHeckeQuadraticLocal[G,2];",
+    ));
+    assert_eq!(report, concat!(
+        "rvHeckeQuadraticLocal[E, 23] = inert, e=1, f=2, primes=1, depth=0, first_sharp_index=2\n",
+        "rvHeckeQuadraticLocal[E, 4294967311] = inert, e=1, f=2, primes=1, depth=0, first_sharp_index=2\n",
+        "rvHeckeQuadraticLocal[F, 3] = inert, e=1, f=2, primes=1, depth=3, first_sharp_index=2\n",
+        "rvHeckeQuadraticLocal[F, 131] = ramified, e=2, f=1, primes=1, depth=1, first_sharp_index=2\n",
+        "rvHeckeQuadraticLocal[F, 139] = ramified, e=2, f=1, primes=1, depth=1, first_sharp_index=2\n",
+        "rvHeckeQuadraticLocal[G, 2] = inert, e=1, f=2, primes=1, depth=6, first_sharp_index=2\n",
+    ));
+}
+
+#[test]
+fn quadratic_orders_validate_degree_local_primes_and_maximal_integrality() {
+    for (source, expected) in [
+        (
+            "rvheckepacket E(rvHeckeT[12,2]); rvHeckeQuadraticOrder[E];",
+            "requires a packet of degree two",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[36,2]); rvHeckeQuadraticOrder[E];",
+            "requires a packet of degree two",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvHeckeQuadraticLocal[E,9];",
+            "not prime",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvHeckeQuadraticLocal[E,4];",
+            "not prime",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvHeckeQuadraticIntegral(rvHeckeEigenScalar[E,1,2]);",
+            "is nonintegral in the quadratic maximal order",
+        ),
+    ] {
+        let error = diagnostic(interpret(source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}
