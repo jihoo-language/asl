@@ -1784,6 +1784,17 @@ The three pairs of branch marks in the genus-two example produce a theta graph w
 
 `rvHyperFixed(A);` gives the invariant factors, order and actual dual-cycle representatives of the rational component group $(\mathbb Z^b/Q\mathbb Z^b)^{F^{\mathsf T}}$. It uses the perfect pairing $x^{\mathsf T}Q^{-1}y$ to identify this group with the characters of $\mathbb Z^b/(Q\mathbb Z^b+(F^{\mathsf T}-I)\mathbb Z^b)$. The determinant of $Q$ kills this quotient, so Smith operations on the relations and character coordinates can use residues modulo that determinant. For each Smith factor $d$, it chooses a character $y/d$ with $0\le y_i<d$ and returns the integral vector $Qy/d$. The displayed order is the Tamagawa number. In the $p=7$ theta example the geometric order is $124$ and the nonsquare twist has rational order $4$. A second pair has both signs on the two cycles, and the rational orders are $12$ and $20$ even though both geometric orders are $60$. [Arithmetic hyperelliptic example](examples/rv-hyperelliptic-arithmetic.asl)
 
+#### Semistable hyperelliptic local factors
+
+`rvHyperLocal(A);` gives the polynomial in $T$ whose reciprocal is the local Euler factor on inertia-invariant $H^1$. The graph part is $\det(1-TF\mid H^1(\mathrm{graph}))$. The abelian part multiplies the Weil polynomials of the normalized positive-genus components. The combined degree is $2g-b$, where the graph cycle rank $b$ is also the semistable conductor exponent. The local root number is $(-1)^s$ with $s=\dim H^1(\mathrm{graph})^{F=1}$.
+
+`rvHyperLocalFactors(A);` lists each canonical normalized chart as `(base,genus,coefficients,traces,Weil_polynomial)`, with coefficients in increasing degree and traces over $\mathbb F_{p^r}$ for $1\le r\le g_v$. A genus of `None` denotes two geometric rational components and their displayed polynomial is the constant leading unit. A connected normalized chart has a factor for each residue direction that contains an odd number of roots. It uses the same normalization at infinity as the curve equation. An odd degree gives one point at infinity. An even degree gives two or zero according to the square class of the leading unit over the counting field. Finite-field quadratic character sums compute the traces before the integral Newton identities and functional equation fill in the Weil polynomial.
+
+`rvHyperNodalPoints[r](A);` counts points on the nodal curve given by the admissible cover. It adds points on the Frobenius-fixed normalized components and subtracts the number of fixed nodes. The report also gives these vertex and edge counts and the trace $1+p^r V_r-N_r$, an independent coefficient check on the local factor for the chosen graph.
+
+At $p=7$ one genus-three example has two elliptic components with traces $-4,0$ and a split cycle. Its local denominator is $(1-T)(1+4T+7T^2)(1+7T^2)$. A nonsquare twist gives $(1+T)(1-4T+7T^2)(1+7T^2)$, reversing the root number. The count over $\mathbb F_{7^5}$ is $50185$ for the original and $50659$ for the twist. The mixed-sign genus-two example has the same factor $1-T^2$ for either twist, alongside different rational component groups. [Semistable local factor example](examples/rv-hyperelliptic-local.asl)
+
+
 
 
 #### Two-pole odd-prime Artin–Schreier curves

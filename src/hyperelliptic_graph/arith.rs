@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -12,6 +13,10 @@ use crate::rv_qp_quad::{gauge::Coefficients, Element, Wide};
 use crate::stable_marks::Tree;
 
 use super::{period_inner, Cover, Cycle, Grade};
+
+mod euler;
+
+use euler::Local;
 
 pub(crate) type Rational = (i128, i128);
 
@@ -308,6 +313,7 @@ pub(crate) struct Arithmetic {
     frobenius: Vec<Vector>,
     periods: Vec<Vec<i128>>,
     charts: Vec<Chart>,
+    local: OnceCell<Local>,
 }
 
 impl Arithmetic {
@@ -369,6 +375,7 @@ impl Arithmetic {
             frobenius,
             periods,
             charts,
+            local: OnceCell::new(),
         }))
     }
 
@@ -470,6 +477,14 @@ impl Arithmetic {
             &rhs.edges,
             &rhs.charts,
         )))
+    }
+
+    fn local(&self, model: &mut Model) -> Result<&Local> {
+        if let Some(local) = self.local.get() {
+            return Ok(local);
+        }
+        let local = Local::compute(model, self)?;
+        Ok(self.local.get_or_init(|| local))
     }
 
     pub(crate) fn summary(&self, model: &mut Model) -> Result<String> {
@@ -584,6 +599,9 @@ fn wide_inner(
 pub(crate) enum Query {
     Frobenius,
     Fixed,
+    Local,
+    LocalFactors,
+    NodalPoints(usize),
 }
 
 impl Query {
@@ -591,6 +609,9 @@ impl Query {
         match self {
             Self::Frobenius => cover.action_text(model),
             Self::Fixed => cover.fixed_text(model),
+            Self::Local => cover.local(model)?.report(model),
+            Self::LocalFactors => cover.local(model)?.factors(model, &cover.charts),
+            Self::NodalPoints(degree) => euler::nodal(model, cover, degree),
         }
     }
 }

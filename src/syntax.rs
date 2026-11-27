@@ -4940,13 +4940,26 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::ValMatReport(query, self.paren_expr(0)?)
             }
-            Token::Word(op @ ("rvHyperFrobenius" | "rvHyperFixed")) => {
+            Token::Word(
+                op @ ("rvHyperFrobenius"
+                | "rvHyperFixed"
+                | "rvHyperLocal"
+                | "rvHyperLocalFactors"
+                | "rvHyperNodalPoints"),
+            ) => {
                 use crate::hyperelliptic_graph::arith::Query;
                 self.advance()?;
-                let query = if op == "rvHyperFrobenius" {
-                    Query::Frobenius
-                } else {
-                    Query::Fixed
+                let query = match op {
+                    "rvHyperFrobenius" => Query::Frobenius,
+                    "rvHyperFixed" => Query::Fixed,
+                    "rvHyperLocal" => Query::Local,
+                    "rvHyperLocalFactors" => Query::LocalFactors,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let (degree, _) = self.number()?;
+                        self.expect(Token::RBracket)?;
+                        Query::NodalPoints(degree)
+                    }
                 };
                 StatementForm::HyperArithReport(query, self.paren_expr(0)?)
             }

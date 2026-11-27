@@ -498,6 +498,70 @@ impl Ring {
         self.residue_quadratic_trace(model, |model, x| alg.evaluate(model, polynomial, x))
     }
 
+    pub(crate) fn residue_polynomial_traces(
+        &self,
+        model: &mut Model,
+        polynomials: &[&[u64]],
+    ) -> Result<Vec<i128>> {
+        if polynomials.is_empty() {
+            return Ok(Vec::new());
+        }
+        let p = self.prime();
+        if p == 2 {
+            return Err(Error::plain("quadratic character requires an odd prime"));
+        }
+        let count = usize::try_from(self.size_of_residue_field()?)
+            .map_err(|_| Error::plain("quadratic character point field is too large"))?;
+        let words = count.div_ceil(u64::BITS as usize);
+        if words > crate::complex::MAX_PIVOT_CELLS {
+            return Err(Error::plain(
+                "residue square table exceeds the storage limit",
+            ));
+        }
+        model.spend(words)?;
+        let alg = self.algebra(p);
+        let mut squares = vec![0u64; words];
+        let mut x = alg.constant(0);
+        let index_of = |value: &[u64]| {
+            value
+                .iter()
+                .rev()
+                .fold(0usize, |acc, &digit| acc * p as usize + digit as usize)
+        };
+        for index in 1..count {
+            model.spend(self.degree())?;
+            residue_digits(&mut x, p, index as u64);
+            let highest = x
+                .iter()
+                .rev()
+                .find(|&&digit| digit != 0)
+                .expect("nonzero element");
+            if *highest <= (p - 1) / 2 {
+                // Exactly one element of the pair x, -x is a representative.
+                let y = alg.multiply(model, &x, &x)?;
+                model.spend(1 + self.degree())?;
+                let key = index_of(&y);
+                squares[key / 64] |= 1 << (key % 64);
+            }
+        }
+        let mut traces = vec![0i128; polynomials.len()];
+        for index in 0..count {
+            model.spend(self.degree() + polynomials.len() * (1 + self.degree()))?;
+            residue_digits(&mut x, p, index as u64);
+            for (poly, trace) in polynomials.iter().zip(&mut traces) {
+                let value = index_of(&alg.evaluate(model, poly, &x)?);
+                if value != 0 {
+                    *trace += if squares[value / 64] & (1 << (value % 64)) == 0 {
+                        1
+                    } else {
+                        -1
+                    };
+                }
+            }
+        }
+        Ok(traces)
+    }
+
     pub(crate) fn residue_quadratic_trace(
         &self,
         model: &mut Model,
@@ -515,12 +579,9 @@ impl Ring {
         let exponent = (q - 1) / 2;
         let mut x = alg.constant(0);
         let mut trace = 0;
-        for mut index in 0..q {
+        for index in 0..q {
             model.spend(self.degree())?;
-            for c in &mut x {
-                *c = index % p;
-                index /= p;
-            }
+            residue_digits(&mut x, p, index);
             let rhs = evaluate(model, &x)?;
             if rhs.iter().all(|c| c.is_multiple_of(p)) {
                 continue;
@@ -537,6 +598,13 @@ impl Ring {
             };
         }
         Ok(trace)
+    }
+}
+
+fn residue_digits(digits: &mut [u64], p: u64, mut index: u64) {
+    for coefficient in digits {
+        *coefficient = index % p;
+        index /= p;
     }
 }
 
