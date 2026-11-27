@@ -34,8 +34,8 @@ use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_tree,
-    kummer as local_kummer,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
+    cubic_tree, kummer as local_kummer,
 };
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
@@ -242,6 +242,8 @@ pub(crate) enum TypeForm {
     CubicAlg(Label),
     CubicDiv(Label),
     CubicTree(Label, bool),
+    CubicChamber(Label),
+    CubicHecke(Label, cubic_iwahori::Sort),
     CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
@@ -1210,6 +1212,7 @@ pub(crate) enum ExprForm {
     CubicAlgebra(cubic_algebra::Expression),
     CubicDivision(cubic_division::Expression),
     CubicTree(cubic_tree::Expression),
+    CubicIwahori(cubic_iwahori::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1516,6 +1519,7 @@ pub(crate) enum StatementForm {
     CubicDivisionDeclaration(cubic_division::Declaration),
     CubicDivisionReport(cubic_division::Report),
     CubicTreeReport(cubic_tree::Report),
+    CubicIwahoriReport(cubic_iwahori::Report),
     CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
     CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
@@ -8364,6 +8368,160 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_iwahori_word(&mut self) -> Result<cubic_iwahori::GalleryWord> {
+        self.expect(Token::LBracket)?;
+        let entries = self.signed_list(Token::RBracket, "a panel index", "Iwahori panel")?;
+        cubic_iwahori::GalleryWord::literal(&entries)
+    }
+
+    fn cubic_iwahori_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_iwahori::Report;
+        self.advance()?;
+        let report = match name {
+            "rvCubicGallery" => Report::Gallery(Box::new(self.paren_pair(0)?)),
+            "rvCubicIwKernel" => Report::Kernel(Box::new(self.paren_triple(0)?)),
+            "rvCubicIwVectorCoeff" => Report::VectorCoefficient(Box::new(self.paren_pair(0)?)),
+            "rvCubicBusemann" => Report::Busemann(Box::new(self.paren_pair(0)?)),
+            "rvCubicSatakeCounts" => Report::Counts(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                match name {
+                    "rvCubicIwWordData" => {
+                        let word = self.cubic_iwahori_word()?;
+                        self.expect(Token::RBracket)?;
+                        Report::Word(word)
+                    }
+                    "rvCubicIwCoeff" => {
+                        let k = self.signed_number("Iwahori length-zero exponent")?;
+                        self.expect(Token::Comma)?;
+                        let word = self.cubic_iwahori_word()?;
+                        self.expect(Token::RBracket)?;
+                        Report::AffineCoefficient(k, word, Box::new(self.paren_expr(0)?))
+                    }
+                    "rvCubicSphCoeff" => {
+                        let (n, _) = self.number()?;
+                        self.expect(Token::RBracket)?;
+                        Report::SphericalCoefficient(n, Box::new(self.paren_expr(0)?))
+                    }
+                    _ => {
+                        let k = self.signed_number("Satake exponent")?;
+                        self.expect(Token::RBracket)?;
+                        Report::SatakeCoefficient(k, Box::new(self.paren_expr(0)?))
+                    }
+                }
+            }
+        };
+        Ok(StatementForm::CubicIwahoriReport(report))
+    }
+
+    fn cubic_iwahori_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use cubic_iwahori::{Constant, Expression, Unary};
+        let (operation, depth) = match name {
+            "rvCubicBaseChamber" | "rvCubicIwT" | "rvCubicIwOmega" | "rvCubicIwZ"
+            | "rvCubicIwE" | "rvCubicSph" => {
+                self.expect(Token::LBracket)?;
+                let chart = self.label()?;
+                let operation = if name == "rvCubicBaseChamber" {
+                    Expression::Base(chart)
+                } else {
+                    let c = match name {
+                        "rvCubicIwZ" => Constant::Bernstein,
+                        "rvCubicIwE" => Constant::Projector,
+                        _ => {
+                            self.expect(Token::Comma)?;
+                            match name {
+                                "rvCubicIwT" => Constant::Word(self.cubic_iwahori_word()?),
+                                "rvCubicIwOmega" => Constant::Omega(
+                                    self.signed_number("Iwahori length-zero exponent")?,
+                                ),
+                                _ => Constant::Spherical(self.number()?.0),
+                            }
+                        }
+                    };
+                    Expression::Constant(chart, c)
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+            "rvCubicChamber" | "rvCubicHeckeMul" | "rvCubicIwAct" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                let pair = Box::new(pair);
+                let operation = match name {
+                    "rvCubicChamber" => Expression::Chamber(pair),
+                    "rvCubicHeckeMul" => Expression::Multiply(pair),
+                    _ => Expression::Act(pair),
+                };
+                (operation, depth)
+            }
+            "rvCubicChamberVertex"
+            | "rvCubicChamberPanel"
+            | "rvCubicOmega"
+            | "rvCubicHeckeScale" => {
+                self.expect(Token::LBracket)?;
+                let operation = match name {
+                    "rvCubicChamberVertex" => {
+                        let i = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Expression::Endpoint(i, Box::new(self.paren_expr(nest)?))
+                    }
+                    "rvCubicChamberPanel" => {
+                        let (i, j) = self.cubic_indices()?;
+                        self.expect(Token::RBracket)?;
+                        Expression::Panel(i, j, Box::new(self.paren_expr(nest)?))
+                    }
+                    "rvCubicOmega" => {
+                        let k = self.signed_number("geometric omega exponent")?;
+                        self.expect(Token::RBracket)?;
+                        Expression::Omega(k, Box::new(self.paren_expr(nest)?))
+                    }
+                    _ => {
+                        let numerator =
+                            self.signed_wide("a signed rational numerator", "Hecke scale")?;
+                        self.expect(Token::Comma)?;
+                        let denominator =
+                            self.signed_wide("a positive rational denominator", "Hecke scale")?;
+                        self.expect(Token::RBracket)?;
+                        if denominator <= 0 {
+                            return Err(Error::new(
+                                span,
+                                "Hecke scale denominator must be positive",
+                            ));
+                        }
+                        let c = crate::lee_linear::Rational::ratio(numerator, denominator)
+                            .map_err(|_| cubic_iwahori::arithmetic())?;
+                        Expression::Unary(Unary::Scale(c), Box::new(self.paren_expr(nest)?))
+                    }
+                };
+                let (Expression::Endpoint(_, input)
+                | Expression::Panel(_, _, input)
+                | Expression::Omega(_, input)
+                | Expression::Unary(_, input)) = &operation
+                else {
+                    unreachable!()
+                };
+                let depth = input.depth + 1;
+                (operation, depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let operation = match name {
+                    "rvCubicIwDelta" => Unary::Delta,
+                    "rvCubicSatake" => Unary::Satake,
+                    _ => Unary::Compress,
+                };
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::CubicIwahori(operation), depth)
+    }
+
     fn cubic_tree_statement(&mut self, name: &str) -> Result<StatementForm> {
         use cubic_tree::Report;
         self.advance()?;
@@ -14376,6 +14534,17 @@ impl<'src> Parser<'src> {
                 | "rvCubicTreeDistance"
                 | "rvCubicTreeHecke"),
             ) => self.cubic_tree_statement(name)?,
+            Token::Word(
+                name @ ("rvCubicGallery"
+                | "rvCubicIwWordData"
+                | "rvCubicIwKernel"
+                | "rvCubicIwCoeff"
+                | "rvCubicSphCoeff"
+                | "rvCubicSatakeCoeff"
+                | "rvCubicIwVectorCoeff"
+                | "rvCubicBusemann"
+                | "rvCubicSatakeCounts"),
+            ) => self.cubic_iwahori_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -18675,6 +18844,23 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if matches!(
+            name.text.as_str(),
+            "RVCubicChamber" | "RVCubicIw" | "RVCubicSph" | "RVCubicSatake" | "RVCubicChamberVec"
+        ) && self.eat(Token::LParen)?
+        {
+            use cubic_iwahori::Sort;
+            let chart = self.label()?;
+            self.expect(Token::RParen)?;
+            let kind = match name.text.as_str() {
+                "RVCubicChamber" => TypeForm::CubicChamber(chart),
+                "RVCubicIw" => TypeForm::CubicHecke(chart, Sort::Affine),
+                "RVCubicSph" => TypeForm::CubicHecke(chart, Sort::Spherical),
+                "RVCubicSatake" => TypeForm::CubicHecke(chart, Sort::Laurent),
+                _ => TypeForm::CubicHecke(chart, Sort::Vector),
+            };
+            return ty(span, kind, 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -22006,6 +22192,31 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.cubic_tree_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCubicBaseChamber"
+                        | "rvCubicIwT"
+                        | "rvCubicIwOmega"
+                        | "rvCubicIwZ"
+                        | "rvCubicIwE"
+                        | "rvCubicSph"
+                        | "rvCubicChamberVertex"
+                        | "rvCubicChamberPanel"
+                        | "rvCubicOmega"
+                        | "rvCubicHeckeScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicChamber"
+                            | "rvCubicHeckeMul"
+                            | "rvCubicIwAct"
+                            | "rvCubicIwDelta"
+                            | "rvCubicSatake"
+                            | "rvCubicIwCompress"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cubic_iwahori_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

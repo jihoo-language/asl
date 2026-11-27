@@ -516,6 +516,46 @@ impl<'a> Tree<'a> {
         self.vertex(x.radius + 1, true, shifted)
     }
 
+    pub(super) fn neighbors(&self, model: &mut Model, v: &Vertex) -> Result<Vec<Vertex>> {
+        if v.radius == self.depth {
+            return Err(Error::plain(
+                "full chamber panel needs another outward digit of the named division precision",
+            ));
+        }
+        let mut result = Vec::with_capacity(Q + 1);
+        if v.radius != 0 {
+            result.push(self.ancestor(v, v.radius - 1)?);
+        }
+        let children = if v.radius == 0 { Q + 1 } else { Q };
+        for j in 0..children {
+            result.push(self.child(model, v, j)?);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn omega(&self, model: &mut Model, power: i64, v: &Vertex) -> Result<Vertex> {
+        let power = power.rem_euclid(6) as usize;
+        let mut image = v.clone();
+        if power % 2 == 1 {
+            let one = self.order.unit(1);
+            let zero = self.order.zero();
+            let swap = Operator {
+                entries: [zero.clone(), one.clone(), one, zero],
+                power: 0,
+            };
+            let moved = self.translate(model, &image)?;
+            image = self.apply(model, &swap, &moved)?;
+        }
+        if power / 2 > 0 {
+            let twist = Operator {
+                entries: self.identity_entries(),
+                power: power / 2,
+            };
+            image = self.apply(model, &twist, &image)?;
+        }
+        Ok(image)
+    }
+
     pub(crate) fn translate_back(&self, model: &mut Model, x: &Vertex) -> Result<Vertex> {
         let zero = self.order.zero();
         let one = self.order.unit(1);

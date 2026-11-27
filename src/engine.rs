@@ -157,8 +157,8 @@ use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_tree,
-    kummer as local_kummer,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
+    cubic_tree, kummer as local_kummer,
 };
 use crate::rv_field;
 use crate::rv_fusion;
@@ -1265,6 +1265,13 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicChamber(Box<[TypedExpr; 2]>),
+    CubicChamberEndpoint(usize, Box<TypedExpr>),
+    CubicChamberPanel(usize, usize, Box<TypedExpr>),
+    CubicOmega(i64, Box<TypedExpr>),
+    CubicHeckeUnary(cubic_iwahori::Unary, Box<TypedExpr>),
+    CubicHeckeMultiply(Box<[TypedExpr; 2]>),
+    CubicIwahoriAct(Box<[TypedExpr; 2]>),
     CubicTreeLine(usize, Box<[TypedExpr; 2]>),
     CubicTreeMatrix(Box<[TypedExpr; 4]>),
     CubicTreeVertexUnary(cubic_tree::VertexUnary, Box<TypedExpr>),
@@ -3108,6 +3115,9 @@ impl Engine {
                     }
                 };
                 return Ok(Some(output));
+            }
+            StatementForm::CubicIwahoriReport(report) => {
+                return self.cubic_iwahori_report(report).map(Some)
             }
             StatementForm::CubicTreeReport(report) => {
                 return self.cubic_tree_report(report).map(Some)
@@ -12609,6 +12619,138 @@ impl Engine {
         }
     }
 
+    fn cubic_iwahori_report(&mut self, report: cubic_iwahori::Report) -> Result<String> {
+        use cubic_iwahori::{Coefficient, Report, Sort};
+        match report {
+            Report::Word(word) => Ok(format!(
+                "rvCubicIwWordData = {}",
+                cubic_iwahori::word_description(word)
+            )),
+            Report::Gallery(pair) => {
+                let [a, b] = *pair;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                self.checker().cubic_chamber_grade(&a, "rvCubicGallery")?;
+                self.checker().require_type(a.ty, &b, "rvCubicGallery")?;
+                let extension = self.cubic_division_type(a.ty);
+                let (Value::CubicChamber(a), Value::CubicChamber(b)) =
+                    (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    unreachable!()
+                };
+                a.gallery(&cubic_tree::Tree::new(&mut self.model, &extension)?, &b)
+            }
+            Report::Kernel(inputs) => {
+                let [a, source, target] = *inputs;
+                let a = self.checker().expr(a)?;
+                let (chart, _) =
+                    self.checker()
+                        .cubic_hecke_grade(&a, Some(Sort::Affine), "rvCubicIwKernel")?;
+                let expected = self.model.cubic_chamber_type(chart)?;
+                let source = self.checker().expr(source)?;
+                let target = self.checker().expr(target)?;
+                self.checker()
+                    .require_type(expected, &source, "rvCubicIwKernel source")?;
+                self.checker()
+                    .require_type(expected, &target, "rvCubicIwKernel target")?;
+                let extension = self.cubic_division_type(a.ty);
+                let (
+                    Value::CubicHecke(a),
+                    Value::CubicChamber(source),
+                    Value::CubicChamber(target),
+                ) = (self.eval(&a)?, self.eval(&source)?, self.eval(&target)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                a.kernel(&mut self.model, &tree, &source, &target)
+            }
+            Report::AffineCoefficient(k, word, input) => self.cubic_scalar_coefficient(
+                Sort::Affine,
+                Coefficient::Affine(k, word),
+                *input,
+                "rvCubicIwCoeff",
+            ),
+            Report::SphericalCoefficient(n, input) => self.cubic_scalar_coefficient(
+                Sort::Spherical,
+                Coefficient::Spherical(n),
+                *input,
+                "rvCubicSphCoeff",
+            ),
+            Report::SatakeCoefficient(k, input) => self.cubic_scalar_coefficient(
+                Sort::Laurent,
+                Coefficient::Laurent(k),
+                *input,
+                "rvCubicSatakeCoeff",
+            ),
+            Report::VectorCoefficient(inputs) => {
+                let [v, source] = *inputs;
+                let v = self.checker().expr(v)?;
+                let (chart, _) = self.checker().cubic_hecke_grade(
+                    &v,
+                    Some(Sort::Vector),
+                    "rvCubicIwVectorCoeff",
+                )?;
+                let expected = self.model.cubic_chamber_type(chart)?;
+                let source = self.checker().expr(source)?;
+                self.checker()
+                    .require_type(expected, &source, "rvCubicIwVectorCoeff chamber")?;
+                let (Value::CubicHecke(v), Value::CubicChamber(source)) =
+                    (self.eval(&v)?, self.eval(&source)?)
+                else {
+                    unreachable!()
+                };
+                Ok(v.coefficients(Coefficient::Vector(&source)))
+            }
+            Report::Busemann(inputs) => {
+                let [x, ray] = *inputs;
+                let x = self.checker().expr(x)?;
+                let ray = self.checker().expr(ray)?;
+                self.checker()
+                    .cubic_tree_grade(&x, false, "rvCubicBusemann")?;
+                self.checker()
+                    .require_type(x.ty, &ray, "rvCubicBusemann ray")?;
+                let extension = self.cubic_division_type(x.ty);
+                let (Value::CubicTreeVertex(x), Value::CubicTreeVertex(ray)) =
+                    (self.eval(&x)?, self.eval(&ray)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                Ok(format!(
+                    "rvCubicBusemann = {}",
+                    cubic_iwahori::busemann(&tree, &x, &ray)?
+                ))
+            }
+            Report::Counts(ray) => {
+                let ray = self.checker().expr(*ray)?;
+                self.checker()
+                    .cubic_tree_grade(&ray, false, "rvCubicSatakeCounts")?;
+                let extension = self.cubic_division_type(ray.ty);
+                let Value::CubicTreeVertex(ray) = self.eval(&ray)? else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                cubic_iwahori::satake_counts(&mut self.model, &tree, &ray)
+            }
+        }
+    }
+
+    fn cubic_scalar_coefficient(
+        &mut self,
+        sort: cubic_iwahori::Sort,
+        key: cubic_iwahori::Coefficient<'_>,
+        input: ParsedExpr,
+        name: &str,
+    ) -> Result<String> {
+        let input = self.checker().expr(input)?;
+        self.checker().cubic_hecke_grade(&input, Some(sort), name)?;
+        let Value::CubicHecke(a) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok(a.coefficients(key))
+    }
+
     fn cubic_tree_report(&mut self, report: cubic_tree::Report) -> Result<String> {
         use cubic_tree::Report;
         let path = matches!(&report, Report::Path(_));
@@ -12677,8 +12819,11 @@ impl Engine {
     }
 
     fn cubic_division_type(&self, ty: TypeId) -> Rc<cubic_division::Extension> {
-        let (Kind::CubicDiv(name) | Kind::CubicTreeVertex(name) | Kind::CubicTreeOperator(name)) =
-            self.model.kind(ty)
+        let (Kind::CubicDiv(name)
+        | Kind::CubicTreeVertex(name)
+        | Kind::CubicTreeOperator(name)
+        | Kind::CubicChamber(name)
+        | Kind::CubicHecke(name, _)) = self.model.kind(ty)
         else {
             unreachable!()
         };
@@ -13314,6 +13459,9 @@ impl Engine {
                         };
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::CubicHecke(a), Value::CubicHecke(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::CubicDiv(a), Value::CubicDiv(b)) => self
                         .cubic_division_type(expr.ty)
@@ -16371,6 +16519,79 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicChamber(inputs) => {
+                let (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                cubic_iwahori::Chamber::new(&tree, (*a).clone(), (*b).clone())?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicChamberEndpoint(panel, input) => {
+                let Value::CubicChamber(c) = self.eval(input)? else {
+                    unreachable!()
+                };
+                c.endpoint(*panel)?.persist(&mut self.model)
+            }
+            TypedForm::CubicChamberPanel(panel, index, input) => {
+                let Value::CubicChamber(c) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(input.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                c.panel(&mut self.model, &tree, *panel, *index)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicOmega(power, input) => {
+                let input_value = self.eval(input)?;
+                let extension = self.cubic_division_type(input.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                match input_value {
+                    Value::CubicTreeVertex(v) => tree
+                        .omega(&mut self.model, *power, &v)?
+                        .persist(&mut self.model),
+                    Value::CubicChamber(c) => c
+                        .omega(&mut self.model, &tree, *power)?
+                        .persist(&mut self.model),
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::CubicHeckeUnary(operation, input) => {
+                use cubic_iwahori::Unary;
+                let value = self.eval(input)?;
+                match (operation, value) {
+                    (Unary::Delta, Value::CubicChamber(c)) => {
+                        cubic_iwahori::Object::delta((*c).clone())
+                    }
+                    (Unary::Satake, Value::CubicHecke(a)) => a.satake(&mut self.model)?,
+                    (Unary::Compress, Value::CubicHecke(a)) => a.compress(&mut self.model)?,
+                    (Unary::Scale(c), Value::CubicHecke(a)) => a.scale(&mut self.model, *c)?,
+                    _ => unreachable!(),
+                }
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicHeckeMultiply(inputs) => {
+                let (Value::CubicHecke(a), Value::CubicHecke(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.multiply(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            TypedForm::CubicIwahoriAct(inputs) => {
+                let (Value::CubicHecke(a), Value::CubicHecke(vector)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                a.action(&mut self.model, &tree, &vector)?
                     .persist(&mut self.model)
             }
             TypedForm::CubicTreeLine(radius, inputs) => {
@@ -19983,6 +20204,14 @@ impl Checker<'_> {
             }
             TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
             TypeForm::CubicDiv(name) => self.model.cubic_div_type(&name),
+            TypeForm::CubicChamber(name) => {
+                self.model.cubic_division(&name)?;
+                self.model.cubic_chamber_type(name.text.into())
+            }
+            TypeForm::CubicHecke(name, sort) => {
+                self.model.cubic_division(&name)?;
+                self.model.cubic_hecke_type(name.text.into(), sort)
+            }
             TypeForm::CubicTree(name, matrix) => {
                 self.model.cubic_division(&name)?;
                 self.model.cubic_tree_type(name.text.into(), matrix)
@@ -21140,6 +21369,7 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::CubicHecke(_,sort) => cubic_iwahori::Object::zero(*sort).persist(self.model)?,
                     Kind::CubicDiv(name) => {
                         let extension = self.model.cubic_division_named(name).expect("registered cubic division chart");
                         extension.ring(self.model)?.zero().persist(self.model)?
@@ -23655,6 +23885,7 @@ impl Checker<'_> {
             ExprForm::CubicAlgebra(operation) => self.cubic_algebra_expression(operation),
             ExprForm::CubicDivision(operation) => self.cubic_division_expression(operation),
             ExprForm::CubicTree(operation) => self.cubic_tree_expression(operation),
+            ExprForm::CubicIwahori(operation) => self.cubic_iwahori_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -24568,6 +24799,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CubicHecke(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CubicHeckeUnary(
+                            cubic_iwahori::Unary::Scale(crate::lee_linear::Rational::integer(-1)),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::CubicDiv(..)) {
@@ -28690,6 +28930,7 @@ impl Checker<'_> {
                         | Kind::CubicClass(..)
                         | Kind::CubicAlg(..)
                         | Kind::CubicDiv(..)
+                        | Kind::CubicHecke(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -35219,6 +35460,145 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_iwahori_expression(
+        &mut self,
+        expression: cubic_iwahori::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_iwahori::{Constant, Expression, Sort, Unary};
+        match expression {
+            Expression::Base(name) => {
+                let extension = self.model.cubic_division(&name)?;
+                let ty = self.model.cubic_chamber_type(name.text.into())?;
+                let tree = cubic_tree::Tree::new(self.model, &extension)?;
+                let value = cubic_iwahori::Chamber::base(self.model, &tree)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Chamber(pair) => {
+                let [a, b] = *pair;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let chart = self.cubic_tree_grade(&a, false, "rvCubicChamber")?;
+                self.require_type(a.ty, &b, "rvCubicChamber endpoint")?;
+                let ty = self.model.cubic_chamber_type(chart)?;
+                Ok((ty, TypedForm::CubicChamber(Box::new([a, b]))))
+            }
+            Expression::Endpoint(panel, input) => {
+                let input = self.expr(*input)?;
+                let chart = self.cubic_chamber_grade(&input, "rvCubicChamberVertex")?;
+                let ty = self.model.cubic_tree_type(chart, false)?;
+                Ok((ty, TypedForm::CubicChamberEndpoint(panel, Box::new(input))))
+            }
+            Expression::Panel(panel, index, input) => {
+                let input = self.expr(*input)?;
+                self.cubic_chamber_grade(&input, "rvCubicChamberPanel")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CubicChamberPanel(panel, index, Box::new(input)),
+                ))
+            }
+            Expression::Omega(power, input) => {
+                let input = self.expr(*input)?;
+                if !matches!(
+                    self.model.kind(input.ty),
+                    Kind::CubicChamber(_) | Kind::CubicTreeVertex(_)
+                ) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvCubicOmega",
+                        "a cubic tree vertex or chamber",
+                    ));
+                }
+                Ok((input.ty, TypedForm::CubicOmega(power, Box::new(input))))
+            }
+            Expression::Constant(name, constant) => {
+                self.model.cubic_division(&name)?;
+                let sort = if matches!(constant, Constant::Spherical(_)) {
+                    Sort::Spherical
+                } else {
+                    Sort::Affine
+                };
+                let ty = self.model.cubic_hecke_type(name.text.into(), sort)?;
+                let value =
+                    cubic_iwahori::Object::constant(self.model, constant)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = match operation {
+                    Unary::Delta => {
+                        let chart = self.cubic_chamber_grade(&input, "rvCubicIwDelta")?;
+                        self.model.cubic_hecke_type(chart, Sort::Vector)?
+                    }
+                    Unary::Satake | Unary::Compress => {
+                        let (name, sort) = if matches!(operation, Unary::Satake) {
+                            ("rvCubicSatake", Sort::Laurent)
+                        } else {
+                            ("rvCubicIwCompress", Sort::Affine)
+                        };
+                        let (chart, _) =
+                            self.cubic_hecke_grade(&input, Some(Sort::Spherical), name)?;
+                        self.model.cubic_hecke_type(chart, sort)?
+                    }
+                    Unary::Scale(_) => {
+                        self.cubic_hecke_grade(&input, None, "rvCubicHeckeScale")?;
+                        input.ty
+                    }
+                };
+                Ok((ty, TypedForm::CubicHeckeUnary(operation, Box::new(input))))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (_, sort) = self.cubic_hecke_grade(&a, None, "rvCubicHeckeMul")?;
+                if sort == Sort::Vector {
+                    return Err(self.invalid_operand(
+                        &a,
+                        "rvCubicHeckeMul",
+                        "an affine, spherical or Satake series",
+                    ));
+                }
+                self.require_type(a.ty, &b, "rvCubicHeckeMul")?;
+                Ok((a.ty, TypedForm::CubicHeckeMultiply(Box::new([a, b]))))
+            }
+            Expression::Act(inputs) => {
+                let [a, vector] = *inputs;
+                let a = self.expr(a)?;
+                let (chart, _) = self.cubic_hecke_grade(&a, Some(Sort::Affine), "rvCubicIwAct")?;
+                let vector = self.expr(vector)?;
+                let ty = self.model.cubic_hecke_type(chart, Sort::Vector)?;
+                self.require_type(ty, &vector, "rvCubicIwAct vector")?;
+                Ok((ty, TypedForm::CubicIwahoriAct(Box::new([a, vector]))))
+            }
+        }
+    }
+
+    fn cubic_chamber_grade(&self, input: &TypedExpr, name: &str) -> Result<Box<str>> {
+        if let Kind::CubicChamber(chart) = self.model.kind(input.ty) {
+            Ok(chart.clone())
+        } else {
+            Err(self.invalid_operand(input, name, "an RVCubicChamber(D)"))
+        }
+    }
+
+    fn cubic_hecke_grade(
+        &self,
+        input: &TypedExpr,
+        expected: Option<cubic_iwahori::Sort>,
+        operation: &str,
+    ) -> Result<(Box<str>, cubic_iwahori::Sort)> {
+        if let Kind::CubicHecke(chart, sort) = self.model.kind(input.ty) {
+            if expected.is_none_or(|wanted| wanted == *sort) {
+                return Ok((chart.clone(), *sort));
+            }
+        }
+        let description = expected.map_or_else(
+            || "a cubic Hecke series or chamber vector".to_owned(),
+            |sort| format!("an {}(D)", sort.name()),
+        );
+        Err(self.invalid_operand(input, operation, &description))
     }
 
     fn cubic_tree_expression(
