@@ -197,6 +197,23 @@ impl WzwOp {
 }
 
 #[derive(Clone, Copy)]
+pub(crate) enum OreOp {
+    Factorial(usize),
+    EulerFactor,
+    EulerReduce,
+}
+
+impl OreOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Factorial(_) => "rvOreFactorial",
+            Self::EulerFactor => "rvOreEulerFactor",
+            Self::EulerReduce => "rvOreEulerReduce",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum QuantumOp {
     Scale(i128),
     Shift(usize),
@@ -697,6 +714,7 @@ pub(crate) enum ExprForm {
     QuantumAnnihilator(usize, usize),
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
+    OreUnary(OreOp, Box<ParsedExpr>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
@@ -961,6 +979,8 @@ pub(crate) enum StatementForm {
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
+    QuantumRegularized(usize, usize, usize),
+    QuantumRegularizedRhs(usize, usize),
     QuantumCurvature(crate::rv_pcurv::Report, usize, usize, usize),
     FusionCoefficient(Vec<i128>, ParsedExpr),
     CycloCoefficient(usize, ParsedExpr),
@@ -2289,6 +2309,21 @@ impl<'src> Parser<'src> {
                 let weight = self.signed_tuple("a signed fusion weight", "fusion weight")?;
                 self.expect(Token::RBracket)?;
                 StatementForm::FusionCoefficient(weight, self.paren_expr(0)?)
+            }
+            Token::Word("rvQGrRegularized" | "rvQGrRegularizedRhs") => {
+                let rhs = self.token() == Token::Word("rvQGrRegularizedRhs");
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (rank, ambient) = self.quantum_grade()?;
+                let statement = if rhs {
+                    StatementForm::QuantumRegularizedRhs(rank, ambient)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let degree = self.number()?.0;
+                    StatementForm::QuantumRegularized(rank, ambient, degree)
+                };
+                self.expect(Token::RBracket)?;
+                statement
             }
             Token::Word("rvOreCoeff" | "rvQGrPeriod") => {
                 let period = self.token() == Token::Word("rvQGrPeriod");
@@ -7262,6 +7297,20 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::OreTerm(q, theta, coefficient), 0);
+                }
+                if let Some(operation) = match name.text.as_str() {
+                    "rvOreEulerFactor" if self.token() == Token::LParen => Some(OreOp::EulerFactor),
+                    "rvOreEulerReduce" if self.token() == Token::LParen => Some(OreOp::EulerReduce),
+                    "rvOreFactorial" if self.eat(Token::LBracket)? => {
+                        let height = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Some(OreOp::Factorial(height))
+                    }
+                    _ => None,
+                } {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::OreUnary(operation, Box::new(input)), depth);
                 }
                 if matches!(name.text.as_str(), "rvOreMul" | "rvOreApply")
                     && self.token() == Token::LParen

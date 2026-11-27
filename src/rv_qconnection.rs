@@ -9,9 +9,9 @@ const MAX_RANK: usize = 64;
 const MAX_POLYNOMIAL_CELLS: usize = 300_000;
 const MAX_PERIOD: usize = 4096;
 
-type Polynomial = Vec<i128>;
+pub(crate) type Polynomial = Vec<i128>;
 
-fn storage(size: usize) -> Result<()> {
+pub(crate) fn storage(size: usize) -> Result<()> {
     if size > MAX_POLYNOMIAL_CELLS {
         return Err(Error::plain(
             "quantum differential calculation exceeds the polynomial storage limit",
@@ -122,6 +122,7 @@ pub(crate) fn schubert_basis(model: &mut Model, grade: Grade, limit: usize) -> R
 
 struct Connection {
     arrows: Vec<Vec<(usize, usize)>>,
+    weights: Vec<usize>,
     high_to_low: Vec<usize>,
 }
 
@@ -145,10 +146,12 @@ impl Connection {
                 .collect();
             arrows.push(action);
         }
+        let weights: Vec<usize> = shapes.iter().map(|shape| shape.iter().sum()).collect();
         let mut high_to_low: Vec<_> = (0..shapes.len()).collect();
-        high_to_low.sort_unstable_by_key(|&i| std::cmp::Reverse(shapes[i].iter().sum::<usize>()));
+        high_to_low.sort_unstable_by_key(|&i| std::cmp::Reverse(weights[i]));
         Ok(Self {
             arrows,
+            weights,
             high_to_low,
         })
     }
@@ -225,7 +228,11 @@ fn subtract(model: &mut Model, mut left: Polynomial, right: &[i128]) -> Result<P
     Ok(left)
 }
 
-fn exact_divide(model: &mut Model, mut value: Polynomial, divisor: &[i128]) -> Result<Polynomial> {
+pub(crate) fn exact_divide(
+    model: &mut Model,
+    mut value: Polynomial,
+    divisor: &[i128],
+) -> Result<Polynomial> {
     if divisor == [1] || value.is_empty() {
         return Ok(value);
     }
@@ -347,7 +354,11 @@ fn primitive(poly: &mut Polynomial) {
     divide_content(poly, content(poly));
 }
 
-fn polynomial_gcd(model: &mut Model, mut a: Polynomial, mut b: Polynomial) -> Result<Polynomial> {
+pub(crate) fn polynomial_gcd(
+    model: &mut Model,
+    mut a: Polynomial,
+    mut b: Polynomial,
+) -> Result<Polynomial> {
     primitive(&mut a);
     primitive(&mut b);
     while !b.is_empty() {
@@ -452,13 +463,13 @@ pub(crate) fn annihilator(model: &mut Model, grade: Grade) -> Result<Value> {
 }
 
 #[derive(Clone, Copy)]
-struct Rational {
+pub(crate) struct Rational {
     numerator: i128,
     denominator: i128,
 }
 
 impl Rational {
-    const ZERO: Self = Self {
+    pub(crate) const ZERO: Self = Self {
         numerator: 0,
         denominator: 1,
     };
@@ -467,7 +478,7 @@ impl Rational {
         denominator: 1,
     };
 
-    fn add(self, other: Self) -> Result<Self> {
+    pub(crate) fn add(self, other: Self) -> Result<Self> {
         let common = gcd(self.denominator as u128, other.denominator as u128) as i128;
         let left = self.denominator / common;
         let right = other.denominator / common;
@@ -487,6 +498,31 @@ impl Rational {
             .ok_or_else(arithmetic)?;
         Ok(Self {
             numerator: numerator / reduce,
+            denominator,
+        })
+    }
+
+    pub(crate) fn is_zero(self) -> bool {
+        self.numerator == 0
+    }
+
+    pub(crate) fn scale(self, numerator: i128, denominator: i128) -> Result<Self> {
+        if self.is_zero() || numerator == 0 {
+            return Ok(Self::ZERO);
+        }
+        let divisor = gcd(numerator.unsigned_abs(), denominator as u128) as i128;
+        let numerator = numerator / divisor;
+        let denominator = denominator / divisor;
+        let cross_num = gcd(numerator.unsigned_abs(), self.denominator as u128) as i128;
+        let cross_den = gcd(self.numerator.unsigned_abs(), denominator as u128) as i128;
+        let numerator = (self.numerator / cross_den)
+            .checked_mul(numerator / cross_num)
+            .ok_or_else(arithmetic)?;
+        let denominator = (self.denominator / cross_num)
+            .checked_mul(denominator / cross_den)
+            .ok_or_else(arithmetic)?;
+        Ok(Self {
+            numerator,
             denominator,
         })
     }
@@ -514,14 +550,36 @@ impl std::fmt::Display for Rational {
     }
 }
 
-pub(crate) fn period(model: &mut Model, grade: Grade, degree: usize) -> Result<String> {
+pub(crate) fn check_period_degree(degree: usize) -> Result<()> {
     if degree > MAX_PERIOD {
         return Err(Error::plain(
             "quantum period degree exceeds the limit of 4096",
         ));
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PeriodScale {
+    Standard,
+    Factorial,
+}
+
+pub(crate) fn period_coefficients(
+    model: &mut Model,
+    grade: Grade,
+    degree: usize,
+    scale: PeriodScale,
+) -> Result<Vec<Rational>> {
+    check_period_degree(degree)?;
+    let factorial = matches!(scale, PeriodScale::Factorial);
     let mut values = vec![Rational::ONE];
     if grade.rank.min(grade.width()) == 1 {
+        if factorial {
+            model.spend(degree)?;
+            values.resize(degree + 1, Rational::ONE);
+            return Ok(values);
+        }
         for d in 1..=degree {
             model.spend(1)?;
             let power = if d == 1 {
@@ -536,7 +594,27 @@ pub(crate) fn period(model: &mut Model, grade: Grade, degree: usize) -> Result<S
         let connection = Connection::build(model, grade)?;
         let mut previous = vec![Rational::ZERO; connection.arrows.len()];
         previous[0] = Rational::ONE;
+        let mut quantum_targets = vec![false; previous.len()];
+        for &(target, quantum) in connection.arrows.iter().flatten() {
+            quantum_targets[target] |= quantum != 0;
+        }
         for d in 1..=degree {
+            if factorial {
+                // For d>0, U_d[i]=(d!)^n l_d[i]/d^|i|. A classical arrow
+                // raises |i| by one, so its contribution to U_d has weight 1.
+                // A quantum arrow lowers |i| by n-1. It has weight
+                // ((d-1)/d)^|j| multiplying U_(d-1)[j] at target j.
+                // In degree zero only the weight-zero unit is nonzero.
+                for (i, &target) in quantum_targets.iter().enumerate() {
+                    if target && !previous[i].is_zero() {
+                        let weight = connection.weights[i];
+                        model.spend(weight)?;
+                        for _ in 0..weight {
+                            previous[i] = previous[i].scale((d - 1) as i128, d as i128)?;
+                        }
+                    }
+                }
+            }
             let mut current = vec![Rational::ZERO; previous.len()];
             // Classical arrows raise codimension, so these entries of the
             // current row are already known when solving for its i-th entry.
@@ -550,18 +628,36 @@ pub(crate) fn period(model: &mut Model, grade: Grade, degree: usize) -> Result<S
                         previous[j]
                     })?;
                 }
-                current[i] = value.divide(d as i128)?;
+                current[i] = if factorial {
+                    value
+                } else {
+                    value.divide(d as i128)?
+                };
             }
             values.push(current[0]);
             previous = current;
         }
     }
-    Ok(format!(
+    Ok(values)
+}
+
+pub(crate) fn period(model: &mut Model, grade: Grade, degree: usize) -> Result<String> {
+    let values = period_coefficients(model, grade, degree, PeriodScale::Standard)?;
+    Ok(format_period(&values))
+}
+
+pub(crate) fn regularized_period(model: &mut Model, grade: Grade, degree: usize) -> Result<String> {
+    let values = period_coefficients(model, grade, degree, PeriodScale::Factorial)?;
+    Ok(format_period(&values))
+}
+
+fn format_period(values: &[Rational]) -> String {
+    format!(
         "[{}]",
         values
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
-    ))
+    )
 }

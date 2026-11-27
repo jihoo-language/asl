@@ -105,6 +105,7 @@ use crate::rv_pcurv;
 use crate::rv_poly;
 use crate::rv_qconnection;
 use crate::rv_qgr;
+use crate::rv_qregular;
 use crate::rv_rees;
 use crate::rv_satake;
 use crate::rv_scheme;
@@ -134,7 +135,6 @@ use crate::sheaf_support::{Grade as SupportGrade, Operation as SupportOp, Suppor
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
-use crate::syntax::QuantumOp;
 use crate::syntax::RvHHSpec;
 use crate::syntax::RvNCSpec;
 use crate::syntax::{
@@ -143,6 +143,7 @@ use crate::syntax::{
     RealBarOp, RhoLocOp, RhoOp, RvIdealOp, RvSchemeOp, Statement, StatementForm, SuspensionForm,
     TypeForm, VBockSpec, Witness,
 };
+use crate::syntax::{OreOp, QuantumOp};
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
 use crate::syntax::{TlOp, WzwOp};
 use crate::transfer;
@@ -388,6 +389,7 @@ enum TypedForm {
     QuantumReduce(rv_pcurv::ModGrade, Box<TypedExpr>),
     QuantumCurvature(rv_pcurv::ModGrade, bool, Box<TypedExpr>),
     OreProduct(Box<[TypedExpr; 2]>),
+    OreUnary(OreOp, Box<TypedExpr>),
     OreApply(rv_qgr::Grade, Box<[TypedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<TypedExpr>),
     SatakeInverse(Box<TypedExpr>),
@@ -1068,6 +1070,16 @@ impl Engine {
                 };
                 let coefficient = rv_ore::coefficient(&mut self.model, &terms, q, theta)?;
                 format!("rvOreCoeff = {coefficient}")
+            }
+            StatementForm::QuantumRegularized(rank, ambient, degree) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let period = rv_qconnection::regularized_period(&mut self.model, grade, degree)?;
+                format!("rvQGrRegularized = {period}")
+            }
+            StatementForm::QuantumRegularizedRhs(rank, ambient) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let rhs = rv_qregular::rhs(&mut self.model, grade)?;
+                format!("rvQGrRegularizedRhs = {rhs}")
             }
             StatementForm::QuantumPeriod(rank, ambient, degree) => {
                 let grade = rv_qgr::Grade::checked(rank, ambient)?;
@@ -4004,6 +4016,18 @@ impl Engine {
                 };
                 rv_satake::inverse(&mut self.model, &terms)
             }
+            TypedForm::OreUnary(operation, input) => {
+                let Value::RVOre(operator) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match operation {
+                    OreOp::Factorial(height) => {
+                        rv_qregular::factorial(&mut self.model, *height, &operator)
+                    }
+                    OreOp::EulerFactor => rv_qregular::euler_factor(&mut self.model, &operator),
+                    OreOp::EulerReduce => rv_qregular::euler_reduce(&mut self.model, &operator),
+                }
+            }
             TypedForm::OreProduct(arguments) => {
                 let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
                 let [Value::RVOre(a), Value::RVOre(b)] = values else {
@@ -5526,6 +5550,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::QuantumBasis(..)
             | ExprForm::OreTerm(..)
             | ExprForm::OreProduct(..)
+            | ExprForm::OreUnary(..)
             | ExprForm::OreApply(..)
             | ExprForm::QuantumReduce(..)
             | ExprForm::QuantumPSection(..)
@@ -8890,6 +8915,13 @@ impl Checker<'_> {
                 let ty = self.model.ore_type()?;
                 let value = rv_ore::term(self.model, q, theta, coefficient)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::OreUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Err(self.invalid_operand(&input, operation.name(), "an Ore operator"));
+                }
+                Ok((input.ty, TypedForm::OreUnary(operation, Box::new(input))))
             }
             ExprForm::OreProduct(arguments) => {
                 let [a, b] = *arguments;
