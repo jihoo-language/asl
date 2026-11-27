@@ -243,7 +243,7 @@ fn glue_basis(model: &mut Model) -> Result<([u32; GLUE_DIMENSION], Vec<usize>)> 
     Ok((rows, pivots))
 }
 
-fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
+pub(super) fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
     let (rows, pivots) = glue_basis(model)?;
     // In doubled coordinates each RREF pivot is 1. Doubling its row recovers
     // the original 2e_i using the 2e_j at nonpivots.

@@ -1,0 +1,34 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[F]{};
+let o=rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zw=rvUnramElem[W]{};
+let ow=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+let e1=rvJacPoint[L](zw,zw);
+let f1=rvJacPoint[L](ow,zw);
+let e2=add(add(e1,f1),rvJacPoint[L](neg(ow),zw));
+let f2=add(add(e1,f1),rvJacPoint[L](i,zw));
+rvjactorsionbasis B[L,2](neg(ow)){e1,e2,f1,f2};
+
+rvk3autom Id[B]{};
+rvk3autom Translate[B]{translate(2)};
+rvk3autom Enriques[B]{switch(2)};
+rvk3autom Gauss[B]{switch(0)};
+rvk3autom Project[B]{project(0)};
+rvk3autom Conjugate[B]{switch(0),project(0),switch(0)};
+
+let x=rvK3LatticeBasis[B,0];
+assert rvK3AutoLattice[Gauss](rvK3AutoLattice[Gauss](x))==x;
+let h=rvKummerHyperplane[B];
+assert rvK3AutoLattice[Project](rvK3FromKummerDiv(h))==rvK3FromKummerDiv(rvK3AutoDiv[Project](h));
+rvK3LatticePair(x,x);
+rvK3LatticePair(rvK3AutoLattice[Gauss](x),rvK3AutoLattice[Gauss](x));
+rvK3AutoNikulin[Id];
+rvK3AutoNikulin[Translate];
+rvK3AutoNikulin[Enriques];
+rvK3AutoNikulin[Gauss];
+rvK3AutoNikulin[Project];
+rvK3AutoNikulin[Conjugate];

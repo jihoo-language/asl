@@ -666,6 +666,7 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     Mukai(MukaiAction),
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
+    K3AutoLattice(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     HilbertSquareDivisor(i128, Box<TypedExpr>),
     HilbertSquareCup(Box<[TypedExpr; 2]>),
     HilbertSquareLlv(hilbert_square::llv::Operation, Box<[TypedExpr; 2]>),
@@ -7942,6 +7943,13 @@ impl Engine {
                 word.apply(&mut self.model, &divisor)?
                     .persist(&mut self.model)
             }
+            TypedForm::K3AutoLattice(word, input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                word.apply_lattice(&mut self.model, &vector)?
+                    .persist(&mut self.model)
+            }
             TypedForm::Nakajima(operation, input) => {
                 let Value::Nakajima(state) = self.eval(input)? else {
                     unreachable!();
@@ -13503,6 +13511,18 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_type(ty, &input, "rvK3AutoDiv input")?;
                 Ok((ty, TypedForm::K3AutoDiv(word, Box::new(input))))
+            }
+            ExprForm::K3AutoLattice(expression) => {
+                let kummer_surface::dynamics::Expression(name, input) = *expression;
+                let word = self.model.k3_automorphism(&name)?;
+                let basis = Label {
+                    text: word.basis_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.k3_lattice_type(&basis)?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvK3AutoLattice input")?;
+                Ok((ty, TypedForm::K3AutoLattice(word, Box::new(input))))
             }
             ExprForm::HilbertSquare(expression) => self.hilbert_square_expression(*expression),
             ExprForm::K3AutoPoint(expression) => {

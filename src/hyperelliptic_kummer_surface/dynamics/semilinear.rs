@@ -8,7 +8,7 @@ use crate::syntax::Label;
 use crate::wide_integer::Natural;
 
 use super::super::{k3, nikulin::NodePermutation};
-use super::{spectrum, Generator, Word};
+use super::{spectrum, Word};
 
 pub(super) fn fixed(model: &mut Model, name: &Label, base: &Label, power: u128) -> Result<String> {
     let (word, curve, frobenius) = data(model, name, base)?;
@@ -92,17 +92,6 @@ fn data(
     let frobenius =
         NodePermutation::new(model, &word.basis, &curve, 1).map_err(|error| error.at(base.span))?;
     Ok((word, curve, frobenius))
-}
-
-impl Word {
-    fn reverses_primitive(&self) -> bool {
-        self.generators
-            .iter()
-            .filter(|generator| matches!(generator, Generator::Switch(_) | Generator::Project(_)))
-            .count()
-            % 2
-            != 0
-    }
 }
 
 fn count_overflow() -> Error {

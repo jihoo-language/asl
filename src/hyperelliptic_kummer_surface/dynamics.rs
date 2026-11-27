@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::nikulin::{self, AFFINE};
 use super::polarized::{self, Divisor, COEFFICIENTS};
 
+mod involution;
 mod points;
 mod semilinear;
 mod spectrum;
@@ -29,6 +30,7 @@ pub(crate) enum Generator {
 pub(crate) enum Command {
     Define(Label, Label, Vec<Generator>),
     Entropy(Label),
+    Nikulin(Label),
     Cycles(Label),
     FrobFixed(Label, Label, u128),
     FrobZeta(Label, Label),
@@ -78,6 +80,10 @@ impl Command {
                 semilinear::fixed(model, &name, &base, power).map(Some)
             }
             Self::FrobZeta(name, base) => semilinear::zeta(model, &name, &base).map(Some),
+            Self::Nikulin(name) => {
+                let word = model.k3_automorphism(&name)?;
+                word.nikulin(model, &name.text).map(Some)
+            }
         }
     }
 }
@@ -86,6 +92,15 @@ impl Word {
     pub(crate) fn apply(&self, model: &mut Model, divisor: &Divisor) -> Result<Divisor> {
         let image = self.action(model, *divisor.coefficients())?;
         Divisor::literal(model, &self.basis, image)
+    }
+
+    fn reverses_primitive(&self) -> bool {
+        !self
+            .generators
+            .iter()
+            .filter(|generator| matches!(generator, Generator::Switch(_) | Generator::Project(_)))
+            .count()
+            .is_multiple_of(2)
     }
 
     fn action(&self, model: &mut Model, mut coordinates: Coordinates) -> Result<Coordinates> {
@@ -140,13 +155,9 @@ impl Generator {
                 for (node, coefficient) in result[1..].iter_mut().enumerate() {
                     // t_mask follows the Gauss switch. The membership test is
                     // for this output node in the translated trope of each E_v.
-                    let translated = node ^ usize::from(mask);
-                    let sum = x[1..]
-                        .iter()
-                        .enumerate()
-                        .filter(|(v, _)| origin & (1 << (translated ^ v)) != 0)
-                        .try_fold(Integer::from_i128(0), |sum, (_, &c)| {
-                            sum.add(Integer::from_i128(c))
+                    let sum = incident_tropes(origin, mask, node)
+                        .try_fold(Integer::from_i128(0), |sum, v| {
+                            sum.add(Integer::from_i128(x[1 + v]))
                         })?;
                     *coefficient = signed(hyperplane.add(half(sum)?)?.negate())?;
                 }
@@ -163,20 +174,25 @@ impl Generator {
     }
 }
 
-fn half(value: Integer) -> Result<Integer> {
+fn incident_tropes(origin: u16, mask: u8, node: usize) -> impl Iterator<Item = usize> {
+    let translated = node ^ usize::from(mask);
+    (0..16).filter(move |v| origin & (1 << (translated ^ v)) != 0)
+}
+
+fn half<const N: usize>(value: Wide<N>) -> Result<Wide<N>> {
     let (magnitude, parity) = value.magnitude.divide_u32(2);
     if parity != 0 {
         return Err(Error::plain(
-            "K3 automorphism must preserve integral marked lattice coordinates",
+            "K3 automorphism must preserve integral lattice coordinates",
         ));
     }
-    Ok(Integer {
+    Ok(Wide {
         magnitude,
         negative: value.negative,
     })
 }
 
-fn signed(value: Integer) -> Result<i128> {
+fn signed<const N: usize>(value: Wide<N>) -> Result<i128> {
     value
         .signed()
         .ok_or_else(|| Error::plain("K3 automorphism coefficient exceeds signed 128-bit range"))

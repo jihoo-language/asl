@@ -985,6 +985,7 @@ pub(crate) enum ExprForm {
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
+    K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
     K3AutoPoint(Box<crate::hyperelliptic_kummer_surface::dynamics::PointExpression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
@@ -3051,6 +3052,7 @@ impl<'src> Parser<'src> {
                     ))));
                 }
                 "rvK3AutoCycles" => Command::Cycles(name),
+                "rvK3AutoNikulin" => Command::Nikulin(name),
                 _ => Command::Entropy(name),
             };
             self.expect(Token::RBracket)?;
@@ -4987,7 +4989,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"
-                | "rvK3FrobFixed" | "rvK3FrobZeta"),
+                | "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3AutoNikulin"),
             ) => self.k3_automorphism_statement(name)?,
             Token::Word(
                 command @ ("rvJacHilbPoints"
@@ -10365,7 +10367,9 @@ impl<'src> Parser<'src> {
                 {
                     return self.mukai_expression(&name.text, span, nest);
                 }
-                if name.text == "rvK3AutoDiv" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvK3AutoDiv" | "rvK3AutoLattice")
+                    && self.eat(Token::LBracket)?
+                {
                     let word = self.label()?;
                     self.expect(Token::RBracket)?;
                     let input = self.paren_expr(nest)?;
@@ -10374,7 +10378,12 @@ impl<'src> Parser<'src> {
                         word,
                         Box::new(input),
                     );
-                    return expr(span, ExprForm::K3AutoDiv(Box::new(expression)), depth);
+                    let form = if name.text == "rvK3AutoLattice" {
+                        ExprForm::K3AutoLattice(Box::new(expression))
+                    } else {
+                        ExprForm::K3AutoDiv(Box::new(expression))
+                    };
+                    return expr(span, form, depth);
                 }
                 if matches!(name.text.as_str(), "rvK3AutoPoint" | "rvK3AutoIter")
                     && self.eat(Token::LBracket)?
