@@ -100,7 +100,7 @@ use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Shea
 use crate::sheaf_ext::{self, Ends as SheafEnds};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
-use crate::sheaf_leray::Leray;
+use crate::sheaf_leray::{Input as LerayInput, InputForm as SheafInputForm, Leray};
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
@@ -580,10 +580,10 @@ impl Engine {
                 self.model.define_sheaf_complex_shared(name.text, result);
                 return Ok(None);
             }
-            StatementForm::SheafDeligne(name, map, source, degree) => {
+            StatementForm::SheafDeligne(form, name, map, source, degree) => {
                 self.model.check_new_sheaf_complex(&name)?;
-                let site = self.sheaf_site(&map, "shdeligne")?;
-                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let site = self.sheaf_site(&map, form.deligne_name())?;
+                let source = LerayInput::resolve(&self.model, &source, form)?;
                 let result = sheaf_truncate::deligne(&mut self.model, &name, source, site, degree)?;
                 for entry in result.components() {
                     let label = Label {
@@ -599,10 +599,10 @@ impl Engine {
                 self.model.define_sheaf_complex_shared(name.text, result);
                 return Ok(None);
             }
-            StatementForm::SheafLeray(name, map, source) => {
+            StatementForm::SheafLeray(form, name, map, source) => {
                 self.model.check_new_sheaf_complex(&name)?;
-                let site = self.sheaf_site(&map, "shleray")?;
-                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let site = self.sheaf_site(&map, form.leray_name())?;
+                let source = LerayInput::resolve(&self.model, &source, form)?;
                 let (leray, components, complex) =
                     Leray::build(&mut self.model, &name, source, site)?;
                 for entry in components {
@@ -5035,20 +5035,32 @@ impl Checker<'_> {
             ExprForm::SheafLerayIncl(name, input) => {
                 let leray = self.model.leray_complex(&name)?;
                 let input = self.expr(*input)?;
-                let Kind::Sheaf(SheafForm::Cochain, source, degree) = self.model.kind(input.ty)
-                else {
-                    return Err(self.invalid_operand(&input, "shLerayIncl", "a ShC cochain"));
+                let form = leray.source.form();
+                let expected = match form {
+                    SheafInputForm::Sheaf => "a ShC cochain",
+                    SheafInputForm::Complex => "a ShTot cochain",
                 };
-                if *source != leray.source.name {
+                let (source, degree, description) = match (form, self.model.kind(input.ty)) {
+                    (SheafInputForm::Sheaf, Kind::Sheaf(SheafForm::Cochain, name, degree)) => {
+                        (name, *degree, "sheaf")
+                    }
+                    (
+                        SheafInputForm::Complex,
+                        Kind::SheafComplex(SheafForm::Cochain, name, degree),
+                    ) => (name, *degree, "complex"),
+                    _ => return Err(self.invalid_operand(&input, "shLerayIncl", expected)),
+                };
+                if source.as_ref() != leray.source.name() {
                     return Err(Error::new(
                         input.span,
                         format!(
-                            "shLerayIncl[{}] requires source sheaf '{}', found '{}'",
-                            name.text, leray.source.name, source
+                            "shLerayIncl[{}] requires source {description} '{}', found '{}'",
+                            name.text,
+                            leray.source.name(),
+                            source,
                         ),
                     ));
                 }
-                let degree = *degree;
                 let ty = self
                     .model
                     .sheaf_complex_type(SheafForm::Cochain, &name, degree)?;

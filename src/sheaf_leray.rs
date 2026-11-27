@@ -3,14 +3,165 @@ use std::rc::Rc;
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
-use crate::model::{Model, Value};
-use crate::sheaf::{self, Cochain, Cochains, Generator, Layer, Matrix, Sheaf, Term};
+use crate::model::{Model, TypeId, Value};
+use crate::odd_cobar::Prime;
+use crate::sheaf::{self, Cochain, Cochains, Generator, Layer, Matrix, Open, Sheaf, Sink, Term};
 use crate::sheaf_hyper::{Complex, Map, NamedSheaf};
 use crate::sheaf_image::{Opens, Site};
 use crate::syntax::{Label, MAX_IDENTIFIER_BYTES};
 
+#[derive(Clone, Copy)]
+pub(crate) enum InputForm {
+    Sheaf,
+    Complex,
+}
+
+impl InputForm {
+    pub(crate) fn leray_name(self) -> &'static str {
+        match self {
+            Self::Sheaf => "shleray",
+            Self::Complex => "shleraycomplex",
+        }
+    }
+
+    pub(crate) fn deligne_name(self) -> &'static str {
+        match self {
+            Self::Sheaf => "shdeligne",
+            Self::Complex => "shdelignecomplex",
+        }
+    }
+}
+
+pub(crate) enum Input {
+    Sheaf(NamedSheaf),
+    Complex(Rc<str>, Rc<Complex>),
+}
+
+impl Input {
+    pub(crate) fn resolve(model: &Model, label: &Label, form: InputForm) -> Result<Self> {
+        Ok(match form {
+            InputForm::Sheaf => Self::Sheaf(NamedSheaf::resolve(model, label)?),
+            InputForm::Complex => {
+                Self::Complex(label.text.as_str().into(), model.sheaf_complex(label)?)
+            }
+        })
+    }
+
+    pub(crate) fn form(&self) -> InputForm {
+        match self {
+            Self::Sheaf(_) => InputForm::Sheaf,
+            Self::Complex(..) => InputForm::Complex,
+        }
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Sheaf(entry) => &entry.name,
+            Self::Complex(name, _) => name,
+        }
+    }
+
+    pub(crate) fn base(&self) -> TypeId {
+        self.components()[0].sheaf.base()
+    }
+
+    fn components(&self) -> &[NamedSheaf] {
+        match self {
+            Self::Sheaf(entry) => std::slice::from_ref(entry),
+            Self::Complex(_, complex) => complex.components(),
+        }
+    }
+
+    fn cochains(&self) -> &dyn Cochains {
+        match self {
+            Self::Sheaf(entry) => entry.sheaf.as_ref(),
+            Self::Complex(_, complex) => complex.as_ref(),
+        }
+    }
+
+    fn local_families<'a>(&'a self, model: &mut Model, site: &Site) -> Result<Opens<Local<'a>>> {
+        let mut cells = 0;
+        site.open_families(model, |model, mask| {
+            cells += mask.len() * self.components().len();
+            sheaf::check_cells(cells)?;
+            Local::new(model, self, mask)
+        })
+    }
+}
+
+struct Local<'a> {
+    input: &'a Input,
+    components: Vec<Open<'a>>,
+    height: usize,
+}
+
+impl<'a> Local<'a> {
+    fn new(model: &mut Model, input: &'a Input, mask: &[bool]) -> Result<Self> {
+        let mut height = 0;
+        let mut components = Vec::new();
+        for (q, sheaf) in input.components().iter().enumerate() {
+            let open = Open::new(model, &sheaf.sheaf, mask)?;
+            if open.height != 0 {
+                height = height.max(q + open.height);
+            }
+            components.push(open);
+        }
+        Ok(Self {
+            input,
+            components,
+            height,
+        })
+    }
+
+    fn contains(&self, term: &Generator) -> bool {
+        // Membership in the open is independent of the input stalk degree.
+        self.components[0].contains(term)
+    }
+}
+
+impl Cochains for Local<'_> {
+    fn prime(&self) -> Prime {
+        self.input.cochains().prime()
+    }
+
+    fn cofaces(
+        &self,
+        model: &mut Model,
+        generator: &Generator,
+        coefficient: u32,
+        emit: &mut Sink<'_>,
+    ) -> Result<()> {
+        if generator.vertical + generator.chain.len() >= self.height {
+            return Ok(());
+        }
+        self.input.cochains().cofaces(
+            model,
+            generator,
+            coefficient,
+            &mut |model, target, value| {
+                if self.contains(&target) {
+                    emit(model, target, value)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn layer(&self, model: &mut Model, degree: usize, limit: usize) -> Result<Layer> {
+        let mut layer = Layer::default();
+        if degree < self.height {
+            for (q, open) in self.components.iter().enumerate().take(degree + 1) {
+                model.spend(1)?;
+                let part = open.layer(model, degree - q, limit)?;
+                layer.append_layer(model, part, q, limit)?;
+            }
+        }
+        Ok(layer)
+    }
+}
+
 pub(crate) struct Leray {
-    pub(crate) source: NamedSheaf,
+    pub(crate) source: Input,
     site: Site,
 }
 
@@ -18,7 +169,7 @@ impl Leray {
     pub(crate) fn build(
         model: &mut Model,
         name: &Label,
-        source: NamedSheaf,
+        source: Input,
         site: Site,
     ) -> Result<(Self, Vec<NamedSheaf>, Complex)> {
         let result = Self::build_through(model, name, source, site, usize::MAX)?;
@@ -34,16 +185,19 @@ impl Leray {
     pub(crate) fn build_through(
         model: &mut Model,
         name: &Label,
-        source: NamedSheaf,
+        source: Input,
         site: Site,
         maximum_degree: usize,
     ) -> Result<(Self, Vec<NamedSheaf>, Complex)> {
-        if source.sheaf.base() != site.source {
-            return Err(Error::plain(
-                "shleray requires a sheaf on the map's named source",
-            ));
+        if source.base() != site.source {
+            let form = source.form();
+            let message = match form {
+                InputForm::Sheaf => "shleray requires a sheaf on the map's named source",
+                InputForm::Complex => "shleraycomplex requires a complex on the map's named source",
+            };
+            return Err(Error::plain(message));
         }
-        let opens = site.opens(model, &source.sheaf)?;
+        let opens = source.local_families(model, &site)?;
         let height = opens
             .unique
             .iter()
@@ -55,7 +209,7 @@ impl Leray {
         let names = (0..height)
             .map(|q| component_label(name, q).map(|label| label.text.into()))
             .collect::<Result<Vec<_>>>()?;
-        let prime = source.sheaf.prime;
+        let prime = source.cochains().prime();
         let mut components = Vec::<NamedSheaf>::with_capacity(height);
         let mut maps = Vec::new();
         let mut previous = Vec::new();
@@ -96,9 +250,9 @@ impl Leray {
         if raw.is_empty() {
             return Ok(Value::SheafC([].into()));
         }
-        let opens = self.site.opens(model, &self.source.sheaf)?;
+        let opens = self.source.local_families(model, &self.site)?;
         let layers = local_layers(model, &opens, degree, &[])?;
-        let prime = self.source.sheaf.prime;
+        let prime = self.source.cochains().prime();
         let mut output = Cochain::default();
         for (point, &local) in opens.indices.iter().enumerate() {
             let chain = [point].into();
@@ -141,7 +295,7 @@ fn component_label(name: &Label, degree: usize) -> Result<Label> {
 
 fn local_layers(
     model: &mut Model,
-    opens: &Opens<'_>,
+    opens: &Opens<Local<'_>>,
     degree: usize,
     previous: &[Layer],
 ) -> Result<Vec<Layer>> {
@@ -171,7 +325,7 @@ fn restriction(model: &mut Model, larger: &Layer, smaller: &Layer) -> Result<Mat
 
 fn differential(
     model: &mut Model,
-    opens: &Opens<'_>,
+    opens: &Opens<Local<'_>>,
     previous: &[Layer],
     current: &[Layer],
     source: &NamedSheaf,

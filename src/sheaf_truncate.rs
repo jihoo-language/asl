@@ -8,7 +8,7 @@ use crate::prime_linear::{Basis, Coordinate, QuotientBasis};
 use crate::sheaf::{self, Cochains, Matrix, Sheaf};
 use crate::sheaf_hyper::{Complex, Map, NamedSheaf};
 use crate::sheaf_image::Site;
-use crate::sheaf_leray::{component_name, Leray};
+use crate::sheaf_leray::{component_name, Input, InputForm, Leray};
 use crate::syntax::Label;
 
 pub(crate) fn truncate(
@@ -92,16 +92,21 @@ pub(crate) fn truncate(
 pub(crate) fn deligne(
     model: &mut Model,
     name: &Label,
-    source: NamedSheaf,
+    source: Input,
     site: Site,
     cutoff: usize,
 ) -> Result<Rc<Complex>> {
-    if source.sheaf.base() != site.source {
-        return Err(Error::plain(
-            "shdeligne requires a sheaf on the open embedding's named source",
-        ));
+    let form = source.form();
+    if source.base() != site.source {
+        let message = match form {
+            InputForm::Sheaf => "shdeligne requires a sheaf on the open embedding's named source",
+            InputForm::Complex => {
+                "shdelignecomplex requires a complex on the open embedding's named source"
+            }
+        };
+        return Err(Error::plain(message));
     }
-    site.require_open_embedding(model)?;
+    site.require_open_embedding(model, form.deligne_name())?;
     // The top kernel needs one additional Roos degree.
     let (_, _, direct) = Leray::build_through(model, name, source, site, cutoff.saturating_add(1))?;
     let (result, _) = truncate(model, name, Rc::new(direct), cutoff)?;

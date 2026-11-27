@@ -139,28 +139,30 @@ impl Site {
         })
     }
 
-    pub(crate) fn require_open_embedding(&self, model: &mut Model) -> Result<()> {
+    pub(crate) fn require_open_embedding(&self, model: &mut Model, operation: &str) -> Result<()> {
         let source = model.poset(self.source).expect("named map source");
         let mut used = vec![false; self.target_poset.names.len()];
         for &image in &self.images {
             if std::mem::replace(&mut used[image], true) {
-                return Err(Error::plain(
-                    "shdeligne requires an injective open embedding",
-                ));
+                return Err(Error::plain(format!(
+                    "{operation} requires an injective open embedding"
+                )));
             }
         }
         for (x, &image) in self.images.iter().enumerate() {
             model.spend(self.images.len() + used.len())?;
             for (z, &other) in self.images.iter().enumerate() {
                 if source.strict_less(x, z) != self.target_poset.strict_less(image, other) {
-                    return Err(Error::plain(
-                        "shdeligne requires an order-reflecting open embedding",
-                    ));
+                    return Err(Error::plain(format!(
+                        "{operation} requires an order-reflecting open embedding"
+                    )));
                 }
             }
             for (point, &inside) in used.iter().enumerate() {
                 if !inside && self.target_poset.strict_less(image, point) {
-                    return Err(Error::plain("shdeligne requires an upward-closed image"));
+                    return Err(Error::plain(format!(
+                        "{operation} requires an upward-closed image"
+                    )));
                 }
             }
         }
@@ -171,7 +173,15 @@ impl Site {
         4 + self.images.len()
     }
 
-    pub(crate) fn opens<'a>(&self, model: &mut Model, sheaf: &'a Sheaf) -> Result<Opens<'a>> {
+    pub(crate) fn opens<'a>(&self, model: &mut Model, sheaf: &'a Sheaf) -> Result<Opens<Open<'a>>> {
+        self.open_families(model, |model, mask| Open::new(model, sheaf, mask))
+    }
+
+    pub(crate) fn open_families<T>(
+        &self,
+        model: &mut Model,
+        mut make: impl FnMut(&mut Model, &[bool]) -> Result<T>,
+    ) -> Result<Opens<T>> {
         let mut unique = Vec::new();
         let mut indices = Vec::with_capacity(self.target_poset.names.len());
         let mut masks = BTreeMap::new();
@@ -187,7 +197,7 @@ impl Site {
                 Entry::Vacant(entry) => {
                     let next = unique.len();
                     sheaf::check_cells((next + 1) * self.images.len())?;
-                    unique.push(Open::new(model, sheaf, entry.key())?);
+                    unique.push(make(model, entry.key())?);
                     entry.insert(next);
                     next
                 }
@@ -198,7 +208,7 @@ impl Site {
     }
 }
 
-pub(crate) struct Opens<'a> {
-    pub(crate) unique: Vec<Open<'a>>,
+pub(crate) struct Opens<T> {
+    pub(crate) unique: Vec<T>,
     pub(crate) indices: Vec<usize>,
 }

@@ -161,6 +161,12 @@ The example projects an eighteen-point product onto a six-point model of the sph
 
 The example suspends the finite product of two circles. For the constant sheaf on the open torus, the two tip stalks see the entire torus. Cutoff zero gives hypercohomology ranks $1,0,2,1$, agreeing with ordinary cohomology. Cutoff one gives $1,2,0,1$. These ranks agree in complementary degrees on the three-dimensional suspension. [Deligne extension of a torus suspension](examples/sheaf-deligne.asl)
 
+### Derived direct images of bounded complexes
+
+`shleraycomplex P[f,K];` uses a bounded complex $K$ on the source of $f$ as coefficients. In degree $q$ the stalk at $y$ is the degree-$q$ total Roos space of $K$ on $X_y$. Its differential includes the signed stalk differential of $K$. The cover restrictions keep the same chain coordinates on the smaller open. `shLerayIncl[P](z)` accepts a `ShTot(K,q)` cochain and puts all its restrictions in horizontal degree zero. The downset argument for an ordinary sheaf applies to each chain and coefficient degree of $K$, giving a quasi-isomorphism on total complexes.
+
+`shdelignecomplex T[j,K,c];` extends a bounded complex along a named open embedding and applies the same smart cutoff. This permits successive Deligne steps with different cutoffs. The double-suspension example adds two tips at each step to the finite torus. Cutoffs $(0,1)$ give ranks $1,0,0,2,1$ and cutoffs $(1,1)$ give $1,2,0,0,1$. The ranks agree in complementary degrees on the four-dimensional model. [Iterated Deligne example](examples/sheaf-iterated-deligne.asl)
+
 ### Derived sheaf Hom and Yoneda products
 
 For two sheaves `F` and `G` on the same named poset over the same prime field, `ShHomC(F,G,n)` has one matrix factor $\operatorname{Hom}(F(x_0),G(x_n))$ for every strict chain $x_0<\cdots<x_n$. This is Hom out of the normalized bar projective resolution of $F$. The differential uses the source restriction on the first face, the target restriction on the last face, and the unchanged matrix on the other faces, with alternating signs. If `F` is constant of rank one, this is the Roos complex of `G`.

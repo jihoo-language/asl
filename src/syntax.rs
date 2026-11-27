@@ -25,6 +25,7 @@ use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
 use crate::sheaf_image::Operation as SheafImageOp;
+use crate::sheaf_leray::InputForm as SheafInputForm;
 use crate::sheaf_page::{Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp};
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
@@ -779,9 +780,9 @@ pub(crate) enum StatementForm {
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
-    SheafLeray(Label, Label, Label),
+    SheafLeray(SheafInputForm, Label, Label, Label),
     SheafTruncate(Label, Label, usize),
-    SheafDeligne(Label, Label, Label, usize),
+    SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
@@ -1552,24 +1553,33 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
             }
-            Token::Word("shtruncate" | "shdeligne") => {
-                let open_extension = self.token() == Token::Word("shdeligne");
+            Token::Word("shtruncate" | "shdeligne" | "shdelignecomplex") => {
+                let source = match self.token() {
+                    Token::Word("shdeligne") => Some(SheafInputForm::Sheaf),
+                    Token::Word("shdelignecomplex") => Some(SheafInputForm::Complex),
+                    _ => None,
+                };
                 self.advance()?;
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
                 let input = self.label()?;
                 self.expect(Token::Comma)?;
-                let statement = if open_extension {
+                let statement = if let Some(form) = source {
                     let sheaf = self.label()?;
                     self.expect(Token::Comma)?;
-                    StatementForm::SheafDeligne(name, input, sheaf, self.number()?.0)
+                    StatementForm::SheafDeligne(form, name, input, sheaf, self.number()?.0)
                 } else {
                     StatementForm::SheafTruncate(name, input, self.number()?.0)
                 };
                 self.expect(Token::RBracket)?;
                 statement
             }
-            Token::Word("shleray") => {
+            Token::Word("shleray" | "shleraycomplex") => {
+                let form = if self.token() == Token::Word("shleray") {
+                    SheafInputForm::Sheaf
+                } else {
+                    SheafInputForm::Complex
+                };
                 self.advance()?;
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
@@ -1577,7 +1587,7 @@ impl<'src> Parser<'src> {
                 self.expect(Token::Comma)?;
                 let source = self.label()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::SheafLeray(name, map, source)
+                StatementForm::SheafLeray(form, name, map, source)
             }
             Token::Word("shpull" | "shpush") => {
                 let pull = self.token() == Token::Word("shpull");
