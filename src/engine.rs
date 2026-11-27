@@ -1798,6 +1798,10 @@ impl Engine {
                     rv_iwahori::at(&mut self.model, a.ty, &action, &frame, step, "rvIwAt")?;
                 format!("rvIwAt[{modulus}, {root}] = {window:?}")
             }
+            StatementForm::TlLinking(strands, word, framings) => {
+                let matrix = rv_tl::linking(&mut self.model, strands, &word, &framings)?;
+                format!("rvTLLinking = {matrix:?}")
+            }
             StatementForm::RVHodge(input) => {
                 let input = self.checker().expr(input)?;
                 rv_hodge::square(&self.model, input.ty, "rvHodge")?;
@@ -6512,6 +6516,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::TlTrace(..)
             | ExprForm::TlJones(..)
             | ExprForm::TlColoredJones(..)
+            | ExprForm::TlFramed(..)
             | ExprForm::WzwCoordinate(..)
             | ExprForm::CycloEmbed(..)
             | ExprForm::CycloGalois(..)
@@ -10194,6 +10199,12 @@ impl Checker<'_> {
                 let grade = rv_tl::Grade::checked(level, strands, 0)?;
                 let ty = self.model.cyclotomic_rational_type(grade.order)?;
                 let value = rv_tl::colored_jones(self.model, grade, color, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlFramed(level, strands, word, colors, framings) => {
+                let grade = rv_tl::Grade::framed(level, strands)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_tl::framed(self.model, grade, &word, &colors, &framings)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::TlOperation(operation, input) => {

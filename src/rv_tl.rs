@@ -7,6 +7,9 @@ use crate::model::{Model, Value};
 use crate::rv_cyclotomic;
 use crate::rv_lens::{self, Rational};
 
+mod framed;
+pub(crate) use framed::{framed, linking};
+
 const MAX_CELLS: usize = 300_000;
 const MAX_WORD: usize = 4096;
 type Path = Rc<[usize]>;
@@ -25,6 +28,14 @@ impl Grade {
         if level == 0 {
             return Err(Error::plain("Temperley–Lieb level must be at least 1"));
         }
+        Self::from_level(level, strands, height)
+    }
+
+    pub(crate) fn framed(level: usize, strands: usize) -> Result<Self> {
+        Self::from_level(level, strands, 0)
+    }
+
+    fn from_level(level: usize, strands: usize, height: usize) -> Result<Self> {
         if height > level {
             return Err(Error::plain(
                 "Temperley–Lieb endpoint height exceeds the level",
@@ -667,22 +678,42 @@ fn cable(model: &mut Model, color: usize, braid: &[Generator]) -> Result<Vec<Gen
     }
     model.spend(crossings)?;
     let mut result = Vec::with_capacity(crossings);
-    for &letter in braid {
+    for &letter in braid.iter().rev() {
         let Generator::Braid(index, positive) = letter else {
             unreachable!()
         };
-        let start = result.len();
-        let base = (index - 1) * color;
-        for row in 0..color {
-            for shift in (row + 1..=row + color).rev() {
-                result.push(Generator::Braid(base + shift, positive));
+        append_crossing(&mut result, (index - 1) * color, color, color, positive);
+    }
+    result.reverse();
+    Ok(result)
+}
+
+fn append_crossing(
+    word: &mut Vec<Generator>,
+    start: usize,
+    left: usize,
+    right: usize,
+    positive: bool,
+) {
+    if left == 0 || right == 0 {
+        return;
+    }
+    // Expose the elementary crossings in chronological application order.
+    if positive {
+        for row in (0..left).rev() {
+            for shift in row + 1..=row + right {
+                word.push(Generator::Braid(start + shift, true));
             }
         }
-        if !positive {
-            result[start..].reverse();
+    } else {
+        // The inverse of the positive right-by-left crossing is
+        // the negative left-by-right crossing.
+        for row in 0..right {
+            for shift in (row + 1..=row + left).rev() {
+                word.push(Generator::Braid(start + shift, false));
+            }
         }
     }
-    Ok(result)
 }
 
 pub(crate) fn colored_jones(
@@ -715,6 +746,45 @@ pub(crate) fn colored_jones(
     }
     let strands = grade.strands.checked_mul(color).ok_or_else(arithmetic)?;
     let cabled = cable(model, color, &braid)?;
+    let blocks = (0..grade.strands).map(|strand| Block {
+        start: strand * color,
+        length: color,
+    });
+    let mut sum = projected_quantum_trace(
+        model,
+        Grade { strands, ..grade },
+        blocks,
+        &cabled,
+        &mut context,
+    )?;
+    sum = rv_lens::multiply(model, grade.order, &sum, &inverse)?;
+    let writhe: i128 = word.iter().map(|&letter| letter.signum()).sum();
+    let twist = color as i128 * writhe;
+    sum = rv_lens::shifted(model, grade.order, &sum, -twist * (color as i128 + 2))?;
+    if twist.rem_euclid(2) != 0 {
+        sum = rv_lens::negative(model, &sum)?;
+    }
+    rv_lens::rational_value(model, sum)
+}
+
+fn projected_quantum_trace(
+    model: &mut Model,
+    grade: Grade,
+    blocks: impl Clone + Iterator<Item = Block>,
+    word: &[Generator],
+    context: &mut Context,
+) -> Result<Rational> {
+    if word.is_empty() {
+        let mut value = Rational::integer(1);
+        for block in blocks {
+            if block.length != 0 {
+                let dim = context.dimension(model, grade, block.length, false)?;
+                value = rv_lens::multiply(model, grade.order, &value, &dim)?;
+            }
+        }
+        return Ok(value);
+    }
+    let strands = grade.strands;
     let mut sum = Rational::zero();
     for height in (strands % 2..=strands.min(grade.level)).step_by(2) {
         let sector = Grade {
@@ -726,17 +796,13 @@ pub(crate) fn colored_jones(
         visit_paths(model, sector, |model, path| {
             model.spend(path.len())?;
             let mut state: Support = [(path.into(), Rational::integer(1))].into();
-            for strand in 0..grade.strands {
-                let block = Block {
-                    start: strand * color,
-                    length: color,
-                };
+            for block in blocks.clone().filter(|block| block.length > 1) {
                 state = context.project(model, sector, &state, block, 0)?;
                 if state.is_empty() {
                     return Ok(());
                 }
             }
-            let image = context.act(model, sector, state, &cabled)?;
+            let image = context.act(model, sector, state, word)?;
             if let Ok(index) = image.binary_search_by(|(p, _)| p.as_ref().cmp(path)) {
                 trace = rv_lens::sum(model, &trace, &image[index].1)?;
             }
@@ -748,12 +814,5 @@ pub(crate) fn colored_jones(
             sum = rv_lens::sum(model, &sum, &weighted)?;
         }
     }
-    sum = rv_lens::multiply(model, grade.order, &sum, &inverse)?;
-    let writhe: i128 = word.iter().map(|&letter| letter.signum()).sum();
-    let twist = color as i128 * writhe;
-    sum = rv_lens::shifted(model, grade.order, &sum, -twist * (color as i128 + 2))?;
-    if twist.rem_euclid(2) != 0 {
-        sum = rv_lens::negative(model, &sum)?;
-    }
-    rv_lens::rational_value(model, sum)
+    Ok(sum)
 }

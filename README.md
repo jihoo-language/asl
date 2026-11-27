@@ -1302,6 +1302,12 @@ Use `rvCycloQMul(a,b)` for products and `rvCycloQGalois[a](c)` to substitute $A\
 
 On two colored strands, channel $h$ has crossing eigenvalue $(-1)^{(2m-h)/2}A^{(h(h+2)-2m(m+2))/2}$. The allowed $h$ are $0,2,\ldots,\min(2m,2k-2m)$. The example checks this channel formula for the color-two trefoil at level five and uses a genuine six-strand cable for the color-two figure-eight. It also checks both Markov stabilizations on eight elementary strands. [Colored Jones example](examples/rv-tl-colored.asl)
 
+#### Component colors and framed closures
+
+`rvTLFramed[k,n,[word],[colors],[framings]]` gives the unnormalized quantum trace of a framed braid closure as an exact `RVCycloQ(4(k+2))` value, with level $k$ and $n$ original strands. Its closure components are the cycles of the strand permutation, ordered by least original strand. Supply one integrable color and one signed integer target framing per component. Braid words act from right to left and move the cable widths along with the strands. A crossing of widths $a$ and $b$ contributes $ab$ elementary crossings, and each initial cable carries its Jones–Wenzl projector. Color zero is the empty cable. At level zero it is the only color.
+
+For signed self-writhe $w_i$, target framing $f_i$, and color $a_i$, the evaluator multiplies the quantum trace by $\prod_i\theta_{a_i}^{f_i-w_i}$ in the signed Temperley–Lieb convention above. A zero-framed unknot of color $a$ gives $d_a$, and the empty closure gives one. `rvTLLinking[n,[word],[framings]];` reports the integer matrix with these target framings on its diagonal and half the signed intercomponent crossing sums off the diagonal. The example checks the multicolor Hopf link by its two fusion channels and verifies positive and negative Markov stabilization. [Framed closure example](examples/rv-tl-framed.asl)
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is

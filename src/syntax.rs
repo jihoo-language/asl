@@ -794,6 +794,7 @@ pub(crate) enum ExprForm {
     TlTrace(usize, usize, usize, Vec<i128>),
     TlJones(usize, usize, Vec<i128>),
     TlColoredJones(usize, usize, usize, Vec<i128>),
+    TlFramed(usize, usize, Vec<i128>, Vec<usize>, Vec<i128>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -1058,6 +1059,7 @@ pub(crate) enum StatementForm {
     RVInvariantFactors(usize, usize, ParsedExpr),
     RVNewton(usize, usize, ParsedExpr),
     RVHodge(ParsedExpr),
+    TlLinking(usize, Vec<i128>, Vec<i128>),
     RVIw(bool, ParsedExpr),
     RVIwKL(Vec<i128>, Vec<i128>),
     HeckeCoefficient(bool, Option<i128>, Vec<i128>, ParsedExpr),
@@ -2819,6 +2821,17 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvTLLinking") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (strands, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let word = self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                self.expect(Token::Comma)?;
+                let framings = self.signed_tuple("a signed framing", "framing")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::TlLinking(strands, word, framings)
             }
             Token::Word("rvCycloCoeff") => {
                 self.advance()?;
@@ -8239,6 +8252,23 @@ impl<'src> Parser<'src> {
                     let path = self.exponents()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::TlPath(level, path), 0);
+                }
+                if name.text == "rvTLFramed" && self.eat(Token::LBracket)? {
+                    let (level, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let (strands, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let word = self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                    self.expect(Token::Comma)?;
+                    let colors = self.exponents()?;
+                    self.expect(Token::Comma)?;
+                    let framings = self.signed_tuple("a signed framing", "framing")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::TlFramed(level, strands, word, colors, framings),
+                        0,
+                    );
                 }
                 if name.text == "rvTLColoredJones" && self.eat(Token::LBracket)? {
                     let (level, strands, color) = self.tl_grade()?;
