@@ -1026,6 +1026,10 @@ The stable ranks of powers of either operator give the $p$-rank, and $\dim(\ker 
 
 The genus-five final types $(0,0,1,2,2)$ and $(1,1,1,1,2)$ have stratum dimensions five and six. The permutation $(1\;2)$ certifies specialization from the latter to the former even though the two types are incomparable in the coordinatewise order. [Ekedahl–Oort closure example](examples/rank-eo-closure.asl)
 
+`eoFirstSlope(x);` computes Harashita’s sharp lower bound on the first Newton slope of the stratum of a positive-genus final type. The calculation extends the sequence to the full self-dual flag and finds the periodic set of the map that applies $V$ when its image is nonzero and $F^{-1}$ otherwise. The bound is the proportion of periodic indices above the middle of that flag. `eoSlopeCycles(x);` counts cycles in this periodic set. The first slope of an individual point can exceed the bound. [Harashita, Ekedahl–Oort strata and the first Newton slope strata](https://hdl.handle.net/2115/17113)
+
+Four polynomial Artin–Schreier curves of genus eight have final type $[0,1,1,2,2,3,3,4]$. Their first slopes are $1/2$, $1/3$, $3/8$, and $1/4$. The stratum bound is $1/4$. [EO and first Newton slope example](examples/rank-eo-first-slope.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

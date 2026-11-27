@@ -1326,22 +1326,13 @@ impl Engine {
                 self.model.define_rv_as_cover(name.text, cover);
                 return Ok(None);
             }
-            StatementForm::EOReport(weyl, expression) => {
+            StatementForm::EOReport(report, expression) => {
                 let expression = self.checker().expr(expression)?;
-                let operation = if weyl { "eoWeyl" } else { "eoDim" };
-                self.checker().require_eo(&expression, operation)?;
+                self.checker().require_eo(&expression, report.name())?;
                 let Value::EOType(sequence) = self.eval(&expression)? else {
                     unreachable!()
                 };
-                if weyl {
-                    let mut permutation = eo::weyl(&mut self.model, &sequence)?;
-                    for image in &mut permutation {
-                        *image += 1;
-                    }
-                    format!("eoWeyl = {permutation:?}")
-                } else {
-                    format!("eoDim = {}", eo::dimension(&mut self.model, &sequence)?)
-                }
+                report.evaluate(&mut self.model, &sequence)?
             }
             StatementForm::EOWitness(lower, upper) => {
                 let lower = self.checker().expr(lower)?;

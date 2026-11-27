@@ -1,0 +1,18 @@
+let leading = rvmon[[0,1]]{0,17};
+let denominator = rvmon[[0,1]]{17,0};
+rvascover Pure[[0,1]] {leading,denominator};
+rvascover WithSeven[[0,1]] {add(leading,rvmon[[0,1]]{10,7}),denominator};
+rvascover WithEleven[[0,1]] {add(leading,rvmon[[0,1]]{6,11}),denominator};
+rvascover WithFifteen[[0,1]] {add(leading,rvmon[[0,1]]{2,15}),denominator};
+let shared = rvASEOType[Pure];
+assert shared == eoType{0,1,1,2,2,3,3,4};
+assert rvASEOType[WithSeven] == shared;
+assert rvASEOType[WithEleven] == shared;
+assert rvASEOType[WithFifteen] == shared;
+show shared;
+eoFirstSlope(shared);
+eoSlopeCycles(shared);
+rvASNewton[Pure];
+rvASNewton[WithSeven];
+rvASNewton[WithEleven];
+rvASNewton[WithFifteen];

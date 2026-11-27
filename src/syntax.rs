@@ -2,6 +2,7 @@ use crate::bp::Operation as BpOperation;
 use crate::bp_page::{Mode as BpPageMode, Operation as BpPageOp};
 use crate::bp_vpage::Operation as BpVPageOp;
 use crate::comodule::Generator;
+use crate::eo::Report as EoReport;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
@@ -854,7 +855,7 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
-    EOReport(bool, ParsedExpr),
+    EOReport(EoReport, ParsedExpr),
     EOWitness(ParsedExpr, ParsedExpr),
     RvAsWordQuery(AsWordQuery, Label, Vec<Vec<AsOperator>>),
     RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
@@ -2164,10 +2165,16 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvAsCover(name, variables, self.rv_generators()?)
             }
-            Token::Word("eoDim" | "eoWeyl") => {
-                let weyl = self.token() == Token::Word("eoWeyl");
+            Token::Word("eoDim" | "eoWeyl" | "eoFirstSlope" | "eoSlopeCycles") => {
+                let report = match self.token() {
+                    Token::Word("eoDim") => EoReport::Dimension,
+                    Token::Word("eoWeyl") => EoReport::Weyl,
+                    Token::Word("eoFirstSlope") => EoReport::FirstSlope,
+                    Token::Word("eoSlopeCycles") => EoReport::SlopeCycles,
+                    _ => unreachable!(),
+                };
                 self.advance()?;
-                StatementForm::EOReport(weyl, self.paren_expr(0)?)
+                StatementForm::EOReport(report, self.paren_expr(0)?)
             }
             Token::Word("eoClosureWitness") => {
                 self.advance()?;
