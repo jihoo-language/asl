@@ -1222,6 +1222,9 @@ pub(crate) enum StatementForm {
     SiegelRoot(Box<ParsedExpr>),
     SiegelDelta5At(Box<ParsedExpr>),
     SiegelMaass(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::maass::Command>),
+    SiegelChamber(
+        Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::farey::Command>,
+    ),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -3868,6 +3871,51 @@ impl<'src> Parser<'src> {
         )))
     }
 
+    fn siegel_chamber_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::farey::Command;
+        self.advance()?;
+        let command = if name == "rvsiegelchamber" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let mut coordinates = [0; 3];
+            for (i, coordinate) in coordinates.iter_mut().enumerate() {
+                if i != 0 {
+                    self.expect(Token::Comma)?;
+                }
+                *coordinate =
+                    self.signed_wide("a signed period coordinate", "Siegel period coordinate")?;
+            }
+            Command::Declare(name, coordinates)
+        } else {
+            self.expect(Token::LBracket)?;
+            let chamber = self.label()?;
+            if name == "rvSiegelChamberData" {
+                Command::Data(chamber)
+            } else {
+                let target = if name == "rvIgusaChamberPath" {
+                    self.expect(Token::Comma)?;
+                    Some(self.label()?)
+                } else {
+                    None
+                };
+                let mut indices = [0; 3];
+                for index in &mut indices {
+                    self.expect(Token::Comma)?;
+                    *index = self.signed_wide(
+                        "a signed Fourier exponent",
+                        "Igusa chamber Fourier exponent",
+                    )?;
+                }
+                match target {
+                    Some(target) => Command::Path(chamber, target, indices),
+                    None => Command::Coefficient(chamber, indices),
+                }
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::SiegelChamber(Box::new(command)))
+    }
+
     fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
         let (expression, depth) = match name {
@@ -6065,6 +6113,12 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvIgusaInverse" | "rvIgusaWallJump" | "rvIgusaResidue")) => {
                 self.igusa_inverse_statement(name)?
             }
+            Token::Word(
+                name @ ("rvsiegelchamber"
+                | "rvSiegelChamberData"
+                | "rvIgusaChamberCoeff"
+                | "rvIgusaChamberPath"),
+            ) => self.siegel_chamber_statement(name)?,
             Token::Word("rvSiegelDelta5") => {
                 use crate::hyperelliptic_kummer_surface::hilbert::{
                     elliptic_genus::Query, Command,

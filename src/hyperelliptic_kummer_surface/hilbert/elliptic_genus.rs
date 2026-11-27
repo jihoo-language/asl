@@ -12,6 +12,7 @@ use super::Integer;
 use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
 
 mod cyclic;
+pub(crate) mod farey;
 pub(crate) mod inverse;
 pub(crate) mod maass;
 

@@ -30,7 +30,7 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{inverse, maass};
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
@@ -651,6 +651,7 @@ pub(crate) struct Model {
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
+    siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -761,6 +762,7 @@ impl Model {
             bielliptic_quotients: HashMap::new(),
             elliptic_gluings: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
+            siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -4265,6 +4267,30 @@ impl Model {
 
     pub(crate) fn siegel_weight_type(&mut self) -> Result<TypeId> {
         self.inhabited_type(Kind::SiegelWeight, 0)
+    }
+
+    pub(crate) fn register_siegel_chamber(
+        &mut self,
+        name: Label,
+        coordinates: [i128; 3],
+    ) -> Result<()> {
+        if self.siegel_chambers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Siegel chamber '{}' is already defined", name.text),
+            ));
+        }
+        let period = farey::Period::new(self, coordinates).map_err(|error| error.at(name.span))?;
+        self.allocate(name.text.len() + 10)?;
+        self.siegel_chambers.insert(name.text, Rc::new(period));
+        Ok(())
+    }
+
+    pub(crate) fn siegel_chamber(&self, name: &Label) -> Result<Rc<farey::Period>> {
+        self.siegel_chambers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Siegel chamber '{}'", name.text)))
     }
 
     pub(crate) fn register_siegel_maass(

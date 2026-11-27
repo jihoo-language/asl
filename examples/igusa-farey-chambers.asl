@@ -1,0 +1,10 @@
+rvsiegelchamber Base[2,1,3];
+rvsiegelchamber Opposite[2,-1,3];
+rvsiegelchamber Far[2,7,27];
+rvSiegelChamberData[Far];
+rvIgusaChamberCoeff[Base,0,0,1];
+rvIgusaChamberCoeff[Opposite,0,0,1];
+rvIgusaChamberCoeff[Far,0,0,1];
+rvIgusaChamberPath[Base,Opposite,0,0,1];
+rvIgusaChamberPath[Base,Far,0,0,1];
+rvIgusaChamberPath[Far,Base,0,0,1];

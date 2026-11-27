@@ -37,17 +37,12 @@ impl Query {
                 };
                 (
                     format!("rvIgusaInverse[{m}, {n}, {r}, {name}]"),
-                    coefficient(model, m, n, r, chamber)?,
+                    coefficient(model, m, n, Integer::from_i128(r), chamber)?,
                 )
             }
             Self::WallJump(m, n, r) => (
                 format!("rvIgusaWallJump[{m}, {n}, {r}]"),
-                if r == 0 {
-                    Integer::from_i128(0)
-                } else {
-                    let residue = residue(model, m, n)?;
-                    multiply(model, residue, Integer::from_i128(r))?
-                },
+                wall_jump(model, m, n, Integer::from_i128(r))?,
             ),
             Self::Residue(m, n) => (format!("rvIgusaResidue[{m}, {n}]"), residue(model, m, n)?),
         };
@@ -63,7 +58,13 @@ fn shifted_degree(index: i128) -> Option<u128> {
     }
 }
 
-fn coefficient(model: &mut Model, m: i128, n: i128, r: i128, chamber: Chamber) -> Result<Integer> {
+pub(super) fn coefficient(
+    model: &mut Model,
+    m: i128,
+    n: i128,
+    r: Integer,
+    chamber: Chamber,
+) -> Result<Integer> {
     let mut total = Integer::from_i128(0);
     let Some((p, q)) = shifted_degree(m).zip(shifted_degree(n)) else {
         return Ok(total);
@@ -71,31 +72,48 @@ fn coefficient(model: &mut Model, m: i128, n: i128, r: i128, chamber: Chamber) -
     // Every root with a+b>0 satisfies |s| ≤ a+b, so a full row at
     // (p,q) has no Laurent exponent outside [−p−q,p+q].
     let on_empty_side = match chamber {
-        Chamber::Inside => r <= 0,
-        Chamber::Outside => r >= 0,
+        Chamber::Inside => r.negative || r.is_zero(),
+        Chamber::Outside => !r.negative || r.is_zero(),
     };
-    if on_empty_side && r.unsigned_abs() >= p.saturating_add(q) {
+    if on_empty_side
+        && !r
+            .magnitude
+            .cmp(Magnitude::from_small(p.saturating_add(q)))
+            .is_lt()
+    {
         return Ok(total);
     }
     let product = rectangle(model, p, q)?;
     // The cutoff or a containing cached rectangle checked both indices.
     let (p, q) = (p as usize, q as usize);
-    let index = (p, q, r);
-    let bounds = match chamber {
-        Chamber::Inside => (Included((p, q, i128::MIN)), Excluded(index)),
-        Chamber::Outside => (Excluded(index), Included((p, q, i128::MAX))),
+    let first = Included((p, q, i128::MIN));
+    let last = Included((p, q, i128::MAX));
+    let bounds = match (chamber, r.signed()) {
+        (Chamber::Inside, Some(r)) => (first, Excluded((p, q, r))),
+        (Chamber::Outside, Some(r)) => (Excluded((p, q, r)), last),
+        // The degree cutoff bounds every Laurent exponent tightly. A
+        // wider r lies beyond the whole row on the contributing side.
+        (_, None) => (first, last),
     };
     for (&(_, _, s), &value) in product.range(bounds) {
         model.spend(1)?;
-        let scale = Integer {
-            magnitude: Magnitude::from_small(r.abs_diff(s)),
-            negative: false,
-        };
+        let mut scale = r
+            .add(Integer::from_i128(s).negate())
+            .map_err(|_| overflow())?;
+        scale.negative = false;
         total = total
             .add(multiply(model, value, scale)?)
             .map_err(|_| overflow())?;
     }
     Ok(total)
+}
+
+pub(super) fn wall_jump(model: &mut Model, m: i128, n: i128, r: Integer) -> Result<Integer> {
+    if r.is_zero() {
+        return Ok(Integer::from_i128(0));
+    }
+    let residue = residue(model, m, n)?;
+    multiply(model, residue, r)
 }
 
 fn rectangle(model: &mut Model, p: u128, q: u128) -> Result<Rc<Product>> {
