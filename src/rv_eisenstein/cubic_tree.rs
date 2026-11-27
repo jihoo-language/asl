@@ -195,6 +195,35 @@ impl<'a> Tree<'a> {
         self.vertex(n, second, coordinate)
     }
 
+    pub(crate) fn address(&self, model: &mut Model, vertex: &Vertex) -> Result<Vec<u8>> {
+        let mut address = self
+            .order
+            .digit_indices(model, &vertex.coordinate, vertex.radius)?;
+        if vertex.second {
+            address[0] = Q as u8;
+        }
+        Ok(address)
+    }
+
+    pub(super) fn vertex_at_address(&self, model: &mut Model, address: &[u8]) -> Result<Vertex> {
+        Self::require_radius(self.depth, address.len())?;
+        let Some((&first, tail)) = address.split_first() else {
+            return Ok(self.root());
+        };
+        if usize::from(first) > Q || tail.iter().any(|&d| usize::from(d) >= Q) {
+            return Err(inconsistent());
+        }
+        let second = usize::from(first) == Q;
+        let mut coordinate = self.order.zero();
+        for (degree, index) in address.iter().enumerate().skip(usize::from(second)) {
+            let digit = self
+                .order
+                .graded_digit(model, degree, usize::from(*index))?;
+            coordinate = self.order.add(model, &coordinate, &digit)?;
+        }
+        self.vertex(address.len(), second, coordinate)
+    }
+
     pub(crate) fn sphere_report(
         model: &mut Model,
         name: &str,

@@ -35,7 +35,7 @@ use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQu
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
@@ -251,6 +251,7 @@ pub(crate) enum TypeForm {
     CubicDiv(Label),
     CubicTree(Label, bool),
     CubicChamber(Label),
+    CubicBoundary(Label),
     CubicHecke(Label, cubic_iwahori::Sort),
     CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
@@ -1225,6 +1226,7 @@ pub(crate) enum ExprForm {
     CubicDivision(cubic_division::Expression),
     CubicTree(cubic_tree::Expression),
     CubicIwahori(cubic_iwahori::Expression),
+    CubicPrincipal(cubic_principal::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1536,6 +1538,7 @@ pub(crate) enum StatementForm {
     CubicDivisionReport(cubic_division::Report),
     CubicTreeReport(cubic_tree::Report),
     CubicIwahoriReport(cubic_iwahori::Report),
+    CubicPrincipalReport(cubic_principal::Report),
     CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
     CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
@@ -8645,6 +8648,143 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_principal_rational(&mut self, spectral: bool) -> Result<cubic_principal::Rat> {
+        let a = self.signed_wide("a signed rational numerator", "boundary coefficient")?;
+        self.expect(Token::Comma)?;
+        let b = self.signed_wide("a positive rational denominator", "boundary coefficient")?;
+        if spectral {
+            cubic_principal::spectral(a, b)
+        } else {
+            cubic_principal::rational(a, b)
+        }
+    }
+
+    fn cubic_principal_motion(&mut self, name: &str) -> Result<cubic_principal::Move> {
+        use cubic_principal::Move;
+        if name.ends_with("Omega") {
+            self.expect(Token::Comma)?;
+            Ok(Move::Omega(self.signed_number("geometric omega exponent")?))
+        } else if name.ends_with("Back") {
+            Ok(Move::TranslateBack)
+        } else {
+            Ok(Move::Translate)
+        }
+    }
+
+    fn cubic_principal_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_principal::{BoundaryQuery as Query, Report};
+        self.advance()?;
+        let report = match name {
+            "rvCubicBoundaryMass" => Report::Mass(Box::new(self.paren_expr(0)?)),
+            "rvCubicBoundaryValue" => Report::Boundary(Query::Value, Box::new(self.paren_pair(0)?)),
+            "rvCubicBoundaryIntegral" => {
+                Report::Boundary(Query::Integral, Box::new(self.paren_pair(0)?))
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let spectral = self.cubic_principal_rational(true)?;
+                if name == "rvCubicKnappSpectrum" {
+                    self.expect(Token::Comma)?;
+                    let (level, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return Ok(StatementForm::CubicPrincipalReport(Report::KnappSpectrum(
+                        spectral, level,
+                    )));
+                }
+                let movement = if matches!(
+                    name,
+                    "rvCubicPoissonCovariantTranslate"
+                        | "rvCubicPoissonCovariantBack"
+                        | "rvCubicPoissonCovariantOmega"
+                ) {
+                    Some(self.cubic_principal_motion(name)?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                match name {
+                    "rvCubicKnappKernel" => {
+                        Report::KnappKernel(spectral, Box::new(self.paren_pair(0)?))
+                    }
+                    "rvCubicPoissonCovariance" => {
+                        Report::CompactCovariance(spectral, Box::new(self.paren_triple(0)?))
+                    }
+                    _ => {
+                        let query = match (name, movement) {
+                            (_, Some(movement)) => Query::Covariance(movement, spectral),
+                            ("rvCubicPoissonEigen", None) => Query::Eigen(spectral),
+                            _ => Query::Poisson(spectral),
+                        };
+                        Report::Boundary(query, Box::new(self.paren_pair(0)?))
+                    }
+                }
+            }
+        };
+        Ok(StatementForm::CubicPrincipalReport(report))
+    }
+
+    fn cubic_principal_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use cubic_principal::{Expression, Unary};
+        if name == "rvCubicBoundaryCylinder" {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::CubicPrincipal(Expression::Cylinder(Box::new(input))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        if name == "rvCubicBoundaryConstant" {
+            let chart = self.label()?;
+            self.expect(Token::Comma)?;
+            let value = self.cubic_principal_rational(false)?;
+            self.expect(Token::RBracket)?;
+            return expr(
+                span,
+                ExprForm::CubicPrincipal(Expression::Scalar(chart, value)),
+                0,
+            );
+        }
+        let operation = match name {
+            "rvCubicBoundaryRefine" => Unary::Refine(self.number()?.0),
+            "rvCubicBoundaryCoarsen" => Unary::Coarsen(self.number()?.0),
+            "rvCubicBoundaryAverage" => Unary::Average(self.number()?.0),
+            "rvCubicBoundaryDifference" => Unary::Difference(self.number()?.0),
+            _ => {
+                let value = self.cubic_principal_rational(name != "rvCubicBoundaryScale")?;
+                match name {
+                    "rvCubicBoundaryScale" => Unary::Scale(value),
+                    "rvCubicKnappStein" => Unary::Knapp(value),
+                    "rvCubicPrincipal" => {
+                        self.expect(Token::RBracket)?;
+                        let inputs = self.paren_pair(nest)?;
+                        let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                        return expr(
+                            span,
+                            ExprForm::CubicPrincipal(Expression::Compact(value, Box::new(inputs))),
+                            depth,
+                        );
+                    }
+                    _ => Unary::Move(self.cubic_principal_motion(name)?, value),
+                }
+            }
+        };
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(nest)?;
+        let depth = input.depth + 1;
+        expr(
+            span,
+            ExprForm::CubicPrincipal(Expression::Unary(operation, Box::new(input))),
+            depth,
+        )
+    }
+
     fn cubic_iwahori_word(&mut self) -> Result<cubic_iwahori::GalleryWord> {
         self.expect(Token::LBracket)?;
         let entries = self.signed_list(Token::RBracket, "a panel index", "Iwahori panel")?;
@@ -15000,6 +15140,19 @@ impl<'src> Parser<'src> {
                 | "rvCubicBusemann"
                 | "rvCubicSatakeCounts"),
             ) => self.cubic_iwahori_statement(name)?,
+            Token::Word(
+                name @ ("rvCubicBoundaryMass"
+                | "rvCubicBoundaryValue"
+                | "rvCubicBoundaryIntegral"
+                | "rvCubicPoisson"
+                | "rvCubicPoissonEigen"
+                | "rvCubicPoissonCovariance"
+                | "rvCubicPoissonCovariantTranslate"
+                | "rvCubicPoissonCovariantBack"
+                | "rvCubicPoissonCovariantOmega"
+                | "rvCubicKnappSpectrum"
+                | "rvCubicKnappKernel"),
+            ) => self.cubic_principal_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -19386,6 +19539,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, kind, 0);
         }
+        if name.text == "RVCubicBoundary" && self.eat(Token::LParen)? {
+            let chart = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CubicBoundary(chart), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -22824,6 +22982,24 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.cubic_iwahori_expression(&name.text, span, nest);
+                }
+                if (name.text == "rvCubicBoundaryCylinder" && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicBoundaryConstant"
+                            | "rvCubicBoundaryRefine"
+                            | "rvCubicBoundaryCoarsen"
+                            | "rvCubicBoundaryAverage"
+                            | "rvCubicBoundaryDifference"
+                            | "rvCubicBoundaryScale"
+                            | "rvCubicKnappStein"
+                            | "rvCubicPrincipal"
+                            | "rvCubicPrincipalTranslate"
+                            | "rvCubicPrincipalTranslateBack"
+                            | "rvCubicPrincipalOmega"
+                    ) && self.token() == Token::LBracket)
+                {
+                    return self.cubic_principal_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

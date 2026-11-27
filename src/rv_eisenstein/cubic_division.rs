@@ -524,6 +524,34 @@ impl Order<'_> {
         self.reduce(out)
     }
 
+    pub(super) fn digit_indices(
+        &self,
+        model: &mut Model,
+        value: &Element,
+        precision: usize,
+    ) -> Result<Vec<u8>> {
+        let mut indices = vec![0; precision];
+        for (j, row) in value.0.iter().enumerate() {
+            let mut digits = precision.saturating_sub(j).div_ceil(3);
+            let mut remaining = row.clone();
+            for index in indices.iter_mut().skip(j).step_by(3) {
+                let [a, b, c] = residue(&remaining);
+                *index = (9 * a + 3 * b + c) as u8;
+                if digits > 1 {
+                    let base = self.extension.base.algebra(digits)?;
+                    for (entry, r) in remaining.iter_mut().zip([a, b, c]) {
+                        let negated = base.negate(model, &base.scalar(r))?;
+                        let divisible = base.add(model, entry, &negated)?;
+                        *entry =
+                            divide_by_lambda(model, &self.extension.base, digits, divisible, 1)?;
+                    }
+                }
+                digits -= 1;
+            }
+        }
+        Ok(indices)
+    }
+
     pub(crate) fn commutator(
         &self,
         model: &mut Model,

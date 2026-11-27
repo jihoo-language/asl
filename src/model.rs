@@ -106,7 +106,7 @@ use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_fusion;
 use crate::rv_hh;
@@ -404,6 +404,7 @@ pub(crate) enum Kind {
     CubicTreeVertex(Box<str>),
     CubicTreeOperator(Box<str>),
     CubicChamber(Box<str>),
+    CubicBoundary(Box<str>),
     CubicHecke(Box<str>, cubic_iwahori::Sort),
     CubicSplitMatrix(Box<str>),
     PeriodPolynomial(period::Grade),
@@ -683,6 +684,7 @@ pub(crate) enum Value {
     CubicTreeVertex(Rc<cubic_tree::Vertex>),
     CubicTreeOperator(Rc<cubic_tree::Operator>),
     CubicChamber(Rc<cubic_iwahori::Chamber>),
+    CubicBoundary(Rc<cubic_principal::Function>),
     CubicHecke(Rc<cubic_iwahori::Object>),
     CubicSplitMatrix(Rc<cubic_algebra::SplitMatrix>),
     PeriodPolynomial(Rc<period::Polynomial>),
@@ -1845,6 +1847,7 @@ impl Model {
             | Kind::CubicTreeVertex(..)
             | Kind::CubicTreeOperator(..)
             | Kind::CubicChamber(..)
+            | Kind::CubicBoundary(..)
             | Kind::CubicHecke(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
@@ -2272,6 +2275,7 @@ impl Model {
                 | Kind::CubicTreeVertex(..)
                 | Kind::CubicTreeOperator(..)
                 | Kind::CubicChamber(..)
+                | Kind::CubicBoundary(..)
                 | Kind::CubicHecke(..)
                 | Kind::CubicSplitMatrix(..)
                 | Kind::PeriodPolynomial(..)
@@ -6867,6 +6871,10 @@ impl Model {
         })
     }
 
+    pub(crate) fn cubic_boundary_type(&mut self, name: Box<str>) -> Result<TypeId> {
+        self.inhabited_type(Kind::CubicBoundary(name), 0)
+    }
+
     pub(crate) fn cubic_chamber_type(&mut self, name: Box<str>) -> Result<TypeId> {
         self.inhabited_type(Kind::CubicChamber(name), 0)
     }
@@ -8507,6 +8515,7 @@ impl Model {
             | Kind::CubicTreeVertex(..)
             | Kind::CubicTreeOperator(..)
             | Kind::CubicChamber(..)
+            | Kind::CubicBoundary(..)
             | Kind::CubicHecke(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..)
@@ -9218,6 +9227,7 @@ impl Model {
             Kind::CubicTreeVertex(name) => out.push(&format!("RVCubicTreeVertex({name})")),
             Kind::CubicTreeOperator(name) => out.push(&format!("RVCubicTreeOp({name})")),
             Kind::CubicChamber(name) => out.push(&format!("RVCubicChamber({name})")),
+            Kind::CubicBoundary(name) => out.push(&format!("RVCubicBoundary({name})")),
             Kind::CubicHecke(name, sort) => out.push(&format!("{}({name})", sort.name())),
             Kind::CubicSplitMatrix(name) => out.push(&format!("RVCubicSplitMatrix({name})")),
             Kind::CubicClass(field) => out.push(&format!("RVCubicClass({field})")),
@@ -9674,6 +9684,7 @@ impl Model {
             (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) => Ok(a == b),
             (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a == b),
             (Value::CubicChamber(a), Value::CubicChamber(b)) => Ok(a == b),
+            (Value::CubicBoundary(a), Value::CubicBoundary(b)) => Ok(a == b),
             (Value::CubicHecke(a), Value::CubicHecke(b)) => Ok(a == b),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries() == b.entries())
@@ -10113,6 +10124,7 @@ impl Model {
             (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) => Ok(a.cmp(b)),
             (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a.cmp(b)),
             (Value::CubicChamber(a), Value::CubicChamber(b)) => Ok(a.cmp(b)),
+            (Value::CubicBoundary(a), Value::CubicBoundary(b)) => Ok(a.cmp(b)),
             (Value::CubicHecke(a), Value::CubicHecke(b)) => Ok(a.cmp(b)),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries().cmp(b.entries()))
@@ -10767,7 +10779,7 @@ impl Model {
                         "cannot enumerate an Amice cyclotomic group ring",
                     ));
                 }
-                Kind::CubicChamber(..) | Kind::CubicHecke(..) => {
+                Kind::CubicChamber(..) | Kind::CubicBoundary(..) | Kind::CubicHecke(..) => {
                     return Err(Error::plain(
                         "cubic chambers and Hecke modules use indexed queries",
                     ));
@@ -12916,6 +12928,10 @@ impl Model {
             Value::CubicTreeVertex(vertex) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", vertex.description()))
+            }
+            Value::CubicBoundary(f) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", f.description()))
             }
             Value::CubicChamber(c) => {
                 self.write_type(out, ty, 0)?;

@@ -160,7 +160,7 @@ use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_eisenstein::{
     self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_iwahori,
-    cubic_tree, kummer as local_kummer,
+    cubic_principal, cubic_tree, kummer as local_kummer,
 };
 use crate::rv_field;
 use crate::rv_fusion;
@@ -1314,6 +1314,9 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicBoundaryCylinder(Box<TypedExpr>),
+    CubicBoundaryUnary(cubic_principal::Unary, Box<TypedExpr>),
+    CubicPrincipalCompact(cubic_principal::Rat, Box<[TypedExpr; 2]>),
     CubicChamber(Box<[TypedExpr; 2]>),
     CubicChamberEndpoint(usize, Box<TypedExpr>),
     CubicChamberPanel(usize, usize, Box<TypedExpr>),
@@ -3185,6 +3188,9 @@ impl Engine {
                     }
                 };
                 return Ok(Some(output));
+            }
+            StatementForm::CubicPrincipalReport(report) => {
+                return self.cubic_principal_report(report).map(Some)
             }
             StatementForm::CubicIwahoriReport(report) => {
                 return self.cubic_iwahori_report(report).map(Some)
@@ -13006,6 +13012,122 @@ impl Engine {
         }
     }
 
+    fn cubic_principal_report(&mut self, report: cubic_principal::Report) -> Result<String> {
+        use cubic_principal::{fraction, BoundaryQuery, Motion, Report};
+        match report {
+            Report::Mass(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .cubic_tree_grade(&input, false, "rvCubicBoundaryMass")?;
+                let Value::CubicTreeVertex(v) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let mass = cubic_principal::mass(v.level())?;
+                Ok(format!("rvCubicBoundaryMass = {}", fraction(mass)))
+            }
+            Report::Boundary(query, inputs) => {
+                let operation = match query {
+                    BoundaryQuery::Value => "rvCubicBoundaryValue",
+                    BoundaryQuery::Integral => "rvCubicBoundaryIntegral",
+                    BoundaryQuery::Poisson(_) => "rvCubicPoisson",
+                    BoundaryQuery::Eigen(_) => "rvCubicPoissonEigen",
+                    BoundaryQuery::Covariance(..) => "rvCubicPoissonCovariant",
+                };
+                let [f, v] = *inputs;
+                let f = self.checker().expr(f)?;
+                let v = self.checker().expr(v)?;
+                let chart = self.checker().cubic_boundary_grade(&f, operation)?;
+                let expected = self.model.cubic_tree_type(chart, false)?;
+                self.checker().require_type(expected, &v, operation)?;
+                let extension = self.cubic_division_type(f.ty);
+                let (Value::CubicBoundary(f), Value::CubicTreeVertex(v)) =
+                    (self.eval(&f)?, self.eval(&v)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                match query {
+                    BoundaryQuery::Value | BoundaryQuery::Integral => {
+                        let address = tree.address(&mut self.model, &v)?;
+                        let x = if matches!(query, BoundaryQuery::Value) {
+                            f.value(&address)?
+                        } else {
+                            f.integrate(&mut self.model, &address)?
+                        };
+                        Ok(format!("{operation} = {}", fraction(x)))
+                    }
+                    BoundaryQuery::Poisson(t) => {
+                        let x = cubic_principal::poisson(&mut self.model, &tree, &f, &v, t)?;
+                        Ok(format!("{operation} = {}", fraction(x)))
+                    }
+                    BoundaryQuery::Eigen(t) => {
+                        cubic_principal::poisson_eigen(&mut self.model, &tree, &f, &v, t)
+                    }
+                    BoundaryQuery::Covariance(g, t) => {
+                        Motion::Move(g).covariance(&mut self.model, &tree, t, &f, &v)
+                    }
+                }
+            }
+            Report::CompactCovariance(t, inputs) => {
+                let [g, f, v] = *inputs;
+                let g = self.checker().expr(g)?;
+                let f = self.checker().expr(f)?;
+                let v = self.checker().expr(v)?;
+                let chart =
+                    self.checker()
+                        .cubic_tree_grade(&g, true, "rvCubicPoissonCovariance")?;
+                let functions = self.model.cubic_boundary_type(chart.clone())?;
+                let vertices = self.model.cubic_tree_type(chart, false)?;
+                self.checker()
+                    .require_type(functions, &f, "rvCubicPoissonCovariance function")?;
+                self.checker()
+                    .require_type(vertices, &v, "rvCubicPoissonCovariance vertex")?;
+                let extension = self.cubic_division_type(g.ty);
+                let (
+                    Value::CubicTreeOperator(g),
+                    Value::CubicBoundary(f),
+                    Value::CubicTreeVertex(v),
+                ) = (self.eval(&g)?, self.eval(&f)?, self.eval(&v)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                Motion::Compact(&g).covariance(&mut self.model, &tree, t, &f, &v)
+            }
+            Report::KnappSpectrum(z, r) => {
+                let value = cubic_principal::Knapp::new(z)?.eigenvalue(r)?;
+                Ok(format!(
+                    "rvCubicKnappSpectrum = level={r}, eigenvalue={}",
+                    fraction(value)
+                ))
+            }
+            Report::KnappKernel(z, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                self.checker()
+                    .cubic_tree_grade(&a, false, "rvCubicKnappKernel")?;
+                self.checker()
+                    .require_type(a.ty, &b, "rvCubicKnappKernel target")?;
+                let extension = self.cubic_division_type(a.ty);
+                let (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) =
+                    (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                let x = tree.address(&mut self.model, &a)?;
+                let y = tree.address(&mut self.model, &b)?;
+                let c = cubic_principal::Knapp::new(z)?.cylinder_coefficient(
+                    &mut self.model,
+                    &x,
+                    &y,
+                )?;
+                Ok(format!("rvCubicKnappKernel = {}", fraction(c)))
+            }
+        }
+    }
+
     fn cubic_iwahori_report(&mut self, report: cubic_iwahori::Report) -> Result<String> {
         use cubic_iwahori::{Coefficient, Report, Sort};
         match report {
@@ -13210,6 +13332,7 @@ impl Engine {
         | Kind::CubicTreeVertex(name)
         | Kind::CubicTreeOperator(name)
         | Kind::CubicChamber(name)
+        | Kind::CubicBoundary(name)
         | Kind::CubicHecke(name, _)) = self.model.kind(ty)
         else {
             unreachable!()
@@ -13854,6 +13977,9 @@ impl Engine {
                         };
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::CubicBoundary(a), Value::CubicBoundary(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::CubicHecke(a), Value::CubicHecke(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
@@ -16991,6 +17117,50 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicBoundaryCylinder(input) => {
+                let extension = self.cubic_division_type(input.ty);
+                let Value::CubicTreeVertex(v) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                let path = tree.address(&mut self.model, &v)?;
+                cubic_principal::Function::characteristic(&mut self.model, &path)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicBoundaryUnary(operation, input) => {
+                use cubic_principal::Unary;
+                let Value::CubicBoundary(f) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match *operation {
+                    Unary::Refine(level) => f.refine(level)?,
+                    Unary::Coarsen(level) => f.coarsen(level)?,
+                    Unary::Average(level) => f.average(&mut self.model, level)?,
+                    Unary::Difference(level) => f.difference(&mut self.model, level)?,
+                    Unary::Scale(c) => f.scale(&mut self.model, c)?,
+                    Unary::Knapp(z) => {
+                        cubic_principal::Knapp::new(z)?.transform(&mut self.model, &f)?
+                    }
+                    Unary::Move(g, z) => {
+                        let extension = self.cubic_division_type(input.ty);
+                        let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                        cubic_principal::Motion::Move(g).act(&mut self.model, &tree, z, &f)?
+                    }
+                }
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicPrincipalCompact(z, inputs) => {
+                let (Value::CubicTreeOperator(g), Value::CubicBoundary(f)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                cubic_principal::Motion::Compact(&g)
+                    .act(&mut self.model, &tree, *z, &f)?
                     .persist(&mut self.model)
             }
             TypedForm::CubicChamber(inputs) => {
@@ -20715,6 +20885,10 @@ impl Checker<'_> {
             }
             TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
             TypeForm::CubicDiv(name) => self.model.cubic_div_type(&name),
+            TypeForm::CubicBoundary(name) => {
+                self.model.cubic_division(&name)?;
+                self.model.cubic_boundary_type(name.text.into())
+            }
             TypeForm::CubicChamber(name) => {
                 self.model.cubic_division(&name)?;
                 self.model.cubic_chamber_type(name.text.into())
@@ -21887,6 +22061,7 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::CubicBoundary(_) => cubic_principal::Function::scalar(cubic_principal::Rat::ZERO).persist(self.model)?,
                     Kind::CubicHecke(_,sort) => cubic_iwahori::Object::zero(*sort).persist(self.model)?,
                     Kind::CubicDiv(name) => {
                         let extension = self.model.cubic_division_named(name).expect("registered cubic division chart");
@@ -24413,6 +24588,7 @@ impl Checker<'_> {
             ExprForm::CubicDivision(operation) => self.cubic_division_expression(operation),
             ExprForm::CubicTree(operation) => self.cubic_tree_expression(operation),
             ExprForm::CubicIwahori(operation) => self.cubic_iwahori_expression(operation),
+            ExprForm::CubicPrincipal(operation) => self.cubic_principal_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -25332,6 +25508,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CubicBoundary(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CubicBoundaryUnary(
+                            cubic_principal::Unary::Scale(cubic_principal::Rat::integer(-1)),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::CubicHecke(..)) {
@@ -29486,6 +29671,7 @@ impl Checker<'_> {
                         | Kind::CubicAlg(..)
                         | Kind::CubicDiv(..)
                         | Kind::CubicHecke(..)
+                        | Kind::CubicBoundary(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -36264,6 +36450,74 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_principal_expression(
+        &mut self,
+        expression: cubic_principal::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_principal::{Expression, Move, Unary};
+        match expression {
+            Expression::Scalar(name, c) => {
+                self.model.cubic_division(&name)?;
+                let ty = self.model.cubic_boundary_type(name.text.into())?;
+                let value = cubic_principal::Function::scalar(c).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Cylinder(input) => {
+                let input = self.expr(*input)?;
+                let chart = self.cubic_tree_grade(&input, false, "rvCubicBoundaryCylinder")?;
+                let ty = self.model.cubic_boundary_type(chart)?;
+                Ok((ty, TypedForm::CubicBoundaryCylinder(Box::new(input))))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let name = match operation {
+                    Unary::Refine(_) => "rvCubicBoundaryRefine",
+                    Unary::Coarsen(_) => "rvCubicBoundaryCoarsen",
+                    Unary::Average(_) => "rvCubicBoundaryAverage",
+                    Unary::Difference(_) => "rvCubicBoundaryDifference",
+                    Unary::Scale(_) => "rvCubicBoundaryScale",
+                    Unary::Knapp(_) => "rvCubicKnappStein",
+                    Unary::Move(Move::Translate, _) => "rvCubicPrincipalTranslate",
+                    Unary::Move(Move::TranslateBack, _) => "rvCubicPrincipalTranslateBack",
+                    Unary::Move(Move::Omega(_), _) => "rvCubicPrincipalOmega",
+                };
+                let chart = self.cubic_boundary_grade(&input, name)?;
+                if let Unary::Refine(n)
+                | Unary::Coarsen(n)
+                | Unary::Average(n)
+                | Unary::Difference(n) = operation
+                {
+                    let extension = self
+                        .model
+                        .cubic_division_named(&chart)
+                        .expect("registered cubic division chart");
+                    cubic_tree::Tree::require_radius(extension.precision, n)?;
+                }
+                Ok((
+                    input.ty,
+                    TypedForm::CubicBoundaryUnary(operation, Box::new(input)),
+                ))
+            }
+            Expression::Compact(z, inputs) => {
+                let [g, f] = *inputs;
+                let g = self.expr(g)?;
+                let f = self.expr(f)?;
+                let chart = self.cubic_tree_grade(&g, true, "rvCubicPrincipal")?;
+                let ty = self.model.cubic_boundary_type(chart)?;
+                self.require_type(ty, &f, "rvCubicPrincipal function")?;
+                Ok((ty, TypedForm::CubicPrincipalCompact(z, Box::new([g, f]))))
+            }
+        }
+    }
+
+    fn cubic_boundary_grade(&self, input: &TypedExpr, operation: &str) -> Result<Box<str>> {
+        if let Kind::CubicBoundary(chart) = self.model.kind(input.ty) {
+            Ok(chart.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicBoundary(D)"))
+        }
     }
 
     fn cubic_iwahori_expression(
