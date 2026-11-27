@@ -28,6 +28,7 @@ use crate::hw_algebra;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
+use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::jet_hom;
@@ -433,6 +434,7 @@ enum JacobianAction {
         Box<[TypedExpr; 2]>,
         Option<crate::ec_poly::Polynomial>,
     ),
+    HalfAt(Rc<hw_closed::Curve>, String, Box<[TypedExpr; 2]>),
     RichelotPoint(
         Box<crate::richelot::correspondence::Correspondence>,
         Box<[TypedExpr; 2]>,
@@ -4584,6 +4586,29 @@ impl Engine {
                 let support = hyperelliptic_kummer::support(&mut self.model, &curve, &divisor)?;
                 self.model.show_jacobian_kummer(&support)?
             }
+            Command::HalfFiber(name, xy) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                let point = self.checker().jacobian_point_inputs(
+                    &name,
+                    &curve,
+                    *xy,
+                    "rvJacHalfFiber coordinate",
+                )?;
+                let [a, b] = self.eval_jacobian_point(&point)?;
+                let fiber = PointHalfFiber::new(&mut self.model, &curve, &a, &b, "rvJacHalfFiber")?;
+                let description = if let Some(fiber) = fiber {
+                    let dimension = fiber.dimension();
+                    let count = if dimension < u128::BITS as usize {
+                        (1u128 << dimension).to_string()
+                    } else {
+                        format!("2^{dimension}")
+                    };
+                    format!("F2 dimension {dimension}, count {count}")
+                } else {
+                    "empty".into()
+                };
+                format!("rvJacHalfFiber[{}] = {description}", name.text)
+            }
         };
         Ok(Some(report))
     }
@@ -4591,10 +4616,7 @@ impl Engine {
     fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
         match action {
             JacobianAction::Point(curve, xy, root) => {
-                let [x, y] = xy.as_ref();
-                let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
-                    unreachable!()
-                };
+                let [x, y] = self.eval_jacobian_point(xy)?;
                 let value = if let Some(root) = root {
                     point_halving::half(&mut self.model, curve, &x, &y, root)?
                 } else {
@@ -4602,11 +4624,16 @@ impl Engine {
                 };
                 value.persist(&mut self.model, curve)
             }
+            JacobianAction::HalfAt(curve, index, xy) => {
+                let [a, b] = self.eval_jacobian_point(xy)?;
+                let fiber = PointHalfFiber::new(&mut self.model, curve, &a, &b, "rvJacHalfAt")?
+                    .ok_or_else(|| Error::plain("rvJacHalfAt has an empty rational half fiber"))?;
+                fiber
+                    .at(&mut self.model, curve, &a, &b, index)?
+                    .persist(&mut self.model, curve)
+            }
             JacobianAction::RichelotPoint(correspondence, coordinates) => {
-                let [x, y] = coordinates.as_ref();
-                let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
-                    unreachable!()
-                };
+                let [x, y] = self.eval_jacobian_point(coordinates)?;
                 correspondence
                     .point(&mut self.model, &x, &y)?
                     .persist(&mut self.model, &correspondence.target)
@@ -4671,6 +4698,16 @@ impl Engine {
                 rv_unram::persist(&mut self.model, sign)
             }
         }
+    }
+
+    fn eval_jacobian_point(
+        &mut self,
+        [x, y]: &[TypedExpr; 2],
+    ) -> Result<[rv_unram::Coordinates; 2]> {
+        let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
+            unreachable!()
+        };
+        Ok([x, y])
     }
 
     fn hww_command(&mut self, command: hw_closed::Command) -> Result<Option<String>> {
@@ -17485,28 +17522,29 @@ impl Checker<'_> {
             }
             Expression::Point(name, xy, root) => {
                 let curve = self.model.jacobian_curve(&name.text)?;
-                let field = Label {
-                    text: curve.grade.ring.to_string(),
-                    span: name.span,
-                };
-                let coefficient = self.model.rv_unram_type(&field)?;
-                let [x, y] = *xy;
-                let x = self.expr(x)?;
-                let y = self.expr(y)?;
                 let context = if root.is_some() {
                     "rvJacHalfPoint coordinate"
                 } else {
                     "rvJacPoint coordinate"
                 };
-                self.require_type(coefficient, &x, context)?;
-                self.require_type(coefficient, &y, context)?;
+                let xy = self.jacobian_point_inputs(&name, &curve, *xy, context)?;
                 let root = root
                     .map(|coefficients| point_halving::witness(self.model, &curve, coefficients))
                     .transpose()?;
                 let ty = self.model.jacobian_type(name.text.into())?;
                 Ok((
                     ty,
-                    TypedForm::Jacobian(JacobianAction::Point(curve, Box::new([x, y]), root)),
+                    TypedForm::Jacobian(JacobianAction::Point(curve, Box::new(xy), root)),
+                ))
+            }
+            Expression::HalfAt(name, index, xy) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                let xy =
+                    self.jacobian_point_inputs(&name, &curve, *xy, "rvJacHalfAt coordinate")?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::HalfAt(curve, index, Box::new(xy))),
                 ))
             }
             Expression::Transport(name, direction, input) => {
@@ -17647,6 +17685,25 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn jacobian_point_inputs(
+        &mut self,
+        name: &Label,
+        curve: &hw_closed::Curve,
+        [x, y]: [ParsedExpr; 2],
+        context: &str,
+    ) -> Result<[TypedExpr; 2]> {
+        let field = Label {
+            text: curve.grade.ring.to_string(),
+            span: name.span,
+        };
+        let coefficient = self.model.rv_unram_type(&field)?;
+        let x = self.expr(x)?;
+        let y = self.expr(y)?;
+        self.require_type(coefficient, &x, context)?;
+        self.require_type(coefficient, &y, context)?;
+        Ok([x, y])
     }
 
     fn hww_operand(

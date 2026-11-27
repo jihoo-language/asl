@@ -5,6 +5,8 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::model::Model;
 
+pub(crate) mod fiber;
+
 pub(crate) fn witness(
     model: &mut Model,
     curve: &Curve,
@@ -30,11 +32,7 @@ pub(crate) fn half(
 ) -> Result<Divisor> {
     let field = field(curve);
     let f = curve.polynomial();
-    if field.ring.multiply(model, y, y)? != poly::evaluate(model, field, f, x)? {
-        return Err(Error::plain(
-            "rvJacHalfPoint requires an affine point on the curve",
-        ));
-    }
+    require_affine_point(model, curve, x, y, "rvJacHalfPoint")?;
     let reflection = [x.to_vec(), field.signed(-1)];
     let expected_square = poly::remainder(model, field, reflection.to_vec(), f)?;
     model.spend(root.len() * field.cells())?;
@@ -47,22 +45,48 @@ pub(crate) fn half(
 
     // The common roots are the chosen values of the square root at the branch
     // points. At a ramified input, z = 0 is simple in z − r(x − z²).
-    let branch = reflect(model, field, f, &reflection)?;
-    let branch = at_square(model, field, branch)?;
-    let lifted_root = reflect(model, field, &root, &reflection)?;
-    let lifted_root = at_square(model, field, lifted_root)?;
+    let branch = lift(model, field, f, &reflection)?;
+    let lifted_root = lift(model, field, &root, &reflection)?;
     let z = [field.zero(), field.one()];
     let relation = poly::sum(model, field, &z, &lifted_root, true)?;
-    let selected = poly::gcd(model, field, branch, relation)?;
+    let selected = poly::monic_gcd(model, field, branch, relation)?;
     if selected.len() != f.len() {
         return Err(Error::plain(
             "rvJacHalfPoint witness gives the wrong degree",
         ));
     }
-    let selected = monic(model, field, selected)?;
     if selected[0].as_slice() != y {
         return Err(Error::plain("rvJacHalfPoint witness norm must equal −y"));
     }
+    from_selection(model, curve, x, y, selected, "rvJacHalfPoint")
+}
+
+fn require_affine_point(
+    model: &mut Model,
+    curve: &Curve,
+    x: &[u64],
+    y: &[u64],
+    operation: &str,
+) -> Result<()> {
+    let field = field(curve);
+    if field.ring.multiply(model, y, y)? != poly::evaluate(model, field, curve.polynomial(), x)? {
+        return Err(Error::plain(format!(
+            "{operation} requires an affine point on the curve"
+        )));
+    }
+    Ok(())
+}
+
+fn from_selection(
+    model: &mut Model,
+    curve: &Curve,
+    x: &[u64],
+    y: &[u64],
+    selected: Polynomial,
+    operation: &str,
+) -> Result<Divisor> {
+    let field = field(curve);
+    let reflection = [x.to_vec(), field.signed(-1)];
 
     // R(z) = E(z²) + z O(z²) implies f(X) − E(x − X)² = (X − x) O(x − X)².
     // The divisor of y − E(x − X) identifies the half with the conjugate
@@ -78,16 +102,16 @@ pub(crate) fn half(
         }
     }
     let u = reflect(model, field, &odd, &reflection)?;
-    let u = monic(model, field, u)?;
+    let u = poly::monic(model, field, u)?;
     let even = reflect(model, field, &even, &reflection)?;
     let v = poly::scale(model, field, &even, &field.signed(-1))?;
     let half = Divisor::new(model, curve, u, v)?;
     let point = Divisor::from_point(model, curve, x, y.to_vec())?;
     let double = half.add(model, curve, &half)?;
     if double != point {
-        return Err(Error::plain(
-            "rvJacHalfPoint failed Cantor doubling verification",
-        ));
+        return Err(Error::plain(format!(
+            "{operation} failed Cantor doubling verification"
+        )));
     }
     Ok(half)
 }
@@ -112,7 +136,13 @@ fn reflect(
     Ok(result)
 }
 
-fn at_square(model: &mut Model, field: Field<'_>, polynomial: Polynomial) -> Result<Polynomial> {
+fn lift(
+    model: &mut Model,
+    field: Field<'_>,
+    polynomial: &[Scalar],
+    reflection: &[Scalar],
+) -> Result<Polynomial> {
+    let polynomial = reflect(model, field, polynomial, reflection)?;
     let length = polynomial.len().saturating_mul(2).saturating_sub(1);
     field.check_polynomial(length)?;
     model.spend(length * field.cells())?;
@@ -126,15 +156,4 @@ fn at_square(model: &mut Model, field: Field<'_>, polynomial: Polynomial) -> Res
         result.push(coefficient);
     }
     Ok(result)
-}
-
-fn monic(model: &mut Model, field: Field<'_>, polynomial: Polynomial) -> Result<Polynomial> {
-    let leading = polynomial
-        .last()
-        .ok_or_else(|| Error::plain("rvJacHalfPoint obtained a zero polynomial"))?;
-    if leading == &field.one() {
-        return Ok(polynomial);
-    }
-    let inverse = field.inverse_unit(model, leading)?;
-    poly::scale(model, field, &polynomial, &inverse)
 }

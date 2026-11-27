@@ -31,6 +31,7 @@ mod elliptic_local;
 mod engine;
 mod eo;
 mod error;
+mod finite_field_factor;
 mod hw_algebra;
 mod hw_closed;
 mod hyperelliptic;

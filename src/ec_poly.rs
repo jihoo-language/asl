@@ -301,6 +301,27 @@ pub(crate) fn gcd(
     Ok(a)
 }
 
+pub(crate) fn monic(model: &mut Model, field: Field<'_>, a: Polynomial) -> Result<Polynomial> {
+    let Some(leading) = a.last() else {
+        return Ok(a);
+    };
+    if leading == &field.one() {
+        return Ok(a);
+    }
+    let inverse = field.inverse_unit(model, leading)?;
+    scale(model, field, &a, &inverse)
+}
+
+pub(crate) fn monic_gcd(
+    model: &mut Model,
+    field: Field<'_>,
+    a: Polynomial,
+    b: Polynomial,
+) -> Result<Polynomial> {
+    let gcd = gcd(model, field, a, b)?;
+    monic(model, field, gcd)
+}
+
 pub(crate) fn resultant(
     model: &mut Model,
     field: Field<'_>,

@@ -2825,6 +2825,12 @@ impl<'src> Parser<'src> {
             "rvJacCompose" => Command::Compose(Box::new(self.paren_pair(0)?)),
             "rvJacOrder" => Command::Order(Box::new(self.paren_expr(0)?)),
             "rvJacKummer" => Command::Kummer(Box::new(self.paren_expr(0)?)),
+            "rvJacHalfFiber" => {
+                self.expect(Token::LBracket)?;
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::HalfFiber(curve, Box::new(self.paren_pair(0)?))
+            }
             _ => {
                 self.expect(Token::LBracket)?;
                 let curve = self.label()?;
@@ -2934,6 +2940,19 @@ impl<'src> Parser<'src> {
                     None
                 };
                 (Expression::Point(curve, Box::new(xy), root), depth)
+            }
+            "rvJacHalfAt" => {
+                let curve = self.label()?;
+                self.expect(Token::Comma)?;
+                let Token::Number(index) = self.token() else {
+                    return Err(self.expected("a nonnegative decimal integer"));
+                };
+                let index = index.into();
+                self.advance()?;
+                self.expect(Token::RBracket)?;
+                let xy = self.paren_pair(nest)?;
+                let depth = 1 + xy[0].depth.max(xy[1].depth);
+                (Expression::HalfAt(curve, index, Box::new(xy)), depth)
             }
             "rvRichelotPoint" => {
                 let target = self.label()?;
@@ -3418,7 +3437,7 @@ impl<'src> Parser<'src> {
             Token::Word("rvECCMCertify") => self.ec_cm_statement()?,
             Token::Word(
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
-                | "rvJacCompose" | "rvjacchart" | "rvJacKummer"),
+                | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
             Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
                 self.richelot_statement(command)?
@@ -8539,6 +8558,7 @@ impl<'src> Parser<'src> {
                     "rvjac"
                         | "rvJacPoint"
                         | "rvJacHalfPoint"
+                        | "rvJacHalfAt"
                         | "rvRichelotPoint"
                         | "rvJacScale"
                         | "rvJacU"

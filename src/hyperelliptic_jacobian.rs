@@ -22,11 +22,13 @@ pub(crate) enum Command {
     Order(Box<ParsedExpr>),
     Compose(Box<[ParsedExpr; 2]>),
     Kummer(Box<ParsedExpr>),
+    HalfFiber(Label, Box<[ParsedExpr; 2]>),
 }
 
 pub(crate) enum Expression {
     Literal(Label, Vec<Vec<i128>>, Vec<Vec<i128>>),
     Point(Label, Box<[ParsedExpr; 2]>, Option<Vec<Vec<i128>>>),
+    HalfAt(Label, String, Box<[ParsedExpr; 2]>),
     RichelotPoint(Label, Box<[ParsedExpr; 2]>),
     Transport(Label, Direction, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
