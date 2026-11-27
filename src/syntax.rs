@@ -6619,7 +6619,7 @@ impl<'src> Parser<'src> {
     }
 
     fn hilbert_llv_statement(&mut self, name: &str) -> Result<StatementForm> {
-        use crate::hyperelliptic_kummer_surface::llv_character::Command;
+        use crate::hyperelliptic_kummer_surface::llv_character::{Command, HodgeFactors};
         self.advance()?;
         let shape = |parser: &mut Self| {
             parser.set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))
@@ -6641,6 +6641,41 @@ impl<'src> Parser<'src> {
                     let k = self.wide_unsigned("oscillator degree")?;
                     self.expect(Token::RBracket)?;
                     Command::SoOscillator(n, k)
+                }
+                "rvHilbLLVHodgeInvariant" | "rvHilbLLVHodgeInvariantDecomposition" => {
+                    self.expect(Token::Comma)?;
+                    let d = self.signed_wide("a signed degree", "cohomological degree")?;
+                    self.expect(Token::Comma)?;
+                    let rho = self.wide_unsigned("Hodge polarization rank")?;
+                    let factors = if self.token() == Token::Comma {
+                        self.advance()?;
+                        let real = match self.token() {
+                            Token::Word("real") => true,
+                            Token::Word("cm") => false,
+                            _ => return Err(self.expected("real or cm Hodge group")),
+                        };
+                        self.advance()?;
+                        self.expect(Token::Comma)?;
+                        let e = self.wide_unsigned(if real {
+                            "real multiplication field degree"
+                        } else {
+                            "CM field half-degree"
+                        })?;
+                        if real {
+                            HodgeFactors::Real(e)
+                        } else {
+                            HodgeFactors::Complex(e)
+                        }
+                    } else {
+                        HodgeFactors::Generic
+                    };
+                    self.expect(Token::RBracket)?;
+                    let weight = if name == "rvHilbLLVHodgeInvariant" {
+                        Some(shape(self)?)
+                    } else {
+                        None
+                    };
+                    Command::SummandInvariant(n, d, rho, factors, weight)
                 }
                 "rvHilbGLOscillator" => {
                     self.expect(Token::Comma)?;
@@ -8035,7 +8070,9 @@ impl<'src> Parser<'src> {
                 | "rvHilbSOOscillator"
                 | "rvHilbComplexMultiplicationHodge"
                 | "rvHilbComplexMultiplicationPrimitiveHodge"
-                | "rvHilbGLOscillator"),
+                | "rvHilbGLOscillator"
+                | "rvHilbLLVHodgeInvariant"
+                | "rvHilbLLVHodgeInvariantDecomposition"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {

@@ -9,7 +9,10 @@ mod invariants;
 mod multiplication;
 mod orthogonal;
 mod reduced;
+mod summand_invariants;
 mod weyl;
+
+pub(crate) use summand_invariants::HodgeFactors;
 
 const RANK: usize = 12;
 const LARGEST_RHO: usize = RANK - 1;
@@ -37,6 +40,7 @@ pub(crate) enum Command {
     ComplexMultiplicationHodge(u128, i128, u128, u128, bool),
     SoOscillator(u128, u128),
     GlOscillator(u128, u128, i128),
+    SummandInvariant(u128, i128, u128, HodgeFactors, Option<Vec<u128>>),
 }
 
 impl Command {
@@ -110,6 +114,9 @@ impl Command {
             ),
             Self::SoOscillator(m, k) => multiplication::so_oscillator(model, m, k),
             Self::GlOscillator(m, k, s) => multiplication::gl_oscillator(model, m, k, s),
+            Self::SummandInvariant(n, d, rho, factors, shape) => {
+                summand_invariants::report(model, n, d, rho, factors, shape)
+            }
         }
     }
 }

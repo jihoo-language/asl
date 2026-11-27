@@ -51,6 +51,33 @@ pub(super) fn dimension_for(
     Ok(ratio.numerator)
 }
 
+pub(super) fn gl_dimension(model: &mut Model, shape: &[usize], rank: usize) -> Result<Magnitude> {
+    if shape.len() > rank {
+        return Ok(Magnitude::default());
+    }
+    let mut ratio = WeylProduct {
+        numerator: Magnitude::from_small(1),
+        denominator: Magnitude::from_small(1),
+    };
+    for (i, &part) in shape.iter().enumerate() {
+        for j in i + 1..rank {
+            let other = shape.get(j).copied().unwrap_or(0);
+            let difference = (j - i) as u128;
+            ratio.multiply(
+                model,
+                natural_sum([(part - other) as u128, difference])?,
+                difference,
+            )?;
+        }
+    }
+    if ratio.denominator.small() != Some(1) {
+        return Err(Error::plain(
+            "general linear Weyl dimension did not reduce to an integer",
+        ));
+    }
+    Ok(ratio.numerator)
+}
+
 struct WeylProduct {
     numerator: Magnitude,
     denominator: Magnitude,

@@ -13,14 +13,14 @@ pub(super) enum Group {
     Unitary,
 }
 
-struct Factors {
-    rho: usize,
-    degree: usize,
-    dimension: usize,
+pub(super) struct Factors {
+    pub(super) rho: usize,
+    pub(super) degree: usize,
+    pub(super) dimension: usize,
 }
 
 impl Factors {
-    fn new(group: Group, rho: u128, degree: u128) -> Result<Self> {
+    pub(super) fn new(group: Group, rho: u128, degree: u128) -> Result<Self> {
         if !(1..=(DIMENSION - 2) as u128).contains(&rho) {
             return Err(Error::plain("Hodge polarization rank must be in 1..=21"));
         }
