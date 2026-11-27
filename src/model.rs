@@ -96,6 +96,7 @@ use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_deform;
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
+use crate::sheaf_kuranishi;
 use crate::sheaf_leray::Leray;
 use crate::sheaf_page;
 use crate::sheaf_support::{self, Supports};
@@ -490,6 +491,7 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    sheaf_kuranishi: HashMap<Rc<str>, Rc<sheaf_kuranishi::Chart>>,
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Total>,
     sheaf_resolutions: HashMap<String, Rc<Resolution>>,
@@ -559,6 +561,7 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            sheaf_kuranishi: HashMap::new(),
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
             sheaf_resolutions: HashMap::new(),
@@ -1318,6 +1321,70 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::Sheaf(form, name, degree), 0)
+    }
+
+    pub(crate) fn check_new_sheaf_kuranishi(&self, name: &Label) -> Result<()> {
+        if self.sheaf_kuranishi.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("Kuranishi chart '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_sheaf_kuranishi(
+        &mut self,
+        name: &Label,
+        chart: sheaf_kuranishi::Chart,
+    ) -> Result<()> {
+        self.check_new_sheaf_kuranishi(name)?;
+        self.allocate(1)?;
+        self.sheaf_kuranishi
+            .insert(name.text.as_str().into(), Rc::new(chart));
+        Ok(())
+    }
+
+    pub(crate) fn sheaf_kuranishi(&self, name: &Label) -> Result<Rc<sheaf_kuranishi::Chart>> {
+        self.sheaf_kuranishi
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Kuranishi chart '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn show_kuranishi_equation(&mut self, name: &Label, index: usize) -> Result<String> {
+        let chart = self.sheaf_kuranishi(name)?;
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!("shkuranishiEq[{}, {index}] = ", name.text))?;
+        let mut first = true;
+        for (mono, scalar) in chart.equation(self, index)? {
+            self.spend(1 + mono.factors().len())?;
+            if !first {
+                out.push(" + ")?;
+            }
+            first = false;
+            if scalar != 1 {
+                out.push(&format!("{scalar}*"))?;
+            }
+            for (i, &(variable, power)) in mono.factors().iter().enumerate() {
+                if i != 0 {
+                    out.push("*")?;
+                }
+                out.push(&format!("x{variable}"))?;
+                if power != 1 {
+                    out.push(&format!("^{power}"))?;
+                }
+            }
+        }
+        if first {
+            out.push("0")?;
+        }
+        Ok(out.string)
     }
 
     pub(crate) fn known_sheaf_deformation_type(

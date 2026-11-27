@@ -1343,6 +1343,10 @@ pub(crate) struct Cochain {
 }
 
 impl Cochain {
+    pub(crate) fn cells(&self) -> usize {
+        self.cells
+    }
+
     pub(crate) fn into_terms(self) -> Vec<Term> {
         self.terms.into_iter().collect()
     }

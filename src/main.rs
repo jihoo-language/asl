@@ -158,6 +158,7 @@ mod sheaf_ext;
 mod sheaf_higher;
 mod sheaf_hyper;
 mod sheaf_image;
+mod sheaf_kuranishi;
 mod sheaf_leray;
 mod sheaf_page;
 mod sheaf_serre;

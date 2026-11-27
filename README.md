@@ -380,6 +380,18 @@ The generator checks all chosen lower lifts and the final class for any arm leng
 awk -v r=30 -v p=5 -f examples/sheaf-deformation-arms.awk | nix run path:. -- -
 ```
 
+### Kuranishi equations for sheaf deformations
+
+`shkuranishi K[F,n];` computes the normalized deformation chart through total degree $n$ in the basis of $\operatorname{Ext}^1(F,F)$. To choose an ordered linear slice, give independent degree-one classes in braces after the declaration. The command `shkuranishiDims[K];` reports the chosen tangent dimension, the dimension of $\operatorname{Ext}^2(F,F)$, and the truncation. The coordinates $x_0,x_1,\ldots$ follow the chosen order.
+
+The chart splits the Roos Hom complex using linear preimages of boundaries. For a $2$-cochain $q$, it subtracts the chosen preimage of $dq$ before projecting the resulting cycle. This gives a projection $\pi$ and homotopy $h$ on arbitrary cochains with $dh+hd=1-i\pi$. In each degree it computes $A=i(x)-hQ$, where $Q=-A\circ A$ is the quadratic functoriality defect using the sign of `shExtCompose`. The two outputs are the actual curvature $R=dA+Q$ and the obstruction $\kappa=\pi Q$.
+
+The calculation verifies $dQ=A\circ R-R\circ A$ and $R=i\kappa+h(dQ)$ coefficientwise. The term $h(dQ)$ is linear in coefficients of $R$ from lower orders, so the residual and the obstruction coordinates generate the same ideal through the computed truncation. The split also gives $\pi R=\kappa$. All products use sparse commutative monomials and ordinary finite-field coefficients.
+
+Use `shKurA[K,[e0,...]]`, `shKurR[K,[e0,...]]`, and `shKurKappa[K,[e0,...]]` for coefficients in the raw lift, raw curvature, and $\operatorname{Ext}^2$, respectively. The statement `shkuranishiEq[K,j];` prints the polynomial in obstruction coordinate $j$. The command `shKurArc[K,[c0,...],[w0,...],r]` substitutes $x_i=c_i t^{w_i}$ with positive weights, checks the equations through order $r$, and verifies the resulting restriction jet with the deformation append operation. Use `shKurArcKappa` with the same arguments for the obstruction coefficient at order $r$.
+
+The two arms of the example give $x_0x_1-x_2x_3x_4$. A common tail makes a cubic curvature coefficient with nonzero ordinary differential. A weighted arc equalizes the two path products at order three and gives their common tail composite in order four. The diagonal slice gives an actual square term, including in characteristic two. [Kuranishi example](examples/sheaf-kuranishi.asl)
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

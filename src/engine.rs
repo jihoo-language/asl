@@ -135,6 +135,7 @@ use crate::sheaf_ext::{self, Ends as SheafEnds};
 use crate::sheaf_higher::{self, Operation as SheafHigherOp};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
+use crate::sheaf_kuranishi;
 use crate::sheaf_leray::{Input as LerayInput, InputForm as SheafInputForm, Leray};
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
@@ -774,6 +775,47 @@ impl Engine {
         Ok(None)
     }
 
+    fn define_sheaf_kuranishi(
+        &mut self,
+        name: Label,
+        sheaf: Label,
+        order: usize,
+        directions: Option<Vec<ParsedExpr>>,
+    ) -> Result<()> {
+        self.model.check_new_sheaf_kuranishi(&name)?;
+        let ty = self
+            .model
+            .sheaf_hom_type(SheafForm::Class, &sheaf, &sheaf, 1)?;
+        let Kind::SheafHom(_, ends, _) = self.model.kind(ty) else {
+            unreachable!()
+        };
+        let hom = self.model.sheaf_hom(ends);
+        let directions = if let Some(directions) = directions {
+            let mut classes = Vec::with_capacity(directions.len());
+            for direction in directions {
+                let direction = self.checker().expr(direction)?;
+                if direction.ty != ty {
+                    return Err(Error::new(direction.span, "Kuranishi directions must be degree-one self-Ext classes on the selected sheaf"));
+                }
+                let Value::OddClass(coordinates) = self.eval(&direction)? else {
+                    unreachable!()
+                };
+                classes.push(coordinates);
+            }
+            Some(classes)
+        } else {
+            None
+        };
+        let chart = sheaf_kuranishi::Chart::build(
+            &mut self.model,
+            &hom,
+            sheaf.text.into(),
+            order,
+            directions,
+        )?;
+        self.model.define_sheaf_kuranishi(&name, chart)
+    }
+
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
@@ -895,6 +937,20 @@ impl Engine {
                     grade.r,
                     grade.chain.b,
                     grade.f
+                )
+            }
+            StatementForm::SheafKuranishi(name, sheaf, order, directions) => {
+                self.define_sheaf_kuranishi(name, sheaf, order, directions)?;
+                return Ok(None);
+            }
+            StatementForm::SheafKuranishiEquation(name, index) => {
+                self.model.show_kuranishi_equation(&name, index)?
+            }
+            StatementForm::SheafKuranishiDimensions(name) => {
+                let chart = self.model.sheaf_kuranishi(&name)?;
+                format!(
+                    "shkuranishiDims[{}] = tangent={}, obstruction={}, order={}",
+                    name.text, chart.directions, chart.obstructions, chart.order
                 )
             }
             StatementForm::SheafExtDimension(source, target, degree) => {
@@ -8346,6 +8402,7 @@ impl Checker<'_> {
             | ExprForm::SheafDefOperation(..)
             | ExprForm::SheafDefAppend(..)
             | ExprForm::SheafDefGauge(..)) => self.check_sheaf_deformation(form),
+            ExprForm::SheafKuranishi(query) => self.sheaf_kuranishi_expression(*query),
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
                 let after = self.expr(after)?;
@@ -13028,6 +13085,42 @@ impl Checker<'_> {
             Kind::RVCyclo(order) => Ok(order),
             _ => Err(self.invalid_operand(input, operation, "a cyclotomic integer")),
         }
+    }
+
+    fn sheaf_kuranishi_expression(
+        &mut self,
+        query: sheaf_kuranishi::Query,
+    ) -> Result<(TypeId, TypedForm)> {
+        use sheaf_kuranishi::{Coefficient, Query};
+        let (ty, value) = match query {
+            Query::Coefficient(name, powers, coefficient) => {
+                let chart = self.model.sheaf_kuranishi(&name)?;
+                let (form, degree) = match coefficient {
+                    Coefficient::Lift => (SheafForm::Cochain, 1),
+                    Coefficient::Residual => (SheafForm::Cochain, 2),
+                    Coefficient::Obstruction => (SheafForm::Class, 2),
+                };
+                let ends = SheafEnds::endomorphisms(chart.sheaf.clone());
+                let ty = self.model.known_sheaf_hom_type(form, ends, degree)?;
+                let value = chart.coefficient(self.model, &powers, coefficient)?;
+                (ty, value)
+            }
+            Query::Arc(name, amplitudes, weights, order, class) => {
+                let chart = self.model.sheaf_kuranishi(&name)?;
+                let ends = SheafEnds::endomorphisms(chart.sheaf.clone());
+                let hom = self.model.sheaf_hom(&ends);
+                let ty = if class {
+                    self.model.known_sheaf_hom_type(SheafForm::Class, ends, 2)?
+                } else {
+                    self.model
+                        .known_sheaf_deformation_type(chart.sheaf.clone(), order)?
+                };
+                let value =
+                    chart.specialized(self.model, &hom, &amplitudes, &weights, order, class)?;
+                (ty, value)
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn check_sheaf_deformation(&mut self, form: ExprForm) -> Result<(TypeId, TypedForm)> {

@@ -726,6 +726,7 @@ pub(crate) enum ExprForm {
     SheafExtGenerator(Label, Label, usize, usize),
     SheafHomMap(Label),
     SheafHomIdentity(Label),
+    SheafKuranishi(Box<crate::sheaf_kuranishi::Query>),
     SheafDefStart(Label),
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
@@ -1031,6 +1032,9 @@ pub(crate) enum StatementForm {
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
+    SheafKuranishi(Label, Label, usize, Option<Vec<ParsedExpr>>),
+    SheafKuranishiEquation(Label, usize),
+    SheafKuranishiDimensions(Label),
     SheafExtDimension(Label, Label, usize),
     SheafComplex(Label, Vec<Label>),
     SheafResolution(Label, Label, usize, crate::sheaf_cellular::Presentation),
@@ -2169,9 +2173,67 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::SetTopology(operation, name, input), depth)
     }
 
+    fn sheaf_kuranishi_statement(&mut self, name: &str) -> Result<StatementForm> {
+        self.advance()?;
+        if name == "shkuranishi" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let sheaf = self.label()?;
+            self.expect(Token::Comma)?;
+            let order = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let directions = if self.token() == Token::LBrace {
+                Some(self.set_named_rows(|parser| parser.expr(0))?)
+            } else {
+                None
+            };
+            return Ok(StatementForm::SheafKuranishi(
+                name, sheaf, order, directions,
+            ));
+        }
+        self.expect(Token::LBracket)?;
+        let chart = self.label()?;
+        let statement = if name == "shkuranishiEq" {
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            StatementForm::SheafKuranishiEquation(chart, index)
+        } else {
+            StatementForm::SheafKuranishiDimensions(chart)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(statement)
+    }
+
+    fn sheaf_kuranishi_expression(&mut self, name: &str, span: Span) -> Result<ParsedExpr> {
+        use crate::sheaf_kuranishi::{Coefficient, Query};
+        self.expect(Token::LBracket)?;
+        let chart = self.label()?;
+        self.expect(Token::Comma)?;
+        let query = if matches!(name, "shKurArc" | "shKurArcKappa") {
+            let amplitudes = self.sheaf_matrix()?;
+            self.expect(Token::Comma)?;
+            let weights = self.exponents()?;
+            self.expect(Token::Comma)?;
+            let order = self.number()?.0;
+            Query::Arc(chart, amplitudes, weights, order, name == "shKurArcKappa")
+        } else {
+            let coefficient = match name {
+                "shKurA" => Coefficient::Lift,
+                "shKurR" => Coefficient::Residual,
+                _ => Coefficient::Obstruction,
+            };
+            Query::Coefficient(chart, self.exponents()?, coefficient)
+        };
+        self.expect(Token::RBracket)?;
+        expr(span, ExprForm::SheafKuranishi(Box::new(query)), 0)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
+            Token::Word(command @ ("shkuranishi" | "shkuranishiEq" | "shkuranishiDims")) => {
+                self.sheaf_kuranishi_statement(command)?
+            }
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -7393,6 +7455,13 @@ impl<'src> Parser<'src> {
                     )
                 ) {
                     return self.sheaf_deformation_expr(&name, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "shKurA" | "shKurR" | "shKurKappa" | "shKurArc" | "shKurArcKappa"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.sheaf_kuranishi_expression(&name.text, span);
                 }
                 if name.text == "shExtCompose" && self.token() == Token::LParen {
                     let arguments = self.paren_pair(nest)?;

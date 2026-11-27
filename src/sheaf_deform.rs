@@ -6,7 +6,7 @@ use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::prime_linear::Basis;
-use crate::sheaf::{self, Cochain, Cochains, Support, Term};
+use crate::sheaf::{self, Cochain, Cochains, Layer, Support, Term};
 use crate::sheaf_ext::{self, Hom};
 
 #[derive(Clone, Copy)]
@@ -210,37 +210,78 @@ fn cancel(model: &mut Model, hom: &Hom, a: &[Term], b: &[Term]) -> Result<bool> 
     Ok(true)
 }
 
+pub(crate) struct Boundaries {
+    source: Layer,
+    target: Layer,
+    basis: Basis,
+}
+
+impl Boundaries {
+    pub(crate) fn build(model: &mut Model, hom: &Hom, degree: usize) -> Result<Self> {
+        let previous = degree.checked_sub(1).ok_or_else(|| {
+            Error::plain("degree-zero sheaf cochains have no incoming differential")
+        })?;
+        let source = hom.layer(model, previous, MAX_PIVOT_CELLS)?;
+        let target = hom.layer(model, degree, MAX_PIVOT_CELLS)?;
+        let cells = source.cells() + target.cells();
+        sheaf::check_cells(cells)?;
+        let mut basis = Basis::default();
+        for i in 0..source.size {
+            let image = hom.indexed_column(model, &source.generator(i), &target)?;
+            basis.insert_with_witness(model, hom.prime(), image, vec![(i, 1)])?;
+            sheaf::check_cells(cells + basis.cells())?;
+        }
+        Ok(Self {
+            source,
+            target,
+            basis,
+        })
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        self.source.cells() + self.target.cells() + self.basis.cells()
+    }
+
+    pub(crate) fn preimage(
+        &self,
+        model: &mut Model,
+        hom: &Hom,
+        raw: &[Term],
+        factor: u32,
+    ) -> Result<Option<Vec<Term>>> {
+        if raw.is_empty() || factor == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        let prime = hom.prime();
+        let target = raw
+            .iter()
+            .map(|(generator, coefficient)| {
+                Ok((
+                    self.target.index(model, generator)?,
+                    prime.mul(*coefficient, factor),
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let (remainder, witness) = self.basis.reduce_with_witness(model, prime, target)?;
+        if !remainder.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            witness
+                .into_iter()
+                .map(|(i, coefficient)| (self.source.generator(i), coefficient))
+                .collect(),
+        ))
+    }
+}
+
 fn primitive(model: &mut Model, hom: &Hom, curvature: &[Term]) -> Result<Vec<Term>> {
     if curvature.is_empty() {
         return Ok(Vec::new());
     }
-    let prime = hom.prime();
-    let source = hom.layer(model, 1, MAX_PIVOT_CELLS)?;
-    let target = hom.layer(model, 2, MAX_PIVOT_CELLS)?;
-    let cells = source.cells() + target.cells();
-    sheaf::check_cells(cells)?;
-    let mut basis = Basis::default();
-    for i in 0..source.size {
-        let image = hom.indexed_column(model, &source.generator(i), &target)?;
-        basis.insert_with_witness(model, prime, image, vec![(i, 1)])?;
-        sheaf::check_cells(cells + basis.cells())?;
-    }
-    let defect = curvature
-        .iter()
-        .map(|(generator, coefficient)| {
-            Ok((target.index(model, generator)?, prime.negate(*coefficient)))
-        })
-        .collect::<Result<_>>()?;
-    let (remainder, primitive) = basis.reduce_with_witness(model, prime, defect)?;
-    if !remainder.is_empty() {
-        return Err(Error::plain(
-            "shDefLift has a nonzero obstruction in sheaf Ext degree two",
-        ));
-    }
-    Ok(primitive
-        .into_iter()
-        .map(|(i, coefficient)| (source.generator(i), coefficient))
-        .collect())
+    Boundaries::build(model, hom, 2)?
+        .preimage(model, hom, curvature, hom.prime().negate(1))?
+        .ok_or_else(|| Error::plain("shDefLift has a nonzero obstruction in sheaf Ext degree two"))
 }
 
 pub(crate) fn elements(
