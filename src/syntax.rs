@@ -772,6 +772,8 @@ pub(crate) enum StatementForm {
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
     SheafLeray(Label, Label, Label),
+    SheafTruncate(Label, Label, usize),
+    SheafDeligne(Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
@@ -1519,6 +1521,23 @@ impl<'src> Parser<'src> {
                 let prime = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
+            }
+            Token::Word("shtruncate" | "shdeligne") => {
+                let open_extension = self.token() == Token::Word("shdeligne");
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let input = self.label()?;
+                self.expect(Token::Comma)?;
+                let statement = if open_extension {
+                    let sheaf = self.label()?;
+                    self.expect(Token::Comma)?;
+                    StatementForm::SheafDeligne(name, input, sheaf, self.number()?.0)
+                } else {
+                    StatementForm::SheafTruncate(name, input, self.number()?.0)
+                };
+                self.expect(Token::RBracket)?;
+                statement
             }
             Token::Word("shleray") => {
                 self.advance()?;

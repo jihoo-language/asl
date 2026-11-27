@@ -1025,7 +1025,15 @@ impl Model {
     }
 
     pub(crate) fn define_sheaf_complex(&mut self, name: String, complex: sheaf_hyper::Complex) {
-        self.sheaf_complexes.insert(name, Rc::new(complex));
+        self.define_sheaf_complex_shared(name, Rc::new(complex));
+    }
+
+    pub(crate) fn define_sheaf_complex_shared(
+        &mut self,
+        name: String,
+        complex: Rc<sheaf_hyper::Complex>,
+    ) {
+        self.sheaf_complexes.insert(name, complex);
     }
 
     pub(crate) fn define_leray_complex(&mut self, name: String, leray: Leray) {

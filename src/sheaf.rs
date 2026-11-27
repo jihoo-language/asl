@@ -178,6 +178,20 @@ impl Matrix {
         self.0.is_empty()
     }
 
+    pub(crate) fn apply(
+        &self,
+        model: &mut Model,
+        prime: Prime,
+        input: &[Coordinate],
+    ) -> Result<Vec<Coordinate>> {
+        let mut column = Vec::new();
+        for &(index, coefficient) in input {
+            column =
+                prime_linear::add_scaled(model, prime, &column, self.column(index), coefficient)?;
+        }
+        Ok(column)
+    }
+
     pub(crate) fn compose(
         model: &mut Model,
         prime: Prime,
@@ -191,11 +205,7 @@ impl Matrix {
         let mut cells = 1;
         for (index, middle) in &before.0 {
             model.spend(1 + middle.len())?;
-            let mut column = Vec::new();
-            for &(j, coefficient) in middle {
-                column =
-                    prime_linear::add_scaled(model, prime, &column, after.column(j), coefficient)?;
-            }
+            let column = after.apply(model, prime, middle)?;
             if !column.is_empty() {
                 cells += 3 + 2 * column.len();
                 check_cells(cells)?;

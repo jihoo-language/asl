@@ -125,6 +125,10 @@ impl Map {
         })
     }
 
+    pub(crate) fn matrix(&self, point: usize) -> &Matrix {
+        &self.matrices[point]
+    }
+
     pub(crate) fn apply_cochain(&self, model: &mut Model, raw: &[Term]) -> Result<Value> {
         let output = self.apply_support(model, raw)?;
         sheaf::persist(model, output)
@@ -260,6 +264,14 @@ impl Complex {
             cohomology: Cohomology::default(),
             pages: RefCell::new(BTreeMap::new()),
         })
+    }
+
+    pub(crate) fn components(&self) -> &[NamedSheaf] {
+        &self.components
+    }
+
+    pub(crate) fn maps(&self) -> &[Rc<Map>] {
+        &self.maps
     }
 
     pub(crate) fn component_at(&self, degree: usize) -> Option<&NamedSheaf> {

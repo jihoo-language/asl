@@ -139,6 +139,34 @@ impl Site {
         })
     }
 
+    pub(crate) fn require_open_embedding(&self, model: &mut Model) -> Result<()> {
+        let source = model.poset(self.source).expect("named map source");
+        let mut used = vec![false; self.target_poset.names.len()];
+        for &image in &self.images {
+            if std::mem::replace(&mut used[image], true) {
+                return Err(Error::plain(
+                    "shdeligne requires an injective open embedding",
+                ));
+            }
+        }
+        for (x, &image) in self.images.iter().enumerate() {
+            model.spend(self.images.len() + used.len())?;
+            for (z, &other) in self.images.iter().enumerate() {
+                if source.strict_less(x, z) != self.target_poset.strict_less(image, other) {
+                    return Err(Error::plain(
+                        "shdeligne requires an order-reflecting open embedding",
+                    ));
+                }
+            }
+            for (point, &inside) in used.iter().enumerate() {
+                if !inside && self.target_poset.strict_less(image, point) {
+                    return Err(Error::plain("shdeligne requires an upward-closed image"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn cells(&self) -> usize {
         4 + self.images.len()
     }

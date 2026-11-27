@@ -115,6 +115,7 @@ mod sheaf_hyper;
 mod sheaf_image;
 mod sheaf_leray;
 mod sheaf_page;
+mod sheaf_truncate;
 mod steenrod;
 mod syntax;
 mod transfer;

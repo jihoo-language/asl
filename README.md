@@ -153,6 +153,14 @@ For an ordinary cochain $a$, `shLerayIncl[K](a)` places its family of restrictio
 
 The example projects an eighteen-point product onto a six-point model of the sphere. Both $R^0f_*F$ and $R^1f_*F$ are rank-one constant sheaves, and $d_2$ takes the generator of $E_2^{0,1}$ nontrivially to $E_2^{2,0}$. Replacing the upper-right entry of the matrix at `x2a<x4a` by zero splits the example and makes this differential zero. [Leray spectral sequence example](examples/sheaf-leray.asl)
 
+### Smart truncation and a Deligne extension
+
+`shtruncate T[K,c];` forms the smart truncation $\tau_{\le c}K$. It retains the sheaves below stalk degree $c$ and, when the cutoff meets an outgoing differential, makes `T__c` from the stalkwise kernels of that differential. The restriction matrices preserve these kernels. The preceding differential factors through them because its composite with the outgoing differential vanishes.
+
+`shdeligne T[j,F,c];` performs one extension step $\tau_{\le c}Rj_*F$ for an ordinary sheaf on the source of the named open embedding $j$. The embedding must be injective, reflect the order, and have upward-closed image. The construction forms Roos cochains through degree $c+1$ when that degree exists, then computes the terminal kernels. The result is a complex of sheaves with the usual total cochains, hypercohomology, and spectral sequence.
+
+The example suspends the finite product of two circles. For the constant sheaf on the open torus, the two tip stalks see the entire torus. Cutoff zero gives hypercohomology ranks $1,0,2,1$, agreeing with ordinary cohomology. Cutoff one gives $1,2,0,1$. These ranks agree in complementary degrees on the three-dimensional suspension. [Deligne extension of a torus suspension](examples/sheaf-deligne.asl)
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

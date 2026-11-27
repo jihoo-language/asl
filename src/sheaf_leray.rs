@@ -21,6 +21,23 @@ impl Leray {
         source: NamedSheaf,
         site: Site,
     ) -> Result<(Self, Vec<NamedSheaf>, Complex)> {
+        let result = Self::build_through(model, name, source, site, usize::MAX)?;
+        for component in &result.1 {
+            model.check_new_sheaf(&Label {
+                text: component.name.to_string(),
+                span: name.span,
+            })?;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn build_through(
+        model: &mut Model,
+        name: &Label,
+        source: NamedSheaf,
+        site: Site,
+        maximum_degree: usize,
+    ) -> Result<(Self, Vec<NamedSheaf>, Complex)> {
         if source.sheaf.base() != site.source {
             return Err(Error::plain(
                 "shleray requires a sheaf on the map's named source",
@@ -33,9 +50,10 @@ impl Leray {
             .map(|open| open.height)
             .max()
             .unwrap_or(0)
-            .max(1);
+            .max(1)
+            .min(maximum_degree.saturating_add(1));
         let names = (0..height)
-            .map(|q| component_name(model, name, q))
+            .map(|q| component_label(name, q).map(|label| label.text.into()))
             .collect::<Result<Vec<_>>>()?;
         let prime = source.sheaf.prime;
         let mut components = Vec::<NamedSheaf>::with_capacity(height);
@@ -101,20 +119,24 @@ impl Leray {
     }
 }
 
-fn component_name(model: &Model, name: &Label, degree: usize) -> Result<Rc<str>> {
+pub(crate) fn component_name(model: &Model, name: &Label, degree: usize) -> Result<Rc<str>> {
+    let label = component_label(name, degree)?;
+    model.check_new_sheaf(&label)?;
+    Ok(label.text.into())
+}
+
+fn component_label(name: &Label, degree: usize) -> Result<Label> {
     let text = format!("{}__{degree}", name.text);
     if text.len() > MAX_IDENTIFIER_BYTES {
         return Err(Error::new(
             name.span,
-            "generated Leray component name exceeds the identifier length limit",
+            "generated sheaf component name exceeds the identifier length limit",
         ));
     }
-    let label = Label {
+    Ok(Label {
         text,
         span: name.span,
-    };
-    model.check_new_sheaf(&label)?;
-    Ok(label.text.into())
+    })
 }
 
 fn local_layers(

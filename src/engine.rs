@@ -103,6 +103,7 @@ use crate::sheaf_leray::Leray;
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
+use crate::sheaf_truncate;
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
@@ -545,6 +546,37 @@ impl Engine {
                 })?;
                 let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
                 self.model.define_sheaf(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafTruncate(name, original, degree) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let original = self.model.sheaf_complex(&original)?;
+                let (result, terminal) =
+                    sheaf_truncate::truncate(&mut self.model, &name, original, degree)?;
+                if let Some(entry) = terminal {
+                    self.model
+                        .define_sheaf_shared(entry.name.to_string(), entry.sheaf);
+                }
+                self.model.define_sheaf_complex_shared(name.text, result);
+                return Ok(None);
+            }
+            StatementForm::SheafDeligne(name, map, source, degree) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let site = self.sheaf_site(&map, "shdeligne")?;
+                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let result = sheaf_truncate::deligne(&mut self.model, &name, source, site, degree)?;
+                for entry in result.components() {
+                    let label = Label {
+                        text: entry.name.to_string(),
+                        span: name.span,
+                    };
+                    self.model.check_new_sheaf(&label)?;
+                }
+                for entry in result.components() {
+                    self.model
+                        .define_sheaf_shared(entry.name.to_string(), entry.sheaf.clone());
+                }
+                self.model.define_sheaf_complex_shared(name.text, result);
                 return Ok(None);
             }
             StatementForm::SheafLeray(name, map, source) => {
