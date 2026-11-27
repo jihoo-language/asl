@@ -24,6 +24,13 @@ impl InputForm {
         }
     }
 
+    pub(crate) fn extra_name(self) -> &'static str {
+        match self {
+            Self::Sheaf => "shextra",
+            Self::Complex => "shextracomplex",
+        }
+    }
+
     pub(crate) fn deligne_name(self) -> &'static str {
         match self {
             Self::Sheaf => "shdeligne",
@@ -65,14 +72,14 @@ impl Input {
         self.components()[0].sheaf.base()
     }
 
-    fn components(&self) -> &[NamedSheaf] {
+    pub(crate) fn components(&self) -> &[NamedSheaf] {
         match self {
             Self::Sheaf(entry) => std::slice::from_ref(entry),
             Self::Complex(_, complex) => complex.components(),
         }
     }
 
-    fn cochains(&self) -> &dyn Cochains {
+    pub(crate) fn cochains(&self) -> &dyn Cochains {
         match self {
             Self::Sheaf(entry) => entry.sheaf.as_ref(),
             Self::Complex(_, complex) => complex.as_ref(),
@@ -89,18 +96,36 @@ impl Input {
     }
 }
 
-struct Local<'a> {
+pub(crate) struct Local<'a> {
     input: &'a Input,
     components: Vec<Open<'a>>,
     height: usize,
 }
 
 impl<'a> Local<'a> {
-    fn new(model: &mut Model, input: &'a Input, mask: &[bool]) -> Result<Self> {
+    pub(crate) fn new(model: &mut Model, input: &'a Input, mask: &[bool]) -> Result<Self> {
+        Self::from_opens(model, input, |model, sheaf| Open::new(model, sheaf, mask))
+    }
+
+    pub(crate) fn supported(
+        model: &mut Model,
+        input: &'a Input,
+        starts: Rc<[bool]>,
+    ) -> Result<Self> {
+        Self::from_opens(model, input, |model, sheaf| {
+            Open::supported(model, sheaf, starts.clone())
+        })
+    }
+
+    fn from_opens(
+        model: &mut Model,
+        input: &'a Input,
+        mut make: impl FnMut(&mut Model, &'a Sheaf) -> Result<Open<'a>>,
+    ) -> Result<Self> {
         let mut height = 0;
         let mut components = Vec::new();
         for (q, sheaf) in input.components().iter().enumerate() {
-            let open = Open::new(model, &sheaf.sheaf, mask)?;
+            let open = make(model, &sheaf.sheaf)?;
             if open.height != 0 {
                 height = height.max(q + open.height);
             }
@@ -113,7 +138,7 @@ impl<'a> Local<'a> {
         })
     }
 
-    fn contains(&self, term: &Generator) -> bool {
+    pub(crate) fn contains(&self, term: &Generator) -> bool {
         // Membership in the open is independent of the input stalk degree.
         self.components[0].contains(term)
     }
@@ -198,50 +223,14 @@ impl Leray {
             return Err(Error::plain(message));
         }
         let opens = source.local_families(model, &site)?;
-        let height = opens
-            .unique
-            .iter()
-            .map(|open| open.height)
-            .max()
-            .unwrap_or(0)
-            .max(1)
-            .min(maximum_degree.saturating_add(1));
-        let names = (0..height)
-            .map(|q| component_label(name, q).map(|label| label.text.into()))
-            .collect::<Result<Vec<_>>>()?;
-        let prime = source.cochains().prime();
-        let mut components = Vec::<NamedSheaf>::with_capacity(height);
-        let mut maps = Vec::new();
-        let mut previous = Vec::new();
-        for (q, component_name) in names.into_iter().enumerate() {
-            let layers = local_layers(model, &opens, q, &previous)?;
-            let dims = opens.indices.iter().map(|&i| layers[i].size).collect();
-            let mut restrictions: BTreeMap<(usize, usize), Rc<Matrix>> = BTreeMap::new();
-            let sheaf = Sheaf::from_cover_maps(model, site.target, prime, dims, |model, a, b| {
-                let (x, z) = (opens.indices[a], opens.indices[b]);
-                if let Some(matrix) = restrictions.get(&(x, z)) {
-                    return Ok(matrix.clone());
-                }
-                let matrix = Rc::new(restriction(model, &layers[x], &layers[z])?);
-                restrictions.insert((x, z), matrix.clone());
-                Ok(matrix)
-            })?;
-            let component = NamedSheaf {
-                name: component_name,
-                sheaf: Rc::new(sheaf),
-            };
-            if let Some(from) = components.last() {
-                let map = differential(model, &opens, &previous, &layers, from, &component)?;
-                let label = Label {
-                    span: name.span,
-                    text: format!("{} differential at {}", name.text, q - 1),
-                };
-                maps.push((label, Rc::new(map)));
-            }
-            components.push(component);
-            previous = layers;
-        }
-        let complex = Complex::build(model, components.clone(), maps)?;
+        let (components, complex) = build_local_complex(
+            model,
+            name,
+            site.target,
+            source.cochains().prime(),
+            &opens,
+            maximum_degree,
+        )?;
         model.allocate(site.cells())?;
         Ok((Self { source, site }, components, complex))
     }
@@ -271,6 +260,60 @@ impl Leray {
         }
         sheaf::persist(model, output.into_terms())
     }
+}
+
+pub(crate) fn build_local_complex(
+    model: &mut Model,
+    name: &Label,
+    base: TypeId,
+    prime: Prime,
+    opens: &Opens<Local<'_>>,
+    maximum_degree: usize,
+) -> Result<(Vec<NamedSheaf>, Complex)> {
+    let height = opens
+        .unique
+        .iter()
+        .map(|open| open.height)
+        .max()
+        .unwrap_or(0)
+        .max(1)
+        .min(maximum_degree.saturating_add(1));
+    let names = (0..height)
+        .map(|q| component_label(name, q).map(|label| label.text.into()))
+        .collect::<Result<Vec<_>>>()?;
+    let mut components = Vec::<NamedSheaf>::with_capacity(height);
+    let mut maps = Vec::new();
+    let mut previous = Vec::new();
+    for (q, component_name) in names.into_iter().enumerate() {
+        let layers = local_layers(model, opens, q, &previous)?;
+        let dims = opens.indices.iter().map(|&i| layers[i].size).collect();
+        let mut restrictions: BTreeMap<(usize, usize), Rc<Matrix>> = BTreeMap::new();
+        let sheaf = Sheaf::from_cover_maps(model, base, prime, dims, |model, a, b| {
+            let (x, z) = (opens.indices[a], opens.indices[b]);
+            if let Some(matrix) = restrictions.get(&(x, z)) {
+                return Ok(matrix.clone());
+            }
+            let matrix = Rc::new(restriction(model, &layers[x], &layers[z])?);
+            restrictions.insert((x, z), matrix.clone());
+            Ok(matrix)
+        })?;
+        let component = NamedSheaf {
+            name: component_name,
+            sheaf: Rc::new(sheaf),
+        };
+        if let Some(from) = components.last() {
+            let map = differential(model, opens, &previous, &layers, from, &component)?;
+            let label = Label {
+                span: name.span,
+                text: format!("{} differential at {}", name.text, q - 1),
+            };
+            maps.push((label, Rc::new(map)));
+        }
+        components.push(component);
+        previous = layers;
+    }
+    let complex = Complex::build(model, components.clone(), maps)?;
+    Ok((components, complex))
 }
 
 pub(crate) fn component_name(model: &Model, name: &Label, degree: usize) -> Result<Rc<str>> {

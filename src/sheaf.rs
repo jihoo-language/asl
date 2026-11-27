@@ -498,6 +498,9 @@ impl Sheaf {
     ) -> Result<()> {
         let point = *reversed.last().unwrap();
         if remaining == 0 {
+            if bounds.starts.is_some_and(|starts| !starts[point]) {
+                return Ok(());
+            }
             return output.push_block(
                 model,
                 reversed.iter().rev().copied().collect(),
@@ -589,6 +592,7 @@ impl Cochains for Sheaf {
             degree,
             Bounds {
                 longest: &self.order.longest,
+                starts: None,
                 limit,
             },
             self.height,
@@ -599,6 +603,7 @@ impl Cochains for Sheaf {
 #[derive(Clone, Copy)]
 struct Bounds<'a> {
     longest: &'a [usize],
+    starts: Option<&'a [bool]>,
     limit: usize,
 }
 
@@ -630,11 +635,29 @@ impl Sheaf {
 pub(crate) struct Open<'a> {
     sheaf: &'a Sheaf,
     longest: Vec<usize>,
+    starts: Option<Rc<[bool]>>,
     pub(crate) height: usize,
 }
 
 impl<'a> Open<'a> {
     pub(crate) fn new(model: &mut Model, sheaf: &'a Sheaf, included: &[bool]) -> Result<Self> {
+        Self::from_start_set(model, sheaf, included, None)
+    }
+
+    pub(crate) fn supported(
+        model: &mut Model,
+        sheaf: &'a Sheaf,
+        starts: Rc<[bool]>,
+    ) -> Result<Self> {
+        Self::from_start_set(model, sheaf, &starts, Some(starts.clone()))
+    }
+
+    fn from_start_set(
+        model: &mut Model,
+        sheaf: &'a Sheaf,
+        included: &[bool],
+        starts: Option<Rc<[bool]>>,
+    ) -> Result<Self> {
         let mut longest: Vec<_> = included
             .iter()
             .map(|&included| usize::from(included))
@@ -644,8 +667,9 @@ impl<'a> Open<'a> {
             if longest[point] != 0 {
                 model.spend(sheaf.covers()[point].len())?;
                 for &next in &sheaf.covers()[point] {
-                    // Inverse images of principal opens are upward closed.
-                    debug_assert!(included[next]);
+                    // Ordinary opens are upward closed. For supports, propagate the
+                    // maximum length from a permitted initial point up the whole open.
+                    debug_assert!(starts.is_some() || included[next]);
                     longest[next] = longest[next].max(longest[point] + 1);
                 }
             }
@@ -659,12 +683,16 @@ impl<'a> Open<'a> {
         Ok(Self {
             sheaf,
             longest,
+            starts,
             height,
         })
     }
 
     pub(crate) fn contains(&self, generator: &Generator) -> bool {
-        self.longest[generator.place.chain()[0]] != 0
+        let start = generator.place.chain()[0];
+        self.starts
+            .as_ref()
+            .map_or(self.longest[start] != 0, |starts| starts[start])
     }
 }
 
@@ -702,6 +730,7 @@ impl Cochains for Open<'_> {
             degree,
             Bounds {
                 longest: &self.longest,
+                starts: self.starts.as_deref(),
                 limit,
             },
             self.height,

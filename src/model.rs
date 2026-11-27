@@ -80,6 +80,7 @@ use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
 use crate::sheaf_leray::Leray;
 use crate::sheaf_page;
+use crate::sheaf_support::{self, Supports};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::v_bars;
@@ -146,6 +147,7 @@ pub(crate) enum Kind {
     SheafComplex(SheafForm, Rc<str>, usize),
     SheafHom(SheafForm, SheafEnds, usize),
     SheafPage(Rc<str>, sheaf_page::Grade),
+    SheafLocal(Rc<str>, sheaf_support::Grade),
     Star(TypeId, usize),
     Product(TypeId, TypeId),
     Arrow(TypeId, TypeId),
@@ -431,6 +433,7 @@ pub(crate) struct Model {
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
     sheaf_complexes: HashMap<String, Total>,
     sheaf_resolutions: HashMap<String, Rc<Resolution>>,
+    sheaf_supports: HashMap<String, Rc<Supports>>,
     leray_complexes: HashMap<String, Rc<Leray>>,
     serre_shifts: HashMap<String, usize>,
     type_ids: HashMap<Kind, TypeId>,
@@ -481,6 +484,7 @@ impl Model {
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
             sheaf_resolutions: HashMap::new(),
+            sheaf_supports: HashMap::new(),
             leray_complexes: HashMap::new(),
             serre_shifts: HashMap::new(),
             type_ids: HashMap::new(),
@@ -576,9 +580,11 @@ impl Model {
                 1
             }
             Kind::SheafHom(_, ref ends, k) if k >= self.sheaf_homs[ends].height => 1,
-            Kind::Sheaf(..) | Kind::SheafComplex(..) | Kind::SheafPage(..) | Kind::SheafHom(..) => {
-                usize::MAX
-            }
+            Kind::Sheaf(..)
+            | Kind::SheafComplex(..)
+            | Kind::SheafPage(..)
+            | Kind::SheafHom(..)
+            | Kind::SheafLocal(..) => usize::MAX,
             Kind::Product(left, right) => self.types[left.0]
                 .cardinality_bound
                 .saturating_mul(self.types[right.0].cardinality_bound),
@@ -830,6 +836,7 @@ impl Model {
                 | Kind::SheafComplex(..)
                 | Kind::SheafHom(..)
                 | Kind::SheafPage(..)
+                | Kind::SheafLocal(..)
                 | Kind::Operations(..)
                 | Kind::Cobar(..)
                 | Kind::MCobar(..)
@@ -1328,6 +1335,34 @@ impl Model {
         degree: usize,
     ) -> Result<TypeId> {
         self.inhabited_type(Kind::SheafComplex(form, name, degree), 0)
+    }
+
+    pub(crate) fn define_sheaf_supports(&mut self, name: String, data: Supports) {
+        self.sheaf_supports.insert(name, Rc::new(data));
+    }
+
+    pub(crate) fn sheaf_supports(&self, name: &Label) -> Result<Rc<Supports>> {
+        self.sheaf_supports_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!(
+                    "'{}' is not a declared extraordinary inverse image",
+                    name.text
+                ),
+            )
+        })
+    }
+
+    pub(crate) fn sheaf_supports_named(&self, name: &str) -> Option<Rc<Supports>> {
+        self.sheaf_supports.get(name).cloned()
+    }
+
+    pub(crate) fn sheaf_local_type(
+        &mut self,
+        name: Rc<str>,
+        grade: sheaf_support::Grade,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::SheafLocal(name, grade), 0)
     }
 
     pub(crate) fn sheaf_page_type(
@@ -2834,6 +2869,7 @@ impl Model {
             | Kind::SheafComplex(..)
             | Kind::SheafHom(..)
             | Kind::SheafPage(..)
+            | Kind::SheafLocal(..)
             | Kind::Operations(..)
             | Kind::Cobar(..)
             | Kind::PCobar(..)
@@ -3048,6 +3084,17 @@ impl Model {
             }
             Kind::SheafComplex(form, name, degree) => {
                 out.push(&format!("{}({name}, {degree})", form.total_name()))
+            }
+            Kind::SheafLocal(name, grade) => {
+                let local = self
+                    .sheaf_supports_named(name)
+                    .expect("registered support data");
+                out.push(&format!(
+                    "ShLocal({name}, {}, {}, {})",
+                    local.point_name(grade.point),
+                    grade.mode.name(),
+                    grade.degree
+                ))
             }
             Kind::SheafPage(name, grade) => out.push(&format!(
                 "ShE({name}, {}, {}, {})",
@@ -4194,6 +4241,13 @@ impl Model {
                             odd_ext::elements(self, data.filtered().prime(), rank, MAX_ELEMENTS)?
                         }
                     }
+                }
+                Kind::SheafLocal(ref name, grade) => {
+                    let data = self
+                        .sheaf_supports_named(name)
+                        .expect("registered support data");
+                    let rank = data.rank(self, grade)?;
+                    odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::SheafPage(ref name, grade) => {
                     let data = self

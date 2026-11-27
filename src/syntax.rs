@@ -32,6 +32,7 @@ use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
 use crate::sheaf_image::Operation as SheafImageOp;
 use crate::sheaf_leray::InputForm as SheafInputForm;
 use crate::sheaf_page::{Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp};
+use crate::sheaf_support::{Mode as SupportMode, Operation as SupportOp};
 use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
@@ -61,6 +62,7 @@ pub(crate) enum TypeForm {
     SheafHom(SheafForm, Label, Label, usize),
     SheafComplex(SheafForm, Label, usize),
     SheafPage(Label, SheafPageGrade),
+    SheafLocal(Label, Label, SupportMode, usize),
     Operations(usize),
     Cobar(usize, usize),
     MCobar(MotivicGrade),
@@ -622,6 +624,9 @@ pub(crate) enum ExprForm {
     SheafCellTerm(Label, usize, Label, usize, i64),
     SheafGenerator(Label, usize, usize),
     SheafLerayIncl(Label, Box<ParsedExpr>),
+    SheafLocalGenerator(Label, Label, SupportMode, usize, usize),
+    SheafLocalClass(Label, Label, SupportMode, Box<ParsedExpr>),
+    SheafLocalOperation(SupportOp, Box<ParsedExpr>),
     SheafApply(Label, Box<ParsedExpr>),
     SheafEmbed(Label, usize, Box<ParsedExpr>),
     SheafPart(usize, Box<ParsedExpr>),
@@ -863,6 +868,8 @@ pub(crate) enum StatementForm {
     SheafCellular(Label, Label, Label),
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
+    SheafExtra(SheafInputForm, Label, Label, Label),
+    SheafLocalDimension(Label, Label, SupportMode, usize),
     SheafDimension(Label, usize),
     SheafSerre(Label, Label),
     SheafSerreShift(Label),
@@ -1475,6 +1482,15 @@ impl<'src> Parser<'src> {
         })
     }
 
+    fn sheaf_local_site(&mut self) -> Result<(Label, Label, SupportMode)> {
+        let complex = self.label()?;
+        self.expect(Token::Comma)?;
+        let point = self.label()?;
+        self.expect(Token::Comma)?;
+        let mode = SupportMode::from_label(&self.label()?)?;
+        Ok((complex, point, mode))
+    }
+
     fn sheaf_page_grade(&mut self) -> Result<SheafPageGrade> {
         let r = self.number()?.0;
         self.expect(Token::Comma)?;
@@ -1756,6 +1772,30 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 statement
+            }
+            Token::Word("shextra" | "shextracomplex") => {
+                let form = if self.token() == Token::Word("shextra") {
+                    SheafInputForm::Sheaf
+                } else {
+                    SheafInputForm::Complex
+                };
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let map = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafExtra(form, name, map, source)
+            }
+            Token::Word("shlocaldim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (complex, point, mode) = self.sheaf_local_site()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafLocalDimension(complex, point, mode, degree)
             }
             Token::Word("shleray" | "shleraycomplex") => {
                 let form = if self.token() == Token::Word("shleray") {
@@ -3637,6 +3677,13 @@ impl<'src> Parser<'src> {
                 TypeForm::RVComplex(grade, name.text.ends_with("Tor")),
                 0,
             );
+        }
+        if name.text == "ShLocal" && self.eat(Token::LParen)? {
+            let (name, point, mode) = self.sheaf_local_site()?;
+            self.expect(Token::Comma)?;
+            let degree = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SheafLocal(name, point, mode, degree), 0);
         }
         if name.text == "ShE" && self.eat(Token::LParen)? {
             let name = self.label()?;
@@ -5559,6 +5606,48 @@ impl<'src> Parser<'src> {
                         ExprForm::SheafTerm(sheaf, chain, index, coefficient),
                         0,
                     );
+                }
+                if name.text == "shlocalgen" && self.eat(Token::LBracket)? {
+                    let (complex, point, mode) = self.sheaf_local_site()?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafLocalGenerator(complex, point, mode, degree, index),
+                        0,
+                    );
+                }
+                if name.text == "shLocalClass" && self.eat(Token::LBracket)? {
+                    let (complex, point, mode) = self.sheaf_local_site()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafLocalClass(complex, point, mode, Box::new(input)),
+                        depth,
+                    );
+                }
+                if self.token() == Token::LParen {
+                    let operation = match name.text.as_str() {
+                        "shLocalRep" => Some(SupportOp::Rep),
+                        "shLocalForget" => Some(SupportOp::Forget),
+                        "shLocalRestrict" => Some(SupportOp::Restrict),
+                        "shLocalConnect" => Some(SupportOp::Connect),
+                        _ => None,
+                    };
+                    if let Some(operation) = operation {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::SheafLocalOperation(operation, Box::new(input)),
+                            depth,
+                        );
+                    }
                 }
                 if name.text == "shLerayIncl" && self.eat(Token::LBracket)? {
                     let complex = self.label()?;

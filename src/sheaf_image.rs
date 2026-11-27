@@ -140,12 +140,26 @@ impl Site {
     }
 
     pub(crate) fn require_open_embedding(&self, model: &mut Model, operation: &str) -> Result<()> {
+        self.embedding(model, operation, true).map(|_| ())
+    }
+
+    pub(crate) fn closed_image(&self, model: &mut Model, operation: &str) -> Result<Vec<bool>> {
+        self.embedding(model, operation, false)
+    }
+
+    fn embedding(&self, model: &mut Model, operation: &str, open: bool) -> Result<Vec<bool>> {
+        let kind = if open { "open" } else { "closed" };
+        let closed_condition = if open {
+            "an upward-closed"
+        } else {
+            "a downward-closed"
+        };
         let source = model.poset(self.source).expect("named map source");
         let mut used = vec![false; self.target_poset.names.len()];
         for &image in &self.images {
             if std::mem::replace(&mut used[image], true) {
                 return Err(Error::plain(format!(
-                    "{operation} requires an injective open embedding"
+                    "{operation} requires an injective {kind} embedding"
                 )));
             }
         }
@@ -154,19 +168,28 @@ impl Site {
             for (z, &other) in self.images.iter().enumerate() {
                 if source.strict_less(x, z) != self.target_poset.strict_less(image, other) {
                     return Err(Error::plain(format!(
-                        "{operation} requires an order-reflecting open embedding"
+                        "{operation} requires an order-reflecting {kind} embedding"
                     )));
                 }
             }
             for (point, &inside) in used.iter().enumerate() {
-                if !inside && self.target_poset.strict_less(image, point) {
+                let (left, right) = if open { (image, point) } else { (point, image) };
+                if !inside && self.target_poset.strict_less(left, right) {
                     return Err(Error::plain(format!(
-                        "{operation} requires an upward-closed image"
+                        "{operation} requires {closed_condition} image"
                     )));
                 }
             }
         }
-        Ok(())
+        Ok(used)
+    }
+
+    pub(crate) fn image(&self, point: usize) -> usize {
+        self.images[point]
+    }
+
+    pub(crate) fn target_poset(&self) -> &Poset {
+        &self.target_poset
     }
 
     pub(crate) fn cells(&self) -> usize {

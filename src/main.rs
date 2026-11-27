@@ -133,6 +133,7 @@ mod sheaf_leray;
 mod sheaf_page;
 mod sheaf_serre;
 mod sheaf_stalk;
+mod sheaf_support;
 mod sheaf_truncate;
 mod steenrod;
 mod syntax;

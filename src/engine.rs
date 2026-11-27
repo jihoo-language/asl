@@ -119,6 +119,7 @@ use crate::sheaf_leray::{Input as LerayInput, InputForm as SheafInputForm, Leray
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
+use crate::sheaf_support::{Grade as SupportGrade, Operation as SupportOp, Supports};
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
@@ -481,6 +482,8 @@ enum TypedForm {
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
+    SheafLocalClass(Rc<Supports>, SupportGrade, Box<TypedExpr>),
+    SheafLocalOperation(Rc<Supports>, SupportGrade, SupportOp, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
     SheafCompose(Box<[TypedExpr; 2]>),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
@@ -708,6 +711,36 @@ impl Engine {
                 }
                 self.model.define_sheaf_complex_shared(name.text, result);
                 return Ok(None);
+            }
+            StatementForm::SheafExtra(form, name, map, source) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let site = self.sheaf_site(&map, form.extra_name())?;
+                let source = LerayInput::resolve(&self.model, &source, form)?;
+                let (supports, components, complex) =
+                    Supports::build(&mut self.model, &name, source, site)?;
+                for entry in components {
+                    self.model
+                        .define_sheaf_shared(entry.name.to_string(), entry.sheaf);
+                }
+                self.model.define_sheaf_complex(name.text.clone(), complex);
+                self.model.define_sheaf_supports(name.text, supports);
+                return Ok(None);
+            }
+            StatementForm::SheafLocalDimension(name, point, mode, degree) => {
+                let data = self.model.sheaf_supports(&name)?;
+                let index = data.point(&self.model, &point)?;
+                let grade = SupportGrade {
+                    point: index,
+                    mode,
+                    degree,
+                };
+                let rank = data.rank(&mut self.model, grade)?;
+                format!(
+                    "shlocaldim[{}, {}, {}, {degree}] = {rank}",
+                    name.text,
+                    point.text,
+                    mode.name()
+                )
             }
             StatementForm::SheafLeray(form, name, map, source) => {
                 self.model.check_new_sheaf_complex(&name)?;
@@ -2239,7 +2272,9 @@ impl Engine {
                     .prime
             }
             Kind::SheafHom(_, ends, _) => self.model.sheaf_hom(ends).prime(),
-            Kind::SheafComplex(_, name, _) | Kind::SheafPage(name, _) => self
+            Kind::SheafComplex(_, name, _)
+            | Kind::SheafPage(name, _)
+            | Kind::SheafLocal(name, _) => self
                 .model
                 .sheaf_total_named(name)
                 .expect("registered sheaf complex")
@@ -2504,6 +2539,7 @@ impl Engine {
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
+                            | Kind::SheafLocal(..)
                             | Kind::SheafHom(..) => self.sheaf_prime(expr.ty),
                             Kind::MixedChain(grade, _) => {
                                 self.model.mixed_complex(grade.complex).prime
@@ -4442,6 +4478,18 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::SheafLocalClass(data, grade, input) => {
+                let Value::SheafC(raw) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.class(&mut self.model, *grade, &raw)
+            }
+            TypedForm::SheafLocalOperation(data, grade, operation, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.apply(&mut self.model, *grade, *operation, &coordinates)
+            }
             TypedForm::SheafLerayIncl(leray, degree, input) => {
                 let Value::SheafC(raw) = self.eval(input)? else {
                     unreachable!()
@@ -4872,6 +4920,18 @@ impl Checker<'_> {
             TypeForm::RhoLoc(grade) => self.model.rho_loc_type(grade),
             TypeForm::RhoMin(grade) => self.model.rho_min_type(grade),
             TypeForm::MExt(grade) => self.model.mext_type(grade),
+            TypeForm::SheafLocal(name, point, mode, degree) => {
+                let data = self.model.sheaf_supports(&name)?;
+                let point = data.point(self.model, &point)?;
+                self.model.sheaf_local_type(
+                    name.text.into(),
+                    SupportGrade {
+                        point,
+                        mode,
+                        degree,
+                    },
+                )
+            }
             TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
@@ -5191,7 +5251,7 @@ impl Checker<'_> {
                     Kind::RMCobar(..) => real_motivic::zero(),
                     Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) | Kind::SheafHom(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
-                    Kind::SheafPage(..) => odd_ext::zero(),
+                    Kind::SheafPage(..) | Kind::SheafLocal(..) => odd_ext::zero(),
                     Kind::MixedMinimum(..) => odd_ext::zero(),
                     Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
@@ -5854,6 +5914,74 @@ impl Checker<'_> {
                     .sheaf_complex_type(SheafForm::Class, &name, degree)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::SheafLocalGenerator(name, point, mode, degree, index) => {
+                let data = self.model.sheaf_supports(&name)?;
+                let point = data.point(self.model, &point)?;
+                let grade = SupportGrade {
+                    point,
+                    mode,
+                    degree,
+                };
+                let rank = data.rank(self.model, grade)?;
+                if index >= rank {
+                    return Err(Error::new(
+                        name.span,
+                        format!("local sheaf generator {index} is out of range for rank {rank}"),
+                    ));
+                }
+                let ty = self.model.sheaf_local_type(name.text.into(), grade)?;
+                let value = odd_ext::persist(self.model, vec![(index, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafLocalClass(name, point, mode, input) => {
+                let data = self.model.sheaf_supports(&name)?;
+                let point = data.point(self.model, &point)?;
+                let input = self.expr(*input)?;
+                let degree = match (data.input.form(), self.model.kind(input.ty)) {
+                    (SheafInputForm::Sheaf, Kind::Sheaf(SheafForm::Cochain, source, degree))
+                    | (
+                        SheafInputForm::Complex,
+                        Kind::SheafComplex(SheafForm::Cochain, source, degree),
+                    ) if source.as_ref() == data.input.name() => *degree,
+                    _ => {
+                        return Err(Error::new(
+                            input.span,
+                            format!(
+                                "shLocalClass requires an ambient cochain of '{}'",
+                                data.input.name()
+                            ),
+                        ))
+                    }
+                };
+                let grade = SupportGrade {
+                    point,
+                    mode,
+                    degree,
+                };
+                let ty = self.model.sheaf_local_type(name.text.into(), grade)?;
+                Ok((ty, TypedForm::SheafLocalClass(data, grade, Box::new(input))))
+            }
+            ExprForm::SheafLocalOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::SheafLocal(name, grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, operation.name(), "a ShLocal class"));
+                };
+                let name = name.clone();
+                let grade = *grade;
+                let data = self
+                    .model
+                    .sheaf_supports_named(&name)
+                    .expect("registered support data");
+                let ty = if let Some(output) = operation.output(grade)? {
+                    self.model.sheaf_local_type(name, output)?
+                } else {
+                    data.cochain_type(self.model, grade.degree)?
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafLocalOperation(data, grade, operation, Box::new(input)),
+                ))
+            }
             ExprForm::SheafLerayIncl(name, input) => {
                 let leray = self.model.leray_complex(&name)?;
                 let input = self.expr(*input)?;
@@ -6132,8 +6260,10 @@ impl Checker<'_> {
                         TypedForm::SheafOperation(operation, data, degree, Box::new(input)),
                     ));
                 }
-                if let (SheafOp::Scale(scalar), Kind::SheafPage(name, _)) =
-                    (operation, self.model.kind(input.ty))
+                if let (
+                    SheafOp::Scale(scalar),
+                    Kind::SheafPage(name, _) | Kind::SheafLocal(name, _),
+                ) = (operation, self.model.kind(input.ty))
                 {
                     let prime = self
                         .model
@@ -9987,6 +10117,7 @@ impl Checker<'_> {
                         | Kind::SheafHom(..)
                         | Kind::SheafPage(..)
                         | Kind::RMExt(..)
+                        | Kind::SheafLocal(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)
                         | Kind::PExt(..)

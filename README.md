@@ -181,6 +181,16 @@ The example suspends the finite product of two circles. For the constant sheaf o
 
 `shdelignecomplex T[j,K,c];` extends a bounded complex along a named open embedding and applies the same smart cutoff. This permits successive Deligne steps with different cutoffs. The double-suspension example adds two tips at each step to the finite torus. Cutoffs $(0,1)$ give ranks $1,0,0,2,1$ and cutoffs $(1,1)$ give $1,2,0,0,1$. The ranks agree in complementary degrees on the four-dimensional model. [Iterated Deligne example](examples/sheaf-iterated-deligne.asl)
 
+### Extraordinary inverse image and local supports
+
+`shextra K[i,F];` and `shextracomplex K[i,A];` construct $Ri^!$ of an ordinary sheaf `F` or a bounded complex `A` on the named target of $i:Z\to X$. The map must be injective, reflect the order, and have downward-closed image. At $z$ let $U$ be the principal open above $i(z)$ and let $U^\circ$ be its complement of the image of $Z$. The stalk model consists of Roos cochains on $U$ supported on chains meeting $Z$. Since $Z$ is closed, these chains begin in $Z$. The differential includes the signed stalk differential of the coefficients. Restrictions keep the same chains on smaller opens. The resulting complex on $Z$ has components `K__0`, `K__1`, and so on, and `shcohomology H[K,n];` takes its cohomology sheaf.
+
+`ShLocal(K,z,mode,n)` is the cohomology in degree $n$ for `absolute` ($U$), `punctured` ($U^\circ$), or `relative` ($(U,U^\circ)$). Use `shlocaldim[K,z,mode,n];` for its dimension and `shlocalgen[K,z,mode,n,i]` for a basis class. `shLocalClass[K,z,mode](c)` restricts an ambient cochain to the indicated model and takes its class. A relative input must vanish on the punctured open. `shLocalRep(h)` gives a canonical ambient cochain by extending its local representative by zero. Closure is understood on the relevant local complex. Local classes support `zero`, `add` and `shScale`.
+
+`shLocalForget` maps relative classes to absolute classes, and `shLocalRestrict` maps absolute classes to punctured classes. The underlying cochain restriction to $U^\circ$ is surjective in each degree with the relative complex as its kernel. The connecting map `shLocalConnect(h)` takes the absolute differential of a punctured representative extended by zero, then takes the relative class in degree $n+1$. Changing the representative or the lift gives the same class.
+
+On the cone of a finite torus, the relative ranks at the vertex in degrees zero through three are $0,0,2,1$ for constant coefficients. The degree-one connecting map takes a punctured basis to a relative basis in degree two. Applying the cutoff-one Deligne extension makes the degree-two relative group vanish while the degree-three class survives. [Local supports on the cone of a torus](examples/sheaf-support.asl)
+
 ### Stalk cohomology and the Serre functor
 
 `shcohomology H[K,q];` takes stalk cohomology of a bounded complex of sheaves. At each point it computes the kernel of the outgoing differential modulo the image of the incoming differential. A restriction transports a representative and projects it into the target stalk cohomology.
