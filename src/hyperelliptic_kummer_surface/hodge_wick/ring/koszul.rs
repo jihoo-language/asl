@@ -320,6 +320,16 @@ impl Form {
         grade: &Grade,
         cycle: &Chain,
     ) -> Result<String> {
+        self.lift_minimal_relation(model, grade, cycle)?
+            .text(model, self)
+    }
+
+    pub(super) fn lift_minimal_relation(
+        &self,
+        model: &mut Model,
+        grade: &Grade,
+        cycle: &Chain,
+    ) -> Result<Tensor> {
         if grade.homological != 1 {
             return Err(Error::plain(
                 "Verbitsky minimal relations require homological degree one",
@@ -346,7 +356,7 @@ impl Form {
                 "Verbitsky minimal relation has nonzero image in the quotient",
             ));
         }
-        polynomial.text(model, self)
+        Ok(polynomial)
     }
 
     pub(crate) fn tor_table(&self, model: &mut Model, grade: &Grade) -> Result<String> {

@@ -1,4 +1,5 @@
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
+use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -888,6 +889,10 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    VerbitskyFreeTimes(Vec<u128>, Box<TypedExpr>),
+    VerbitskyFreeDifferential(Box<TypedExpr>),
+    VerbitskyFreeAugment(Box<TypedExpr>),
+    VerbitskyFreeScale(hodge_wick::Entry, Box<TypedExpr>),
     KoszulTerm(u32, Box<TypedExpr>),
     KoszulDiff(Box<TypedExpr>),
     KoszulCast(bool, Box<TypedExpr>),
@@ -2410,6 +2415,9 @@ impl Engine {
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
+            StatementForm::VerbitskyFree(command) => {
+                return self.verbitsky_free_command(*command).map(Some)
+            }
             StatementForm::VerbitskyKoszul(command) => {
                 return self.koszul_command(*command).map(Some)
             }
@@ -6035,6 +6043,47 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn verbitsky_free_command(&mut self, command: verbitsky_resolution::Command) -> Result<String> {
+        use verbitsky_resolution::Command;
+        let name = match &command {
+            Command::Shifts(name, _) | Command::Entry(name, ..) | Command::Pfaffian(name, _) => {
+                name
+            }
+        };
+        let length = match &command {
+            Command::Shifts(_, length)
+            | Command::Entry(_, length, ..)
+            | Command::Pfaffian(_, length) => *length,
+        };
+        let grade = verbitsky_resolution::Grade {
+            basis: name.text.as_str().into(),
+            length,
+            homological: 0,
+            weight: 0,
+        };
+        let form = self.model.hodge_wick(&grade.basis)?;
+        form.validate_free(&grade)?;
+        let basis = &name.text;
+        match command {
+            Command::Shifts(..) => {
+                let value = form.free_shifts(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyResolution[{basis}, {length}] = {value}"
+                ))
+            }
+            Command::Entry(_, _, p, i, j) => {
+                let value = form.free_entry(&mut self.model, &grade, p, i, j)?;
+                Ok(format!(
+                    "rvVerbitskyResolutionEntry[{basis}, {length}, {p}, {i}, {j}] = {value}"
+                ))
+            }
+            Command::Pfaffian(..) => {
+                let value = form.free_pfaffian(&mut self.model, &grade)?;
+                Ok(format!("rvVerbitskyPfaffian[{basis}, {length}] = {value}"))
             }
         }
     }
@@ -9791,6 +9840,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::VerbitskyKoszul(a), Value::VerbitskyKoszul(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11820,6 +11872,52 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyFreeTimes(powers, input) => {
+                let Kind::VerbitskyFree(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let Value::VerbitskyFree(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector
+                    .times(&mut self.model, &form, powers)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyFreeDifferential(input) => {
+                let Kind::VerbitskyFree(grade) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Value::VerbitskyFree(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                self.model
+                    .hodge_wick(&grade.basis)?
+                    .free_differential(&mut self.model, &grade, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyFreeAugment(input) => {
+                let Kind::VerbitskyFree(grade) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Value::VerbitskyFree(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                self.model
+                    .hodge_wick(&grade.basis)?
+                    .free_augment(&mut self.model, &grade, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyFreeScale(scalar, input) => {
+                let Value::VerbitskyFree(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector
+                    .scale(&mut self.model, *scalar)?
                     .persist(&mut self.model)
             }
             TypedForm::KoszulTerm(mask, input) => {
@@ -14797,6 +14895,14 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::VerbitskyFree(name, length, homological, weight) => {
+                self.model.verbitsky_free_type(verbitsky_resolution::Grade {
+                    basis: name.text.into(),
+                    length,
+                    homological,
+                    weight,
+                })
+            }
             TypeForm::VerbitskyKoszul(name, length, homological, weight, tor) => {
                 self.model.verbitsky_koszul_type(
                     koszul::Grade {
@@ -15925,6 +16031,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
+                    Kind::VerbitskyFree(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
@@ -18165,6 +18272,7 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::VerbitskyKoszul(operation) => self.koszul_expression(*operation),
+            ExprForm::VerbitskyFree(operation) => self.verbitsky_free_expression(*operation),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
             }
@@ -19059,6 +19167,12 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::VerbitskyFree(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::VerbitskyFreeScale((-1, 1), Box::new(input)),
+                    ));
+                }
                 if matches!(
                     self.model.kind(input.ty),
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..)
@@ -23023,6 +23137,7 @@ impl Checker<'_> {
                         | Kind::Verbitsky(..)
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
+                        | Kind::VerbitskyFree(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
@@ -24717,6 +24832,79 @@ impl Checker<'_> {
                 Ok((
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn verbitsky_free_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<&verbitsky_resolution::Grade> {
+        if let Kind::VerbitskyFree(grade) = self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVVerbitskyFree vector"))
+        }
+    }
+
+    fn verbitsky_free_expression(
+        &mut self,
+        expression: verbitsky_resolution::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use verbitsky_resolution::Expression;
+        match expression {
+            Expression::Basis(name, length, homological, index, powers) => {
+                let grade = verbitsky_resolution::Grade {
+                    basis: name.text.into(),
+                    length,
+                    homological: homological as i128,
+                    weight: 0,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                form.validate_free(&grade)?;
+                let (grade, vector) = form.free_basis(self.model, &grade, index, &powers)?;
+                let ty = self.model.verbitsky_free_type(grade)?;
+                Ok((ty, TypedForm::Constant(vector.persist(self.model)?)))
+            }
+            Expression::Times(powers, input) => {
+                let input = self.expr(*input)?;
+                let grade = self
+                    .verbitsky_free_grade(&input, "rvVerbitskyFreeTimes")?
+                    .clone();
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let grade = form.free_times_grade(&grade, &powers)?;
+                let ty = self.model.verbitsky_free_type(grade)?;
+                Ok((ty, TypedForm::VerbitskyFreeTimes(powers, Box::new(input))))
+            }
+            Expression::Differential(input) => {
+                let input = self.expr(*input)?;
+                let grade = self
+                    .verbitsky_free_grade(&input, "rvVerbitskyResolutionDiff")?
+                    .differential()?;
+                let ty = self.model.verbitsky_free_type(grade)?;
+                Ok((ty, TypedForm::VerbitskyFreeDifferential(Box::new(input))))
+            }
+            Expression::Augment(input) => {
+                let input = self.expr(*input)?;
+                let grade = self
+                    .verbitsky_free_grade(&input, "rvVerbitskyResolutionAugment")?
+                    .ring_grade()?;
+                let ty = self.model.verbitsky_type(grade)?;
+                Ok((ty, TypedForm::VerbitskyFreeAugment(Box::new(input))))
+            }
+            Expression::Scale(scalar, input) => {
+                if scalar.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                self.verbitsky_free_grade(&input, "rvVerbitskyFreeScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::VerbitskyFreeScale(scalar, Box::new(input)),
                 ))
             }
         }

@@ -155,6 +155,7 @@ pub(crate) enum TypeForm {
     HodgeTensor(Label, i128, i128),
     Verbitsky(Label, i128, i128),
     VerbitskyKoszul(Label, i128, i128, i128, bool),
+    VerbitskyFree(Label, i128, i128, i128),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
@@ -1041,6 +1042,7 @@ pub(crate) enum ExprForm {
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
+    VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     OG6Clifford(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression>,
@@ -1296,6 +1298,7 @@ pub(crate) enum StatementForm {
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
+    VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Command>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
     KSExterior(
@@ -6565,6 +6568,95 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_free_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+        let command = match name {
+            "rvVerbitskyResolutionEntry" => {
+                self.expect(Token::Comma)?;
+                let p = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let j = self.number()?.0;
+                Command::Entry(basis, length, p, i, j)
+            }
+            "rvVerbitskyPfaffian" => Command::Pfaffian(basis, length),
+            _ => Command::Shifts(basis, length),
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::VerbitskyFree(Box::new(command)))
+    }
+
+    fn verbitsky_free_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Expression;
+        let (expression, depth) = match name {
+            "rvVerbitskyResolutionBasis" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+                self.expect(Token::Comma)?;
+                let p = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let powers = if self.token() == Token::LBrace {
+                    self.set_named_rows(|parser| {
+                        parser.wide_unsigned("free module monomial exponent")
+                    })?
+                } else {
+                    Vec::new()
+                };
+                (Expression::Basis(basis, length, p, index, powers), 0)
+            }
+            "rvVerbitskyFreeTimes" => {
+                let powers = self.set_named_rows(|parser| {
+                    parser.wide_unsigned("free module monomial exponent")
+                })?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Times(powers, Box::new(input)), depth)
+            }
+            "rvVerbitskyFreeScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("an integer numerator", "free module numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator =
+                    self.signed_wide("a positive denominator", "free module denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Scale((numerator, denominator), Box::new(input)),
+                    depth,
+                )
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let input = Box::new(input);
+                let operation = if name == "rvVerbitskyResolutionAugment" {
+                    Expression::Augment(input)
+                } else {
+                    Expression::Differential(input)
+                };
+                (operation, depth)
+            }
+        };
+        expr(span, ExprForm::VerbitskyFree(Box::new(expression)), depth)
+    }
+
     fn koszul_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression;
         let (expression, depth) = match name {
@@ -9544,6 +9636,11 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyTorTable"
                 | "rvVerbitskyMinimalRelation"),
             ) => self.koszul_statement(command)?,
+            Token::Word(
+                command @ ("rvVerbitskyResolution"
+                | "rvVerbitskyResolutionEntry"
+                | "rvVerbitskyPfaffian"),
+            ) => self.verbitsky_free_statement(command)?,
             Token::Word(command @ ("rvKummerDivPair" | "rvKummerFujiki")) => {
                 self.kummer_divisor_statement(command)?
             }
@@ -13535,6 +13632,11 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
+        if name.text == "RVVerbitskyFree" && self.eat(Token::LParen)? {
+            let (basis, length, p, w) = self.koszul_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::VerbitskyFree(basis, length, p, w), 0);
+        }
         if matches!(name.text.as_str(), "RVVerbitskyKoszul" | "RVVerbitskyTor")
             && self.eat(Token::LParen)?
         {
@@ -15379,6 +15481,18 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (name.text == "rvVerbitskyFreeTimes" && self.token() == Token::LBrace)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyResolutionBasis" | "rvVerbitskyFreeScale"
+                    ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyResolutionDiff" | "rvVerbitskyResolutionAugment"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.verbitsky_free_expression(&name.text, span, nest);
                 }
                 if (name.text == "rvVerbitskyKoszulTerm" && self.token() == Token::LBrace)
                     || (matches!(

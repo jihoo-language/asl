@@ -12,6 +12,7 @@ use super::{multiply_powers, storage, work_limit, Form, Grade, Power, Tensor};
 
 pub(crate) mod koszul;
 mod linear;
+pub(crate) mod resolution;
 use linear::Echelon;
 
 pub(crate) enum Command {
