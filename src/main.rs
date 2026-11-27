@@ -104,6 +104,7 @@ mod rv_iwhecke;
 mod rv_iwkl;
 mod rv_koszul;
 mod rv_laurent;
+mod rv_lens;
 mod rv_negative;
 mod rv_newton;
 mod rv_ore;

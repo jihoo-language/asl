@@ -65,6 +65,7 @@ use crate::rv_ideal::Ideal as RvIdeal;
 use crate::rv_iwhecke;
 use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
+use crate::rv_lens;
 use crate::rv_negative;
 use crate::rv_ore;
 use crate::rv_pcurv;
@@ -197,6 +198,7 @@ pub(crate) enum Kind {
     RVOre,
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
+    RVCycloQ(usize),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
@@ -333,6 +335,7 @@ pub(crate) enum Value {
     RVOre(rv_ore::Support),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
+    RVCycloQ(rv_lens::Rational),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
@@ -711,6 +714,7 @@ impl Model {
             | Kind::RVSatake(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::RVCycloQ(..)
             | Kind::RVWzw(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVHive(..) => {
@@ -889,6 +893,7 @@ impl Model {
                 | Kind::RVOre
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
+                | Kind::RVCycloQ(..)
                 | Kind::RVWzw(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
@@ -2002,6 +2007,11 @@ impl Model {
         self.inhabited_type(Kind::RVWzw(grade), 0)
     }
 
+    pub(crate) fn cyclotomic_rational_type(&mut self, order: usize) -> Result<TypeId> {
+        rv_cyclotomic::check_order(order)?;
+        self.inhabited_type(Kind::RVCycloQ(order), 0)
+    }
+
     pub(crate) fn cyclotomic_type(&mut self, order: usize) -> Result<TypeId> {
         rv_cyclotomic::check_order(order)?;
         self.inhabited_type(Kind::RVCyclo(order), 0)
@@ -2939,6 +2949,7 @@ impl Model {
             | Kind::RVOre
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::RVCycloQ(..)
             | Kind::RVWzw(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
@@ -3332,6 +3343,7 @@ impl Model {
                 "RVWzw({}, {})",
                 grade.fusion.rank, grade.fusion.level
             )),
+            Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVOre => out.push("RVOre"),
             Kind::RVQGrP(grade) => out.push(&format!(
@@ -3521,6 +3533,9 @@ impl Model {
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => {
                 Ok(rv_wzw::compare(self, left, right)?.is_eq())
+            }
+            (Value::RVCycloQ(left), Value::RVCycloQ(right)) => {
+                Ok(rv_lens::compare(self, left, right)?.is_eq())
             }
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 Ok(rv_cyclotomic::compare(self, left, right)?.is_eq())
@@ -3750,6 +3765,7 @@ impl Model {
                 rv_fusion::compare(self, left, right)
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
+            (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
             }
@@ -3941,6 +3957,9 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a cyclotomic torus state module",
                     ))
+                }
+                Kind::RVCycloQ(..) => {
+                    return Err(Error::plain("cannot enumerate a rational cyclotomic field"))
                 }
                 Kind::RVCyclo(..) => {
                     return Err(Error::plain("cannot enumerate an integral cyclotomic ring"));
@@ -5098,6 +5117,18 @@ impl Model {
                     out.push(&format!("{weight:?}: {coefficient:?}"))?;
                 }
                 out.push("}")
+            }
+            Value::RVCycloQ(ratio) => {
+                self.spend(ratio.numerator.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{[")?;
+                for (index, coefficient) in ratio.numerator.iter().enumerate() {
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push(&format!("] / {}}}", ratio.denominator))
             }
             Value::RVCyclo(coefficients) => {
                 self.spend(coefficients.len())?;

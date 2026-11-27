@@ -1005,6 +1005,14 @@ Write the normalized weight in descending order, set $x_{\lambda,i}=\lambda_i+n-
 
 `rvWzwS(v)`, `rvWzwSAdjoint(v)`, and `rvWzwT[h](v)` apply these matrices and the conjugate transpose of $S$. `rvWzwCharge(v)` sends each weight to its contragredient. The raw normalization gives $S^2=aC$, $SS^*=|a|I$, and $(ST)^3=bC$, where $a=(-1)^{n(n-1)/2}nL^{n-1}$ and $b$ is the vacuum coefficient of $(ST)^3$. The example computes $b=375(z_{60}^4+z_{60}^{14})$ at rank three, level two, checks $b^2=a^3\exp(2\pi i\,k(n^2-1)/(4L))$, and recovers an $S$ entry from the vacuum amplitude and the conjugate Verlinde character. [WZW modular example](examples/rv-wzw-modular.asl)
 
+### Doubled WZW lens-space invariants
+
+`rvLensTV[n,k,p,q]` computes the lens-space Turaev–Viro invariant of the unitary $\mathrm{SU}(n)_k$ theory doubled. For $p>0$, it accepts a signed $q$ coprime to $p$ and uses its residue modulo $p$. The inputs $p=0,q=\pm1$ describe $S^2\times S^1$. The normalization assigns $1$ to $S^2\times S^1$ and $1/\operatorname{Dim}\mathcal C$ to $S^3$, where $\operatorname{Dim}\mathcal C$ is the sum of the squares of the quantum dimensions.
+
+The interpreter decomposes a gluing matrix with first column $(q,p)$ by signed Euclidean division, using $S=\left(\begin{smallmatrix}0&-1\\1&0\end{smallmatrix}\right)$ and $T=\left(\begin{smallmatrix}1&1\\0&1\end{smallmatrix}\right)$. For a word with $m$ copies of raw $S$, it returns the product of its vacuum amplitude and its complex conjugate, divided by $[n(n+k)^{n-1}]^m$. The calculation cancels common numerator and denominator factors as it proceeds. `rvWzwTV[n,k]{S,T[h],...}` uses a supplied gluing word in matrix multiplication order, acting on the vacuum from right to left. Left and right twists fix the vacuum and projective framing phases cancel in the doubled amplitude.
+
+Both operations return `RVCycloQ(D)` with the same $D$ as `RVWzw(n,k)`. Its display gives the cyclotomic numerator coefficients and a common positive denominator, reduced by their scalar gcd. Use `rvCycloRat[d](c)` for a cyclotomic integer divided by positive $d$. Values support `zero`, `add`, `neg`, and equality. At rank two and level two, $L(8,1)$ has invariant $0$, $L(8,3)$ has invariant $1$, and $L(2,1)$ has invariant $(2-z_{16}^2+z_{16}^6)/4=(2-\sqrt2)/4$. [Lens-space invariant example](examples/rv-lens-tv.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

@@ -20,7 +20,7 @@ fn arithmetic() -> Error {
     Error::plain("cyclotomic integer arithmetic is out of range")
 }
 
-fn trim(coefficients: &mut Vec<i128>) {
+pub(crate) fn trim(coefficients: &mut Vec<i128>) {
     coefficients.truncate(
         coefficients
             .iter()

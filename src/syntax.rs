@@ -100,6 +100,7 @@ pub(crate) enum TypeForm {
     RVOre,
     RVFusion(usize, usize),
     RVCyclo(usize),
+    RVCycloQ(usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
@@ -684,6 +685,9 @@ pub(crate) enum ExprForm {
     WzwUnary(WzwOp, Box<ParsedExpr>),
     WzwScale(Box<[ParsedExpr; 2]>),
     WzwCoordinate(Vec<i128>, Box<ParsedExpr>),
+    LensTv(usize, usize, usize, i128),
+    WzwTv(usize, usize, Vec<crate::rv_lens::Step>),
+    CycloRatio(u128, Box<ParsedExpr>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -3842,6 +3846,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVWzw(rank, level), 0);
         }
+        if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
+            let (order, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVCycloQ(order), 0);
+        }
         if name.text == "RVCyclo" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
             self.expect(Token::RParen)?;
@@ -6359,6 +6368,71 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, form, 0);
+                }
+                if name.text == "rvLensTV" && self.eat(Token::LBracket)? {
+                    let (rank, level) = self.fusion_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (p, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let q = self.signed_wide("a signed lens parameter", "lens parameter")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::LensTv(rank, level, p, q), 0);
+                }
+                if name.text == "rvWzwTV" && self.eat(Token::LBracket)? {
+                    let (rank, level) = self.fusion_grade()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut steps = Vec::new();
+                    while self.token() != Token::RBrace {
+                        use crate::rv_lens::{Step, MAX_WORD};
+                        if steps.len() == MAX_WORD {
+                            return Err(Error::new(
+                                self.span(),
+                                "WZW gluing word exceeds the limit of 256 letters",
+                            ));
+                        }
+                        let step = match self.token() {
+                            Token::Word("S") => {
+                                self.advance()?;
+                                Step::S
+                            }
+                            Token::Word("T") => {
+                                self.advance()?;
+                                self.expect(Token::LBracket)?;
+                                let power =
+                                    self.signed_wide("a signed twist power", "twist power")?;
+                                self.expect(Token::RBracket)?;
+                                Step::T(power)
+                            }
+                            _ => return Err(self.expected("S or T[power] in the WZW gluing word")),
+                        };
+                        steps.push(step);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::WzwTv(rank, level, steps), 0);
+                }
+                if name.text == "rvCycloRat" && self.eat(Token::LBracket)? {
+                    let Token::Number(decimal) = self.token() else {
+                        return Err(self.expected("a positive cyclotomic rational denominator"));
+                    };
+                    let denominator = decimal.parse::<u128>().map_err(|_| {
+                        Error::new(
+                            self.span(),
+                            "cyclotomic rational denominator exceeds the u128 range",
+                        )
+                    })?;
+                    self.advance()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::CycloRatio(denominator, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvWzwCoord" && self.eat(Token::LBracket)? {
                     let weight = self.signed_tuple("a signed WZW weight", "WZW weight")?;

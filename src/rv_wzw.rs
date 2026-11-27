@@ -37,7 +37,7 @@ impl Grade {
         Ok(Self { fusion, order })
     }
 
-    fn period(self) -> usize {
+    pub(crate) fn period(self) -> usize {
         self.fusion.rank + self.fusion.level
     }
 }
@@ -210,12 +210,12 @@ pub(crate) fn t_entry(
     rv_cyclotomic::root(model, grade.order, twist(grade, &weight, power))
 }
 
-pub(crate) fn t_action(
+pub(crate) fn t_support(
     model: &mut Model,
     grade: Grade,
     input: &Support,
     power: i128,
-) -> Result<Value> {
+) -> Result<Vec<(Weight, Polynomial)>> {
     let mut state = Vec::new();
     let mut kept = 0;
     for (weight, coefficient) in input.iter() {
@@ -226,7 +226,17 @@ pub(crate) fn t_action(
         storage(kept)?;
         state.push((weight.clone(), output.into()));
     }
-    persist(model, state)
+    Ok(state)
+}
+
+pub(crate) fn t_action(
+    model: &mut Model,
+    grade: Grade,
+    input: &Support,
+    power: i128,
+) -> Result<Value> {
+    let output = t_support(model, grade, input, power)?;
+    persist(model, output)
 }
 
 fn cyclic(raw: Vec<i128>) -> Cyclic {
@@ -396,14 +406,14 @@ pub(crate) fn s_entry(
     rv_cyclotomic::persist(model, coefficient)
 }
 
-pub(crate) fn s_action(
+pub(crate) fn s_support(
     model: &mut Model,
     grade: Grade,
     input: &Support,
     adjoint: bool,
-) -> Result<Value> {
+) -> Result<Vec<(Weight, Polynomial)>> {
     if input.is_empty() {
-        return Ok(zero());
+        return Ok(Vec::new());
     }
     let mut output = Vec::new();
     let mut kept = 0;
@@ -430,5 +440,14 @@ pub(crate) fn s_action(
             Ok(())
         },
     )?;
+    Ok(output)
+}
+pub(crate) fn s_action(
+    model: &mut Model,
+    grade: Grade,
+    input: &Support,
+    adjoint: bool,
+) -> Result<Value> {
+    let output = s_support(model, grade, input, adjoint)?;
     persist(model, output)
 }

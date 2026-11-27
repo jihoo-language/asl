@@ -91,6 +91,7 @@ use crate::rv_iwhecke;
 use crate::rv_iwkl;
 use crate::rv_koszul;
 use crate::rv_laurent;
+use crate::rv_lens;
 use crate::rv_negative;
 use crate::rv_newton;
 use crate::rv_ore;
@@ -373,6 +374,8 @@ enum TypedForm {
     WzwUnary(rv_wzw::Grade, WzwOp, Box<TypedExpr>),
     WzwScale(rv_wzw::Grade, Box<[TypedExpr; 2]>),
     WzwCoordinate(rv_wzw::Grade, Vec<i128>, Box<TypedExpr>),
+    CycloRatio(u128, Box<TypedExpr>),
+    CycloRatioNegate(Box<TypedExpr>),
     Verlinde(usize, Vec<i128>, Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
@@ -2603,6 +2606,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVWzw(a), Value::RVWzw(b)) => {
                         rv_wzw::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
+                        rv_lens::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVCyclo(a), Value::RVCyclo(b)) => {
                         rv_cyclotomic::add(&mut self.model, &a, &b)
                     }
@@ -3471,6 +3477,18 @@ impl Engine {
                     unreachable!()
                 };
                 rv_wzw::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::CycloRatio(denominator, input) => {
+                let Value::RVCyclo(numerator) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_lens::ratio(&mut self.model, &numerator, *denominator)
+            }
+            TypedForm::CycloRatioNegate(input) => {
+                let Value::RVCycloQ(ratio) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_lens::negate(&mut self.model, &ratio)
             }
             TypedForm::WzwCoordinate(grade, weight, input) => {
                 let Value::RVWzw(terms) = self.eval(input)? else {
@@ -5061,6 +5079,7 @@ impl Checker<'_> {
             TypeForm::RVWzw(rank, level) => {
                 self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
             }
+            TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
                 .model
@@ -5360,6 +5379,7 @@ impl Checker<'_> {
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
+                    Kind::RVCycloQ(..) => rv_lens::zero(),
                     Kind::RVWzw(..) => rv_wzw::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
@@ -6826,6 +6846,9 @@ impl Checker<'_> {
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
                     ));
                 }
+                if matches!(self.model.kind(input.ty), Kind::RVCycloQ(..)) {
+                    return Ok((input.ty, TypedForm::CycloRatioNegate(Box::new(input))));
+                }
                 if let Kind::RVWzw(grade) = *self.model.kind(input.ty) {
                     return Ok((
                         input.ty,
@@ -6887,6 +6910,24 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::WzwScale(grade, Box::new([scalar, input])),
                 ))
+            }
+            ExprForm::LensTv(rank, level, p, q) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_lens::lens(self.model, grade, p, q)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwTv(rank, level, word) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_lens::word(self.model, grade, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CycloRatio(denominator, input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_order(&input, "rvCycloRat")?;
+                let ty = self.model.cyclotomic_rational_type(order)?;
+                Ok((ty, TypedForm::CycloRatio(denominator, Box::new(input))))
             }
             ExprForm::WzwCoordinate(weight, input) => {
                 let input = self.expr(*input)?;
@@ -10312,6 +10353,7 @@ impl Checker<'_> {
                         | Kind::RVOre
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::RVCycloQ(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
