@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -7,6 +8,7 @@ use crate::hw_algebra::{self, Matrix};
 use crate::hw_closed::Curve;
 use crate::hyperelliptic::Residues;
 use crate::hyperelliptic_jacobian::{miller, Divisor, Pairing};
+use crate::hyperelliptic_kummer_surface::theta;
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::rv_unram::{mul_mod, Ring};
@@ -27,6 +29,7 @@ pub(crate) struct Basis {
     generators: Box<[Rc<Divisor>]>,
     root: Scalar,
     logarithm: Logarithm,
+    theta: OnceCell<Rc<theta::Group>>,
 }
 
 pub(crate) struct Frobenius {
@@ -105,11 +108,20 @@ impl Basis {
             generators: generators.into_boxed_slice(),
             root: root.to_vec(),
             logarithm,
+            theta: OnceCell::new(),
         })
     }
 
     pub(crate) fn len(&self) -> usize {
         self.generators.len()
+    }
+
+    pub(crate) fn theta(&self, model: &mut Model) -> Result<Rc<theta::Group>> {
+        if let Some(group) = self.theta.get() {
+            return Ok(group.clone());
+        }
+        let group = theta::Group::build(model, self, self.curve.clone())?;
+        Ok(self.theta.get_or_init(|| Rc::new(group)).clone())
     }
 
     pub(crate) fn binary_combination(&self, model: &mut Model, mut mask: u8) -> Result<Divisor> {

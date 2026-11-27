@@ -3110,6 +3110,40 @@ impl<'src> Parser<'src> {
             let input = self.paren_expr(nest)?;
             let depth = 1 + input.depth;
             (Expression::Base(operation, curve, Box::new(input)), depth)
+        } else if matches!(
+            name,
+            "rvKummerTranslate"
+                | "rvKummerThetaEntry"
+                | "rvKummerThetaFactor"
+                | "rvKummerTropeCoeff"
+        ) {
+            use crate::hyperelliptic_kummer_surface::theta::Query;
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            let mask = self.kummer_theta_index("Kummer theta mask", 15)?;
+            if name == "rvKummerTranslate" {
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Translate(basis, mask, Box::new(input)), depth)
+            } else {
+                let query = match name {
+                    "rvKummerThetaEntry" => Query::Entry(
+                        mask,
+                        self.kummer_theta_index("Kummer theta row", 3)?,
+                        self.kummer_theta_index("Kummer theta column", 3)?,
+                    ),
+                    "rvKummerThetaFactor" => {
+                        Query::Factor(mask, self.kummer_theta_index("Kummer theta mask", 15)?)
+                    }
+                    _ => Query::Trope(
+                        mask,
+                        self.kummer_theta_index("Kummer trope coefficient", 3)?,
+                    ),
+                };
+                self.expect(Token::RBracket)?;
+                (Expression::ThetaScalar(basis, query), 0)
+            }
         } else if name == "rvKummerDiffAdd" {
             self.expect(Token::LParen)?;
             let left = self.expr(nest + 1)?;
@@ -3159,6 +3193,18 @@ impl<'src> Parser<'src> {
             (Expression::Apply(operation, Box::new(input)), depth)
         };
         expr(span, ExprForm::Kummer(Box::new(expression)), depth)
+    }
+
+    fn kummer_theta_index(&mut self, description: &str, maximum: usize) -> Result<usize> {
+        self.expect(Token::Comma)?;
+        let (index, span) = self.number()?;
+        if index > maximum {
+            return Err(Error::new(
+                span,
+                format!("{description} must be between 0 and {maximum}"),
+            ));
+        }
+        Ok(index)
     }
 
     fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -9121,6 +9167,10 @@ impl<'src> Parser<'src> {
                         | "rvKummerDescend"
                         | "rvKummerFrob"
                         | "rvKummerDirection"
+                        | "rvKummerTranslate"
+                        | "rvKummerThetaEntry"
+                        | "rvKummerThetaFactor"
+                        | "rvKummerTropeCoeff"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),

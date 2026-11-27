@@ -1254,6 +1254,12 @@ The example gives $P(T)=T^4-2T^2+9$ and independently counts eight classes over 
 
 `rvKummerExtend[D](K)` embeds the normalized coordinates of `K` into the field of the coefficient extension `D`. `rvKummerDescend[C](K)` recovers those coordinates over `C` when they all lie in its field. This also works for twist-only points whose extension divisor lifts change sign under Frobenius. `rvKummerFrob[C,k](K)` applies the $k$th power of the relative Frobenius on the extension of `C` that contains `K`. The equation checks and residue embeddings are the same as for `RVJac`.
 
+#### The marked Kummer theta group
+
+For a certified genus-two level-2 basis `B`, a mask `a` from 0 to 15 labels the two-torsion class $T_a$ by its bits in the listed basis order, starting with the least significant bit. `rvKummerTranslate[B,a](K)` sends $\kappa(P)$ to $\kappa(P+T_a)$ on the named Kummer surface, including points whose lifts lie on the twist. The interpreter recovers the translating projectivities from all sixteen marked nodes and reuses them for the basis.
+
+`rvKummerThetaEntry[B,a,i,j]` gives entry $(i,j)$ of the translating matrix $M_a$, with rows and columns numbered from zero and the first nonzero entry in row order equal to one. `rvKummerThetaFactor[B,a,b]` gives the scalar $c(a,b)$ in $M_aM_b=c(a,b)M_{a\mathbin{\mathrm{xor}}b}$. The quotient $c(a,b)/c(b,a)$ is the Weil pairing of $T_a$ and $T_b$. `rvKummerTropeCoeff[B,a,i]` reads a coefficient of the translated theta plane, normalizing its first nonzero coefficient to one. The plane at mask zero is $w=0$. [Theta group example over an extension field](examples/hyperelliptic-kummer-theta.asl)
+
 #### Arithmetic of the resolved Kummer K3
 
 `rvKummerK3Zeta[C];`, `rvKummerK3Points[C,r];`, and `rvKummerK3Picard[C,r];` use the same monic quintic, with $r\ge1$. The zeta function of the resolution has denominator $(1-T)(1-q^2T)\det(1-TF\mid\wedge^2H^1(J))\prod_d(1-(qT)^d)$ over $\mathbb F_q$. The displayed orbit lengths $d$ come from the zero class and the unordered pairs of branch points, including infinity. The two factors from eigenvalue $q$ in the abelian part are displayed separately from its cross quartic. Over $\mathbb F_{q^r}$ the point report gives the singular quartic count, the rational node count and the resolved count. Each rational node adds $q^r$ points on resolution. The calculation uses the base Weil polynomial and branch factor degrees.

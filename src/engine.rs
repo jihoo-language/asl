@@ -503,6 +503,7 @@ enum KummerAction {
         Rc<hw_closed::Curve>,
         Box<TypedExpr>,
     ),
+    Translate(Rc<kummer_surface::theta::Group>, usize, Box<TypedExpr>),
     Apply(
         Rc<hw_closed::Curve>,
         kummer_surface::Operation,
@@ -5160,6 +5161,14 @@ impl Engine {
                     }
                 };
                 output.persist(&mut self.model)
+            }
+            KummerAction::Translate(group, mask, input) => {
+                let Value::Kummer(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                group
+                    .translate(&mut self.model, *mask, &point)?
+                    .persist(&mut self.model)
             }
             KummerAction::Apply(curve, operation, input) => {
                 let input = self.eval(input)?;
@@ -18606,6 +18615,29 @@ impl Checker<'_> {
                     ty,
                     KummerAction::Base(operation, source, curve, Box::new(input)),
                 )
+            }
+            Expression::Translate(name, mask, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let group = basis
+                    .theta(self.model)
+                    .map_err(|error| error.at(name.span))?;
+                let ty = self.model.kummer_type(basis.curve_name.clone())?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvKummerTranslate point")?;
+                (ty, KummerAction::Translate(group, mask, Box::new(input)))
+            }
+            Expression::ThetaScalar(name, query) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let group = basis
+                    .theta(self.model)
+                    .map_err(|error| error.at(name.span))?;
+                let ty = self.model.rv_unram_type(&Label {
+                    text: group.curve.grade.ring.to_string(),
+                    span: name.span,
+                })?;
+                let value = group.query(self.model, query)?;
+                let value = rv_unram::persist(self.model, value)?;
+                return Ok((ty, TypedForm::Constant(value)));
             }
             Expression::DifferentialAdd(inputs) => {
                 let [left, right, difference] = *inputs;

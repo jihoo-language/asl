@@ -15,6 +15,7 @@ pub(crate) mod hilbert;
 pub(crate) mod k3;
 pub(crate) mod nikulin;
 pub(crate) mod resolution;
+pub(crate) mod theta;
 
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
@@ -23,6 +24,8 @@ pub(crate) enum Expression {
     Richelot(Label, Box<ParsedExpr>),
     RichelotDescend(Label, Box<ParsedExpr>),
     Base(BaseOperation, Label, Box<ParsedExpr>),
+    Translate(Label, usize, Box<ParsedExpr>),
+    ThetaScalar(Label, theta::Query),
     Apply(Operation, Box<ParsedExpr>),
 }
 
