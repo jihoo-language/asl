@@ -5,7 +5,7 @@ use crate::wide_integer::Natural;
 use super::necklace::factorization;
 use super::norm::{cycles, half, power};
 use super::{
-    add, degree_limit, determinant_from_ghosts, integrity, multiply, power_sums, require_degree,
+    add, degree_limit, determinant_from_ghosts, integrity, multiply, power_sums, require_rank,
     trace_at_product, zero, Integer, Spectrum, MAX_DEGREE,
 };
 
@@ -258,19 +258,6 @@ impl Projector {
 
 fn dimension(p: &[i128]) -> Integer {
     Integer::from_i128((p.len() - 1) as i128)
-}
-
-fn require_rank(rank: Integer) -> Result<usize> {
-    if rank.negative && !rank.is_zero() {
-        return Err(Error::plain("cyclic tensor projector rank is negative"));
-    }
-    let degree = rank
-        .magnitude
-        .small()
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(degree_limit)?;
-    require_degree(degree)?;
-    Ok(degree)
 }
 
 fn check_primitive_lower_bound(n: u128) -> Result<()> {

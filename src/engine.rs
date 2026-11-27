@@ -759,6 +759,7 @@ enum TypedForm {
     WittVerschiebung(u128, Box<TypedExpr>),
     WittNorm(u128, Box<TypedExpr>),
     WittCyclicPower(crate::rv_witt_spectrum::CyclicPower, Box<TypedExpr>),
+    WittSchur(crate::rv_witt_spectrum::SchurShape, Box<TypedExpr>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -1943,6 +1944,9 @@ impl Engine {
                 return command.execute(&mut self.model).map(Some)
             }
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
+            StatementForm::WittSchurBranch(branch) => {
+                return branch.report(&mut self.model).map(Some)
+            }
             StatementForm::WittSpectrumQuery(query, input) => {
                 let value = self.checker().expr(*input)?;
                 let ty = self.model.witt_spectrum_type()?;
@@ -10345,6 +10349,14 @@ impl Engine {
                 };
                 value
                     .cyclic_power(&mut self.model, *projection)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::WittSchur(shape, input) => {
+                let Value::RVWittSpectrum(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .schur(&mut self.model, shape)?
                     .persist(&mut self.model)
             }
             TypedForm::WittExterior(r, input) => {
@@ -22544,6 +22556,11 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_type(ty, &input, projection.name())?;
                 TypedForm::WittCyclicPower(projection, Box::new(input))
+            }
+            Expression::Schur(shape, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvWittSpectrumSchur")?;
+                TypedForm::WittSchur(shape, Box::new(input))
             }
             Expression::Exterior(m, input) => {
                 let input = self.expr(*input)?;

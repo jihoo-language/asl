@@ -1322,6 +1322,7 @@ pub(crate) enum StatementForm {
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
+    WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
@@ -5463,6 +5464,20 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn witt_schur_shape(&mut self) -> Result<crate::rv_witt_spectrum::SchurShape> {
+        let span = self.span();
+        self.expect(Token::LBracket)?;
+        let mut rows = Vec::new();
+        while self.token() != Token::RBracket {
+            rows.push(self.wide_unsigned("Schur shape row length")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        crate::rv_witt_spectrum::SchurShape::new(rows).map_err(|error| error.at(span))
+    }
+
     fn witt_spectrum_expression(
         &mut self,
         name: &str,
@@ -5543,6 +5558,14 @@ impl<'src> Parser<'src> {
                 let input = self.paren_expr(nest)?;
                 let depth = input.depth + 1;
                 (Expression::CyclicPower(projection, Box::new(input)), depth)
+            }
+            "rvWittSpectrumSchur" => {
+                self.expect(Token::LBracket)?;
+                let shape = self.witt_schur_shape()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Schur(shape, Box::new(input)), depth)
             }
             "rvK3FrobHilbSpectrum" => {
                 self.expect(Token::LBracket)?;
@@ -8816,13 +8839,35 @@ impl<'src> Parser<'src> {
                 )
             }
             Token::Word(
+                name @ ("rvWittSchurMajorIndex"
+                | "rvWittCyclicSchurMultiplicity"
+                | "rvWittLieSchurMultiplicity"),
+            ) => {
+                use crate::rv_witt_spectrum::SchurBranch;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let shape = self.witt_schur_shape()?;
+                let branch = match name {
+                    "rvWittSchurMajorIndex" => SchurBranch::Major(shape),
+                    "rvWittLieSchurMultiplicity" => SchurBranch::Lie(shape),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let order = self.wide_unsigned("cyclotomic order")?;
+                        SchurBranch::Cyclic(shape, order)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::WittSchurBranch(branch)
+            }
+            Token::Word(
                 name @ ("rvWittSpectrumData"
                 | "rvWittSpectrumGhost"
                 | "rvWittSpectrumCoeff"
                 | "rvWittSpectrumNecklace"
                 | "rvWittSpectrumNormGhost"
                 | "rvWittSpectrumCyclicGhost"
-                | "rvWittSpectrumLieGhost"),
+                | "rvWittSpectrumLieGhost"
+                | "rvWittSpectrumSchurGhost"),
             ) => {
                 use crate::rv_witt_spectrum::Query;
                 self.advance()?;
@@ -8835,6 +8880,13 @@ impl<'src> Parser<'src> {
                     let index = self.wide_unsigned("Witt spectrum ghost index")?;
                     self.expect(Token::RBracket)?;
                     Query::CyclicGhost(projection, index)
+                } else if name == "rvWittSpectrumSchurGhost" {
+                    self.expect(Token::LBracket)?;
+                    let shape = self.witt_schur_shape()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("Witt spectrum ghost index")?;
+                    self.expect(Token::RBracket)?;
+                    Query::SchurGhost(shape, index)
                 } else if name == "rvWittSpectrumNormGhost" {
                     self.expect(Token::LBracket)?;
                     let degree = self.wide_unsigned("tensor-induction degree")?;
@@ -15777,6 +15829,7 @@ impl<'src> Parser<'src> {
                         | "rvWittSpectrumNorm"
                         | "rvWittSpectrumCyclic"
                         | "rvWittSpectrumLie"
+                        | "rvWittSpectrumSchur"
                         | "rvK3FrobHilbSpectrum"
                         | "rvK3SpechtSpectrum"
                         | "rvK3StratumSpectrum"

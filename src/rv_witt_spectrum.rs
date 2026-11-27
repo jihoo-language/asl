@@ -15,9 +15,11 @@ type Polynomial = Vec<Integer>;
 mod cyclic;
 mod necklace;
 mod norm;
+mod schur;
 pub(crate) use cyclic::CyclicPower;
 pub(crate) use necklace::coordinate as primitive_coordinate;
 pub(crate) use norm::{cycles as norm_cycles, power as norm_power};
+pub(crate) use schur::{Branch as SchurBranch, Shape as SchurShape};
 
 pub(crate) enum Expression {
     Literal(Vec<i128>, Option<Vec<i128>>),
@@ -27,6 +29,7 @@ pub(crate) enum Expression {
     Verschiebung(u128, Box<ParsedExpr>),
     Norm(u128, Box<ParsedExpr>),
     CyclicPower(CyclicPower, Box<ParsedExpr>),
+    Schur(SchurShape, Box<ParsedExpr>),
     Exterior(u128, Box<ParsedExpr>),
     Bridge(Bridge),
     HilbertBridge(HilbertBridge),
@@ -55,6 +58,7 @@ pub(crate) enum Query {
     Necklace(u128),
     NormGhost(u128, u128),
     CyclicGhost(CyclicPower, u128),
+    SchurGhost(SchurShape, u128),
 }
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -302,6 +306,16 @@ impl Spectrum {
                     .signed()
                     .ok_or_else(coefficient_overflow)?;
                 Ok(format!("{} = {ghost}", projection.ghost_label(k)))
+            }
+            Query::SchurGhost(shape, k) => {
+                let ghost = self
+                    .schur_ghost(model, &shape, k)?
+                    .signed()
+                    .ok_or_else(coefficient_overflow)?;
+                Ok(format!(
+                    "rvWittSpectrumSchurGhost[{:?}, {k}] = {ghost}",
+                    shape.rows()
+                ))
             }
             Query::Necklace(n) => {
                 if n == 0 {
@@ -646,6 +660,19 @@ pub(crate) fn require_degree(degree: usize) -> Result<()> {
         return Err(degree_limit());
     }
     Ok(())
+}
+
+fn require_rank(rank: Integer) -> Result<usize> {
+    if rank.negative && !rank.is_zero() {
+        return Err(Error::plain("Witt spectrum parity rank is negative"));
+    }
+    let degree = rank
+        .magnitude
+        .small()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(degree_limit)?;
+    require_degree(degree)?;
+    Ok(degree)
 }
 
 fn degree_limit() -> Error {
