@@ -445,26 +445,27 @@ fn bareiss(
             return Ok([].into());
         };
         matrix.swap(i, row);
-        let pivot = matrix[i][i].clone();
-        for row in i + 1..size {
-            let factor = matrix[row][i].clone();
-            for column in i + 1..size {
+        let (pivot_and_prior, lower) = matrix.split_at_mut(i + 1);
+        let pivot_row = &pivot_and_prior[i];
+        let pivot = pivot_row[i].clone();
+        for row in lower {
+            let factor = row[i].clone();
+            for (current, pivot_entry) in row[i + 1..].iter_mut().zip(&pivot_row[i + 1..]) {
                 model.spend(1)?;
-                let current = &matrix[row][column];
                 let value = bareiss_update(
                     model,
                     &pivot,
                     current,
                     &factor,
-                    &matrix[i][column],
+                    pivot_entry,
                     previous.as_deref(),
                 )?;
                 storage = storage - cells(current) + cells(&value);
                 check_storage(storage)?;
-                matrix[row][column] = value;
+                *current = value;
             }
-            storage = storage - cells(&matrix[row][i]) + 1;
-            matrix[row][i] = [].into();
+            storage = storage - cells(&row[i]) + 1;
+            row[i] = [].into();
         }
         previous = Some(pivot);
     }

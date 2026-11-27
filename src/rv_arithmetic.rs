@@ -118,7 +118,7 @@ fn exact_degree_representative(
     for period in 1..=field.degree() {
         square_point(model, field, current)?;
         model.spend(point.len())?;
-        match (&*current).cmp(point) {
+        match Ord::cmp(current, point) {
             Ordering::Less => return Ok(false),
             Ordering::Equal => return Ok(period == field.degree()),
             Ordering::Greater => {}

@@ -283,7 +283,7 @@ pub(crate) fn standard_support(
     support: usize,
 ) -> Result<bool> {
     model.spend(1 + initial.len())?;
-    Ok(!initial.iter().any(|&leading| leading & support == leading))
+    Ok(initial.iter().all(|&leading| leading & !support != 0))
 }
 
 pub(crate) fn check_storage(cells: usize) -> Result<()> {
