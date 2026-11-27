@@ -13,6 +13,7 @@ use super::{stratum::Partition, unimodular};
 mod boundary;
 pub(crate) mod cohomology;
 mod cup;
+mod graded_basis;
 pub(crate) mod primary;
 pub(crate) mod tautological;
 mod virasoro;

@@ -12,6 +12,7 @@ use crate::wide_integer::Natural;
 use super::super::unimodular::Vector;
 use super::{tautological, Accumulator, Factor, Integer, Mode, State, LIMBS, POINT};
 
+pub(crate) mod lefschetz;
 pub(crate) mod schur;
 
 type Denominator = Natural<LIMBS>;
@@ -23,6 +24,7 @@ pub(crate) enum Expression {
     Scale(i128, u128, Box<ParsedExpr>),
     ToFock(i128, Box<ParsedExpr>),
     Cup(Box<[ParsedExpr; 2]>),
+    Lefschetz(lefschetz::Operation, Box<[ParsedExpr; 2]>),
     Chern(u128, u128, bool, Box<ParsedExpr>),
     Schur(u128, u128, Vec<u128>, Box<ParsedExpr>),
 }
@@ -373,6 +375,22 @@ fn divide(model: &mut Model, value: Denominator, divisor: Denominator) -> Result
     Ok(value
         .divide_exact(model, divisor)?
         .expect("the coefficient content divides each entry"))
+}
+
+fn cancel(
+    model: &mut Model,
+    numerator: &mut Denominator,
+    denominator: &mut Denominator,
+) -> Result<()> {
+    if denominator.small() == Some(1) {
+        return Ok(());
+    }
+    let common = numerator.gcd(model, *denominator)?;
+    if common.small() != Some(1) {
+        *numerator = divide(model, *numerator, common)?;
+        *denominator = divide(model, *denominator, common)?;
+    }
+    Ok(())
 }
 
 fn character_storage(cells: usize) -> Result<()> {

@@ -4277,10 +4277,21 @@ impl<'src> Parser<'src> {
         nest: usize,
     ) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression;
-        let (expression, depth) = if name == "rvHilbCohCup" {
+        let (expression, depth) = if matches!(
+            name,
+            "rvHilbCohCup" | "rvHilbCohLefschetzInverse" | "rvHilbCohLower"
+        ) {
             let inputs = self.paren_pair(nest)?;
             let depth = 1 + inputs[0].depth.max(inputs[1].depth);
-            (Expression::Cup(Box::new(inputs)), depth)
+            use crate::hyperelliptic_kummer_surface::nakajima::cohomology::lefschetz::Operation;
+            let expression = match name {
+                "rvHilbCohLefschetzInverse" => {
+                    Expression::Lefschetz(Operation::Inverse, Box::new(inputs))
+                }
+                "rvHilbCohLower" => Expression::Lefschetz(Operation::Lower, Box::new(inputs)),
+                _ => Expression::Cup(Box::new(inputs)),
+            };
+            (expression, depth)
         } else {
             self.expect(Token::LBracket)?;
             match name {
@@ -11627,7 +11638,10 @@ impl<'src> Parser<'src> {
                         | "rvHilbCohCh"
                         | "rvHilbCohSchur"
                 ) && self.token() == Token::LBracket)
-                    || (name.text == "rvHilbCohCup" && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvHilbCohCup" | "rvHilbCohLefschetzInverse" | "rvHilbCohLower"
+                    ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_cohomology_expression(&name.text, span, nest);
                 }

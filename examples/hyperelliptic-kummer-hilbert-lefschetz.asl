@@ -1,0 +1,22 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let h=rvHilbCohQ[1,2](rvNakajimaMonomial[B]{(1,0,2),(1,1,1)});
+let a=rvHilbCohQ[1,3](rvNakajimaMonomial[B]{(1,0,2),(1,2,1)});
+let delta=rvHilbCohQ[1,2](rvNakajimaMonomial[B]{(1,0,1),(2,0,1)});
+let x=add(a,delta);
+let h2=rvHilbCohCup(h,h);
+let h4=rvHilbCohCup(h2,h2);
+assert rvHilbCohLefschetzInverse(h,rvHilbCohCup(h4,x))==x;
+assert rvHilbCohLower(h,h)==rvHilbCohScale[6,1](rvHilbCohUnit[B,3]);
+let orthogonal=add(h,rvHilbCohScale[-3,1](a));
+assert rvHilbCohLower(h,orthogonal)==zero[RVHilbCoh(B,3,0)];
+rvHilbCohDen(rvHilbCohLefschetzInverse(h,rvHilbCohCup(h4,x)));

@@ -695,6 +695,10 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    HilbertCohomologyLefschetz(
+        nakajima::cohomology::lefschetz::Operation,
+        Box<[TypedExpr; 2]>,
+    ),
     HilbertCohomologyFromFock(i128, u128, Box<TypedExpr>),
     HilbertCohomologyScale(i128, u128, Box<TypedExpr>),
     HilbertCohomologyToFock(i128, Box<TypedExpr>),
@@ -9075,6 +9079,20 @@ impl Engine {
                     unreachable!()
                 };
                 word.apply_lattice(&mut self.model, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyLefschetz(operation, inputs) => {
+                let Kind::HilbertCohomology(grade) = self.model.kind(inputs[1].ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let (Value::HilbertCohomology(h), Value::HilbertCohomology(x)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                operation
+                    .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
             }
             TypedForm::HilbertCohomologyCup(inputs) => {
@@ -21068,6 +21086,31 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::HilbertCohomologyToFock(scale, Box::new(input)),
+                ))
+            }
+            Expression::Lefschetz(operation, inputs) => {
+                let [h, x] = *inputs;
+                let h = self.expr(h)?;
+                let x = self.expr(x)?;
+                let divisor = self.hilbert_cohomology_grade(&h, operation.name())?;
+                let grade = self.hilbert_cohomology_grade(&x, operation.name())?;
+                if divisor.basis != grade.basis
+                    || divisor.length != grade.length
+                    || divisor.degree != 2
+                {
+                    return Err(Error::new(h.span, format!("{} requires a degree-two divisor on the same named level basis and length", operation.name())));
+                }
+                let degree = operation.output_degree(grade)?;
+                let marking = Label {
+                    text: grade.basis.to_string(),
+                    span: x.span,
+                };
+                let ty = self
+                    .model
+                    .hilbert_cohomology_type(&marking, grade.length, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertCohomologyLefschetz(operation, Box::new([h, x])),
                 ))
             }
             Expression::Cup(inputs) => {

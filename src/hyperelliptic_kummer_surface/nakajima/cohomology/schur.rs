@@ -4,7 +4,7 @@ use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
 use crate::model::Model;
 
-use super::{divide, factorial, positive, product, pure, Class, Denominator, Integer, Vector};
+use super::{cancel, factorial, positive, product, pure, Class, Denominator, Integer, Vector};
 
 type Series = Vec<Class>;
 
@@ -142,22 +142,6 @@ fn rank(model: &mut Model, n: u128, shape: &[u128]) -> Result<Class> {
         negative: false,
     };
     Class::scaled_wide(model, &pure(n, 0), rank, denominator)
-}
-
-fn cancel(
-    model: &mut Model,
-    numerator: &mut Denominator,
-    denominator: &mut Denominator,
-) -> Result<()> {
-    if denominator.small() == Some(1) {
-        return Ok(());
-    }
-    let common = numerator.gcd(model, *denominator)?;
-    if common.small() != Some(1) {
-        *numerator = divide(model, *numerator, common)?;
-        *denominator = divide(model, *denominator, common)?;
-    }
-    Ok(())
 }
 
 fn exponential(
