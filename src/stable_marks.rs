@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
+pub(crate) use crate::rv_qp_quad::gauge::Coefficients;
 use crate::rv_qp_quad::{Element, Field};
 use crate::tropical_matroid::{Grade, Matroid};
 
@@ -188,57 +189,6 @@ fn complement(count: usize, group: &[usize]) -> Vec<usize> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum Coefficients {
-    Rational(Prime),
-    Quadratic(Field),
-}
-
-impl Coefficients {
-    fn prime(self) -> Prime {
-        match self {
-            Self::Rational(prime) => prime,
-            Self::Quadratic(field) => field.prime(),
-        }
-    }
-
-    fn determinant(
-        self,
-        model: &mut Model,
-        [a, b]: [Element; 2],
-        [c, d]: [Element; 2],
-    ) -> Result<Element> {
-        let (left, right) = match self {
-            Self::Rational(_) => (a.rational_product(model, d)?, c.rational_product(model, b)?),
-            Self::Quadratic(field) => (field.multiply(model, a, d)?, field.multiply(model, c, b)?),
-        };
-        left.difference(model, right)
-    }
-
-    fn local(self, model: &mut Model, value: Element) -> Result<Option<Local>> {
-        match self {
-            Self::Rational(prime) => {
-                let Some(order) = value.rational_valuation(model, prime)? else {
-                    return Ok(None);
-                };
-                Ok(Some(Local {
-                    order,
-                    angular: value.rational_angle(model, prime)?,
-                }))
-            }
-            Self::Quadratic(field) => {
-                let Some(order) = field.valuation(model, value)? else {
-                    return Ok(None);
-                };
-                Ok(Some(Local {
-                    order,
-                    angular: field.angular_component(model, value, order)?,
-                }))
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct Local {
     order: i64,
     angular: u32,
@@ -258,16 +208,15 @@ impl Pairs {
         let mut values = vec![None; count * count];
         for (i, &point) in marks.iter().enumerate() {
             for (j, &later) in marks.iter().enumerate().skip(i + 1) {
-                let determinant = field.determinant(model, point, later)?;
-                let Some(local) = field.local(model, determinant)? else {
+                let Some((order, angular)) = field.bracket(model, point, later)? else {
                     return Err(Error::plain(format!(
                         "projective marks {i} and {j} collide exactly"
                     )));
                 };
-                values[i * count + j] = Some(local);
+                values[i * count + j] = Some(Local { order, angular });
                 values[j * count + i] = Some(Local {
-                    order: local.order,
-                    angular: prime.negate(local.angular),
+                    order,
+                    angular: prime.negate(angular),
                 });
             }
         }

@@ -5,6 +5,8 @@ use crate::prime_linear::invert;
 use crate::rv_ore::gcd;
 use crate::wide_integer::Natural;
 
+pub(crate) mod gauge;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Element {
     pub(crate) a: i128,
@@ -30,15 +32,6 @@ impl Element {
 
     pub(crate) fn is_zero(self) -> bool {
         self.a == 0 && self.b == 0
-    }
-
-    pub(crate) fn difference(self, model: &mut Model, other: Self) -> Result<Self> {
-        affine_combination(model, self, other, true)
-    }
-
-    pub(crate) fn rational_product(self, model: &mut Model, other: Self) -> Result<Self> {
-        debug_assert!(self.b == 0 && other.b == 0);
-        product(model, 0, self, other)
     }
 
     pub(crate) fn rational_inverse(self, model: &mut Model) -> Result<Self> {
@@ -675,10 +668,13 @@ fn normalize_wide<const N: usize>(
         .magnitude
         .gcd(model, b.magnitude)?
         .gcd(model, c.magnitude)?;
+    let common = Wide {
+        magnitude: common,
+        negative: false,
+    };
     let mut coefficient = |x: Wide<N>, negative| {
-        x.magnitude
-            .divide_exact(model, common)?
-            .and_then(|magnitude| magnitude.signed(negative))
+        x.divide_exact(model, common)?
+            .and_then(|value| value.magnitude.signed(negative))
             .ok_or_else(arithmetic)
     };
     let real = coefficient(a, a.negative != c.negative)?;

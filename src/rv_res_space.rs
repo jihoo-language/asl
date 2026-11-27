@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
+use crate::rv_qp_quad::gauge::Coefficients as FieldArithmetic;
 use crate::rv_qp_quad::{Element, Field};
 use crate::tropical_matroid;
 
@@ -273,42 +274,6 @@ pub(crate) fn validate_rows<T>(grade: Grade, rows: &[Vec<T>]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum FieldArithmetic {
-    Rational(Prime),
-    Quadratic(Field),
-}
-
-impl FieldArithmetic {
-    fn product(self, model: &mut Model, x: Element, y: Element) -> Result<Element> {
-        match self {
-            Self::Rational(_) => x.rational_product(model, y),
-            Self::Quadratic(field) => field.multiply(model, x, y),
-        }
-    }
-
-    fn inverse(self, model: &mut Model, x: Element) -> Result<Element> {
-        match self {
-            Self::Rational(_) => x.rational_inverse(model),
-            Self::Quadratic(field) => field.inverse(model, x),
-        }
-    }
-
-    fn order(self, model: &mut Model, x: Element) -> Result<Option<i64>> {
-        match self {
-            Self::Rational(p) => x.rational_valuation(model, p),
-            Self::Quadratic(field) => field.valuation(model, x),
-        }
-    }
-
-    fn angle(self, model: &mut Model, x: Element, order: i64) -> Result<u32> {
-        match self {
-            Self::Rational(p) => x.rational_angle(model, p),
-            Self::Quadratic(field) => field.angular_component(model, x, order),
-        }
-    }
-}
-
 pub(crate) fn rational(
     model: &mut Model,
     grade: Grade,
@@ -364,6 +329,9 @@ fn specialize(
             weights.len()
         )));
     }
+    if let [row] = rows.as_slice() {
+        return specialize_line(model, grade, weights, field, row);
+    }
     let mut pivots = Vec::new();
     for i in 0..rows.len().min(width) {
         // These are the valuations in the matrix with column j scaled by
@@ -406,6 +374,46 @@ fn specialize(
     Space::new(model, grade, reduced)
 }
 
+// In a one-row chart the reduced entries are angular ratios. There is
+// no need to represent the exact coefficient ratios in the number field.
+fn specialize_line(
+    model: &mut Model,
+    grade: Grade,
+    weights: &[i64],
+    field: FieldArithmetic,
+    row: &[Element],
+) -> Result<Space> {
+    let mut locals = Vec::with_capacity(row.len());
+    let mut minimum = None;
+    for (j, &entry) in row.iter().enumerate() {
+        model.spend(1)?;
+        let local = field
+            .order(model, entry)?
+            .map(|order| (i128::from(order) - i128::from(weights[j]), order));
+        if let Some((weight, order)) = local {
+            if minimum.is_none_or(|(best, _, _)| weight < best) {
+                minimum = Some((weight, j, order));
+            }
+        }
+        locals.push(local);
+    }
+    let Some((weight, pivot, order)) = minimum else {
+        return Ok(Space::zero(grade));
+    };
+    let angular = field.angle(model, row[pivot], order)?;
+    let inverse = invert(model, grade.prime, angular)?;
+    let mut result = vec![0; row.len()];
+    for (j, local) in locals.into_iter().enumerate() {
+        model.spend(1)?;
+        if let Some((local_weight, order)) = local {
+            if local_weight == weight {
+                result[j] = grade.prime.mul(field.angle(model, row[j], order)?, inverse);
+            }
+        }
+    }
+    Space::new(model, grade, vec![result])
+}
+
 fn weighted_pivot(
     model: &mut Model,
     field: FieldArithmetic,
@@ -438,9 +446,8 @@ fn normalize_pivot(
     let pivot = row[j];
     row[j] = Element::ZERO;
     if pivot != Element::ONE && row.iter().any(|x| !x.is_zero()) {
-        let inverse = field.inverse(model, pivot)?;
         for x in row.iter_mut().filter(|x| !x.is_zero()) {
-            *x = field.product(model, *x, inverse)?;
+            *x = field.ratio(model, *x, pivot)?;
         }
     }
     row[j] = Element::ONE;
@@ -463,8 +470,7 @@ fn eliminate_pivot(
     row[j] = Element::ZERO;
     for (k, (x, &y)) in row.iter_mut().zip(pivot).enumerate() {
         if k != j && !y.is_zero() {
-            let term = field.product(model, scale, y)?;
-            *x = x.difference(model, term)?;
+            *x = field.subtract_product(model, *x, scale, y)?;
         }
     }
     Ok(())
