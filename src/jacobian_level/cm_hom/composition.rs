@@ -136,7 +136,7 @@ pub(crate) fn dual(
     Ok(child)
 }
 
-fn verify_dual(
+pub(super) fn verify_dual(
     model: &mut Model,
     map: &Morphism,
     dual: &Morphism,

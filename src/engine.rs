@@ -77,6 +77,7 @@ use crate::jacobian_level;
 use crate::jacobian_level::cm_cycles as kummer_cm;
 use crate::jacobian_level::cm_hom;
 use crate::jacobian_level::cm_hom::composition as cm_composition;
+use crate::jacobian_level::cm_hom::fourier as cm_abelian;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -701,6 +702,22 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+struct TypedCMAbelian {
+    atlas: Rc<cm_abelian::Abelian>,
+    operation: CMAbelianOperation,
+}
+
+enum CMAbelianOperation {
+    Divisor([i128; 2], Box<TypedExpr>),
+    Mukai([i128; 2], Box<TypedExpr>),
+    Map(Box<[TypedExpr; 4]>),
+    FromGraph(Box<TypedExpr>),
+    Scale(crate::rv_qp_quad::Element, Box<TypedExpr>),
+    Block(usize, Box<TypedExpr>),
+    Unary(cm_abelian::Unary, Box<TypedExpr>),
+    Binary(cm_abelian::Binary, Box<[TypedExpr; 2]>),
+}
+
 enum TypedCMHomCoordinate {
     Read(Rc<cm_hom::Hom>, Box<TypedExpr>),
     Map(Box<TypedExpr>),
@@ -937,6 +954,7 @@ enum TypedForm {
     CMHomLift(Rc<cm_hom::marked::Marking>, Box<TypedExpr>),
     CMHomOperator(Box<TypedCMHomOperator>),
     CMHomCoordinate(TypedCMHomCoordinate),
+    CMAbelian(Box<TypedCMAbelian>),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
@@ -7660,6 +7678,7 @@ impl Engine {
     fn cm_hom_statement(&mut self, statement: cm_hom::Statement) -> Result<Option<String>> {
         use cm_hom::Statement;
         match statement {
+            Statement::Fourier(statement) => self.cm_abelian_statement(*statement),
             Statement::Composition(statement) => self.cm_composition_statement(*statement),
             Statement::Define(name, certs, expressions, nonprincipal_only) => {
                 let [left, right] = *expressions;
@@ -7766,6 +7785,69 @@ impl Engine {
                 let pairing = cm_hom::marked::pair(left, right, n);
                 Ok(Some(format!(
                     "rvCMHomWedgePair = residue={pairing}, modulus={n}"
+                )))
+            }
+        }
+    }
+
+    fn cm_abelian_statement(&mut self, statement: cm_abelian::Statement) -> Result<Option<String>> {
+        use cm_abelian::{Report, Statement};
+        match statement {
+            Statement::Define(name, [h, hd, r, s]) => {
+                self.model.define_cm_abelian(name, |model| {
+                    let frames = [
+                        model.cm_hom(&h.text)?,
+                        model.cm_hom(&hd.text)?,
+                        model.cm_hom(&r.text)?,
+                        model.cm_hom(&s.text)?,
+                    ];
+                    cm_abelian::Abelian::new(model, h, frames)
+                })?;
+                Ok(None)
+            }
+            Statement::Report(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, atlas) = self.checker().cm_abelian_operand(&input)?;
+                let output = match (report, self.eval(&input)?) {
+                    (Report::Data, Value::CMAbelianMukai(value)) => {
+                        atlas.report(&mut self.model, *value)?
+                    }
+                    (Report::Determinant, Value::CMAbelianDiv(value)) => {
+                        let det = atlas.determinant(&mut self.model, *value)?;
+                        format!("rvCMAbelianDet = {}", cm_abelian::scalar_text(det))
+                    }
+                    (Report::Map, Value::CMAbelianMap(value)) => atlas.report_map(*value),
+                    _ => {
+                        return Err(Error::plain(
+                            "CM abelian report received the wrong kind of marked operand",
+                        ))
+                    }
+                };
+                Ok(Some(output))
+            }
+            Statement::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let (_, atlas) = self.checker().cm_abelian_operand(&left)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "CM abelian pairing argument")?;
+                let pair = match (self.eval(&left)?, self.eval(&right)?) {
+                    (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => {
+                        atlas.intersection(&mut self.model, *a, *b)?
+                    }
+                    (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => {
+                        atlas.pair(&mut self.model, *a, *b)?
+                    }
+                    _ => {
+                        return Err(Error::plain(
+                            "CM abelian pairing requires two divisors or two Mukai vectors",
+                        ))
+                    }
+                };
+                Ok(Some(format!(
+                    "rvCMAbelianPair = {}",
+                    cm_abelian::scalar_text(pair)
                 )))
             }
         }
@@ -8057,6 +8139,120 @@ impl Engine {
             Statement::Form(name) => {
                 let pairing = self.model.kummer_brauer_pairing(&name.text)?;
                 pairing.form(&mut self.model, &name.text).map(Some)
+            }
+        }
+    }
+
+    fn eval_cm_abelian(&mut self, plan: &TypedCMAbelian) -> Result<Value> {
+        use CMAbelianOperation as Op;
+        let atlas = &plan.atlas;
+        match &plan.operation {
+            Op::Divisor(diagonal, input) => {
+                let Value::CMHomCoordinate(z) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMAbelianDiv(Rc::new(atlas.divisor(
+                    &mut self.model,
+                    *diagonal,
+                    &z,
+                )?)))
+            }
+            Op::Mukai(grades, input) => {
+                let Value::CMAbelianDiv(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMAbelianMukai(Rc::new(cm_abelian::Mukai::new(
+                    *grades, *divisor,
+                ))))
+            }
+            Op::Map(inputs) => {
+                let evaluate = |engine: &mut Self, input: &TypedExpr| -> Result<_> {
+                    let Value::ECMap(map) = engine.eval(input)? else {
+                        unreachable!()
+                    };
+                    Ok(map)
+                };
+                let [a, b, c, d] = inputs.as_ref();
+                let entries = [
+                    evaluate(self, a)?,
+                    evaluate(self, b)?,
+                    evaluate(self, c)?,
+                    evaluate(self, d)?,
+                ];
+                Ok(Value::CMAbelianMap(Rc::new(
+                    atlas.endomorphism(&mut self.model, entries)?,
+                )))
+            }
+            Op::FromGraph(input) => {
+                let Value::CMHomCycle(cycle) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMAbelianDiv(Rc::new(
+                    atlas.divisor_from_graph(&mut self.model, cycle)?,
+                )))
+            }
+            Op::Scale(scalar, input) => {
+                match self.eval(input)? {
+                    Value::CMAbelianDiv(v) => Ok(Value::CMAbelianDiv(Rc::new(
+                        atlas.scale_divisor(&mut self.model, *v, *scalar)?,
+                    ))),
+                    Value::CMAbelianMukai(v) => Ok(Value::CMAbelianMukai(Rc::new(
+                        atlas.scale_mukai(&mut self.model, *v, *scalar)?,
+                    ))),
+                    _ => unreachable!(),
+                }
+            }
+            Op::Block(index, input) => {
+                let Value::CMAbelianMap(map) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let block = atlas.block(&mut self.model, *map, *index)?;
+                ec_morphism::persist(&mut self.model, block)
+            }
+            Op::Unary(op, input) => {
+                use cm_abelian::Unary as U;
+                match (op, self.eval(input)?) {
+                    (U::Fourier, Value::CMAbelianMukai(v)) => Ok(Value::CMAbelianMukai(Rc::new(
+                        atlas.fourier(&mut self.model, *v)?,
+                    ))),
+                    (U::Line, Value::CMAbelianDiv(v)) => Ok(Value::CMAbelianMukai(Rc::new(
+                        atlas.line(&mut self.model, *v)?,
+                    ))),
+                    (U::FirstChern, Value::CMAbelianMukai(v)) => {
+                        Ok(Value::CMAbelianDiv(Rc::new(v.divisor())))
+                    }
+                    (U::Graph, Value::CMAbelianDiv(v)) => {
+                        Ok(Value::CMHomCycle(atlas.graph(&mut self.model, *v)?))
+                    }
+                    (U::Dagger, Value::CMAbelianMap(v)) => Ok(Value::CMAbelianMap(Rc::new(
+                        atlas.dagger(&mut self.model, *v)?,
+                    ))),
+                    (U::Adjugate, Value::CMAbelianMap(v)) => Ok(Value::CMAbelianMap(Rc::new(
+                        atlas.adjugate(&mut self.model, *v)?,
+                    ))),
+                    _ => unreachable!(),
+                }
+            }
+            Op::Binary(op, inputs) => {
+                use cm_abelian::Binary as B;
+                let [a, b] = inputs.as_ref();
+                match (op, self.eval(a)?, self.eval(b)?) {
+                    (B::Tensor, Value::CMAbelianMukai(a), Value::CMAbelianDiv(b)) => Ok(
+                        Value::CMAbelianMukai(Rc::new(atlas.tensor(&mut self.model, *a, *b)?)),
+                    ),
+                    (B::Pull | B::Push, Value::CMAbelianMap(a), Value::CMAbelianMukai(b)) => {
+                        Ok(Value::CMAbelianMukai(Rc::new(atlas.pull_push(
+                            &mut self.model,
+                            *b,
+                            *a,
+                            matches!(op, B::Push),
+                        )?)))
+                    }
+                    (B::Compose, Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(
+                        Value::CMAbelianMap(Rc::new(atlas.compose(&mut self.model, *a, *b)?)),
+                    ),
+                    _ => unreachable!(),
+                }
             }
         }
     }
@@ -11479,6 +11675,28 @@ impl Engine {
                     (BinaryOp::Add, Value::CMHomCycle(a), Value::CMHomCycle(b)) => {
                         Ok(Value::CMHomCycle(kummer_cm::cycle_add(a, b)?))
                     }
+                    (BinaryOp::Add, Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => {
+                        let Kind::CMAbelianDiv(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let atlas = self.model.cm_abelian(name)?;
+                        Ok(Value::CMAbelianDiv(Rc::new(atlas.add_divisor(
+                            &mut self.model,
+                            *a,
+                            *b,
+                        )?)))
+                    }
+                    (BinaryOp::Add, Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => {
+                        let Kind::CMAbelianMukai(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let atlas = self.model.cm_abelian(name)?;
+                        Ok(Value::CMAbelianMukai(Rc::new(atlas.add_mukai(
+                            &mut self.model,
+                            *a,
+                            *b,
+                        )?)))
+                    }
                     (BinaryOp::Add, Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => {
                         let Kind::CMHomCoordinate(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -13306,6 +13524,7 @@ impl Engine {
                 Value::CMHomCycle(cycle) => Ok(Value::CMHomCycle(kummer_cm::cycle_negate(cycle)?)),
                 _ => unreachable!(),
             },
+            TypedForm::CMAbelian(plan) => self.eval_cm_abelian(plan),
             TypedForm::CMHomCoordinate(action) => {
                 use TypedCMHomCoordinate as Action;
                 let value = match action {
@@ -17553,6 +17772,11 @@ impl Checker<'_> {
             TypeForm::CMHomCycle(name) => self.model.cm_hom_cycle_type(&name),
             TypeForm::CMHomWedge(name) => self.model.cm_hom_wedge_type(&name),
             TypeForm::CMHomCoordinate(name) => self.model.cm_hom_coordinate_type(&name),
+            TypeForm::CMAbelianDiv(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianDiv),
+            TypeForm::CMAbelianMukai(name) => {
+                self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)
+            }
+            TypeForm::CMAbelianMap(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianMap),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -18757,6 +18981,8 @@ impl Checker<'_> {
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
+                    Kind::CMAbelianDiv(..) => Value::CMAbelianDiv(Rc::new(cm_abelian::Divisor::ZERO)),
+                    Kind::CMAbelianMukai(..) => Value::CMAbelianMukai(Rc::new(cm_abelian::Mukai::ZERO)),
                     Kind::CMHomCoordinate(name) => {
                         let frame = self.model.cm_hom(name)?;
                         let value = cm_composition::Coordinates::literal(self.model, &frame, [0; 2])?;
@@ -22202,6 +22428,18 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
+                }
+                if let Kind::CMAbelianDiv(name) | Kind::CMAbelianMukai(name) =
+                    self.model.kind(input.ty)
+                {
+                    let atlas = self.model.cm_abelian(name)?;
+                    let ty = input.ty;
+                    let operation =
+                        CMAbelianOperation::Scale(cm_abelian::integer(-1), Box::new(input));
+                    return Ok((
+                        ty,
+                        TypedForm::CMAbelian(Box::new(TypedCMAbelian { atlas, operation })),
                     ));
                 }
                 if let Kind::CMHomCoordinate(name) = self.model.kind(input.ty) {
@@ -26160,6 +26398,8 @@ impl Checker<'_> {
                         | Kind::CMHomCycle(..)
                         | Kind::CMHomWedge(..)
                         | Kind::CMHomCoordinate(..)
+                        | Kind::CMAbelianDiv(..)
+                        | Kind::CMAbelianMukai(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
@@ -32402,6 +32642,7 @@ impl Checker<'_> {
     fn cm_hom_expression(&mut self, expression: cm_hom::Expression) -> Result<(TypeId, TypedForm)> {
         use cm_hom::Expression;
         let (ty, modulus, operator, input) = match expression {
+            Expression::Fourier(expression) => return self.cm_abelian_expression(*expression),
             Expression::Composition(expression) => {
                 return self.cm_composition_expression(*expression)
             }
@@ -32481,6 +32722,162 @@ impl Checker<'_> {
                 operator,
                 input,
             })),
+        ))
+    }
+
+    fn cm_abelian_operand(&self, input: &TypedExpr) -> Result<(Label, Rc<cm_abelian::Abelian>)> {
+        let (Kind::CMAbelianDiv(name) | Kind::CMAbelianMukai(name) | Kind::CMAbelianMap(name)) =
+            self.model.kind(input.ty)
+        else {
+            return Err(self.invalid_operand(
+                input,
+                "CM abelian operation",
+                "a marked CM abelian operand",
+            ));
+        };
+        let label = Label {
+            text: name.to_string(),
+            span: input.span,
+        };
+        Ok((label, self.model.cm_abelian(name)?))
+    }
+
+    fn cm_abelian_expression(
+        &mut self,
+        expression: cm_abelian::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_abelian::Expression;
+        use CMAbelianOperation as Op;
+        let (ty, atlas, operation) = match expression {
+            Expression::Divisor(name, diagonal, input) => {
+                let atlas = self.model.cm_abelian(&name.text)?;
+                let input = self.expr(*input)?;
+                let expected = self.model.cm_hom_coordinate_type(&atlas.hom_name)?;
+                self.require_type(expected, &input, "CM abelian off-diagonal Hom coordinate")?;
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?,
+                    atlas,
+                    Op::Divisor(diagonal, Box::new(input)),
+                )
+            }
+            Expression::Mukai(grades, input) => {
+                let input = self.expr(*input)?;
+                let (name, atlas) = self.cm_abelian_operand(&input)?;
+                let expected = self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?;
+                self.require_type(expected, &input, "CM abelian Mukai divisor")?;
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)?,
+                    atlas,
+                    Op::Mukai(grades, Box::new(input)),
+                )
+            }
+            Expression::Map(name, args) => {
+                let atlas = self.model.cm_abelian(&name.text)?;
+                let [a, b, c, d] = *args;
+                let values = [self.expr(a)?, self.expr(b)?, self.expr(c)?, self.expr(d)?];
+                for (i, value) in values.iter().enumerate() {
+                    let frame = atlas.frame(i)?;
+                    let expected = self
+                        .model
+                        .ec_map_type(frame.maps[0].source.clone(), frame.maps[0].target.clone())?;
+                    self.require_type(expected, value, "CM abelian product map block endpoints")?;
+                }
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMAbelianMap)?,
+                    atlas,
+                    Op::Map(Box::new(values)),
+                )
+            }
+            Expression::FromGraph(name, input) => {
+                let atlas = self.model.cm_abelian(&name.text)?;
+                let input = self.expr(*input)?;
+                let expected = self.model.cm_hom_cycle_type(&atlas.hom_name)?;
+                self.require_type(expected, &input, "CM abelian graph cycle")?;
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?,
+                    atlas,
+                    Op::FromGraph(Box::new(input)),
+                )
+            }
+            Expression::Scale([a, b], input) => {
+                let scalar = crate::rv_qp_quad::Element::new(a, 0, b)?;
+                let input = self.expr(*input)?;
+                let (_, atlas) = self.cm_abelian_operand(&input)?;
+                if !matches!(
+                    self.model.kind(input.ty),
+                    Kind::CMAbelianDiv(..) | Kind::CMAbelianMukai(..)
+                ) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvCMAbelianScale",
+                        "a marked divisor or Mukai vector",
+                    ));
+                }
+                (input.ty, atlas, Op::Scale(scalar, Box::new(input)))
+            }
+            Expression::Block(index, input) => {
+                let input = self.expr(*input)?;
+                let (name, atlas) = self.cm_abelian_operand(&input)?;
+                let expected = self.model.cm_abelian_type(&name, Kind::CMAbelianMap)?;
+                self.require_type(expected, &input, "CM abelian product morphism")?;
+                let frame = atlas.frame(index)?;
+                let ty = self
+                    .model
+                    .ec_map_type(frame.maps[0].source.clone(), frame.maps[0].target.clone())?;
+                (ty, atlas, Op::Block(index, Box::new(input)))
+            }
+            Expression::Unary(op, input) => {
+                use cm_abelian::Unary as U;
+                let input = self.expr(*input)?;
+                let (name, atlas) = self.cm_abelian_operand(&input)?;
+                let expected = match op {
+                    U::Fourier | U::FirstChern => Kind::CMAbelianMukai,
+                    U::Line | U::Graph => Kind::CMAbelianDiv,
+                    U::Dagger | U::Adjugate => Kind::CMAbelianMap,
+                };
+                let expected = self.model.cm_abelian_type(&name, expected)?;
+                self.require_type(expected, &input, "CM abelian unary operand")?;
+                let ty = match op {
+                    U::Line => self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)?,
+                    U::FirstChern => self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?,
+                    U::Graph => self.model.cm_hom_cycle_type(&atlas.hom_name)?,
+                    _ => input.ty,
+                };
+                (ty, atlas, Op::Unary(op, Box::new(input)))
+            }
+            Expression::Binary(op, args) => {
+                use cm_abelian::Binary as B;
+                let [a, b] = *args;
+                let first = self.expr(a)?;
+                let second = self.expr(b)?;
+                let (name, atlas) = self.cm_abelian_operand(&first)?;
+                let [left, right, answer]: [fn(Rc<str>) -> Kind; 3] = match op {
+                    B::Tensor => [
+                        Kind::CMAbelianMukai,
+                        Kind::CMAbelianDiv,
+                        Kind::CMAbelianMukai,
+                    ],
+                    B::Pull | B::Push => [
+                        Kind::CMAbelianMap,
+                        Kind::CMAbelianMukai,
+                        Kind::CMAbelianMukai,
+                    ],
+                    B::Compose => [Kind::CMAbelianMap, Kind::CMAbelianMap, Kind::CMAbelianMap],
+                };
+                let left = self.model.cm_abelian_type(&name, left)?;
+                let right = self.model.cm_abelian_type(&name, right)?;
+                self.require_type(left, &first, "CM abelian first operand")?;
+                self.require_type(right, &second, "CM abelian second operand")?;
+                (
+                    self.model.cm_abelian_type(&name, answer)?,
+                    atlas,
+                    Op::Binary(op, Box::new([first, second])),
+                )
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::CMAbelian(Box::new(TypedCMAbelian { atlas, operation })),
         ))
     }
 

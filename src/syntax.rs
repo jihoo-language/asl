@@ -162,6 +162,9 @@ pub(crate) enum TypeForm {
     CMHomCycle(Label),
     CMHomWedge(Label),
     CMHomCoordinate(Label),
+    CMAbelianDiv(Label),
+    CMAbelianMukai(Label),
+    CMAbelianMap(Label),
     KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -3271,6 +3274,133 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::CMHom(Box::new(result)))
+    }
+
+    fn cm_abelian_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{Report, Statement},
+            Statement as Hom,
+        };
+        self.advance()?;
+        let command = match name {
+            "rvcmabelian" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let a = self.label()?;
+                self.expect(Token::Comma)?;
+                let b = self.label()?;
+                self.expect(Token::Comma)?;
+                let c = self.label()?;
+                self.expect(Token::Comma)?;
+                let d = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Define(label, [a, b, c, d])
+            }
+            "rvCMAbelianPair" => Statement::Pair(Box::new(self.paren_pair(0)?)),
+            _ => {
+                let query = match name {
+                    "rvCMAbelianMapData" => Report::Map,
+                    "rvCMAbelianDet" => Report::Determinant,
+                    _ => Report::Data,
+                };
+                Statement::Report(query, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::CMHom(Box::new(Hom::Fourier(Box::new(
+            command,
+        )))))
+    }
+
+    fn cm_abelian_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{Binary, Expression, Unary},
+            Expression as Hom,
+        };
+        let (input, depth) = match name {
+            "rvCMAbelianDiv" | "rvCMAbelianFromGraph" | "rvCMAbelianMap" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                if name == "rvCMAbelianDiv" {
+                    let diagonal = self.cm_hom_coefficients()?;
+                    self.expect(Token::RBracket)?;
+                    let input = Box::new(self.paren_expr(nest)?);
+                    let depth = input.depth + 1;
+                    (Expression::Divisor(label, diagonal, input), depth)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    if name == "rvCMAbelianFromGraph" {
+                        let input = Box::new(self.paren_expr(nest)?);
+                        let depth = input.depth + 1;
+                        (Expression::FromGraph(label, input), depth)
+                    } else {
+                        self.expect(Token::LParen)?;
+                        let a = self.expr(nest + 1)?;
+                        self.expect(Token::Comma)?;
+                        let b = self.expr(nest + 1)?;
+                        self.expect(Token::Comma)?;
+                        let c = self.expr(nest + 1)?;
+                        self.expect(Token::Comma)?;
+                        let d = self.expr(nest + 1)?;
+                        self.expect(Token::RParen)?;
+                        let entries = Box::new([a, b, c, d]);
+                        let depth = entries.iter().map(|x| x.depth).max().unwrap_or(0) + 1;
+                        (Expression::Map(label, entries), depth)
+                    }
+                }
+            }
+            "rvCMAbelianMukai" | "rvCMAbelianScale" => {
+                self.expect(Token::LBracket)?;
+                let a = self.signed_wide("a signed Mukai coefficient", "Mukai coefficient")?;
+                self.expect(Token::Comma)?;
+                let b = self.signed_wide("a signed Mukai coefficient", "Mukai coefficient")?;
+                self.expect(Token::RBracket)?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                let value = if name == "rvCMAbelianMukai" {
+                    Expression::Mukai([a, b], input)
+                } else {
+                    Expression::Scale([a, b], input)
+                };
+                (value, depth)
+            }
+            "rvCMAbelianBlock" => {
+                self.expect(Token::LBracket)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::Block(index, input), depth)
+            }
+            "rvCMAbelianTensor" | "rvCMAbelianPull" | "rvCMAbelianPush" | "rvCMAbelianCompose" => {
+                let args = Box::new(self.paren_pair(nest)?);
+                let depth = args[0].depth.max(args[1].depth) + 1;
+                let op = match name {
+                    "rvCMAbelianTensor" => Binary::Tensor,
+                    "rvCMAbelianPull" => Binary::Pull,
+                    "rvCMAbelianPush" => Binary::Push,
+                    _ => Binary::Compose,
+                };
+                (Expression::Binary(op, args), depth)
+            }
+            _ => {
+                let arg = Box::new(self.paren_expr(nest)?);
+                let depth = arg.depth + 1;
+                let op = match name {
+                    "rvCMAbelianFourier" => Unary::Fourier,
+                    "rvCMAbelianLine" => Unary::Line,
+                    "rvCMAbelianC" => Unary::FirstChern,
+                    "rvCMAbelianGraph" => Unary::Graph,
+                    "rvCMAbelianDagger" => Unary::Dagger,
+                    _ => Unary::Adjugate,
+                };
+                (Expression::Unary(op, arg), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(input)))),
+            depth,
+        )
     }
 
     fn cm_composition_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -12161,6 +12291,10 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                name @ ("rvcmabelian" | "rvCMAbelianPair" | "rvCMAbelianData"
+                | "rvCMAbelianMapData" | "rvCMAbelianDet"),
+            ) => self.cm_abelian_statement(name)?,
+            Token::Word(
                 name @ ("rvcmhomdual" | "rvcmhomcompose" | "rvCMHomProductData"
                 | "rvCMHomCoordinates"),
             ) => self.cm_composition_statement(name)?,
@@ -16190,6 +16324,20 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if matches!(
+            name.text.as_str(),
+            "RVCMAbelianDiv" | "RVCMAbelianMukai" | "RVCMAbelianMap"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            let form = match name.text.as_str() {
+                "RVCMAbelianDiv" => TypeForm::CMAbelianDiv(label),
+                "RVCMAbelianMukai" => TypeForm::CMAbelianMukai(label),
+                _ => TypeForm::CMAbelianMap(label),
+            };
+            return ty(span, form, 0);
+        }
         if name.text == "RVCMHomCoordinate" && self.eat(Token::LParen)? {
             let label = self.label()?;
             self.expect(Token::RParen)?;
@@ -18757,6 +18905,31 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMAbelianDiv"
+                        | "rvCMAbelianFromGraph"
+                        | "rvCMAbelianMap"
+                        | "rvCMAbelianMukai"
+                        | "rvCMAbelianScale"
+                        | "rvCMAbelianBlock"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCMAbelianFourier"
+                            | "rvCMAbelianLine"
+                            | "rvCMAbelianC"
+                            | "rvCMAbelianGraph"
+                            | "rvCMAbelianDagger"
+                            | "rvCMAbelianAdjugate"
+                            | "rvCMAbelianTensor"
+                            | "rvCMAbelianPull"
+                            | "rvCMAbelianPush"
+                            | "rvCMAbelianCompose"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cm_abelian_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

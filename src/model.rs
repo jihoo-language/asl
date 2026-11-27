@@ -319,6 +319,9 @@ pub(crate) enum Kind {
     CMHomCycle(Rc<str>),
     CMHomWedge(Rc<str>),
     CMHomCoordinate(Rc<str>),
+    CMAbelianDiv(Rc<str>),
+    CMAbelianMukai(Rc<str>),
+    CMAbelianMap(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
@@ -559,6 +562,9 @@ pub(crate) enum Value {
     CMHomCycle(cm_cycles::Cycle),
     CMHomWedge(linking::Fixed),
     CMHomCoordinate(Rc<cm_hom::composition::Coordinates>),
+    CMAbelianDiv(Rc<cm_hom::fourier::Divisor>),
+    CMAbelianMukai(Rc<cm_hom::fourier::Mukai>),
+    CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
@@ -799,6 +805,7 @@ pub(crate) struct Model {
     cm_hom: HashMap<String, Rc<cm_hom::Hom>>,
     cm_hom_markings: HashMap<String, Rc<cm_hom::marked::Marking>>,
     cm_hom_products: HashMap<String, Rc<cm_hom::composition::Product>>,
+    cm_abelian: HashMap<String, Rc<cm_hom::fourier::Abelian>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
@@ -965,6 +972,7 @@ impl Model {
             cm_hom: HashMap::new(),
             cm_hom_markings: HashMap::new(),
             cm_hom_products: HashMap::new(),
+            cm_abelian: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
@@ -1597,7 +1605,10 @@ impl Model {
             Kind::KummerBrauerClass(ref name) => {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
             }
-            Kind::CMHomCoordinate(..) => usize::MAX,
+            Kind::CMHomCoordinate(..)
+            | Kind::CMAbelianDiv(..)
+            | Kind::CMAbelianMukai(..)
+            | Kind::CMAbelianMap(..) => usize::MAX,
             Kind::CMHomWedge(ref name) => {
                 usize::try_from(self.cm_hom_markings[name.as_ref()].modulus())
                     .unwrap_or(usize::MAX)
@@ -1933,6 +1944,9 @@ impl Model {
                 | Kind::CMHomCycle(..)
                 | Kind::CMHomWedge(..)
                 | Kind::CMHomCoordinate(..)
+                | Kind::CMAbelianDiv(..)
+                | Kind::CMAbelianMukai(..)
+                | Kind::CMAbelianMap(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
@@ -4586,6 +4600,39 @@ impl Model {
         self.allocate(name.text.len())?;
         self.cm_hom.insert(name.text, Rc::new(entry));
         Ok(())
+    }
+
+    pub(crate) fn define_cm_abelian(
+        &mut self,
+        name: Label,
+        make: impl FnOnce(&mut Self) -> Result<cm_hom::fourier::Abelian>,
+    ) -> Result<()> {
+        if self.cm_abelian.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "CM abelian marking is already defined",
+            ));
+        }
+        let entry = make(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_abelian.insert(name.text, Rc::new(entry));
+        Ok(())
+    }
+
+    pub(crate) fn cm_abelian(&self, name: &str) -> Result<Rc<cm_hom::fourier::Abelian>> {
+        self.cm_abelian
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM abelian marking '{name}'")))
+    }
+
+    pub(crate) fn cm_abelian_type(
+        &mut self,
+        name: &Label,
+        kind: fn(Rc<str>) -> Kind,
+    ) -> Result<TypeId> {
+        self.cm_abelian(&name.text)?;
+        self.inhabited_type(kind(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_cm_hom_product(
@@ -7558,6 +7605,9 @@ impl Model {
             | Kind::CMHomCycle(..)
             | Kind::CMHomWedge(..)
             | Kind::CMHomCoordinate(..)
+            | Kind::CMAbelianDiv(..)
+            | Kind::CMAbelianMukai(..)
+            | Kind::CMAbelianMap(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
@@ -8134,6 +8184,9 @@ impl Model {
             Kind::CMHomCycle(name) => out.push(&format!("RVCMHomCycle({name})")),
             Kind::CMHomWedge(name) => out.push(&format!("RVCMHomWedge({name})")),
             Kind::CMHomCoordinate(name) => out.push(&format!("RVCMHomCoordinate({name})")),
+            Kind::CMAbelianDiv(name) => out.push(&format!("RVCMAbelianDiv({name})")),
+            Kind::CMAbelianMukai(name) => out.push(&format!("RVCMAbelianMukai({name})")),
+            Kind::CMAbelianMap(name) => out.push(&format!("RVCMAbelianMap({name})")),
             Kind::KummerBrauerFixed(name, level) => {
                 out.push(&format!("RVKummerBrauerFixed({name},{level})"))
             }
@@ -8596,6 +8649,9 @@ impl Model {
             (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a == b),
             (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a == b),
             (Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => Ok(a.compare(b).is_eq()),
+            (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a == b),
+            (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a == b),
+            (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -9023,6 +9079,9 @@ impl Model {
             (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a.cmp(b)),
             (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a.cmp(b)),
             (Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => Ok(a.compare(b)),
+            (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a.cmp(b)),
+            (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a.cmp(b)),
+            (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -9491,6 +9550,11 @@ impl Model {
                             Value::CMHomWedge(coordinates)
                         })
                         .collect()
+                }
+                Kind::CMAbelianDiv(..) | Kind::CMAbelianMukai(..) | Kind::CMAbelianMap(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate exact CM abelian correspondences",
+                    ));
                 }
                 Kind::CMHomCoordinate(..) => {
                     return Err(Error::plain("cannot enumerate exact CM Hom coordinates"));
@@ -11392,6 +11456,18 @@ impl Model {
                     self.write_ec_polynomial(out, direction)?;
                 }
                 out.push("}")
+            }
+            Value::CMAbelianDiv(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMAbelianMukai(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMAbelianMap(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coordinates()))
             }
             Value::CMHomCoordinate(coordinate) => {
                 self.write_type(out, ty, 0)?;

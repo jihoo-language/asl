@@ -460,7 +460,7 @@ pub(crate) fn persist(model: &mut Model, value: Element) -> Result<Value> {
     Ok(Value::RVQpQuad(value))
 }
 
-fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element> {
+pub(crate) fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element> {
     model.spend(1)?;
     let g = gcd(gcd(x.a.unsigned_abs(), x.b.unsigned_abs()), y.c as u128) as i128;
     let h = gcd(gcd(y.a.unsigned_abs(), y.b.unsigned_abs()), x.c as u128) as i128;
@@ -484,7 +484,56 @@ fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element
     )
 }
 
-fn affine_combination(model: &mut Model, x: Element, y: Element, minus: bool) -> Result<Element> {
+// Accumulate short sums of quadratic products before narrowing any term.
+// This keeps, for example, a rank-one Hermitian determinant exactly zero
+// even when both products in it exceed the scalar coordinate range.
+pub(crate) fn product_sum<const N: usize>(
+    model: &mut Model,
+    radicand: i128,
+    terms: [(i128, Element, Element); N],
+) -> Result<Element> {
+    type Coefficient = Wide<56>;
+    let zero = Coefficient::from_i128(0);
+    let (mut real, mut imaginary, mut denominator) = (zero, zero, Coefficient::from_i128(1));
+    for (weight, a, b) in terms {
+        model.spend(16)?;
+        if weight == 0 || a.is_zero() || b.is_zero() {
+            continue;
+        }
+        let x = Coefficient::product(a.a, b.a)
+            .add(Coefficient::product(a.b, b.b).multiply(radicand)?)?
+            .multiply(weight)?;
+        let y = Coefficient::product(a.a, b.b)
+            .add(Coefficient::product(a.b, b.a))?
+            .multiply(weight)?;
+        let term_denominator = Coefficient::product(a.c, b.c);
+        let common = Coefficient {
+            magnitude: denominator
+                .magnitude
+                .gcd(model, term_denominator.magnitude)?,
+            negative: false,
+        };
+        let left = term_denominator
+            .divide_exact(model, common)?
+            .ok_or_else(arithmetic)?;
+        let right = denominator
+            .divide_exact(model, common)?
+            .ok_or_else(arithmetic)?;
+        real = real.multiply_wide(left)?.add(x.multiply_wide(right)?)?;
+        imaginary = imaginary
+            .multiply_wide(left)?
+            .add(y.multiply_wide(right)?)?;
+        denominator = denominator.multiply_wide(left)?;
+    }
+    normalize_wide(model, real, imaginary, denominator)
+}
+
+pub(crate) fn affine_combination(
+    model: &mut Model,
+    x: Element,
+    y: Element,
+    minus: bool,
+) -> Result<Element> {
     model.spend(1)?;
     let common = gcd(x.c as u128, y.c as u128) as i128;
     let (sx, sy) = (y.c / common, x.c / common);

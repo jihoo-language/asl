@@ -13,11 +13,13 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod composition;
+pub(crate) mod fourier;
 pub(crate) mod marked;
 
 pub(crate) enum Statement {
     Define(Label, Option<[Label; 2]>, Box<[ParsedExpr; 2]>, bool),
     Composition(Box<composition::Statement>),
+    Fourier(Box<fourier::Statement>),
     Mark(Label, Label, Label, Label, [Label; 2]),
     Data(Label),
     MarkedData(Label),
@@ -29,6 +31,7 @@ pub(crate) enum Statement {
 pub(crate) enum Expression {
     Class(Label, Label),
     Composition(Box<composition::Expression>),
+    Fourier(Box<fourier::Expression>),
     Map(Label, [i128; 2]),
     Cycle(Label, Cycle),
     Wedge(Label, [i128; 6]),
