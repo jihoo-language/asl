@@ -56,6 +56,7 @@ use crate::rv_arithmetic;
 use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_as_derham;
+use crate::rv_as_odd::Cover as RvAsOddCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -1358,6 +1359,17 @@ impl Engine {
             StatementForm::RvAsWordQuery(query, name, words) => {
                 let cover = self.model.rv_as_cover(&name)?;
                 rv_as_derham::word_report(&mut self.model, &cover, &name.text, query, &words)?
+            }
+            StatementForm::RvAsOdd(name, prime, terms) => {
+                self.model.check_new_rv_as_odd_cover(&name)?;
+                let cover = RvAsOddCover::build(&mut self.model, prime, terms)?;
+                self.model.define_rv_as_odd_cover(name.text, cover);
+                return Ok(None);
+            }
+            StatementForm::RvAsOddQuery(query, name) => {
+                self.model
+                    .rv_as_odd_cover(&name)?
+                    .report(&mut self.model, &name.text, query)?
             }
             StatementForm::RvAsQuery(query, name) => {
                 let cover = self.model.rv_as_cover(&name)?;
@@ -6907,6 +6919,12 @@ impl Checker<'_> {
                     ty,
                     TypedForm::AsDeRhamOperation(operation, cover, field, Box::new(input)),
                 ))
+            }
+            ExprForm::AsOddCoefficient(name, character, index) => {
+                let cover = self.model.rv_as_odd_cover(&name)?;
+                let ty = self.model.cyclotomic_type(cover.order())?;
+                let value = cover.coefficient(self.model, character, index)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::RvOmega(family, name, modulus, index) => {
                 let ty = self.model.rv_curve_diff_type(family, &name, modulus)?;

@@ -1036,6 +1036,14 @@ The genus-five final types $(0,0,1,2,2)$ and $(1,1,1,1,2)$ have stratum dimensio
 
 Four polynomial Artin–Schreier curves of genus eight have final type $[0,1,1,2,2,3,3,4]$. Their first slopes are $1/2$, $1/3$, $3/8$, and $1/4$. The stratum bound is $1/4$. [EO and first Newton slope example](examples/rank-eo-first-slope.asl)
 
+#### Odd-prime Artin–Schreier characters
+
+`rvasodd C[p] {(e0,c0),...};` declares the smooth one-pole cover $y^p-y=\sum_i c_ix^{e_i}$ over $\mathbb F_p$. The exponents are nonnegative and the coefficients are signed integers reduced modulo the odd prime `p`. Each positive exponent $pe$ reduces to $e$ by an Artin–Schreier change of variable, and terms with equal exponents combine. A constant term survives the reduction and can twist the arithmetic over $\mathbb F_p$. `rvASOddReduced[C];` prints the surviving `(exponent, coefficient)` pairs. The reduced degree `d` must be positive. `rvASOddGenus[C];` reports $(p-1)(d-1)/2$, and `rvASOddPrank[C];` reports zero.
+
+`rvASOddCharacterL[C,j];` computes the degree-$(d-1)$ factor of the additive character $a\mapsto\zeta_p^{ja}$, for `1 <= j < p`. Each coefficient array is in the power basis of $\mathbb Z[\zeta_p]$. `rvASOddCoeff[C,j,k]` gives coefficient `k` as a `RVCyclo(p)` value. The computation obtains trace distributions up to degree `d-1` from monic irreducible polynomials and uses exact Newton identities. `rvASOddLPolynomial[C];` takes the Galois norm of the character factor. `rvASOddPoints[C,m];` obtains the point count in positive extension degree `m` by a character power-trace recurrence. The work, storage, and signed 128-bit coefficient bounds apply, and point counts use unsigned 128-bit integers. [Lauder and Wan, Computing Zeta Functions of Artin–Schreier Curves over Finite Fields](https://doi.org/10.1112/S1461157000000681)
+
+`rvASOddCharacterNewton[C,j];` computes the slopes of one character factor with $v_p(p)=1$ using the uniformizer $1-\zeta_p$. `rvASOddNewton[C];` computes the slopes of the full numerator. In characteristic five, the factors for $x^6$, $x^6+x^3$, and $x^6+x^4$ have first slopes $1/2$, $3/8$, and $1/4$, respectively. The example also checks signed normalization and a constant twist on a typed coefficient and on point counts. [Odd-prime Artin–Schreier example](examples/rank-as-odd.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

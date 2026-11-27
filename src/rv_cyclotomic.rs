@@ -84,7 +84,7 @@ pub(crate) fn modulus(model: &mut Model, order: usize) -> Result<Polynomial> {
     Ok(factors.pop().unwrap().1.into())
 }
 
-fn persist(model: &mut Model, mut coefficients: Vec<i128>) -> Result<Value> {
+pub(crate) fn persist(model: &mut Model, mut coefficients: Vec<i128>) -> Result<Value> {
     trim(&mut coefficients);
     model.allocate(2 * coefficients.len())?;
     Ok(Value::RVCyclo(coefficients.into()))
@@ -94,14 +94,19 @@ pub(crate) fn zero() -> Value {
     Value::RVCyclo([].into())
 }
 
-pub(crate) fn finish(
+pub(crate) fn finish(model: &mut Model, order: usize, coefficients: Vec<i128>) -> Result<Value> {
+    let coefficients = reduced(model, order, coefficients)?;
+    persist(model, coefficients)
+}
+
+pub(crate) fn reduced(
     model: &mut Model,
     order: usize,
     mut coefficients: Vec<i128>,
-) -> Result<Value> {
+) -> Result<Vec<i128>> {
     let modulus = model.cyclotomic(order)?;
     divide(model, &mut coefficients, &modulus, |_, _| {})?;
-    persist(model, coefficients)
+    Ok(coefficients)
 }
 
 pub(crate) fn root(model: &mut Model, order: usize, power: i128) -> Result<Value> {
@@ -120,13 +125,29 @@ pub(crate) fn compare(model: &mut Model, a: &Polynomial, b: &Polynomial) -> Resu
 }
 
 pub(crate) fn add(model: &mut Model, a: &[i128], b: &[i128]) -> Result<Value> {
-    model.spend(a.len().max(b.len()))?;
     let mut sum = a.to_vec();
-    sum.resize(a.len().max(b.len()), 0);
-    for (entry, &coefficient) in sum.iter_mut().zip(b) {
-        *entry = entry.checked_add(coefficient).ok_or_else(arithmetic)?;
-    }
+    accumulate(model, &mut sum, b, false)?;
     persist(model, sum)
+}
+
+pub(crate) fn accumulate(
+    model: &mut Model,
+    target: &mut Vec<i128>,
+    coefficients: &[i128],
+    subtract: bool,
+) -> Result<()> {
+    model.spend(target.len().max(coefficients.len()))?;
+    target.resize(target.len().max(coefficients.len()), 0);
+    for (entry, &coefficient) in target.iter_mut().zip(coefficients) {
+        *entry = if subtract {
+            entry.checked_sub(coefficient)
+        } else {
+            entry.checked_add(coefficient)
+        }
+        .ok_or_else(arithmetic)?;
+    }
+    trim(target);
+    Ok(())
 }
 
 pub(crate) fn scale(model: &mut Model, coefficients: &[i128], factor: i128) -> Result<Value> {
@@ -142,8 +163,18 @@ pub(crate) fn scale(model: &mut Model, coefficients: &[i128], factor: i128) -> R
 }
 
 pub(crate) fn multiply(model: &mut Model, order: usize, a: &[i128], b: &[i128]) -> Result<Value> {
+    let coefficients = product_coefficients(model, order, a, b)?;
+    persist(model, coefficients)
+}
+
+pub(crate) fn product_coefficients(
+    model: &mut Model,
+    order: usize,
+    a: &[i128],
+    b: &[i128],
+) -> Result<Vec<i128>> {
     if a.is_empty() || b.is_empty() {
-        return Ok(zero());
+        return Ok(Vec::new());
     }
     model.spend(a.len() + b.len())?;
     let a: Vec<_> = a
@@ -169,14 +200,26 @@ pub(crate) fn multiply(model: &mut Model, order: usize, a: &[i128], b: &[i128]) 
                 .ok_or_else(arithmetic)?;
         }
     }
-    finish(model, order, coefficients)
+    reduced(model, order, coefficients)
 }
 
 pub(crate) fn conjugate(model: &mut Model, order: usize, coefficients: &[i128]) -> Result<Value> {
-    let mut conjugate = vec![0; order];
-    model.spend(coefficients.len())?;
-    for (power, &coefficient) in coefficients.iter().enumerate() {
-        conjugate[(order - power) % order] = coefficient;
+    let coefficients = substitute_root(model, order, coefficients, order - 1)?;
+    persist(model, coefficients)
+}
+
+pub(crate) fn substitute_root(
+    model: &mut Model,
+    order: usize,
+    coefficients: &[i128],
+    power: usize,
+) -> Result<Vec<i128>> {
+    let power = power % order;
+    let mut changed = vec![0i128; order];
+    model.spend(order + coefficients.len())?;
+    for (index, &coefficient) in coefficients.iter().enumerate() {
+        let value = &mut changed[(power * index) % order];
+        *value = value.checked_add(coefficient).ok_or_else(arithmetic)?;
     }
-    finish(model, order, conjugate)
+    reduced(model, order, changed)
 }

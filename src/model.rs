@@ -41,6 +41,7 @@ use crate::real_motivic;
 use crate::rho_bock;
 use crate::rho_localized;
 use crate::rv_as_cover::Cover as RvAsCover;
+use crate::rv_as_odd::Cover as RvAsOddCover;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -407,6 +408,7 @@ pub(crate) struct Model {
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
+    rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -449,6 +451,7 @@ impl Model {
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
             rv_as_covers: HashMap::new(),
+            rv_as_odd_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -1973,6 +1976,35 @@ impl Model {
         }
         let field = BinaryField::new(self, modulus)?;
         self.inhabited_type(Kind::CurveDiff(family, name.text.as_str().into(), field), 0)
+    }
+
+    pub(crate) fn rv_as_odd_cover(&self, name: &Label) -> Result<Rc<RvAsOddCover>> {
+        self.rv_as_odd_covers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown odd Artin–Schreier cover '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn check_new_rv_as_odd_cover(&self, name: &Label) -> Result<()> {
+        if self.rv_as_odd_covers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "odd Artin–Schreier cover '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_rv_as_odd_cover(&mut self, name: String, cover: RvAsOddCover) {
+        self.rv_as_odd_covers.insert(name, Rc::new(cover));
     }
 
     pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {
