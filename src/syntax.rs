@@ -33,7 +33,9 @@ use crate::rv_as_odd_tate::Operation as AsOddTateOp;
 use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
-use crate::rv_eisenstein::{self as eisenstein, cubic_hilbert as cubic, kummer as local_kummer};
+use crate::rv_eisenstein::{
+    self as eisenstein, cubic_algebra, cubic_hilbert as cubic, kummer as local_kummer,
+};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
 use crate::rv_qp_quad::Unary as QuadUnary;
@@ -207,6 +209,8 @@ pub(crate) enum TypeForm {
     LocalKummer(local_kummer::Spec),
     CubicLocal(cubic::LocalSpec),
     CubicClass(Label),
+    CubicAlg(Label),
+    CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1160,6 +1164,7 @@ pub(crate) enum ExprForm {
     Eisenstein(eisenstein::Expression),
     LocalKummer(local_kummer::Expression),
     Cubic(cubic::Expression),
+    CubicAlgebra(cubic_algebra::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1453,6 +1458,9 @@ pub(crate) enum StatementForm {
     LocalKummerField(local_kummer::FieldReport),
     LocalKummerReport(local_kummer::Report, Box<ParsedExpr>),
     Cubic(cubic::Report),
+    CubicAlgebraDeclaration(cubic_algebra::Declaration),
+    CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
+    CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -7453,6 +7461,146 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_algebra_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_algebra::{Declaration, Report, SplitDeclaration};
+        self.advance()?;
+        match name {
+            "rvcubicalgebra" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.cubic_local_spec()?;
+                self.expect(Token::RBracket)?;
+                Ok(StatementForm::CubicAlgebraDeclaration(Declaration(
+                    name,
+                    base,
+                    Box::new(self.paren_pair(0)?),
+                )))
+            }
+            "rvcubicsplit" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let algebra = self.label()?;
+                self.expect(Token::RBracket)?;
+                let rows =
+                    self.local_coefficient_rows("a signed split coefficient", "split coefficient")?;
+                Ok(StatementForm::CubicSplitDeclaration(SplitDeclaration(
+                    name, algebra, rows,
+                )))
+            }
+            "rvCubicAlgData" | "rvCubicSplitData" => {
+                self.expect(Token::LBracket)?;
+                let field = self.label()?;
+                self.expect(Token::RBracket)?;
+                let report = if name == "rvCubicAlgData" {
+                    Report::Data(field)
+                } else {
+                    Report::SplitData(field)
+                };
+                Ok(StatementForm::CubicAlgebraReport(report))
+            }
+            _ => Ok(StatementForm::CubicAlgebraReport(Report::Characteristic(
+                Box::new(self.paren_expr(0)?),
+            ))),
+        }
+    }
+
+    fn cubic_indices(&mut self) -> Result<(usize, usize)> {
+        let (i, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (j, _) = self.number()?;
+        Ok((i, j))
+    }
+
+    fn cubic_algebra_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use cubic_algebra::{Expression, Unary};
+        let (operation, depth) = match name {
+            "rvCubicAlgMul" | "rvCubicSplitMul" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                let pair = Box::new(pair);
+                (
+                    if name == "rvCubicAlgMul" {
+                        Expression::Multiply(pair)
+                    } else {
+                        Expression::SplitMultiply(pair)
+                    },
+                    depth,
+                )
+            }
+            "rvCubicAlgElem" | "rvCubicAlgBasis" | "rvCubicAlgTerm" | "rvCubicAlgIsSplit"
+            | "rvCubicSplitMat" => {
+                self.expect(Token::LBracket)?;
+                let algebra = self.label()?;
+                let (i, j) = if matches!(name, "rvCubicAlgBasis" | "rvCubicAlgTerm") {
+                    self.expect(Token::Comma)?;
+                    self.cubic_indices()?
+                } else {
+                    (0, 0)
+                };
+                self.expect(Token::RBracket)?;
+                match name {
+                    "rvCubicAlgElem" => {
+                        let rows = self.local_coefficient_rows(
+                            "a signed cubic algebra coefficient",
+                            "cubic algebra coefficient",
+                        )?;
+                        (Expression::Literal(algebra, rows), 0)
+                    }
+                    "rvCubicAlgBasis" => (Expression::Basis(algebra, i, j), 0),
+                    "rvCubicAlgIsSplit" => (Expression::SplitStatus(algebra), 0),
+                    _ => {
+                        let input = self.paren_expr(nest)?;
+                        let depth = 1 + input.depth;
+                        let input = Box::new(input);
+                        (
+                            if name == "rvCubicSplitMat" {
+                                Expression::SplitImage(algebra, input)
+                            } else {
+                                Expression::Term(algebra, i, j, input)
+                            },
+                            depth,
+                        )
+                    }
+                }
+            }
+            "rvCubicAlgCoeff" | "rvCubicSplitEntry" => {
+                self.expect(Token::LBracket)?;
+                let (i, j) = self.cubic_indices()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let input = Box::new(input);
+                (
+                    if name == "rvCubicAlgCoeff" {
+                        Expression::Unary(Unary::Coefficient(i, j), input)
+                    } else {
+                        Expression::SplitEntry(i, j, input)
+                    },
+                    depth,
+                )
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let input = Box::new(input);
+                let operation = match name {
+                    "rvCubicReducedTrace" => Expression::Unary(Unary::Trace, input),
+                    "rvCubicReducedNorm" => Expression::Unary(Unary::Norm, input),
+                    "rvCubicAdj" => Expression::Unary(Unary::Adjugate, input),
+                    "rvCubicInverse" => Expression::Unary(Unary::Inverse, input),
+                    _ => Expression::SplitDeterminant(input),
+                };
+                (operation, depth)
+            }
+        };
+        expr(span, ExprForm::CubicAlgebra(operation), depth)
+    }
+
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
         use period::mazur_tate::{Embedding, Statement};
         self.advance()?;
@@ -12563,6 +12711,10 @@ impl<'src> Parser<'src> {
                 | "rvCubicNormSubgroup"
                 | "rvCubicHilbertInvariant"),
             ) => self.cubic_statement(name)?,
+            Token::Word(
+                name @ ("rvcubicalgebra" | "rvcubicsplit" | "rvCubicAlgData" | "rvCubicSplitData"
+                | "rvCubicReducedChar"),
+            ) => self.cubic_algebra_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -16656,6 +16808,18 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CubicClass(field), 0);
         }
+        if matches!(name.text.as_str(), "RVCubicAlg" | "RVCubicSplitMatrix")
+            && self.eat(Token::LParen)?
+        {
+            let algebra = self.label()?;
+            self.expect(Token::RParen)?;
+            let kind = if name.text == "RVCubicAlg" {
+                TypeForm::CubicAlg(algebra)
+            } else {
+                TypeForm::CubicSplitMatrix(algebra)
+            };
+            return ty(span, kind, 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -19701,6 +19865,29 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCubicAlgElem"
+                        | "rvCubicAlgBasis"
+                        | "rvCubicAlgTerm"
+                        | "rvCubicAlgIsSplit"
+                        | "rvCubicAlgCoeff"
+                        | "rvCubicSplitMat"
+                        | "rvCubicSplitEntry"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicAlgMul"
+                            | "rvCubicSplitMul"
+                            | "rvCubicReducedTrace"
+                            | "rvCubicReducedNorm"
+                            | "rvCubicAdj"
+                            | "rvCubicInverse"
+                            | "rvCubicSplitDet"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cubic_algebra_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

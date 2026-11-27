@@ -68,10 +68,10 @@ pub(crate) fn require_field(field: &Base) -> Result<()> {
     Ok(())
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Local {
-    valuation: i128,
-    unit: BaseElement,
+    pub(super) valuation: i128,
+    pub(super) unit: BaseElement,
 }
 
 impl Local {
@@ -113,6 +113,29 @@ impl Local {
         }
         let unit = divide_by_lambda(model, field, source, value, valuation)?;
         Self::new(model, field, precision, valuation as i128, unit)
+    }
+
+    pub(super) fn factor_integral(
+        model: &mut Model,
+        field: &Base,
+        source: usize,
+        value: BaseElement,
+    ) -> Result<(Self, usize)> {
+        let valuation = field.algebra(source)?.valuation(model, &value)?;
+        if valuation == source {
+            return Err(Error::plain(
+                "cannot certify a nonzero cubic local element from zero residue",
+            ));
+        }
+        let digits = source - valuation;
+        let unit = divide_by_lambda(model, field, source, value, valuation)?;
+        Ok((
+            Self {
+                valuation: valuation as i128,
+                unit,
+            },
+            digits,
+        ))
     }
 
     pub(crate) fn multiply(

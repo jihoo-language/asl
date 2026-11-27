@@ -100,7 +100,9 @@ use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
-use crate::rv_eisenstein::{self as eisenstein, cubic_hilbert as cubic, kummer as local_kummer};
+use crate::rv_eisenstein::{
+    self as eisenstein, cubic_algebra, cubic_hilbert as cubic, kummer as local_kummer,
+};
 use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
@@ -363,6 +365,8 @@ pub(crate) enum Kind {
     LocalKummer(local_kummer::Grade),
     CubicLocal(cubic::Grade),
     CubicClass(Box<str>),
+    CubicAlg(Box<str>),
+    CubicSplitMatrix(Box<str>),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -603,6 +607,8 @@ pub(crate) enum Value {
     LocalKummer(Rc<local_kummer::Element>),
     CubicLocal(Rc<cubic::Local>),
     CubicClass(cubic::Class),
+    CubicAlg(Rc<cubic_algebra::Element>),
+    CubicSplitMatrix(Rc<cubic_algebra::SplitMatrix>),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -854,6 +860,8 @@ pub(crate) struct Model {
     pub(crate) igusa_inverse_cache: inverse::Cache,
     local_kummer_fields: HashMap<String, Rc<local_kummer::Extension>>,
     cubic_certificate: Option<Rc<cubic::Certificate>>,
+    cubic_algebras: HashMap<String, Rc<cubic_algebra::Extension>>,
+    cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
@@ -1015,6 +1023,8 @@ impl Model {
             igusa_inverse_cache: inverse::Cache::default(),
             local_kummer_fields: HashMap::new(),
             cubic_certificate: None,
+            cubic_algebras: HashMap::new(),
+            cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             verbitsky_associative: HashMap::new(),
@@ -1639,6 +1649,8 @@ impl Model {
             | Kind::Eisenstein(..)
             | Kind::LocalKummer(..)
             | Kind::CubicLocal(..)
+            | Kind::CubicAlg(..)
+            | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1994,6 +2006,8 @@ impl Model {
                 | Kind::LocalKummer(..)
                 | Kind::CubicLocal(..)
                 | Kind::CubicClass(..)
+                | Kind::CubicAlg(..)
+                | Kind::CubicSplitMatrix(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -6257,6 +6271,75 @@ impl Model {
         self.inhabited_type(Kind::HWWMatrix(grade), 0)
     }
 
+    pub(crate) fn register_cubic_algebra(
+        &mut self,
+        name: Label,
+        grade: cubic::Grade,
+        base: Rc<eisenstein::Extension>,
+        parameters: [cubic_algebra::Parameter; 2],
+    ) -> Result<()> {
+        if self.cubic_algebras.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("cubic algebra '{}' is already defined", name.text),
+            ));
+        }
+        let algebra = cubic_algebra::Extension::new(self, grade, base, parameters)
+            .map_err(|error| error.at(name.span))?;
+        self.cubic_algebras.insert(name.text, Rc::new(algebra));
+        Ok(())
+    }
+
+    pub(crate) fn register_cubic_split(
+        &mut self,
+        declaration: cubic_algebra::SplitDeclaration,
+    ) -> Result<()> {
+        let cubic_algebra::SplitDeclaration(name, algebra, rows) = declaration;
+        if self.cubic_splits.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("cubic split witness '{}' is already defined", name.text),
+            ));
+        }
+        let extension = self.cubic_algebra(&algebra)?;
+        let split = cubic_algebra::Split::new(self, algebra.text.into(), extension, rows)
+            .map_err(|error| error.at(name.span))?;
+        self.cubic_splits.insert(name.text, Rc::new(split));
+        Ok(())
+    }
+
+    pub(crate) fn cubic_algebra_named(&self, name: &str) -> Option<Rc<cubic_algebra::Extension>> {
+        self.cubic_algebras.get(name).cloned()
+    }
+
+    pub(crate) fn cubic_algebra(&self, name: &Label) -> Result<Rc<cubic_algebra::Extension>> {
+        self.cubic_algebra_named(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown cubic algebra '{}'", name.text)))
+    }
+
+    pub(crate) fn cubic_split_named(&self, name: &str) -> Option<Rc<cubic_algebra::Split>> {
+        self.cubic_splits.get(name).cloned()
+    }
+
+    pub(crate) fn cubic_split(&self, name: &Label) -> Result<Rc<cubic_algebra::Split>> {
+        self.cubic_split_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown cubic split witness '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn cubic_alg_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cubic_algebra(name)?;
+        self.inhabited_type(Kind::CubicAlg(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn cubic_split_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cubic_split(name)?;
+        self.inhabited_type(Kind::CubicSplitMatrix(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn cubic_local_type(&mut self, grade: cubic::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::CubicLocal(grade), 0)
     }
@@ -7655,6 +7738,8 @@ impl Model {
             | Kind::LocalKummer(..)
             | Kind::CubicLocal(..)
             | Kind::CubicClass(..)
+            | Kind::CubicAlg(..)
+            | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -8308,6 +8393,8 @@ impl Model {
                 "RVCubicLocal({},{})",
                 grade.field, grade.precision
             )),
+            Kind::CubicAlg(name) => out.push(&format!("RVCubicAlg({name})")),
+            Kind::CubicSplitMatrix(name) => out.push(&format!("RVCubicSplitMatrix({name})")),
             Kind::CubicClass(field) => out.push(&format!("RVCubicClass({field})")),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
@@ -8718,6 +8805,10 @@ impl Model {
             (Value::LocalKummer(a), Value::LocalKummer(b)) => Ok(a == b),
             (Value::CubicLocal(a), Value::CubicLocal(b)) => Ok(a == b),
             (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a == b),
+            (Value::CubicAlg(a), Value::CubicAlg(b)) => Ok(a == b),
+            (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
+                Ok(a.entries() == b.entries())
+            }
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -9120,6 +9211,10 @@ impl Model {
             (Value::LocalKummer(a), Value::LocalKummer(b)) => Ok(a.cmp(b)),
             (Value::CubicLocal(a), Value::CubicLocal(b)) => Ok(a.cmp(b)),
             (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a.cmp(b)),
+            (Value::CubicAlg(a), Value::CubicAlg(b)) => Ok(a.cmp(b)),
+            (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
+                Ok(a.entries().cmp(b.entries()))
+            }
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -9691,6 +9786,11 @@ impl Model {
                 Kind::MazurAmice(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
+                    ));
+                }
+                Kind::CubicAlg(..) | Kind::CubicSplitMatrix(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the bounded cubic algebra or split matrix",
                     ));
                 }
                 Kind::CubicLocal(..) => {
@@ -11668,6 +11768,18 @@ impl Model {
             Value::CubicLocal(element) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", element.write()))
+            }
+            Value::CubicAlg(element) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", element.rows()))
+            }
+            Value::CubicSplitMatrix(matrix) => {
+                self.write_type(out, ty, 0)?;
+                let entries = matrix.rows();
+                out.push(&format!(
+                    "{{{:?}}}",
+                    [&entries[..3], &entries[3..6], &entries[6..]]
+                ))
             }
             Value::CubicClass(class) => {
                 self.write_type(out, ty, 0)?;

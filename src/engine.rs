@@ -150,7 +150,9 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
-use crate::rv_eisenstein::{self as eisenstein, cubic_hilbert as cubic, kummer as local_kummer};
+use crate::rv_eisenstein::{
+    self as eisenstein, cubic_algebra, cubic_hilbert as cubic, kummer as local_kummer,
+};
 use crate::rv_field;
 use crate::rv_fusion;
 use crate::rv_gauss;
@@ -1147,6 +1149,13 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicAlgTerm(usize, Box<TypedExpr>),
+    CubicAlgUnary(cubic_algebra::Unary, Box<TypedExpr>),
+    CubicAlgProduct(Box<[TypedExpr; 2]>),
+    CubicSplitImage(Box<TypedExpr>),
+    CubicSplitProduct(Box<[TypedExpr; 2]>),
+    CubicSplitEntry(usize, Box<TypedExpr>),
+    CubicSplitDeterminant(Box<TypedExpr>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2940,6 +2949,45 @@ impl Engine {
                     }
                 };
                 return Ok(Some(output));
+            }
+            StatementForm::CubicAlgebraDeclaration(declaration) => {
+                let cubic_algebra::Declaration(name, spec, inputs) = declaration;
+                let (grade, field) = cubic::Grade::resolve(&self.model, spec)?;
+                let [a, b] = *inputs;
+                let a = self.cubic_algebra_parameter(&grade, &field, a)?;
+                let b = self.cubic_algebra_parameter(&grade, &field, b)?;
+                self.model
+                    .register_cubic_algebra(name, grade, field, [a, b])?;
+                return Ok(None);
+            }
+            StatementForm::CubicSplitDeclaration(declaration) => {
+                self.model.register_cubic_split(declaration)?;
+                return Ok(None);
+            }
+            StatementForm::CubicAlgebraReport(report) => {
+                return match report {
+                    cubic_algebra::Report::Data(name) => {
+                        let extension = self.model.cubic_algebra(&name)?;
+                        Ok(Some(extension.report(&name.text)))
+                    }
+                    cubic_algebra::Report::SplitData(name) => {
+                        let witness = self.model.cubic_split(&name)?;
+                        Ok(Some(witness.report(&name.text)))
+                    }
+                    cubic_algebra::Report::Characteristic(input) => {
+                        let input = self.checker().expr(*input)?;
+                        let extension = self
+                            .checker()
+                            .cubic_alg_operand(&input, "rvCubicReducedChar")?;
+                        let Value::CubicAlg(x) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        extension
+                            .algebra()?
+                            .characteristic(&mut self.model, &x)
+                            .map(Some)
+                    }
+                };
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -11293,6 +11341,45 @@ impl Engine {
         }
     }
 
+    fn cubic_algebra_parameter(
+        &mut self,
+        grade: &cubic::Grade,
+        field: &eisenstein::Extension,
+        input: ParsedExpr,
+    ) -> Result<cubic_algebra::Parameter> {
+        let input = self.checker().expr(input)?;
+        let kind = self.model.kind(input.ty).clone();
+        match kind {
+            Kind::Eisenstein(source) if source.name == grade.field => {
+                let Value::Eisenstein(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                cubic_algebra::Parameter::from_integral(
+                    &mut self.model,
+                    field,
+                    source.precision,
+                    (*value).clone(),
+                )
+            }
+            Kind::CubicLocal(source) if source.field == grade.field => {
+                let Value::CubicLocal(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                Ok(cubic_algebra::Parameter {
+                    local: (*value).clone(),
+                    digits: source.precision,
+                })
+            }
+            _ => {
+                let expected =
+                    format!("an element of the named cubic local base '{}'", grade.field);
+                Err(self
+                    .checker()
+                    .invalid_operand(&input, "rvcubicalgebra", &expected))
+            }
+        }
+    }
+
     fn eval_partition_fiber(
         &mut self,
         input: &TypedExpr,
@@ -11867,6 +11954,19 @@ impl Engine {
                         };
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::CubicAlg(a), Value::CubicAlg(b)) => {
+                        let Kind::CubicAlg(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let extension = self
+                            .model
+                            .cubic_algebra_named(name)
+                            .expect("registered cubic algebra");
+                        extension
+                            .algebra()?
+                            .add(&mut self.model, &a, &b)?
+                            .persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::CubicClass(a), Value::CubicClass(b)) => {
                         Ok(Value::CubicClass(a.add(b)))
@@ -14700,6 +14800,127 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicAlgTerm(index, input) => {
+                let Value::Eisenstein(coefficient) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicAlg(name) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let extension = self
+                    .model
+                    .cubic_algebra_named(name)
+                    .expect("registered cubic algebra");
+                extension
+                    .algebra()?
+                    .term(*index, (*coefficient).clone())
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicAlgUnary(operation, input) => {
+                let Value::CubicAlg(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicAlg(name) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let extension = self
+                    .model
+                    .cubic_algebra_named(name)
+                    .expect("registered cubic algebra");
+                let algebra = extension.algebra()?;
+                use cubic_algebra::Unary;
+                match operation {
+                    Unary::Coefficient(i, j) => value
+                        .coefficient(cubic_algebra::index(*i, *j)?)
+                        .persist(&mut self.model),
+                    Unary::Trace => algebra
+                        .trace(&mut self.model, &value)?
+                        .persist(&mut self.model),
+                    Unary::Norm => algebra
+                        .norm(&mut self.model, &value)?
+                        .persist(&mut self.model),
+                    Unary::Adjugate => algebra
+                        .adjugate(&mut self.model, &value)?
+                        .persist(&mut self.model),
+                    Unary::Inverse => algebra
+                        .inverse(&mut self.model, &value)?
+                        .persist(&mut self.model),
+                    Unary::Negate => algebra
+                        .negate(&mut self.model, &value)?
+                        .persist(&mut self.model),
+                }
+            }
+            TypedForm::CubicAlgProduct(inputs) => {
+                let (Value::CubicAlg(a), Value::CubicAlg(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::CubicAlg(name) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let extension = self
+                    .model
+                    .cubic_algebra_named(name)
+                    .expect("registered cubic algebra");
+                extension
+                    .algebra()?
+                    .multiply(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicSplitImage(input) => {
+                let Value::CubicAlg(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicSplitMatrix(name) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let witness = self
+                    .model
+                    .cubic_split_named(name)
+                    .expect("registered cubic split witness");
+                witness
+                    .image(&mut self.model, &value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicSplitProduct(inputs) => {
+                let (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::CubicSplitMatrix(name) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let witness = self
+                    .model
+                    .cubic_split_named(name)
+                    .expect("registered cubic split witness");
+                witness
+                    .multiply(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicSplitEntry(index, input) => {
+                let Value::CubicSplitMatrix(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.coefficient(*index).persist(&mut self.model)
+            }
+            TypedForm::CubicSplitDeterminant(input) => {
+                let Value::CubicSplitMatrix(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::CubicSplitMatrix(name) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let witness = self
+                    .model
+                    .cubic_split_named(name)
+                    .expect("registered cubic split witness");
+                witness
+                    .determinant(&mut self.model, &value)?
                     .persist(&mut self.model)
             }
             TypedForm::CubicLocalUnit(valuation, input) => {
@@ -17942,6 +18163,8 @@ impl Checker<'_> {
                 let (grade, _) = cubic::Grade::resolve(self.model, spec)?;
                 self.model.cubic_local_type(grade)
             }
+            TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
+            TypeForm::CubicSplitMatrix(name) => self.model.cubic_split_type(&name),
             TypeForm::CubicClass(name) => {
                 let field = self.model.eisenstein(&name)?;
                 cubic::require_field(&field).map_err(|error| error.at(name.span))?;
@@ -19079,6 +19302,10 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::CubicAlg(name) => {
+                        let extension = self.model.cubic_algebra_named(name).expect("registered cubic algebra");
+                        extension.algebra()?.zero().persist(self.model)?
+                    }
                     Kind::CubicClass(..) => Value::CubicClass(cubic::Class([0; 4])),
                     Kind::LocalKummer(grade) => {
                         let field = self.model.local_kummer_named(&grade.name).expect("registered local Kummer field");
@@ -21561,6 +21788,7 @@ impl Checker<'_> {
             ExprForm::Eisenstein(operation) => self.eisenstein_expression(operation),
             ExprForm::LocalKummer(operation) => self.local_kummer_expression(operation),
             ExprForm::Cubic(operation) => self.cubic_expression(operation),
+            ExprForm::CubicAlgebra(operation) => self.cubic_algebra_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -22456,6 +22684,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CubicAlg(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CubicAlgUnary(cubic_algebra::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::CubicClass(..)) {
@@ -26517,6 +26751,7 @@ impl Checker<'_> {
                         | Kind::Eisenstein(..)
                         | Kind::LocalKummer(..)
                         | Kind::CubicClass(..)
+                        | Kind::CubicAlg(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -32425,6 +32660,147 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_algebra_expression(
+        &mut self,
+        expression: cubic_algebra::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_algebra::{Expression, Unary};
+        match expression {
+            Expression::Literal(name, rows) => {
+                let extension = self.model.cubic_algebra(&name)?;
+                let ty = self.model.cubic_alg_type(&name)?;
+                let value = extension
+                    .algebra()?
+                    .literal(self.model, rows)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Basis(name, i, j) => {
+                let extension = self.model.cubic_algebra(&name)?;
+                let ty = self.model.cubic_alg_type(&name)?;
+                let index = cubic_algebra::index(i, j)?;
+                let value = extension.algebra()?.basis(index).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Term(name, i, j, input) => {
+                let extension = self.model.cubic_algebra(&name)?;
+                let ty = self.model.cubic_alg_type(&name)?;
+                let expected = self.cubic_base_type(&extension)?;
+                let input = self.expr(*input)?;
+                self.require_type(expected, &input, "rvCubicAlgTerm coefficient")?;
+                let index = cubic_algebra::index(i, j)?;
+                Ok((ty, TypedForm::CubicAlgTerm(index, Box::new(input))))
+            }
+            Expression::SplitStatus(name) => {
+                let extension = self.model.cubic_algebra(&name)?;
+                let ty = self.model.named("S").expect("built-in truth type");
+                Ok((
+                    ty,
+                    TypedForm::Constant(Value::Point(usize::from(extension.is_split()))),
+                ))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.cubic_alg_operand(&a, "rvCubicAlgMul")?;
+                self.require_type(a.ty, &b, "rvCubicAlgMul input")?;
+                Ok((a.ty, TypedForm::CubicAlgProduct(Box::new([a, b]))))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let name = match operation {
+                    Unary::Coefficient(i, j) => {
+                        cubic_algebra::index(i, j)?;
+                        "rvCubicAlgCoeff"
+                    }
+                    Unary::Trace => "rvCubicReducedTrace",
+                    Unary::Norm => "rvCubicReducedNorm",
+                    Unary::Adjugate => "rvCubicAdj",
+                    Unary::Inverse => "rvCubicInverse",
+                    Unary::Negate => unreachable!(),
+                };
+                let extension = self.cubic_alg_operand(&input, name)?;
+                let ty = match operation {
+                    Unary::Coefficient(..) | Unary::Trace | Unary::Norm => {
+                        self.cubic_base_type(&extension)?
+                    }
+                    _ => input.ty,
+                };
+                Ok((ty, TypedForm::CubicAlgUnary(operation, Box::new(input))))
+            }
+            Expression::SplitImage(name, input) => {
+                let witness = self.model.cubic_split(&name)?;
+                let ty = self.model.cubic_split_type(&name)?;
+                let input = self.expr(*input)?;
+                let expected = self.model.cubic_alg_type(&Label {
+                    text: witness.name_of_algebra.to_string(),
+                    span: name.span,
+                })?;
+                self.require_type(expected, &input, "rvCubicSplitMat input")?;
+                Ok((ty, TypedForm::CubicSplitImage(Box::new(input))))
+            }
+            Expression::SplitMultiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.cubic_split_operand(&a, "rvCubicSplitMul")?;
+                self.require_type(a.ty, &b, "rvCubicSplitMul input")?;
+                Ok((a.ty, TypedForm::CubicSplitProduct(Box::new([a, b]))))
+            }
+            Expression::SplitEntry(i, j, input) => {
+                let input = self.expr(*input)?;
+                let witness = self.cubic_split_operand(&input, "rvCubicSplitEntry")?;
+                let ty = self.cubic_base_type(&witness.extension)?;
+                let index = cubic_algebra::index(i, j)?;
+                Ok((ty, TypedForm::CubicSplitEntry(index, Box::new(input))))
+            }
+            Expression::SplitDeterminant(input) => {
+                let input = self.expr(*input)?;
+                let witness = self.cubic_split_operand(&input, "rvCubicSplitDet")?;
+                let ty = self.cubic_base_type(&witness.extension)?;
+                Ok((ty, TypedForm::CubicSplitDeterminant(Box::new(input))))
+            }
+        }
+    }
+
+    fn cubic_base_type(&mut self, extension: &cubic_algebra::Extension) -> Result<TypeId> {
+        self.model.eisenstein_type(eisenstein::Grade {
+            name: extension.base_name.clone(),
+            precision: extension.precision,
+        })
+    }
+
+    fn cubic_alg_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<cubic_algebra::Extension>> {
+        if let Kind::CubicAlg(name) = self.model.kind(input.ty) {
+            Ok(self
+                .model
+                .cubic_algebra_named(name)
+                .expect("registered cubic algebra"))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicAlg(A) element"))
+        }
+    }
+
+    fn cubic_split_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<cubic_algebra::Split>> {
+        if let Kind::CubicSplitMatrix(name) = self.model.kind(input.ty) {
+            Ok(self
+                .model
+                .cubic_split_named(name)
+                .expect("registered cubic split witness"))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVCubicSplitMatrix(S) value"))
+        }
     }
 
     fn mazur_tate_expression(
