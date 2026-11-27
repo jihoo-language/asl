@@ -649,6 +649,8 @@ enum TypedForm {
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     HilbertSquareDivisor(i128, Box<TypedExpr>),
     HilbertSquareCup(Box<[TypedExpr; 2]>),
+    HilbertSquareLlv(hilbert_square::llv::Operation, Box<[TypedExpr; 2]>),
+    HilbertSquareRotate(Box<[TypedExpr; 3]>),
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
@@ -7629,6 +7631,29 @@ impl Engine {
                 };
                 let form = self.model.hilbert_square_form()?;
                 left.cup(&mut self.model, &form, &right)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareLlv(operation, inputs) => {
+                let (Value::HilbertSquare(generator), Value::HilbertSquare(class)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let form = self.model.hilbert_square_form()?;
+                operation
+                    .apply(&mut self.model, &form, &generator, &class)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareRotate(inputs) => {
+                let (Value::HilbertSquare(a), Value::HilbertSquare(b), Value::HilbertSquare(class)) = (
+                    self.eval(&inputs[0])?,
+                    self.eval(&inputs[1])?,
+                    self.eval(&inputs[2])?,
+                ) else {
+                    unreachable!()
+                };
+                let form = self.model.hilbert_square_form()?;
+                hilbert_square::llv::rotate(&mut self.model, &form, &a, &b, &class)?
                     .persist(&mut self.model)
             }
             TypedForm::HilbertSquareScale(scalar, input) => {
@@ -19134,11 +19159,33 @@ impl Checker<'_> {
         &self,
         input: &TypedExpr,
         operation: &str,
-    ) -> Result<(Rc<str>, usize)> {
+    ) -> Result<(Rc<str>, i128)> {
         match self.model.kind(input.ty) {
             Kind::HilbertSquare(name, degree) => Ok((name.clone(), *degree)),
             _ => Err(self.invalid_operand(input, operation, "an RVHilbSquare cohomology class")),
         }
+    }
+
+    fn hilbert_square_generator(
+        &self,
+        input: &TypedExpr,
+        marking: &str,
+        operation: &str,
+    ) -> Result<()> {
+        let (name, degree) = self.hilbert_square_operand(input, operation)?;
+        if name.as_ref() != marking {
+            return Err(Error::new(
+                input.span,
+                format!("{operation} requires the same named marking"),
+            ));
+        }
+        if degree != 2 {
+            return Err(Error::new(
+                input.span,
+                format!("{operation} requires a generator of cohomological degree two"),
+            ));
+        }
+        Ok(())
     }
 
     fn hilbert_square_expression(
@@ -19185,6 +19232,37 @@ impl Checker<'_> {
                 };
                 let ty = self.model.hilbert_square_type(&name, degree)?;
                 Ok((ty, TypedForm::HilbertSquareCup(Box::new([left, right]))))
+            }
+            Expression::Llv(operation, inputs) => {
+                let [generator, class] = *inputs;
+                let generator = self.expr(generator)?;
+                let class = self.expr(class)?;
+                let (name, degree) = self.hilbert_square_operand(&class, operation.name())?;
+                self.hilbert_square_generator(&generator, &name, operation.name())?;
+                let degree = operation.degree(degree)?;
+                let name = Label {
+                    text: name.to_string(),
+                    span: class.span,
+                };
+                let ty = self.model.hilbert_square_type(&name, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertSquareLlv(operation, Box::new([generator, class])),
+                ))
+            }
+            Expression::Rotate(inputs) => {
+                let operation = "rvHilbSquareRotate";
+                let [a, b, class] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let class = self.expr(class)?;
+                let (name, _) = self.hilbert_square_operand(&class, operation)?;
+                self.hilbert_square_generator(&a, &name, operation)?;
+                self.hilbert_square_generator(&b, &name, operation)?;
+                Ok((
+                    class.ty,
+                    TypedForm::HilbertSquareRotate(Box::new([a, b, class])),
+                ))
             }
             Expression::Scale(numerator, denominator, input) => {
                 let input = self.expr(*input)?;

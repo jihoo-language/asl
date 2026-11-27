@@ -9,18 +9,22 @@ use crate::model::{Model, Value};
 use crate::rv_lens::gcd;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod llv;
+
 const RANK: usize = 1 + unimodular::RANK;
 const MIDDLE: usize = RANK * (RANK + 1) / 2;
 
 pub(crate) enum Expression {
-    Basis(Label, usize, usize),
+    Basis(Label, i128, usize),
     Divisor(i128, Box<ParsedExpr>),
     Cup(Box<[ParsedExpr; 2]>),
     Scale(i128, i128, Box<ParsedExpr>),
     Chern(Label, bool),
+    Llv(llv::Operation, Box<[ParsedExpr; 2]>),
+    Rotate(Box<[ParsedExpr; 3]>),
 }
 
-pub(crate) fn dimension(degree: usize) -> usize {
+pub(crate) fn dimension(degree: i128) -> usize {
     match degree {
         0 | 8 => 1,
         2 | 6 => RANK,
@@ -29,9 +33,10 @@ pub(crate) fn dimension(degree: usize) -> usize {
     }
 }
 
-pub(crate) fn cup_degree(left: usize, right: usize) -> Result<usize> {
-    left.checked_add(right)
-        .ok_or_else(|| Error::plain("Hilbert-square cup product degree exceeds usize"))
+pub(crate) fn cup_degree(left: i128, right: i128) -> Result<i128> {
+    left.checked_add(right).ok_or_else(|| {
+        Error::plain("Hilbert-square cup product degree exceeds the signed 128-bit range")
+    })
 }
 
 pub(crate) fn ratio(numerator: i128, denominator: i128) -> Result<Rational> {
@@ -52,19 +57,19 @@ fn checked<T>(result: Result<T>) -> Result<T> {
 }
 
 pub(crate) struct Class {
-    degree: usize,
+    degree: i128,
     coordinates: Vec<Rational>,
 }
 
 impl Class {
-    pub(crate) fn zero(degree: usize) -> Self {
+    pub(crate) fn zero(degree: i128) -> Self {
         Self {
             degree,
             coordinates: vec![Rational::ZERO; dimension(degree)],
         }
     }
 
-    pub(crate) fn basis(degree: usize, index: usize) -> Result<Self> {
+    pub(crate) fn basis(degree: i128, index: usize) -> Result<Self> {
         let mut value = Self::zero(degree);
         let coordinate = value.coordinates.get_mut(index).ok_or_else(|| {
             Error::plain(format!(

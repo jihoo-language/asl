@@ -132,7 +132,7 @@ pub(crate) enum TypeForm {
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     Mukai(Label),
-    HilbertSquare(Label, usize),
+    HilbertSquare(Label, i128),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -3051,18 +3051,40 @@ impl<'src> Parser<'src> {
         span: Span,
         nest: usize,
     ) -> Result<ParsedExpr> {
-        use crate::hyperelliptic_kummer_surface::hilbert_square::Expression;
+        use crate::hyperelliptic_kummer_surface::hilbert_square::{llv::Operation, Expression};
         let (expression, depth) = match name {
             "rvHilbSquareCup" => {
                 let inputs = self.paren_pair(nest)?;
                 let depth = 1 + inputs[0].depth.max(inputs[1].depth);
                 (Expression::Cup(Box::new(inputs)), depth)
             }
+            "rvHilbSquareLower" | "rvHilbSquareLambda" | "rvHilbSquarePrimitive" => {
+                let operation = match name {
+                    "rvHilbSquareLower" => Operation::Lower,
+                    "rvHilbSquareLambda" => Operation::Lambda,
+                    _ => Operation::Primitive,
+                };
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Llv(operation, Box::new(inputs)), depth)
+            }
+            "rvHilbSquareRotate" => {
+                self.expect(Token::LParen)?;
+                let a = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let b = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let class = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let depth = 1 + a.depth.max(b.depth).max(class.depth);
+                (Expression::Rotate(Box::new([a, b, class])), depth)
+            }
             "rvHilbSquareBasis" => {
                 self.expect(Token::LBracket)?;
                 let basis = self.label()?;
                 self.expect(Token::Comma)?;
-                let degree = self.number()?.0;
+                let degree =
+                    self.signed_wide("a signed cohomological degree", "Hilbert-square degree")?;
                 self.expect(Token::Comma)?;
                 let index = self.number()?.0;
                 self.expect(Token::RBracket)?;
@@ -8004,7 +8026,8 @@ impl<'src> Parser<'src> {
         if name.text == "RVHilbSquare" && self.eat(Token::LParen)? {
             let basis = self.label()?;
             self.expect(Token::Comma)?;
-            let degree = self.number()?.0;
+            let degree =
+                self.signed_wide("a signed cohomological degree", "Hilbert-square degree")?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::HilbertSquare(basis, degree), 0);
         }
@@ -10079,7 +10102,14 @@ impl<'src> Parser<'src> {
                         | "rvHilbSquareC2"
                         | "rvHilbSquareC4"
                 ) && self.token() == Token::LBracket)
-                    || (name.text == "rvHilbSquareCup" && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvHilbSquareCup"
+                            | "rvHilbSquareLower"
+                            | "rvHilbSquareLambda"
+                            | "rvHilbSquarePrimitive"
+                            | "rvHilbSquareRotate"
+                    ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
                 }

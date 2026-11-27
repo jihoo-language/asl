@@ -264,7 +264,7 @@ pub(crate) enum Kind {
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     Mukai(Rc<str>),
-    HilbertSquare(Rc<str>, usize),
+    HilbertSquare(Rc<str>, i128),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -3935,7 +3935,7 @@ impl Model {
         Ok(gram)
     }
 
-    pub(crate) fn hilbert_square_type(&mut self, name: &Label, degree: usize) -> Result<TypeId> {
+    pub(crate) fn hilbert_square_type(&mut self, name: &Label, degree: i128) -> Result<TypeId> {
         nikulin::basis_for(
             self,
             name,
