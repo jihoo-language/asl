@@ -32,6 +32,7 @@ pub(crate) enum Expression {
     HalfAt(Label, String, Box<[ParsedExpr; 2]>),
     RichelotPoint(Label, Box<[ParsedExpr; 2]>),
     RichelotPush(Label, Box<ParsedExpr>),
+    BiellipticPoint(Label, Box<[ParsedExpr; 2]>),
     Transport(Label, Direction, Box<ParsedExpr>),
     QuadraticTrace(Label, Box<ParsedExpr>, Box<[Vec<Vec<i128>>; 4]>),
     Apply(Operation, Box<ParsedExpr>),

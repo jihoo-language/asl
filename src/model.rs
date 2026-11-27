@@ -588,6 +588,7 @@ pub(crate) struct Model {
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
+    bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -681,6 +682,7 @@ impl Model {
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
             richelot_isogenies: HashMap::new(),
+            bielliptic_quotients: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -3400,6 +3402,13 @@ impl Model {
         prime: usize,
         lift: Vec<i128>,
     ) -> Result<()> {
+        self.require_fresh_hyperelliptic_name(&name)?;
+        let curve = hyperelliptic::Curve::new(self, prime, lift)?;
+        self.hyperelliptic.insert(name.text, Rc::new(curve));
+        Ok(())
+    }
+
+    fn require_fresh_hyperelliptic_name(&self, name: &Label) -> Result<()> {
         if self.hyperelliptic.contains_key(&name.text)
             || self.hw_closed_curves.contains_key(&name.text)
         {
@@ -3408,8 +3417,6 @@ impl Model {
                 "hyperelliptic curve is already defined",
             ));
         }
-        let curve = hyperelliptic::Curve::new(self, prime, lift)?;
-        self.hyperelliptic.insert(name.text, Rc::new(curve));
         Ok(())
     }
 
@@ -3437,14 +3444,7 @@ impl Model {
         ring: &Label,
         coefficients: Vec<Vec<u64>>,
     ) -> Result<()> {
-        if self.hyperelliptic.contains_key(&name.text)
-            || self.hw_closed_curves.contains_key(&name.text)
-        {
-            return Err(Error::new(
-                name.span,
-                "hyperelliptic curve is already defined",
-            ));
-        }
+        self.require_fresh_hyperelliptic_name(&name)?;
         let coefficient_ring = self.rv_unram(ring)?;
         let curve = hw_closed::Curve::new(
             self,
@@ -3574,6 +3574,46 @@ impl Model {
                 Error::new(
                     target.span,
                     format!("curve '{}' has no stored Richelot splitting", target.text),
+                )
+            })
+    }
+
+    pub(crate) fn define_bielliptic(
+        &mut self,
+        targets: [Label; 2],
+        source: Rc<hw_closed::Curve>,
+        matrix: [ECScalar; 4],
+    ) -> Result<()> {
+        let [plus, minus] = &targets;
+        if plus.text == minus.text {
+            return Err(Error::new(
+                minus.span,
+                "bielliptic target names must be distinct",
+            ));
+        }
+        self.require_fresh_hyperelliptic_name(plus)?;
+        self.require_fresh_hyperelliptic_name(minus)?;
+        let quotients = crate::bielliptic::Quotient::build(self, source, matrix)?;
+        for (name, quotient) in targets.into_iter().zip(quotients) {
+            self.hw_closed_curves
+                .insert(name.text.clone(), quotient.target.clone());
+            self.bielliptic_quotients
+                .insert(name.text, Rc::new(quotient));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bielliptic_quotient(
+        &self,
+        target: &Label,
+    ) -> Result<Rc<crate::bielliptic::Quotient>> {
+        self.bielliptic_quotients
+            .get(&target.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    target.span,
+                    format!("curve '{}' has no stored bielliptic quotient", target.text),
                 )
             })
     }

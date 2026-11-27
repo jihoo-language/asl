@@ -1258,6 +1258,14 @@ The correspondence cyclically orders the splitting with the linear $G_3$ last an
 
 `rvRichelotPush[N](D)` applies the same correspondence to any class `D` of the named source Jacobian and returns a class in `RVJac(N)`. For a squarefree quadratic Mumford support $u(X)=(X-h)^2-k$, it computes the fiber of $(h+\omega,v(h+\omega))$ in the quadratic algebra $\omega^2=k$ and takes its Jacobian trace. A repeated point gives twice its point image. Branch pairs and fibers meeting the chart infinity use their specialized images. The example verifies a nonsplit push by adjoining its two conjugate source points, then compares a repeated-point push with doubling. [Richelot push example](examples/hyperelliptic-richelot-push.asl)
 
+#### Bielliptic quotients in a split chart
+
+`rvbielliptic C[Plus,Minus](a,b,c,d);` registers two degree-two elliptic quotients of a smooth genus-two quintic or sextic. The four coefficients belong to the curve's named precision-one odd field and satisfy $ad-bc\ne0$. The change $x=(at+b)/(ct+d)$ and $Y=(ct+d)^3y$ must give $Y^2=H(t^2)$ for $H(u)=h_0+h_1u+h_2u^2+h_3u^3$ with $h_0h_3\ne0$. The three branch pairs exchanged by $t\mapsto-t$ give a split Richelot quotient with target $\mathrm{Plus}\times\mathrm{Minus}$. The declaration requires the explicit chart over the base field.
+
+The quotient by $(t,Y)\mapsto(-t,Y)$ uses $(t^2,Y)$ and the quotient by $(t,Y)\mapsto(-t,-Y)$ uses $(t^{-2},Y/t^3)$. The interpreter scales both coordinates by the leading coefficient of the corresponding cubic, $h_3$ for $H(u)$ and $h_0$ for $u^3H(1/u)$. This gives monic cubic models that work with the existing `RVJac` and `rvHWW` operations.
+
+`rvBiellipticPoint[E](x,y)` checks the affine source point $(x,y)$ and returns its image in `RVJac(E)` for either factor. A pole of the selected quotient maps to the elliptic point at infinity, represented by the zero class. The example computes both images and the Frobenius polynomials over $\mathbb F_7$. [Bielliptic quotient example](examples/hyperelliptic-bielliptic.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

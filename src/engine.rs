@@ -449,6 +449,7 @@ enum JacobianAction {
         Box<crate::richelot::correspondence::Correspondence>,
         Box<TypedExpr>,
     ),
+    BiellipticPoint(Rc<crate::bielliptic::Quotient>, Box<[TypedExpr; 2]>),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -1499,6 +1500,10 @@ impl Engine {
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
+            StatementForm::Bielliptic(command) => {
+                self.bielliptic_command(*command)?;
+                return Ok(None);
+            }
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
             StatementForm::EllipticCM(command) => {
                 let ec_cm::Command::Certify(family, input) = *command;
@@ -4700,6 +4705,44 @@ impl Engine {
         }
     }
 
+    fn bielliptic_command(&mut self, command: crate::bielliptic::Command) -> Result<()> {
+        let crate::bielliptic::Command {
+            source,
+            targets,
+            matrix: [a, b, c, d],
+        } = command;
+        let curve = self.model.hww_curve(&source)?;
+        if curve.grade.genus != 2 || curve.ring.precision() != 1 {
+            return Err(Error::new(
+                source.span,
+                "bielliptic source must be a smooth genus-two curve over a named precision-one field",
+            ));
+        }
+        let field = Label {
+            text: curve.grade.ring.to_string(),
+            span: source.span,
+        };
+        let expected = self.model.rv_unram_type(&field)?;
+        let mut coordinate = |coefficient| {
+            let coefficient = self.checker().expr(coefficient)?;
+            self.checker()
+                .require_type(expected, &coefficient, "bielliptic chart coefficient")?;
+            let Value::RVUnram(value) = self.eval(&coefficient)? else {
+                unreachable!()
+            };
+            Ok(value.to_vec())
+        };
+        let matrix = [
+            coordinate(a)?,
+            coordinate(b)?,
+            coordinate(c)?,
+            coordinate(d)?,
+        ];
+        self.model
+            .define_bielliptic(targets, curve, matrix)
+            .map_err(|error| error.at(source.span))
+    }
+
     fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
         match action {
             JacobianAction::Point(curve, xy, root) => {
@@ -4742,6 +4785,12 @@ impl Engine {
                 correspondence
                     .push(&mut self.model, &input)?
                     .persist(&mut self.model, &correspondence.target)
+            }
+            JacobianAction::BiellipticPoint(quotient, coordinates) => {
+                let [x, y] = self.eval_jacobian_point(coordinates)?;
+                quotient
+                    .point(&mut self.model, &x, &y)?
+                    .persist(&mut self.model, &quotient.target)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17769,6 +17818,27 @@ impl Checker<'_> {
                     TypedForm::Jacobian(JacobianAction::RichelotPush(
                         Box::new(correspondence),
                         Box::new(input),
+                    )),
+                ))
+            }
+            Expression::BiellipticPoint(name, coordinates) => {
+                let quotient = self.model.bielliptic_quotient(&name)?;
+                let field = Label {
+                    text: quotient.source.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let coefficient = self.model.rv_unram_type(&field)?;
+                let [x, y] = *coordinates;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                self.require_type(coefficient, &x, "rvBiellipticPoint x coordinate")?;
+                self.require_type(coefficient, &y, "rvBiellipticPoint y coordinate")?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::BiellipticPoint(
+                        quotient,
+                        Box::new([x, y]),
                     )),
                 ))
             }

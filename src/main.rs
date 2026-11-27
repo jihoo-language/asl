@@ -1,4 +1,5 @@
 mod adams;
+mod bielliptic;
 mod binary_field;
 mod binary_linear;
 mod bp;
