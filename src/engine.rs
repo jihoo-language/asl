@@ -1104,6 +1104,11 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionDGUnary(
+        crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Unary,
+        Box<TypedExpr>,
+    ),
+    PartitionDGProduct(Box<[TypedExpr; 2]>),
     PartitionFormalStart(Rc<str>, Vec<TypedExpr>),
     PartitionFormalTransform(
         crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Operation,
@@ -2575,6 +2580,7 @@ impl Engine {
                 }
                 .map(Some);
             }
+            StatementForm::PartitionDGReport(report) => return self.partition_dg_report(report),
             StatementForm::PartitionFormalReport(report) => {
                 return self.partition_formal_report(report);
             }
@@ -12345,6 +12351,63 @@ impl Engine {
         }
     }
 
+    fn partition_dg_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Report,
+    ) -> Result<Option<String>> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Report;
+        match report {
+            Report::Declare(name, spec, ordinary) => {
+                self.model.define_partition_dg(name, spec, ordinary)?;
+                Ok(None)
+            }
+            Report::Info(name) => Ok(Some(self.model.partition_dg(&name.text)?.info())),
+            Report::Trace(input) => {
+                let input = self.checker().expr(*input)?;
+                let (name, _) = self.checker().partition_dg_operand(&input)?;
+                let value = self.eval_partition_dg(&input)?;
+                self.model
+                    .partition_dg(&name)?
+                    .trace_report(&mut self.model, &value)
+                    .map(Some)
+            }
+            Report::PotentialTrace(name, input) => {
+                let spec = self.model.partition_dg(&name.text)?;
+                let module = self.partition_dg_module(&spec, *input)?;
+                spec.potential_trace(&mut self.model, &module).map(Some)
+            }
+            Report::Tangent(name, query, input) => {
+                let spec = self.model.partition_dg(&name.text)?;
+                let module = self.partition_dg_module(&spec, *input)?;
+                spec.tangent(&mut self.model, query, &module).map(Some)
+            }
+        }
+    }
+
+    fn partition_dg_module(
+        &mut self,
+        spec: &crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Spec,
+        input: ParsedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::Record>> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::Mode;
+        let input = self.checker().expr(input)?;
+        self.checker()
+            .partition_hall_same_key(&input, Mode::Module, spec.key())?;
+        self.eval_partition_hall(&input)
+    }
+
+    fn eval_partition_dg(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<
+        Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Chain>,
+    > {
+        let Value::RVPartitionDG(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_formal_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report,
@@ -13951,6 +14014,11 @@ impl Engine {
                     ) => self
                         .model
                         .partition_extension(&a.space)?
+                        .add(&mut self.model, &a, &b)?
+                        .persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionDG(a), Value::RVPartitionDG(b)) => self
+                        .model
+                        .partition_dg(&a.frame)?
                         .add(&mut self.model, &a, &b)?
                         .persist(&mut self.model),
                     (BinaryOp::Add, Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => {
@@ -17733,6 +17801,25 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionDGUnary(op, input) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Unary;
+                let value = self.eval_partition_dg(input)?;
+                let spec = self.model.partition_dg(&value.frame)?;
+                match op {
+                    Unary::Differential => spec.differentiate(&mut self.model, &value),
+                    Unary::Negate => spec.negate(&mut self.model, &value),
+                    Unary::Scale(code) => spec.scale(&mut self.model, &value, *code),
+                }?
+                .persist(&mut self.model)
+            }
+            TypedForm::PartitionDGProduct(inputs) => {
+                let a = self.eval_partition_dg(&inputs[0])?;
+                let b = self.eval_partition_dg(&inputs[1])?;
+                self.model
+                    .partition_dg(&a.frame)?
+                    .product(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
             TypedForm::PartitionFormalStart(name, inputs) => {
                 let values = inputs
                     .iter()
@@ -20492,6 +20579,9 @@ impl Checker<'_> {
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
+            TypeForm::RVPartitionDG(name, degree) => {
+                self.model.partition_dg_type(&name.text, degree)
+            }
             TypeForm::RVPartitionFormal(name) => self.model.partition_formal_type(&name.text),
             TypeForm::RVPartitionExtension(name) => self.model.partition_extension_type(&name.text),
             TypeForm::RVPartitionHall(spec, mode) => {
@@ -21647,6 +21737,7 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionDG(name, degree) => crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Chain::zero(name.clone(), *degree).persist(self.model)?,
                     Kind::RVPartitionExtension(name) => self.model.partition_extension(name)?.zero().persist(self.model)?,
                     Kind::RVPartitionHall(grade) => crate::partition_algebra::fiber::gabriel::derived::hall::Record::zero(grade.clone()).persist(self.model)?,
                     Kind::RVPartitionHom(grade, _) => crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(*grade).persist(self.model)?,
@@ -23863,6 +23954,7 @@ impl Checker<'_> {
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
             ExprForm::PartitionHall(expression) => self.partition_hall_expression(*expression),
+            ExprForm::PartitionDG(expression) => self.partition_dg_expression(*expression),
             ExprForm::PartitionFormal(expression) => self.partition_formal_expression(*expression),
             ExprForm::PartitionExtension(expression) => {
                 self.partition_extension_expression(*expression)
@@ -25216,6 +25308,9 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })) {
                     return Ok((input.ty, TypedForm::PartitionHallNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionDG(..)) {
+                    return Ok((input.ty, TypedForm::PartitionDGUnary(crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Unary::Negate, Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionExtension(..)) {
                     return Ok((
@@ -29190,6 +29285,7 @@ impl Checker<'_> {
                         | Kind::RVPartitionFiber(..)
                         | Kind::RVPartitionExt(..)
                         | Kind::RVPartitionHom(..)
+                        | Kind::RVPartitionDG(..)
                         | Kind::RVPartitionExtension(..)
                         | Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })
                         | Kind::RVKaroubiMap(..)
@@ -32013,6 +32109,63 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_dg_expression(
+        &mut self,
+        expression: crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::{
+            degree_bound, Expression, Unary,
+        };
+        match expression {
+            Expression::Literal(name, literal) => {
+                let chain = self
+                    .model
+                    .partition_dg(&name.text)?
+                    .literal(self.model, literal)?;
+                let ty = self.model.partition_dg_type(&name.text, chain.degree)?;
+                Ok((ty, TypedForm::Constant(chain.persist(self.model)?)))
+            }
+            Expression::Unary(op, input) => {
+                let input = self.expr(*input)?;
+                let (name, degree) = self.partition_dg_operand(&input)?;
+                let ty = if matches!(op, Unary::Differential) {
+                    self.model
+                        .partition_dg_type(&name, degree.checked_add(1).ok_or_else(degree_bound)?)?
+                } else {
+                    input.ty
+                };
+                Ok((ty, TypedForm::PartitionDGUnary(op, Box::new(input))))
+            }
+            Expression::Product(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (name, i) = self.partition_dg_operand(&a)?;
+                let (other, j) = self.partition_dg_operand(&b)?;
+                if name != other {
+                    return Err(Error::new(
+                        b.span,
+                        "partition Ginzburg product requires the same nominal algebra",
+                    ));
+                }
+                let ty = self
+                    .model
+                    .partition_dg_type(&name, i.checked_add(j).ok_or_else(degree_bound)?)?;
+                Ok((ty, TypedForm::PartitionDGProduct(Box::new([a, b]))))
+            }
+        }
+    }
+
+    fn partition_dg_operand(&self, input: &TypedExpr) -> Result<(Rc<str>, i128)> {
+        match self.model.kind(input.ty) {
+            Kind::RVPartitionDG(name, degree) => Ok((name.clone(), *degree)),
+            _ => Err(Error::new(
+                input.span,
+                "partition Ginzburg operation requires an RVPartitionDG value",
+            )),
         }
     }
 

@@ -146,6 +146,7 @@ pub(crate) enum TypeForm {
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
     RVPartitionFormal(Label),
+    RVPartitionDG(Label, i128),
     RVPartitionExtension(Label),
     RVPartitionHall(
         crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec,
@@ -954,6 +955,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionDG(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Expression>),
     PartitionFormal(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Expression>),
     PartitionExtension(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression>),
     PartitionHall(Box<crate::partition_algebra::fiber::gabriel::derived::hall::Expression>),
@@ -1575,6 +1577,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionDGReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Report),
     PartitionFormalReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report),
     PartitionExtensionReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report),
     PartitionHallReport(crate::partition_algebra::fiber::gabriel::derived::hall::Report),
@@ -11086,6 +11089,58 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_dg_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::{
+            Expression, Generator, Literal, Unary,
+        };
+        let (operation, depth) = match name {
+            "rvPartitionDGProduct" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Product(Box::new(inputs)), depth)
+            }
+            "rvPartitionDGDifferential" | "rvPartitionDGScale" => {
+                let op = if name == "rvPartitionDGScale" {
+                    self.expect(Token::LBracket)?;
+                    let code = self.wide_unsigned("Ginzburg coefficient code")?;
+                    self.expect(Token::RBracket)?;
+                    Unary::Scale(code)
+                } else {
+                    Unary::Differential
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Unary(op, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let frame = self.label()?;
+                let literal = if name == "rvPartitionDGPotential" {
+                    self.expect(Token::RBracket)?;
+                    Literal::Potential
+                } else {
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("Ginzburg generator or starting vertex")?;
+                    self.expect(Token::RBracket)?;
+                    match name {
+                        "rvPartitionDGPath" => Literal::Path(index, self.partition_labels(false)?),
+                        "rvPartitionDGArrow" => Literal::Arrow(index, Generator::Original),
+                        "rvPartitionDGStar" => Literal::Arrow(index, Generator::Reversed),
+                        "rvPartitionDGLoop" => Literal::Arrow(index, Generator::VertexLoop),
+                        _ => Literal::Derivative(index),
+                    }
+                };
+                (Expression::Literal(frame, literal), 0)
+            }
+        };
+        expr(span, ExprForm::PartitionDG(Box::new(operation)), depth)
+    }
+
     fn partition_formal_terms(
         &mut self,
     ) -> Result<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Terms>
@@ -15995,6 +16050,51 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvpartitionginzburg"
+                | "rvpartitionginzburggradient"
+                | "rvPartitionDGInfo"
+                | "rvPartitionDGTrace"
+                | "rvPartitionDGPotentialTrace"
+                | "rvPartitionDGTangent"
+                | "rvPartitionDGComplex"
+                | "rvPartitionDGCohomology"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::{Report, TangentQuery};
+                self.advance()?;
+                let report = match name {
+                    "rvpartitionginzburg" | "rvpartitionginzburggradient" => {
+                        let frame = self.label()?;
+                        self.expect(Token::LBracket)?;
+                        let key = self.partition_hall_key()?;
+                        self.expect(Token::RBracket)?;
+                        Report::Declare(frame, key, name == "rvpartitionginzburg")
+                    }
+                    "rvPartitionDGInfo" => Report::Info(self.partition_extension_name()?),
+                    "rvPartitionDGTrace" => Report::Trace(Box::new(self.paren_expr(0)?)),
+                    "rvPartitionDGPotentialTrace" => {
+                        let frame = self.partition_extension_name()?;
+                        Report::PotentialTrace(frame, Box::new(self.paren_expr(0)?))
+                    }
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let frame = self.label()?;
+                        let query = if name == "rvPartitionDGCohomology" {
+                            self.expect(Token::Comma)?;
+                            TangentQuery::Cohomology(
+                                self.wide_unsigned("Ginzburg cohomology degree")?,
+                            )
+                        } else if name == "rvPartitionDGComplex" {
+                            TangentQuery::Differentials
+                        } else {
+                            TangentQuery::Summary
+                        };
+                        self.expect(Token::RBracket)?;
+                        Report::Tangent(frame, query, Box::new(self.paren_expr(0)?))
+                    }
+                };
+                StatementForm::PartitionDGReport(report)
+            }
+            Token::Word(
                 name @ ("rvpartitionformal"
                 | "rvPartitionFormalFrame"
                 | "rvPartitionFormalObstruction"
@@ -19370,6 +19470,13 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionDG" && self.eat(Token::LParen)? {
+            let frame = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_wide("a graded path degree", "Ginzburg degree")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionDG(frame, degree), 0);
         }
         if name.text == "RVPartitionFormal" && self.eat(Token::LParen)? {
             let frame = self.label()?;
@@ -24706,6 +24813,20 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionDGPath"
+                        | "rvPartitionDGArrow"
+                        | "rvPartitionDGStar"
+                        | "rvPartitionDGLoop"
+                        | "rvPartitionDGPotential"
+                        | "rvPartitionDGDerivative"
+                        | "rvPartitionDGProduct"
+                        | "rvPartitionDGDifferential"
+                        | "rvPartitionDGScale"
+                ) {
+                    return self.partition_dg_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

@@ -53,6 +53,7 @@ pub(super) enum Field {
 
 pub(super) struct Table {
     q: usize,
+    p: u32,
     add: Vec<u32>,
     multiply: Vec<u32>,
     negative: Vec<u32>,
@@ -116,11 +117,19 @@ impl Field {
         model.allocate(2 * q * q + 2 * q)?;
         Ok(Self::Table(Table {
             q,
+            p: p as u32,
             add,
             multiply,
             negative,
             inverse,
         }))
+    }
+
+    pub(super) fn characteristic(&self) -> u32 {
+        match self {
+            Self::Prime(p) => p.get(),
+            Self::Table(table) => table.p,
+        }
     }
 
     pub(super) fn order(&self) -> u32 {
