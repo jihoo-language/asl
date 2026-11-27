@@ -26,6 +26,7 @@ use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::mixed_bars;
 use crate::mixed_hom;
+use crate::mixed_minimal;
 use crate::motivic;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
@@ -135,6 +136,7 @@ pub(crate) enum Kind {
     Space(String),
     QModule(String),
     MixedChain(mixed::Grade, bool),
+    MixedMinimum(mixed_minimal::Grade, bool),
     MixedPage(mixed_page::Grade),
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
@@ -407,6 +409,8 @@ pub(crate) struct Model {
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
     mixed_homs: HashMap<mixed::Id, Rc<mixed_hom::Hom>>,
+    mixed_minimals: Vec<(String, Rc<mixed_minimal::Minimal>)>,
+    mixed_minimal_ids: HashMap<String, mixed_minimal::Id>,
     mixed_bars: HashMap<mixed::Id, Rc<mixed_bars::Bars>>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
@@ -453,6 +457,8 @@ impl Model {
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
             mixed_homs: HashMap::new(),
+            mixed_minimals: Vec::new(),
+            mixed_minimal_ids: HashMap::new(),
             mixed_bars: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
@@ -541,6 +547,7 @@ impl Model {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::QModule(_) => 1,
+            Kind::MixedMinimum(..) => usize::MAX,
             Kind::MixedChain(..) | Kind::MixedPage(..) => usize::MAX,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
             Kind::SheafComplex(_, ref name, k)
@@ -800,6 +807,7 @@ impl Model {
             self.kind(ty),
             Kind::Cohomology(..)
                 | Kind::MixedChain(..)
+                | Kind::MixedMinimum(..)
                 | Kind::MixedPage(..)
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
@@ -1000,6 +1008,50 @@ impl Model {
         }
         out.push("]")?;
         Ok(out.string)
+    }
+
+    pub(crate) fn check_new_mixed_minimal(&self, name: &Label) -> Result<()> {
+        if self.mixed_minimal_ids.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "minimal mixed model is already defined",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_mixed_minimal(&mut self, name: String, data: mixed_minimal::Minimal) {
+        let id = mixed_minimal::Id(self.mixed_minimals.len());
+        self.mixed_minimal_ids.insert(name.clone(), id);
+        self.mixed_minimals.push((name, Rc::new(data)));
+    }
+
+    pub(crate) fn mixed_minimal_id(&self, name: &Label) -> Result<mixed_minimal::Id> {
+        self.mixed_minimal_ids
+            .get(&name.text)
+            .copied()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown minimal mixed model '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn mixed_minimal_name(&self, id: mixed_minimal::Id) -> &str {
+        &self.mixed_minimals[id.0].0
+    }
+
+    pub(crate) fn mixed_minimal(&self, id: mixed_minimal::Id) -> Rc<mixed_minimal::Minimal> {
+        self.mixed_minimals[id.0].1.clone()
+    }
+
+    pub(crate) fn mixed_minimal_type(
+        &mut self,
+        grade: mixed_minimal::Grade,
+        total: bool,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::MixedMinimum(grade, total), 0)
     }
 
     pub(crate) fn mixed_page_type(&mut self, grade: mixed_page::Grade) -> Result<TypeId> {
@@ -2697,6 +2749,7 @@ impl Model {
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
             | Kind::MixedChain(..)
+            | Kind::MixedMinimum(..)
             | Kind::MixedPage(..)
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
@@ -2879,6 +2932,14 @@ impl Model {
                 out.push(&format!(
                     "{name}({}, {})",
                     self.mixed_name(grade.complex),
+                    grade.b
+                ))
+            }
+            Kind::MixedMinimum(grade, total) => {
+                let name = if *total { "MixedMinU" } else { "MixedMin" };
+                out.push(&format!(
+                    "{name}({}, {})",
+                    self.mixed_minimal_name(grade.minimal),
                     grade.b
                 ))
             }
@@ -3957,6 +4018,12 @@ impl Model {
                     self.mixed_complex(grade.complex)
                         .elements(self, grade, total, MAX_ELEMENTS)?
                 }
+                Kind::MixedMinimum(grade, total) => self.mixed_minimal(grade.minimal).elements(
+                    self,
+                    grade.b,
+                    total,
+                    MAX_ELEMENTS,
+                )?,
                 Kind::MixedPage(grade) => {
                     let rank = self.mixed_page(ty)?.rank();
                     odd_ext::elements(
@@ -4448,6 +4515,11 @@ impl Model {
                     }
                     _ => None,
                 };
+                let minimal = if let Kind::MixedMinimum(grade, true) = *self.kind(ty) {
+                    Some((self.mixed_minimal(grade.minimal), grade.b))
+                } else {
+                    None
+                };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
@@ -4478,6 +4550,10 @@ impl Model {
                             let (b, r) = chart.exponent(index);
                             out.push(&format!("{label}({b},{r})"))?;
                         } else {
+                            if let Some((data, b)) = &minimal {
+                                let exponent = data.filtration(generator, *b).unwrap();
+                                out.push(&format!("u^{exponent}*"))?;
+                            }
                             out.push(&format!("g{generator}"))?;
                         }
                     }

@@ -6,10 +6,11 @@ BEGIN {
     if (bars == "") bars = 0
     if (direct == "") direct = 0
     if (hom == "") hom = 0
+    if (minimal == "") minimal = 0
     if (r !~ /^[0-9]+$/ || r < 1 ||
         p !~ /^[0-9]+$/ || p < 2 || p > 4294967295 ||
-        control !~ /^[01]$/ || bars !~ /^[01]$/ || direct !~ /^[01]$/ || hom !~ /^[01]$/) {
-        print "r must be positive and p must be a prime fitting u32. Set control, bars, hom, and direct to 0 or 1." > "/dev/stderr"
+        control !~ /^[01]$/ || bars !~ /^[01]$/ || direct !~ /^[01]$/ || hom !~ /^[01]$/ || minimal !~ /^[01]$/) {
+        print "r must be positive and p must be a prime fitting u32. Set control, bars, hom, direct, and minimal to 0 or 1." > "/dev/stderr"
         exit 2
     }
     emit("mixedcomplex Stair[" p "] {")
@@ -70,6 +71,27 @@ BEGIN {
             emit(sprintf("assert mixD(mixBarNull[%s,0]) == mixU[%d](mixBarRep[%s,0]);",C,r,C))
         }
         emit(sprintf("mixbars[%s];",C))
+    }
+
+    if (minimal) {
+        emit("mixminimal Minimal[" C "];")
+        emit("let lead = mixMinGen[Minimal,0,0];")
+        emit(sprintf("let terminal = mixMinGen[Minimal,%d,0];",2*r-1))
+        emit("let total = mixU[0](lead);")
+        emit("let inclusion = mixMinI(total);")
+        emit("assert inclusion == mixPageRep(x);")
+        emit("assert mixMinP[Minimal](inclusion) == total;")
+        emit("assert mixMinH[Minimal](inclusion) == zero[MixedU(" C ",1)];")
+        emit(sprintf("assert mixDelta[%d](lead) == zero[MixedMin(Minimal,%d)];",r-1,2*r-3))
+        if (control) {
+            emit(sprintf("assert mixDelta[%d](lead) == zero[MixedMin(Minimal,%d)];",r,2*r-1))
+            emit("assert mixD(total) == zero[MixedMinU(Minimal,-1)];")
+        } else {
+            emit(sprintf("assert mixDelta[%d](lead) == terminal;",r))
+            emit(sprintf("assert mixD(total) == mixU[%d](terminal);",r))
+        }
+        emit("assert mixMinI(mixD(total)) == mixD(inclusion);")
+        emit(sprintf("show mixDelta[%d](lead);",r))
     }
 
     for (i=1; i<=line_count; i++) print lines[i]

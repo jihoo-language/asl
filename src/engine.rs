@@ -31,6 +31,7 @@ use crate::may;
 use crate::may_lift;
 use crate::milnor;
 use crate::mixed_hom;
+use crate::mixed_minimal;
 use crate::model::{DiffFamily, Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::motivic;
 use crate::nakamura;
@@ -179,6 +180,7 @@ enum CobarOp {
     MixUp,
     MixD,
     RvMixedToHH,
+    MixMinI,
     MixClass,
     MixRep,
     MixNext,
@@ -249,6 +251,7 @@ impl CobarOp {
             "rvMixedToHH" => Some(Self::RvMixedToHH),
             "mixb" => Some(Self::MixDown),
             "mixB" => Some(Self::MixUp),
+            "mixMinI" => Some(Self::MixMinI),
             "mixD" => Some(Self::MixD),
             "mixPageRep" => Some(Self::MixRep),
             "mixNext" => Some(Self::MixNext),
@@ -440,6 +443,13 @@ enum TypedForm {
     SheafPageLift(SheafPageLift, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
     MixedComposition([Rc<mixed_hom::Hom>; 3], Box<TypedExpr>, Box<TypedExpr>),
+    MixedMinMap(
+        Rc<mixed_minimal::Minimal>,
+        mixed_minimal::Operation,
+        bool,
+        Box<TypedExpr>,
+    ),
+    MixedDelta(Rc<mixed_minimal::Minimal>, usize, Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
@@ -550,6 +560,22 @@ impl Engine {
                     .mixed_bars(id)?
                     .periodic_rank(&mut self.model, degree)?;
                 format!("mixbarperiodicdim[{}, {degree}] = {rank}", name.text)
+            }
+            StatementForm::MixedMinimal(name, source) => {
+                self.model.check_new_mixed_minimal(&name)?;
+                let source = self.model.mixed_id(&source)?;
+                let data = mixed_minimal::Minimal::build(&mut self.model, source)?;
+                self.model.define_mixed_minimal(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::MixedMinDimension(name, b) => {
+                let id = self.model.mixed_minimal_id(&name)?;
+                let dimension = self
+                    .model
+                    .mixed_minimal(id)
+                    .basis(&mut self.model, b, false)?
+                    .len();
+                format!("mixmindim[{}, {b}] = {dimension}", name.text)
             }
             StatementForm::MixedDimension(spec) => {
                 let grade = self.checker().mixed_grade(spec)?;
@@ -2405,6 +2431,9 @@ impl Engine {
                             Kind::MixedChain(grade, _) => {
                                 self.model.mixed_complex(grade.complex).prime
                             }
+                            Kind::MixedMinimum(grade, _) => {
+                                self.model.mixed_minimal(grade.minimal).prime()
+                            }
                             Kind::MixedPage(grade) => {
                                 self.model.mixed_complex(grade.chain.complex).prime
                             }
@@ -2870,11 +2899,24 @@ impl Engine {
                             let image = complex.apply(&mut self.model, differential, &terms)?;
                             odd_ext::persist(&mut self.model, image)
                         }
+                        Kind::MixedMinimum(grade, true) => {
+                            let data = self.model.mixed_minimal(grade.minimal);
+                            let image = data.differential(&mut self.model, &terms)?;
+                            odd_ext::persist(&mut self.model, image)
+                        }
                         Kind::MixedPage(_) => {
                             mixed_page::differential(&mut self.model, input.ty, expr.ty, &terms)
                         }
                         _ => unreachable!(),
                     }
+                }
+                (CobarOp::MixMinI, Value::OddClass(terms)) => {
+                    let Kind::MixedMinimum(grade, total) = *self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    let data = self.model.mixed_minimal(grade.minimal);
+                    let image = data.inclusion(&mut self.model, &terms, total)?;
+                    odd_ext::persist(&mut self.model, image)
                 }
                 (CobarOp::RvMixedToHH, Value::OddClass(terms)) => {
                     let (id, is_chain) = match *self.model.kind(input.ty) {
@@ -4157,6 +4199,20 @@ impl Engine {
                     output.compose(&mut self.model, outer_hom, inner_hom, &outer, &inner)?;
                 odd_ext::persist(&mut self.model, value)
             }
+            TypedForm::MixedMinMap(data, operation, total, input) => {
+                let Value::OddClass(support) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = data.apply(&mut self.model, &support, *operation, *total)?;
+                odd_ext::persist(&mut self.model, image)
+            }
+            TypedForm::MixedDelta(data, order, input) => {
+                let Value::OddClass(support) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = data.delta(&mut self.model, *order, &support)?;
+                odd_ext::persist(&mut self.model, image)
+            }
             TypedForm::MixedEmbed(input) => self.eval(input),
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
@@ -4609,6 +4665,11 @@ impl Checker<'_> {
                 self.model
                     .mixed_chain_type(mixed::Grade { complex, b }, total)
             }
+            TypeForm::MixedMinimal(name, b, total) => {
+                let minimal = self.model.mixed_minimal_id(&name)?;
+                self.model
+                    .mixed_minimal_type(mixed_minimal::Grade { minimal, b }, total)
+            }
             TypeForm::MixedPage(spec) => {
                 let grade = self.mixed_grade(spec)?;
                 self.model.mixed_page_type(grade)
@@ -4907,6 +4968,7 @@ impl Checker<'_> {
                     Kind::Sheaf(SheafForm::Cochain, ..) | Kind::SheafComplex(SheafForm::Cochain, ..) | Kind::SheafHom(SheafForm::Cochain, ..) =>
                         Value::SheafC([].into()),
                     Kind::SheafPage(..) => odd_ext::zero(),
+                    Kind::MixedMinimum(..) => odd_ext::zero(),
                     Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
                         odd_ext::zero(),
@@ -5360,6 +5422,59 @@ impl Checker<'_> {
                 let value = odd_ext::persist(self.model, support.to_vec())?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MixedMinGenerator(name, b, index, at) => {
+                let minimal = self.model.mixed_minimal_id(&name)?;
+                let indices = self
+                    .model
+                    .mixed_minimal(minimal)
+                    .basis(self.model, b, false)?;
+                let &generator = indices
+                    .get(index)
+                    .ok_or_else(|| Error::new(at, "generator index out of range"))?;
+                let ty = self
+                    .model
+                    .mixed_minimal_type(mixed_minimal::Grade { minimal, b }, false)?;
+                let value = odd_ext::persist(self.model, vec![(generator, 1)])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedMinMap(name, operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, total) = self.mixed_chain(&input, operation.name())?;
+                let minimal = self.model.mixed_minimal_id(&name)?;
+                let data = self.model.mixed_minimal(minimal);
+                if data.source != grade.complex {
+                    return Err(Error::plain(
+                        "minimal mixed model has a different source complex",
+                    ));
+                }
+                let ty = match operation {
+                    mixed_minimal::Operation::Projection => self.model.mixed_minimal_type(
+                        mixed_minimal::Grade {
+                            minimal,
+                            b: grade.b,
+                        },
+                        total,
+                    )?,
+                    mixed_minimal::Operation::Homotopy => {
+                        self.model.mixed_chain_type(grade.shift(1)?, total)?
+                    }
+                };
+                Ok((
+                    ty,
+                    TypedForm::MixedMinMap(data, operation, total, Box::new(input)),
+                ))
+            }
+            ExprForm::MixedDelta(order, input) => {
+                let input = self.expr(*input)?;
+                let Kind::MixedMinimum(grade, false) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "mixDelta", "a MixedMin class"));
+                };
+                let ty = self
+                    .model
+                    .mixed_minimal_type(grade.shift(2 * order as i128 - 1)?, false)?;
+                let data = self.model.mixed_minimal(grade.minimal);
+                Ok((ty, TypedForm::MixedDelta(data, order, Box::new(input))))
+            }
             ExprForm::MixedGenerator(spec, index, at) => {
                 let grade = self.mixed_grade(spec)?;
                 let ty = self.model.mixed_page_type(grade)?;
@@ -5369,16 +5484,22 @@ impl Checker<'_> {
             }
             ExprForm::MixedEmbed(power, input) => {
                 let input = self.expr(*input)?;
-                let Kind::MixedChain(grade, _) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "mixU",
-                        "a MixedChain or MixedU chain",
-                    ));
+                let offset = -2 * power as i128;
+                let ty = match *self.model.kind(input.ty) {
+                    Kind::MixedChain(grade, _) => {
+                        self.model.mixed_chain_type(grade.shift(offset)?, true)?
+                    }
+                    Kind::MixedMinimum(grade, _) => {
+                        self.model.mixed_minimal_type(grade.shift(offset)?, true)?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "mixU",
+                            "a MixedChain, MixedU, MixedMin, or MixedMinU value",
+                        ))
+                    }
                 };
-                let ty = self
-                    .model
-                    .mixed_chain_type(grade.shift(-2 * power as i128)?, true)?;
                 Ok((ty, TypedForm::MixedEmbed(Box::new(input))))
             }
             ExprForm::MixedClass(r, f, input) => {
@@ -5780,6 +5901,7 @@ impl Checker<'_> {
                     | Kind::ASOddDiff(_, p)
                     | Kind::ASOddDeRham(_, p) => p,
                     Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
+                    Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
                     Kind::BPVPage(grade) => grade.prime(),
@@ -8938,6 +9060,23 @@ impl Checker<'_> {
                     )),
                 };
             }
+            CobarOp::MixMinI => {
+                let Kind::MixedMinimum(grade, total) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(
+                        argument,
+                        name,
+                        "a MixedMin or MixedMinU value",
+                    ));
+                };
+                let data = self.model.mixed_minimal(grade.minimal);
+                return self.model.mixed_chain_type(
+                    mixed::Grade {
+                        complex: data.source,
+                        b: grade.b,
+                    },
+                    total,
+                );
+            }
             CobarOp::MixDown | CobarOp::MixUp => {
                 let Kind::MixedChain(grade, false) = *self.model.kind(argument.ty) else {
                     return Err(self.invalid_operand(argument, name, "a MixedChain"));
@@ -8950,8 +9089,15 @@ impl Checker<'_> {
                     Kind::MixedChain(grade, true) => {
                         self.model.mixed_chain_type(grade.shift(-1)?, true)
                     }
+                    Kind::MixedMinimum(grade, true) => {
+                        self.model.mixed_minimal_type(grade.shift(-1)?, true)
+                    }
                     Kind::MixedPage(grade) => self.model.mixed_page_type(grade.differential()?),
-                    _ => Err(self.invalid_operand(argument, name, "a MixedU or MixedE value")),
+                    _ => Err(self.invalid_operand(
+                        argument,
+                        name,
+                        "a MixedU, MixedE, or MixedMinU value",
+                    )),
                 };
             }
             CobarOp::MixRep | CobarOp::MixNext | CobarOp::MixPrev => {
@@ -9292,6 +9438,7 @@ impl Checker<'_> {
                         | Kind::RhoLoc(..)
                         | Kind::MExt(..)
                         | Kind::MixedChain(..)
+                        | Kind::MixedMinimum(..)
                         | Kind::MixedPage(..)
                         | Kind::Sheaf(..)
                         | Kind::SheafComplex(..)

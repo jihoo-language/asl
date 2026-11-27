@@ -53,6 +53,7 @@ pub(crate) enum TypeForm {
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
     MixedChain(Label, i64, bool),
+    MixedMinimal(Label, i64, bool),
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
     SheafHom(SheafForm, Label, Label, usize),
@@ -580,6 +581,9 @@ pub(crate) enum ExprForm {
     MixedEmbed(usize, Box<ParsedExpr>),
     RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
     MixedBarTerm(Label, usize, bool),
+    MixedMinGenerator(Label, i64, usize, Span),
+    MixedMinMap(Label, crate::mixed_minimal::Operation, Box<ParsedExpr>),
+    MixedDelta(usize, Box<ParsedExpr>),
     MixedGenerator(MixedSpec, usize, Span),
     MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
@@ -803,6 +807,8 @@ pub(crate) enum StatementForm {
     MixedBarRank(Label, i64, Option<i64>),
     MixedPeriodicRank(Label, i64),
     MixedHom(Label, Label, Label),
+    MixedMinimal(Label, Label),
+    MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
@@ -1592,6 +1598,23 @@ impl<'src> Parser<'src> {
                 let target = self.label()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::MixedHom(name, source, target)
+            }
+            Token::Word("mixminimal") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedMinimal(name, source)
+            }
+            Token::Word("mixmindim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let b = self.signed_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedMinDimension(name, b)
             }
             Token::Word("mixedcomplex") => {
                 self.advance()?;
@@ -3470,6 +3493,14 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVHochschild(spec, name.text == "RVHH"), 0);
         }
+        if matches!(name.text.as_str(), "MixedMin" | "MixedMinU") && self.eat(Token::LParen)? {
+            let total = name.text == "MixedMinU";
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let b = self.signed_degree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::MixedMinimal(name, b, total), 0);
+        }
         if matches!(name.text.as_str(), "MixedChain" | "MixedU") && self.eat(Token::LParen)? {
             let complex = self.label()?;
             self.expect(Token::Comma)?;
@@ -4210,6 +4241,41 @@ impl<'src> Parser<'src> {
                         ExprForm::MixedBarTerm(complex, i, name.text == "mixBarNull"),
                         0,
                     );
+                }
+                if name.text == "mixMinGen" && self.eat(Token::LBracket)? {
+                    let name = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let b = self.signed_degree()?;
+                    self.expect(Token::Comma)?;
+                    let (i, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::MixedMinGenerator(name, b, i, at), 0);
+                }
+                if matches!(name.text.as_str(), "mixMinP" | "mixMinH")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::mixed_minimal::Operation;
+                    let op = if name.text == "mixMinP" {
+                        Operation::Projection
+                    } else {
+                        Operation::Homotopy
+                    };
+                    let model = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::MixedMinMap(model, op, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "mixDelta" && self.eat(Token::LBracket)? {
+                    let order = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::MixedDelta(order, Box::new(input)), depth);
                 }
                 if name.text == "mixgen" && self.eat(Token::LBracket)? {
                     let spec = self.mixed_spec()?;

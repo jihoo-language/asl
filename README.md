@@ -1339,6 +1339,24 @@ awk -v r=720 -v p=3 -v hom=1 -v bars=1 -f examples/mixed-page-staircase.awk | ni
 
 This verifies composition with the source identity, evaluation of the actual obstruction, and the nonzero $d_{720}$ in the Hom complex. The matching torsion bar is $(1439,720)$. Add `-v control=1` for the closed map and two free bars.
 
+#### Minimal models of mixed complexes
+
+`mixminimal M[C];` chooses a contraction of $(C,b)$ onto its homology. The ordered boundary columns choose linear preimages, and reduction modulo cycles and boundaries gives the maps $i$, $p$ and $h$. On the underlying chains these satisfy $bh+hb=1-ip$, $pi=1$ and $h^2=ph=hi=0$.
+
+`MixedMin(M,b)` is the degree-$b$ homology vector space. The query `mixmindim[M,b];` gives the dimension and `mixMinGen[M,b,k]` selects a basis class. `mixDelta[r]` acts from degree $b$ to $b+2r-1$. The coefficients of the transferred differential are
+$\delta_r=pB(-hB)^{r-1}i$ for $r\ge1$ and $\delta_0=0$.
+Together they give a higher $S^1$ action on the minimal model. The higher operators can be nonzero beyond $r=1$, whereas a strict mixed complex only has $b$ and $B$.
+
+`MixedMinU(M,b)` is the total space with $|u|=-2$. The operation `mixU[f]` inserts a class at $u^f$ or multiplies a total chain by $u^f$. On these chains, `mixD` is $D_{\min}=\sum_{r\ge1}u^r\delta_r$ and satisfies $D_{\min}^2=0$. On underlying chains, `mixMinI`, `mixMinP[M]` and `mixMinH[M]` are $i,p,h$. On total chains they are the corrected maps
+$I=(1+u hB)^{-1}i$, $P=p(1+u Bh)^{-1}$ and $H=h(1+u Bh)^{-1}$.
+The inverse series terminate because their iterates raise raw degree. The maps $I$ and $P$ commute with the corresponding differentials and satisfy $PI=1$ and $DH+HD=1-IP$. [Minimal mixed-model example](examples/mixed-minimal.asl)
+
+```sh
+awk -v r=720 -v p=3 -v minimal=1 -f examples/mixed-page-staircase.awk | nix run path:. -- -
+```
+
+The program checks the corrected 720-term inclusion and prints `MixedMin(Minimal, 1439){g1}` for the sole positive higher operator on the leading class. The split control gives zero. With `-v direct=1 -v r=2048`, the program verifies the same identities for the $2048$th operator.
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.
