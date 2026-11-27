@@ -7,6 +7,7 @@ use crate::model::{Model, Value};
 use crate::rv_unram::Ring;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod eigen;
 mod geometry;
 mod matrix;
 

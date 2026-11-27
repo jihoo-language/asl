@@ -181,6 +181,7 @@ pub(crate) enum TypeForm {
     KummerWeil(Label),
     KummerDiv(Label),
     FrickeSSDiv(Label),
+    FrickeSSQDiv(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
@@ -1150,6 +1151,7 @@ pub(crate) enum ExprForm {
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
     FrickeSS(Box<crate::dwork_k3::fricke::brandt::Expression>),
+    FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Expression>),
     FrickeCMPolyEval(Label, Box<ParsedExpr>),
     FrickeCMPolyModCoeff(Label, Label, usize),
     FrickeCMPairCoeff(usize, Box<ParsedExpr>),
@@ -1438,6 +1440,7 @@ pub(crate) enum StatementForm {
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
     FrickeSS(Box<crate::dwork_k3::fricke::brandt::Command>),
+    FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Command>),
     FrickeCMDefine(Label, Label, Option<Label>),
     FrickeCMData(Label, Option<usize>),
     FrickeCMFactors(Label, Label),
@@ -6487,6 +6490,87 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn fricke_order_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::dwork_k3::fricke::brandt::eigen::Command;
+        self.advance()?;
+        let name = if operation == "rvfrickeheckeorder" {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        self.expect(Token::LBracket)?;
+        let argument = self.label()?;
+        let command = match operation {
+            "rvFrickeOrderData" => {
+                self.expect(Token::RBracket)?;
+                Command::Describe(argument)
+            }
+            "rvFrickeOrderCongruence" => {
+                self.expect(Token::Comma)?;
+                let scalar = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let block = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Congruence(argument, scalar, block, prime)
+            }
+            _ => {
+                self.expect(Token::Comma)?;
+                let c = i128::from(self.signed_number("Brandt generator coefficient")?);
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut factors = Vec::new();
+                while self.token() != Token::RBrace {
+                    factors.push(
+                        self.signed_tuple("a signed Brandt factor coefficient", "Brandt factor")?,
+                    );
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                Command::Define(name.unwrap(), argument, c, factors)
+            }
+        };
+        Ok(StatementForm::FrickeOrder(Box::new(command)))
+    }
+
+    fn fricke_order_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::dwork_k3::fricke::brandt::eigen::Expression;
+        let (expression, depth) =
+            if matches!(name, "rvFrickeOrderIntegral" | "rvFrickeOrderNumerator") {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Extract(name == "rvFrickeOrderIntegral", Box::new(input)),
+                    depth,
+                )
+            } else {
+                self.expect(Token::LBracket)?;
+                let order = self.label()?;
+                self.expect(Token::Comma)?;
+                let block = self.number()?.0;
+                if name == "rvFrickeOrderBasis" {
+                    self.expect(Token::Comma)?;
+                    let column = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    (Expression::Basis(order, block, column), 0)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    (Expression::Project(order, block, Box::new(input)), depth)
+                }
+            };
+        expr(span, ExprForm::FrickeOrder(Box::new(expression)), depth)
     }
 
     fn fricke_ss_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -13267,6 +13351,9 @@ impl<'src> Parser<'src> {
                 | "rvFrickeSSMatrix"
                 | "rvFrickeSSRelations"),
             ) => self.fricke_ss_statement(name)?,
+            Token::Word(
+                name @ ("rvfrickeheckeorder" | "rvFrickeOrderData" | "rvFrickeOrderCongruence"),
+            ) => self.fricke_order_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -17665,6 +17752,7 @@ impl<'src> Parser<'src> {
                 | "RVKummerDisc"
                 | "RVKummerDiv"
                 | "RVFrickeSSDiv"
+                | "RVFrickeSSQDiv"
                 | "RVK3Lattice"
                 | "RVMukai"
                 | "RVKummerWeil"
@@ -17687,6 +17775,7 @@ impl<'src> Parser<'src> {
                 "RVK3PencilCoverPoint" => TypeForm::K3PencilCoverPoint(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVFrickeSSDiv" => TypeForm::FrickeSSDiv(endpoint),
+                "RVFrickeSSQDiv" => TypeForm::FrickeSSQDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVOG10" => TypeForm::OG10(endpoint),
@@ -20275,6 +20364,16 @@ impl<'src> Parser<'src> {
                 ) && matches!(self.token(), Token::LBracket | Token::LParen)
                 {
                     return self.fricke_ss_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrickeOrderBasis"
+                        | "rvFrickeOrderProject"
+                        | "rvFrickeOrderIntegral"
+                        | "rvFrickeOrderNumerator"
+                ) && matches!(self.token(), Token::LBracket | Token::LParen)
+                {
+                    return self.fricke_order_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

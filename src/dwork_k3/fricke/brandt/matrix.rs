@@ -12,7 +12,7 @@ use crate::rv_unram::Ring;
 use super::{arithmetic, certificate, Basis};
 
 #[derive(Clone, Eq, PartialEq)]
-pub(super) struct Matrix(Vec<Vec<i128>>);
+pub(super) struct Matrix(pub(super) Vec<Vec<i128>>);
 
 impl Matrix {
     pub(super) fn hecke(
@@ -226,7 +226,7 @@ pub(super) fn relations(
     ))
 }
 
-fn balance(
+pub(super) fn balance(
     model: &mut Model,
     matrices: &[&Matrix],
     frobenius: &[usize],

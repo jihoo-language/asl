@@ -1115,6 +1115,8 @@ enum TypedForm {
     ECCMActionMap(Rc<ec_cm_action::Realization>, Box<TypedExpr>),
     ECLevel(Rc<ec_level::Level>, ECLevelAction),
     FrickeSSAction(Rc<fricke_ss::Basis>, fricke_ss::Operation, Box<TypedExpr>),
+    FrickeOrderProject(Rc<fricke_ss::eigen::Order>, usize, Box<TypedExpr>),
+    FrickeOrderExtract(bool, Box<TypedExpr>),
     FrickeCMPolyEval(
         Rc<cm_class_poly::fricke::Polynomial>,
         Rc<UnramRing>,
@@ -2703,6 +2705,7 @@ impl Engine {
                 return self.elliptic_modular_statement(command).map(Some)
             }
             StatementForm::FrickeSS(command) => return command.execute(&mut self.model),
+            StatementForm::FrickeOrder(command) => return command.execute(&mut self.model),
             StatementForm::FrickeCMDefine(name, left, right) => {
                 let left = self.model.cm_class_polynomial(&left)?;
                 let value = if let Some(right) = right {
@@ -14827,6 +14830,29 @@ impl Engine {
                 let result = cycle.apply(&mut self.model, point.as_ref().clone())?;
                 elliptic::persist_point(&mut self.model, result)
             }
+            TypedForm::FrickeOrderProject(order, index, input) => {
+                let Value::FrickeSSDiv(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                order
+                    .project(&mut self.model, *index, &divisor)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::FrickeOrderExtract(integral, input) => {
+                let Value::FrickeSSQDiv(fraction) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if *integral && fraction.denominator != 1 {
+                    return Err(Error::new(
+                        input.span,
+                        format!(
+                            "Brandt projection has nontrivial denominator {}",
+                            fraction.denominator
+                        ),
+                    ));
+                }
+                fricke_ss::persist(&mut self.model, fraction.numerator.clone())
+            }
             TypedForm::FrickeSSAction(basis, operation, input) => {
                 let Value::FrickeSSDiv(value) = self.eval(input)? else {
                     unreachable!()
@@ -18933,6 +18959,7 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::FrickeSSDiv(name) => self.model.fricke_ss_type(&name),
+            TypeForm::FrickeSSQDiv(name) => self.model.fricke_ss_qdiv_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
@@ -22555,6 +22582,7 @@ impl Checker<'_> {
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::FrickeSS(expression) => self.fricke_ss_expression(*expression),
+            ExprForm::FrickeOrder(expression) => self.fricke_order_expression(*expression),
             ExprForm::FrickeCMPolyEval(name, input) => {
                 let polynomial = self.model.fricke_cm_polynomial(&name)?;
                 let input = self.expr(*input)?;
@@ -35283,6 +35311,48 @@ impl Checker<'_> {
             return Err(self.invalid_operand(input, operation, "an RVKummerDisc element"));
         };
         Ok(name)
+    }
+
+    fn fricke_order_expression(
+        &mut self,
+        expression: fricke_ss::eigen::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use fricke_ss::eigen::Expression;
+        match expression {
+            Expression::Basis(name, block, column) => {
+                let order = self.model.fricke_order(&name)?;
+                let ty = self.model.fricke_ss_type(&order.base)?;
+                let value = fricke_ss::persist(self.model, order.basis(block, column)?)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Project(name, block, input) => {
+                let order = self.model.fricke_order(&name)?;
+                order.check_block(block)?;
+                let input = self.expr(*input)?;
+                let ty = self.model.fricke_ss_type(&order.base)?;
+                self.require_type(ty, &input, "Brandt eigenprojection")?;
+                let output = self.model.fricke_ss_qdiv_type(&order.base)?;
+                Ok((
+                    output,
+                    TypedForm::FrickeOrderProject(order, block, Box::new(input)),
+                ))
+            }
+            Expression::Extract(integral, input) => {
+                let input = self.expr(*input)?;
+                let Kind::FrickeSSQDiv(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "Brandt projection extraction",
+                        "an RVFrickeSSQDiv",
+                    ));
+                };
+                let ty = self.model.fricke_ss_type(&Label {
+                    text: name.to_string(),
+                    span: input.span,
+                })?;
+                Ok((ty, TypedForm::FrickeOrderExtract(integral, Box::new(input))))
+            }
+        }
     }
 
     fn fricke_ss_operand(&self, input: &TypedExpr) -> Result<Rc<fricke_ss::Basis>> {

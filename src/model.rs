@@ -337,6 +337,7 @@ pub(crate) enum Kind {
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     FrickeSSDiv(Rc<str>),
+    FrickeSSQDiv(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
@@ -594,6 +595,7 @@ pub(crate) enum Value {
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     FrickeSSDiv(Rc<[i128]>),
+    FrickeSSQDiv(Rc<fricke_ss::eigen::Fraction>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
@@ -824,6 +826,7 @@ pub(crate) struct Model {
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     fricke_ss_bases: HashMap<String, Rc<fricke_ss::Basis>>,
+    fricke_hecke_orders: HashMap<String, Rc<fricke_ss::eigen::Order>>,
     dwork_hecke_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
@@ -1000,6 +1003,7 @@ impl Model {
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
             fricke_ss_bases: HashMap::new(),
+            fricke_hecke_orders: HashMap::new(),
             dwork_hecke_equations: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
@@ -1645,7 +1649,7 @@ impl Model {
                     usize::MAX
                 }
             }
-            Kind::FrickeSSDiv(..) => usize::MAX,
+            Kind::FrickeSSDiv(..) | Kind::FrickeSSQDiv(..) => usize::MAX,
             Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
                 usize::MAX
             }
@@ -2035,6 +2039,7 @@ impl Model {
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::FrickeSSDiv(..)
+                | Kind::FrickeSSQDiv(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
@@ -7098,6 +7103,38 @@ impl Model {
             })
     }
 
+    pub(crate) fn define_fricke_order(
+        &mut self,
+        name: Label,
+        order: fricke_ss::eigen::Order,
+    ) -> Result<()> {
+        if self.fricke_hecke_orders.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "Brandt Hecke order is already defined",
+            ));
+        }
+        self.fricke_hecke_orders.insert(name.text, Rc::new(order));
+        Ok(())
+    }
+
+    pub(crate) fn fricke_order(&self, name: &Label) -> Result<Rc<fricke_ss::eigen::Order>> {
+        self.fricke_hecke_orders
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Brandt Hecke order '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn fricke_ss_qdiv_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.fricke_ss(name)?;
+        self.inhabited_type(Kind::FrickeSSQDiv(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn fricke_ss_type(&mut self, name: &Label) -> Result<TypeId> {
         self.fricke_ss(name)?;
         self.inhabited_type(Kind::FrickeSSDiv(name.text.as_str().into()), 0)
@@ -7931,6 +7968,7 @@ impl Model {
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::FrickeSSDiv(..)
+            | Kind::FrickeSSQDiv(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
@@ -8525,6 +8563,7 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::FrickeSSDiv(name) => out.push(&format!("RVFrickeSSDiv({name})")),
+            Kind::FrickeSSQDiv(name) => out.push(&format!("RVFrickeSSQDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::VerbitskyCyclic(grade, class) => {
                 let name = if *class {
@@ -9008,6 +9047,10 @@ impl Model {
                 self.spend(a.len())?;
                 Ok(a == b)
             }
+            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b)) => {
+                self.spend(a.numerator.len())?;
+                Ok(a == b)
+            }
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a == b),
@@ -9454,6 +9497,10 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
                 self.spend(a.len())?;
+                Ok(a.cmp(b))
+            }
+            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b)) => {
+                self.spend(a.numerator.len())?;
                 Ok(a.cmp(b))
             }
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -9966,6 +10013,11 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kummer Weil representation",
                     ))
+                }
+                Kind::FrickeSSQDiv(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate rational supersingular Fricke divisors",
+                    ));
                 }
                 Kind::FrickeSSDiv(..) => {
                     return Err(Error::plain(
@@ -11936,6 +11988,14 @@ impl Model {
             Value::KummerWeil(vector) => {
                 self.write_type(out, ty, 0)?;
                 let fraction = vector.fraction();
+                self.spend(fraction.numerator.len())?;
+                out.push(&format!(
+                    "{{{:?} / {}}}",
+                    fraction.numerator, fraction.denominator
+                ))
+            }
+            Value::FrickeSSQDiv(fraction) => {
+                self.write_type(out, ty, 0)?;
                 self.spend(fraction.numerator.len())?;
                 out.push(&format!(
                     "{{{:?} / {}}}",
