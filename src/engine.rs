@@ -39,8 +39,8 @@ use crate::hyperelliptic_kummer_surface::period as k3_period;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
-    self as kummer_surface, hilbert_square, nakajima, nikulin, polarized as kummer_div, unimodular,
-    Point as KummerPoint,
+    self as kummer_surface, hilbert_square, nakajima, nikulin, pencil, polarized as kummer_div,
+    unimodular, Point as KummerPoint,
 };
 use crate::jacobian_level;
 use crate::jet_hom;
@@ -560,6 +560,12 @@ enum EnriquesAction {
     Read(Rc<enriques::Quotient>, enriques::Read, Box<TypedExpr>),
 }
 
+enum PencilAction {
+    Param(Box<[TypedExpr; 2]>),
+    Map(Box<TypedExpr>),
+    Section(u8, Box<TypedExpr>),
+}
+
 enum KummerWeilAction {
     Basis(Box<TypedExpr>),
     Apply(kummer_weil::Operation, Box<TypedExpr>),
@@ -654,6 +660,7 @@ enum TypedForm {
     JacobianLevelCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
     Kummer(KummerAction),
     Enriques(EnriquesAction),
+    K3Pencil(Rc<pencil::Pencil>, PencilAction),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
@@ -1645,6 +1652,31 @@ impl Engine {
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::KummerK3(command) => return command.execute(&mut self.model).map(Some),
+            StatementForm::K3Pencil(command) => {
+                use pencil::Command;
+                return match *command {
+                    Command::Define(name, basis, first, second) => {
+                        self.model.define_k3_pencil(name, basis, first, second)?;
+                        Ok(None)
+                    }
+                    Command::Fiber(name, input) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let base = self.model.k3_pencil_base_type(&name)?;
+                        let input = self.checker().expr(*input)?;
+                        self.checker()
+                            .require_type(base, &input, "rvK3PencilFiber parameter")?;
+                        let Value::K3PencilBase(parameter) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        let count = pencil.fiber(&mut self.model, &parameter)?;
+                        Ok(Some(format!("rvK3PencilFiber[{}] = {count}", name.text)))
+                    }
+                    Command::Census(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil.census(&mut self.model, &name.text).map(Some)
+                    }
+                };
+            }
             StatementForm::DeclareEnriques(declaration) => {
                 self.model.define_enriques(*declaration)?;
                 return Ok(None);
@@ -7961,6 +7993,32 @@ impl Engine {
                 Ok(Value::PrimeScalar(value))
             }
             TypedForm::Kummer(action) => self.eval_kummer(action),
+            TypedForm::K3Pencil(pencil, action) => match action {
+                PencilAction::Param(inputs) => {
+                    let (Value::RVUnram(u), Value::RVUnram(v)) =
+                        (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                    else {
+                        unreachable!()
+                    };
+                    pencil
+                        .parameter(&mut self.model, u.to_vec(), v.to_vec())?
+                        .persist(&mut self.model)
+                }
+                PencilAction::Map(input) => {
+                    let Value::KummerK3(point) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    pencil
+                        .map(&mut self.model, &point)?
+                        .persist(&mut self.model)
+                }
+                PencilAction::Section(mask, input) => {
+                    let Value::K3PencilBase(parameter) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    pencil.section(&mut self.model, *mask, &parameter)
+                }
+            },
             TypedForm::Enriques(action) => match action {
                 EnriquesAction::Orbit(quotient, from_base, input) => {
                     let Value::KummerK3(point) = self.eval(input)? else {
@@ -10503,6 +10561,7 @@ impl Checker<'_> {
             TypeForm::Kummer(name) => self.model.kummer_type(name.text.into()),
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::Enriques(name) => self.model.enriques_type(name.text.into()),
+            TypeForm::K3PencilBase(name) => self.model.k3_pencil_base_type(&name),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
@@ -13693,6 +13752,7 @@ impl Checker<'_> {
             }
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::Enriques(expression) => self.enriques_expression(*expression),
+            ExprForm::K3Pencil(expression) => self.pencil_expression(*expression),
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
@@ -20420,6 +20480,46 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn pencil_expression(&mut self, expression: pencil::Expression) -> Result<(TypeId, TypedForm)> {
+        use pencil::Operation;
+        let pencil::Expression(name, operation) = expression;
+        let pencil = self.model.k3_pencil(&name)?;
+        if matches!(operation, Operation::Divisor) {
+            let ty = self.model.kummer_divisor_type(&pencil.basis_name)?;
+            return Ok((ty, TypedForm::Constant(pencil.divisor(self.model)?)));
+        }
+        let base = self.model.k3_pencil_base_type(&name)?;
+        let (ty, action) = match operation {
+            Operation::Divisor => unreachable!(),
+            Operation::Param(inputs) => {
+                let coefficient = self.model.rv_unram_type(&Label {
+                    text: pencil.curve.grade.ring.to_string(),
+                    span: name.span,
+                })?;
+                let [u, v] = *inputs;
+                let u = self.expr(u)?;
+                let v = self.expr(v)?;
+                self.require_type(coefficient, &u, "rvK3PencilParam coordinate")?;
+                self.require_type(coefficient, &v, "rvK3PencilParam coordinate")?;
+                (base, PencilAction::Param(Box::new([u, v])))
+            }
+            Operation::Map(input) => {
+                let resolved = self.model.kummer_k3_type(pencil.basis.curve_name.clone())?;
+                let input = self.expr(*input)?;
+                self.require_type(resolved, &input, "rvK3PencilMap point")?;
+                (base, PencilAction::Map(Box::new(input)))
+            }
+            Operation::Section(mask, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(base, &input, "rvK3PencilSection parameter")?;
+                pencil.check_section(mask)?;
+                let resolved = self.model.kummer_k3_type(pencil.basis.curve_name.clone())?;
+                (resolved, PencilAction::Section(mask, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::K3Pencil(pencil, action)))
     }
 
     fn enriques_expression(

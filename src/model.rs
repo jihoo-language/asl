@@ -32,7 +32,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
-    self, hilbert_square, nakajima, nikulin, unimodular, Point as KummerPoint,
+    self, hilbert_square, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
 };
 use crate::hyperelliptic_kummer_surface::{clifford, rational_sparse, spinor};
 use crate::jet_hom;
@@ -259,6 +259,7 @@ pub(crate) enum Kind {
     Kummer(Rc<str>),
     KummerK3(Rc<str>),
     Enriques(Rc<str>),
+    K3PencilBase(Rc<str>),
     KummerDisc(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
@@ -436,6 +437,7 @@ pub(crate) enum Value {
     Kummer(Rc<KummerPoint>),
     KummerK3(Rc<KummerK3Point>),
     Enriques(Rc<enriques::Orbit>),
+    K3PencilBase(Rc<pencil::Parameter>),
     KummerDisc(u8),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
@@ -622,6 +624,7 @@ pub(crate) struct Model {
     jacobian_charts: HashMap<String, Rc<Chart>>,
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
+    k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
@@ -725,6 +728,7 @@ impl Model {
             jacobian_charts: HashMap::new(),
             jacobian_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
+            k3_pencils: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
             nakajima_gram: None,
@@ -1018,6 +1022,7 @@ impl Model {
                 usize::MAX
             }
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
+            Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::KummerWeil(..) => usize::MAX,
             Kind::K3Lattice(..)
@@ -1248,6 +1253,7 @@ impl Model {
                 | Kind::Kummer(..)
                 | Kind::KummerK3(..)
                 | Kind::Enriques(..)
+                | Kind::K3PencilBase(..)
                 | Kind::KummerDisc(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
@@ -3900,6 +3906,38 @@ impl Model {
         self.inhabited_type(Kind::KummerK3(name), 0)
     }
 
+    pub(crate) fn define_k3_pencil(
+        &mut self,
+        name: Label,
+        basis: Label,
+        first: u8,
+        second: u8,
+    ) -> Result<()> {
+        if self.k3_pencils.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("K3 pencil '{}' is already defined", name.text),
+            ));
+        }
+        let pencil =
+            pencil::Pencil::new(self, basis, first, second).map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_pencils.insert(name.text, Rc::new(pencil));
+        Ok(())
+    }
+
+    pub(crate) fn k3_pencil(&self, name: &Label) -> Result<Rc<pencil::Pencil>> {
+        self.k3_pencils
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown K3 pencil '{}'", name.text)))
+    }
+
+    pub(crate) fn k3_pencil_base_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.k3_pencil(name)?;
+        self.inhabited_type(Kind::K3PencilBase(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn define_enriques(&mut self, declaration: enriques::Declare) -> Result<()> {
         let enriques::Declare(name, base, cover, basis, mask) = declaration;
         if self.enriques_quotients.contains_key(&name.text) {
@@ -5194,6 +5232,7 @@ impl Model {
             | Kind::Kummer(..)
             | Kind::KummerK3(..)
             | Kind::Enriques(..)
+            | Kind::K3PencilBase(..)
             | Kind::KummerDisc(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
@@ -5706,6 +5745,7 @@ impl Model {
             Kind::Kummer(name) => out.push(&format!("RVKummer({name})")),
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::Enriques(name) => out.push(&format!("RVEnriques({name})")),
+            Kind::K3PencilBase(name) => out.push(&format!("RVK3PencilBase({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
@@ -6002,6 +6042,7 @@ impl Model {
             (Value::Kummer(a), Value::Kummer(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Enriques(a), Value::Enriques(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3PencilBase(a), Value::K3PencilBase(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6339,6 +6380,7 @@ impl Model {
             (Value::Kummer(a), Value::Kummer(b)) => a.compare(self, b),
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::Enriques(a), Value::Enriques(b)) => a.compare(self, b),
+            (Value::K3PencilBase(a), Value::K3PencilBase(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
@@ -6659,6 +6701,9 @@ impl Model {
                 Kind::Enriques(ref name) => {
                     self.enriques_quotient(name)?.elements(self, MAX_ELEMENTS)?
                 }
+                Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()]
+                    .clone()
+                    .elements(self, MAX_ELEMENTS)?,
                 Kind::KummerDisc(..) => {
                     let count = usize::from(nikulin::ORDER);
                     self.spend(count)?;
@@ -8150,6 +8195,10 @@ impl Model {
                     self.write_ec_polynomial(out, direction)?;
                 }
                 out.push("}")
+            }
+            Value::K3PencilBase(parameter) => {
+                self.write_type(out, ty, 0)?;
+                self.write_ec_polynomial(out, parameter.coordinates())
             }
             Value::Enriques(orbit) => {
                 self.write_type(out, ty, 0)?;

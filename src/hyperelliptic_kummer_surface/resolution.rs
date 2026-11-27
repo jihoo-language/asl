@@ -10,6 +10,7 @@ use crate::model::{Model, Value};
 
 mod jets;
 mod node_projection;
+pub(crate) mod pencil;
 mod switch;
 
 #[derive(Clone)]

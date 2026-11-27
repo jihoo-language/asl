@@ -25,6 +25,7 @@ pub(crate) mod period;
 pub(crate) mod polarized;
 pub(crate) mod rational_sparse;
 pub(crate) mod resolution;
+pub(crate) use resolution::pencil;
 pub(crate) mod spinor;
 pub(crate) mod theta;
 pub(crate) mod unimodular;

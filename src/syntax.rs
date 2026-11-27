@@ -126,6 +126,7 @@ pub(crate) enum TypeForm {
     Kummer(Label),
     KummerK3(Label),
     Enriques(Label),
+    K3PencilBase(Label),
     KummerDisc(Label),
     KummerWeil(Label),
     KummerDiv(Label),
@@ -978,6 +979,7 @@ pub(crate) enum ExprForm {
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
+    K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
@@ -1171,6 +1173,7 @@ pub(crate) enum StatementForm {
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
+    K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Command>),
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
@@ -3824,6 +3827,65 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::GeneralizedKummer(Box::new(command)))
     }
 
+    fn k3_pencil_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::pencil::Command;
+        self.advance()?;
+        let command = if operation == "rvk3pencil" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            let first = self.kummer_theta_index("K3 pencil node mask", 15)? as u8;
+            let second = self.kummer_theta_index("K3 pencil node mask", 15)? as u8;
+            self.expect(Token::RBracket)?;
+            Command::Define(name, basis, first, second)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            if operation == "rvK3PencilFiber" {
+                Command::Fiber(name, Box::new(self.paren_expr(0)?))
+            } else {
+                Command::Census(name)
+            }
+        };
+        Ok(StatementForm::K3Pencil(Box::new(command)))
+    }
+
+    fn k3_pencil_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::pencil::{Expression, Operation};
+        self.expect(Token::LBracket)?;
+        let pencil = self.label()?;
+        let mask = if name == "rvK3PencilSection" {
+            self.kummer_theta_index("K3 pencil trope mask", 15)? as u8
+        } else {
+            0
+        };
+        self.expect(Token::RBracket)?;
+        let (operation, depth) = match name {
+            "rvK3PencilDiv" => (Operation::Divisor, 0),
+            "rvK3PencilParam" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Operation::Param(Box::new(inputs)), depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let operation = if name == "rvK3PencilSection" {
+                    Operation::Section(mask, Box::new(input))
+                } else {
+                    Operation::Map(Box::new(input))
+                };
+                (operation, depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::K3Pencil(Box::new(Expression(pencil, operation))),
+            depth,
+        )
+    }
+
     fn declare_enriques_statement(&mut self) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::enriques::points::Declare;
         self.advance()?;
@@ -5156,6 +5218,9 @@ impl<'src> Parser<'src> {
                 self.kummer_enriques_statement(command)?
             }
             Token::Word("rvenriques") => self.declare_enriques_statement()?,
+            Token::Word(op @ ("rvk3pencil" | "rvK3PencilFiber" | "rvK3PencilCensus")) => {
+                self.k3_pencil_statement(op)?
+            }
             Token::Word(
                 command @ ("rvKummerK3Zeta"
                 | "rvKummerK3Points"
@@ -8552,6 +8617,7 @@ impl<'src> Parser<'src> {
                 | "RVKummer"
                 | "RVKummerK3"
                 | "RVEnriques"
+                | "RVK3PencilBase"
                 | "RVKummerDisc"
                 | "RVKummerDiv"
                 | "RVK3Lattice"
@@ -8567,6 +8633,7 @@ impl<'src> Parser<'src> {
                 "RVKummer" => TypeForm::Kummer(endpoint),
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
                 "RVEnriques" => TypeForm::Enriques(endpoint),
+                "RVK3PencilBase" => TypeForm::K3PencilBase(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
@@ -10493,6 +10560,13 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.jacobian_expression(&name.text, name.span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvK3PencilDiv" | "rvK3PencilParam" | "rvK3PencilMap" | "rvK3PencilSection"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.k3_pencil_expression(&name.text, span, nest);
                 }
                 if (name.text == "rvEnriquesOrbit" && self.token() == Token::LBracket)
                     || (matches!(
