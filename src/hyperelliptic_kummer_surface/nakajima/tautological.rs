@@ -89,7 +89,7 @@ pub(crate) fn top_segre(model: &mut Model, line: &Vector, n: u128) -> Result<i12
     }
     value
         .multiply_u128(1u128 << n)
-        .and_then(|value| value.signed(negative_top && n % 2 != 0))
+        .and_then(|value| value.signed(negative_top && !n.is_multiple_of(2)))
         .ok_or_else(segre_range)
 }
 
@@ -319,7 +319,7 @@ impl Generator {
             } in parts
             {
                 if count % 2 == 1 {
-                    negative ^= length % 2 == 0;
+                    negative ^= length.is_multiple_of(2);
                     negative ^= color != 0 && self.coordinates[usize::from(color - 1)] < 0;
                 }
                 let length = i128::try_from(length).map_err(|_| grade_range())?;

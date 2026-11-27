@@ -699,6 +699,7 @@ enum TypedForm {
     HilbertCohomologyScale(i128, u128, Box<TypedExpr>),
     HilbertCohomologyToFock(i128, Box<TypedExpr>),
     HilbertCohomologyChern(u128, u128, bool, Box<TypedExpr>),
+    HilbertCohomologySchur(u128, u128, Vec<u128>, Box<TypedExpr>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     CMClass(cm_ring::Order, CMClassAction),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
@@ -5150,6 +5151,27 @@ impl Engine {
     ) -> Result<String> {
         use nakajima::cohomology::Report;
         let (input, name, integral) = match report {
+            Report::ExteriorEuler(length, power, inputs) => {
+                let [line, twist] = *inputs;
+                let mut checker = self.checker();
+                let line = checker.expr(line)?;
+                checker.k3_lattice_operand(&line, "rvHilbExteriorEuler")?;
+                let twist = checker.expr(twist)?;
+                checker.require_type(line.ty, &twist, "rvHilbExteriorEuler twist")?;
+                let (Value::K3Lattice(line), Value::K3Lattice(twist)) =
+                    (self.eval(&line)?, self.eval(&twist)?)
+                else {
+                    unreachable!()
+                };
+                let result = nakajima::cohomology::schur::exterior_euler(
+                    &mut self.model,
+                    &line,
+                    &twist,
+                    length,
+                    power,
+                )?;
+                return Ok(format!("rvHilbExteriorEuler[{length}, {power}] = {result}"));
+            }
             Report::Integral(input) => (input, "rvHilbCohIntegral", true),
             Report::Denominator(input) => (input, "rvHilbCohDen", false),
         };
@@ -8953,6 +8975,13 @@ impl Engine {
                     unreachable!()
                 };
                 class.to_fock(&mut self.model, *k)?.persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologySchur(length, j, shape, input) => {
+                let Value::K3Lattice(line) = self.eval(input)? else {
+                    unreachable!()
+                };
+                nakajima::cohomology::schur::character(&mut self.model, &line, *length, *j, shape)?
+                    .persist(&mut self.model)
             }
             TypedForm::HilbertCohomologyChern(length, j, character, input) => {
                 use nakajima::cohomology::Class;
@@ -20912,6 +20941,28 @@ impl Checker<'_> {
                     .model
                     .hilbert_cohomology_type(&marking, length, degree)?;
                 Ok((ty, TypedForm::HilbertCohomologyCup(Box::new([left, right]))))
+            }
+            Expression::Schur(length, j, mut shape, input) => {
+                let input = self.expr(*input)?;
+                if !shape.windows(2).all(|rows| rows[0] >= rows[1]) {
+                    return Err(Error::new(
+                        input.span,
+                        "Schur rows must be weakly decreasing",
+                    ));
+                }
+                while shape.last() == Some(&0) {
+                    shape.pop();
+                }
+                let marking = self.k3_lattice_operand(&input, "rvHilbCohSchur")?;
+                let basis = Label {
+                    text: marking.to_string(),
+                    span: input.span,
+                };
+                let ty = self.hilbert_cohomology_grade_type(&basis, length, j)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertCohomologySchur(length, j, shape, Box::new(input)),
+                ))
             }
             Expression::Chern(length, j, character, input) => {
                 let input = self.expr(*input)?;

@@ -4101,15 +4101,26 @@ impl<'src> Parser<'src> {
                     };
                     (expression, 0)
                 }
-                "rvHilbCohChern" | "rvHilbCohCh" => {
+                "rvHilbCohChern" | "rvHilbCohCh" | "rvHilbCohSchur" => {
                     let n = self.wide_unsigned("Hilbert length")?;
                     self.expect(Token::Comma)?;
                     let j = self.wide_unsigned("characteristic class index")?;
                     self.expect(Token::RBracket)?;
+                    let shape = if name == "rvHilbCohSchur" {
+                        Some(
+                            self.set_named_rows(|parser| parser.wide_unsigned("Schur row length"))?,
+                        )
+                    } else {
+                        None
+                    };
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     (
-                        Expression::Chern(n, j, name == "rvHilbCohCh", Box::new(input)),
+                        if let Some(shape) = shape {
+                            Expression::Schur(n, j, shape, Box::new(input))
+                        } else {
+                            Expression::Chern(n, j, name == "rvHilbCohCh", Box::new(input))
+                        },
                         depth,
                     )
                 }
@@ -6146,6 +6157,20 @@ impl<'src> Parser<'src> {
             ) => self.k3_period_statement(command)?,
             Token::Word(name @ ("rvHilbTautChernDen" | "rvHilbTautSegre")) => {
                 self.hilbert_tautological_statement(name)?
+            }
+            Token::Word("rvHilbExteriorEuler") => {
+                use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let n = self.wide_unsigned("Hilbert length")?;
+                self.expect(Token::Comma)?;
+                let k = self.wide_unsigned("exterior power")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::HilbertCohomology(Box::new(Report::ExteriorEuler(
+                    n,
+                    k,
+                    Box::new(self.paren_pair(0)?),
+                )))
             }
             Token::Word(name @ ("rvHilbCohDen" | "rvHilbCohIntegral")) => {
                 use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report;
@@ -11349,6 +11374,7 @@ impl<'src> Parser<'src> {
                         | "rvHilbCohFock"
                         | "rvHilbCohChern"
                         | "rvHilbCohCh"
+                        | "rvHilbCohSchur"
                 ) && self.token() == Token::LBracket)
                     || (name.text == "rvHilbCohCup" && self.token() == Token::LParen)
                 {

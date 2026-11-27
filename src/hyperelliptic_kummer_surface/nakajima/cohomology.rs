@@ -12,6 +12,8 @@ use crate::wide_integer::Natural;
 use super::super::unimodular::Vector;
 use super::{tautological, Accumulator, Factor, Integer, Mode, State, LIMBS, POINT};
 
+pub(crate) mod schur;
+
 type Denominator = Natural<LIMBS>;
 
 pub(crate) enum Expression {
@@ -22,11 +24,13 @@ pub(crate) enum Expression {
     ToFock(i128, Box<ParsedExpr>),
     Cup(Box<[ParsedExpr; 2]>),
     Chern(u128, u128, bool, Box<ParsedExpr>),
+    Schur(u128, u128, Vec<u128>, Box<ParsedExpr>),
 }
 
 pub(crate) enum Report {
     Integral(Box<ParsedExpr>),
     Denominator(Box<ParsedExpr>),
+    ExteriorEuler(u128, u128, Box<[ParsedExpr; 2]>),
 }
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
@@ -98,6 +102,10 @@ impl Class {
     }
 
     pub(crate) fn add(&self, model: &mut Model, other: &Self) -> Result<Self> {
+        self.add_signed(model, other, false)
+    }
+
+    fn add_signed(&self, model: &mut Model, other: &Self, subtract: bool) -> Result<Self> {
         let common = gcd(self.denominator, other.denominator);
         let left_multiplier = other.denominator / common;
         let right_multiplier = self.denominator / common;
@@ -109,12 +117,13 @@ impl Class {
             &self.numerator,
             positive(left_multiplier),
         )?;
-        add_scaled(
-            model,
-            &mut output,
-            &other.numerator,
-            positive(right_multiplier),
-        )?;
+        let right_scale = positive(right_multiplier);
+        let right_scale = if subtract {
+            right_scale.negate()
+        } else {
+            right_scale
+        };
+        add_scaled(model, &mut output, &other.numerator, right_scale)?;
         normalize(model, output, denominator)
     }
 
@@ -142,16 +151,25 @@ impl Class {
         k: i128,
         denominator: Denominator,
     ) -> Result<Self> {
+        Self::scaled_wide(model, state, Integer::from_i128(k), denominator)
+    }
+
+    fn scaled_wide(
+        model: &mut Model,
+        state: &State,
+        k: Integer,
+        denominator: Denominator,
+    ) -> Result<Self> {
         if denominator.is_zero() {
             return Err(Error::plain(
                 "Hilbert cohomology denominator must be positive",
             ));
         }
-        if k == 0 || state.terms.is_empty() {
+        if k.is_zero() || state.terms.is_empty() {
             return Ok(Self::zero());
         }
         let mut output = Accumulator::default();
-        add_scaled(model, &mut output, state, Integer::from_i128(k))?;
+        add_scaled(model, &mut output, state, k)?;
         normalize(model, output, denominator)
     }
 
@@ -208,7 +226,14 @@ impl Class {
             return Ok(Self::zero());
         }
         let limit = usize::try_from(j).map_err(|_| character_limit())?;
-        let rank = n.min(j) as usize;
+        let power = Self::power_sums(model, line, n, limit)?
+            .pop()
+            .expect("positive character index");
+        power.divide_by_factorial(model, j)
+    }
+
+    fn power_sums(model: &mut Model, line: &Vector, n: u128, limit: usize) -> Result<Vec<Self>> {
+        let rank = n.min(limit as u128) as usize;
         let mut cells = 8usize
             .saturating_mul(limit)
             .saturating_add(8usize.saturating_mul(rank));
@@ -229,12 +254,7 @@ impl Class {
             let mut sum = Self::zero();
             for i in 1..=rank.min(degree - 1) {
                 let product = chern[i - 1].cup(model, &powers[degree - i - 1], length)?;
-                let term = if i % 2 == 1 {
-                    product
-                } else {
-                    product.scale(model, -1, 1)?
-                };
-                sum = sum.add(model, &term)?;
+                sum = sum.add_signed(model, &product, i.is_multiple_of(2))?;
             }
             if degree <= rank {
                 let sign = if degree % 2 == 1 { 1i128 } else { -1 };
@@ -245,14 +265,17 @@ impl Class {
             character_storage(cells)?;
             powers.push(sum);
         }
-        let power = powers.pop().expect("positive character index");
-        if power.numerator.terms.is_empty() {
+        Ok(powers)
+    }
+
+    fn divide_by_factorial(&self, model: &mut Model, index: u128) -> Result<Self> {
+        if self.numerator.terms.is_empty() {
             return Ok(Self::zero());
         }
-        let denominator = factorial(model, j)?
-            .multiply_u128(power.denominator)
+        let denominator = factorial(model, index)?
+            .multiply_u128(self.denominator)
             .ok_or_else(denominator_range)?;
-        Self::scaled_fock(model, &power.numerator, 1, denominator)
+        Self::scaled_fock(model, &self.numerator, 1, denominator)
     }
 }
 
