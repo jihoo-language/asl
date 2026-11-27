@@ -10,8 +10,11 @@ use crate::hyperelliptic_jacobian::Divisor;
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod arithmetic;
+
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
+    DifferentialAdd(Box<[ParsedExpr; 3]>),
     Apply(Operation, Box<ParsedExpr>),
 }
 
@@ -21,6 +24,7 @@ pub(crate) enum Operation {
     Coordinate(usize),
     Liftable,
     Lift,
+    Scale(i128),
 }
 
 impl Operation {
@@ -30,6 +34,7 @@ impl Operation {
             Self::Coordinate(_) => "rvKummerCoord",
             Self::Liftable => "rvKummerLiftable",
             Self::Lift => "rvKummerLift",
+            Self::Scale(_) => "rvKummerScale",
         }
     }
 }
@@ -178,14 +183,14 @@ impl Point {
         match self.recover(model, curve)? {
             Recovery::Identity => Ok(Divisor::zero(curve)),
             Recovery::Linear { x, y_squared } => {
-                let y = square_root(model, field, &y_squared)?;
+                let y = lift_root(model, field, &y_squared)?;
                 Divisor::from_point(model, curve, &x, y)
             }
             Recovery::Quadratic { u, a, b, c } => {
                 let v = if poly::zero(&a) {
-                    vec![field.zero(), square_root(model, field, &c)?]
+                    vec![field.zero(), lift_root(model, field, &c)?]
                 } else {
-                    let constant = square_root(model, field, &a)?;
+                    let constant = lift_root(model, field, &a)?;
                     let inverse = field.inverse_unit(model, &constant)?;
                     vec![constant, field.multiply(model, &b, &inverse)?]
                 };
@@ -275,20 +280,24 @@ impl SquareMatrix {
     }
 }
 
-fn square_root(model: &mut Model, field: Field<'_>, value: &Scalar) -> Result<Scalar> {
+fn lift_root(model: &mut Model, field: Field<'_>, value: &Scalar) -> Result<Scalar> {
+    square_root(model, field, value)?.ok_or_else(|| {
+        Error::plain("rvKummerLift has nonsquare recovery data over the named field")
+    })
+}
+
+fn square_root(model: &mut Model, field: Field<'_>, value: &Scalar) -> Result<Option<Scalar>> {
     if poly::zero(value) {
-        return Ok(field.zero());
+        return Ok(Some(field.zero()));
     }
     let constant = field.ring.negate(model, value)?;
     let factors = factor_squarefree(model, field, vec![constant, field.zero(), field.one()])?;
-    if factors.len() != 2 {
-        return Err(Error::plain(
-            "rvKummerLift has nonsquare recovery data over the named field",
-        ));
-    }
-    let left = field.ring.negate(model, &factors[0][0])?;
-    let right = field.ring.negate(model, &factors[1][0])?;
-    Ok(left.min(right))
+    let [left, right] = factors.as_slice() else {
+        return Ok(None);
+    };
+    let left = field.ring.negate(model, &left[0])?;
+    let right = field.ring.negate(model, &right[0])?;
+    Ok(Some(left.min(right)))
 }
 
 pub(crate) fn elements(model: &mut Model, curve: &Curve, limit: usize) -> Result<Vec<Value>> {

@@ -2895,6 +2895,19 @@ impl<'src> Parser<'src> {
             let inputs = [k0, k1, k2, k3];
             let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
             (Expression::Coordinates(curve, Box::new(inputs)), depth)
+        } else if name == "rvKummerDiffAdd" {
+            self.expect(Token::LParen)?;
+            let left = self.expr(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let right = self.expr(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let difference = self.expr(nest + 1)?;
+            self.expect(Token::RParen)?;
+            let depth = 1 + left.depth.max(right.depth).max(difference.depth);
+            (
+                Expression::DifferentialAdd(Box::new([left, right, difference])),
+                depth,
+            )
         } else {
             let operation = match name {
                 "rvJacKummerPoint" => Operation::Project,
@@ -2909,6 +2922,12 @@ impl<'src> Parser<'src> {
                     }
                     self.expect(Token::RBracket)?;
                     Operation::Coordinate(coordinate)
+                }
+                "rvKummerScale" => {
+                    self.expect(Token::LBracket)?;
+                    let n = self.signed_wide("an integer multiple", "Kummer scalar")?;
+                    self.expect(Token::RBracket)?;
+                    Operation::Scale(n)
                 }
                 "rvKummerLiftable" => Operation::Liftable,
                 _ => Operation::Lift,
@@ -8756,11 +8775,16 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
-                if (matches!(name.text.as_str(), "rvKummer" | "rvKummerCoord")
-                    && self.token() == Token::LBracket)
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKummer" | "rvKummerCoord" | "rvKummerScale"
+                ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
-                        "rvJacKummerPoint" | "rvKummerLiftable" | "rvKummerLift"
+                        "rvJacKummerPoint"
+                            | "rvKummerLiftable"
+                            | "rvKummerLift"
+                            | "rvKummerDiffAdd"
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);

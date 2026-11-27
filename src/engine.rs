@@ -471,6 +471,7 @@ enum JacobianAction {
 
 enum KummerAction {
     Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
+    DifferentialAdd(Rc<hw_closed::Curve>, Box<[TypedExpr; 3]>),
     Apply(
         Rc<hw_closed::Curve>,
         kummer_surface::Operation,
@@ -4911,6 +4912,22 @@ impl Engine {
                 }
                 KummerPoint::new(&mut self.model, curve, coordinates)?.persist(&mut self.model)
             }
+            KummerAction::DifferentialAdd(curve, inputs) => {
+                let [left, right, difference] = inputs.as_ref();
+                let (Value::Kummer(left), Value::Kummer(right), Value::Kummer(difference)) =
+                    (self.eval(left)?, self.eval(right)?, self.eval(difference)?)
+                else {
+                    unreachable!()
+                };
+                kummer_surface::arithmetic::differential_add(
+                    &mut self.model,
+                    curve,
+                    &left,
+                    &right,
+                    &difference,
+                )?
+                .persist(&mut self.model)
+            }
             KummerAction::Apply(curve, operation, input) => {
                 let input = self.eval(input)?;
                 match (operation, input) {
@@ -4927,6 +4944,10 @@ impl Engine {
                     (Operation::Lift, Value::Kummer(point)) => point
                         .lift(&mut self.model, curve)?
                         .persist(&mut self.model, curve),
+                    (Operation::Scale(n), Value::Kummer(point)) => {
+                        kummer_surface::arithmetic::scale(&mut self.model, curve, *n, &point)?
+                            .persist(&mut self.model)
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -18071,6 +18092,26 @@ impl Checker<'_> {
                 let ty = self.model.kummer_type(name.text.into())?;
                 (ty, KummerAction::Coordinates(curve, Box::new(inputs)))
             }
+            Expression::DifferentialAdd(inputs) => {
+                let [left, right, difference] = *inputs;
+                let left = self.expr(left)?;
+                let Kind::Kummer(name) = self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvKummerDiffAdd",
+                        "an RVKummer point",
+                    ));
+                };
+                let curve = self.model.kummer_curve(name)?;
+                let right = self.expr(right)?;
+                let difference = self.expr(difference)?;
+                self.require_type(left.ty, &right, "rvKummerDiffAdd second point")?;
+                self.require_type(left.ty, &difference, "rvKummerDiffAdd difference")?;
+                (
+                    left.ty,
+                    KummerAction::DifferentialAdd(curve, Box::new([left, right, difference])),
+                )
+            }
             Expression::Apply(operation, input) => {
                 let input = self.expr(*input)?;
                 let project = matches!(operation, Operation::Project);
@@ -18095,6 +18136,7 @@ impl Checker<'_> {
                     })?,
                     Operation::Liftable => self.model.named("S").unwrap(),
                     Operation::Lift => self.model.jacobian_type(name)?,
+                    Operation::Scale(_) => input.ty,
                 };
                 (ty, KummerAction::Apply(curve, operation, Box::new(input)))
             }
