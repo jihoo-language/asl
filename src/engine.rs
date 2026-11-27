@@ -15254,19 +15254,21 @@ impl Checker<'_> {
                         TypedForm::ModularHeckeScale(coefficient, Box::new(input)),
                     ))
                 }
-                hecke::Expression::Binary(pair, inputs) => {
+                hecke::Expression::SameAction(inputs) => {
                     let [left, right] = *inputs;
                     let left = self.expr(left)?;
+                    let operation = "rvHeckeSameAction";
+                    let weight = self.hecke_operator_operand(&left, operation)?;
                     let right = self.expr(right)?;
-                    let weight = self.hecke_operator_operand(&left, pair.name())?;
-                    self.require_type(left.ty, &right, pair.name())?;
-                    let ty = match pair {
-                        hecke::Pair::Multiply => left.ty,
-                        hecke::Pair::SameAction => self.model.named("S").unwrap(),
-                    };
+                    self.require_type(left.ty, &right, operation)?;
+                    let ty = self.model.named("S").unwrap();
                     Ok((
                         ty,
-                        TypedForm::ModularHeckeBinary(pair, weight, Box::new([left, right])),
+                        TypedForm::ModularHeckeBinary(
+                            hecke::Pair::SameAction,
+                            weight,
+                            Box::new([left, right]),
+                        ),
                     ))
                 }
             },
@@ -16858,16 +16860,27 @@ impl Checker<'_> {
             ExprForm::HeckeProduct(arguments) => {
                 let [left, right] = *arguments;
                 let left = self.expr(left)?;
-                if !matches!(self.model.kind(left.ty), Kind::RVIwHecke(..)) {
-                    return Err(self.invalid_operand(
-                        &left,
-                        "rvHeckeMul",
-                        "an affine Hecke element",
-                    ));
-                }
+                let weight = match *self.model.kind(left.ty) {
+                    Kind::RVIwHecke(..) => None,
+                    Kind::ModularHecke(weight) => Some(weight),
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &left,
+                            "rvHeckeMul",
+                            "an affine Hecke element or a level-one RVHecke(k) operator",
+                        ));
+                    }
+                };
                 let right = self.expr(right)?;
                 self.require_type(left.ty, &right, "rvHeckeMul")?;
-                Ok((left.ty, TypedForm::HeckeProduct(Box::new([left, right]))))
+                let ty = left.ty;
+                let arguments = Box::new([left, right]);
+                let operation = if let Some(weight) = weight {
+                    TypedForm::ModularHeckeBinary(hecke::Pair::Multiply, weight, arguments)
+                } else {
+                    TypedForm::HeckeProduct(arguments)
+                };
+                Ok((ty, operation))
             }
             ExprForm::RVLaurentMonomial(power, input) => {
                 let input = self.expr(*input)?;

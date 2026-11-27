@@ -84,3 +84,27 @@ fn affine_hecke_checks_types_windows_and_fixed_width_integer_bounds() {
         "{error}"
     );
 }
+
+#[test]
+fn affine_and_level_one_hecke_operators_share_constructor_and_product_syntax() {
+    let source = "
+        let s = rvHeckeT[[1,0,2]];
+        let q = rvHeckeQ[3];
+        let t = rvHeckeT[12,2];
+        let one = rvHeckeUnit[12];
+        assert rvHeckeMul(s,s) == add(rvHeckeMul(add(q,neg(rvHeckeId[3])),s),q);
+        rvHeckeAt[3,[0,1,2]](rvHeckeMul(s,s));
+        assert rvHeckeMul(t,t) == add(rvHeckeT[12,4],rvHeckeScale[2048](one));
+        rvHeckeActionTrace(rvHeckeMul(t,t));";
+    assert_eq!(
+        stdout(interpret(source)),
+        "rvHeckeAt = 3\nrvHeckeActionTrace = 576\n"
+    );
+    for (left, right, expected) in [
+        ("rvHeckeT[[1,0,2]]", "rvHeckeT[12,2]", "RVIwHecke(3)"),
+        ("rvHeckeT[12,2]", "rvHeckeT[[1,0,2]]", "RVHecke(12)"),
+    ] {
+        let error = diagnostic(interpret(&format!("show rvHeckeMul({left},{right});")));
+        assert!(error.contains(expected), "{error}");
+    }
+}

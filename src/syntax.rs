@@ -12508,6 +12508,11 @@ impl<'src> Parser<'src> {
                     "rvHeckeT" | "rvHeckeUnit" | "rvHeckeScale"
                 ) && self.eat(Token::LBracket)?
                 {
+                    if name.text == "rvHeckeT" && self.token() == Token::LBracket {
+                        let window = self.affine_window()?;
+                        self.expect(Token::RBracket)?;
+                        return expr(span, ExprForm::HeckeBasis(false, window), 0);
+                    }
                     let (operation, depth) = if name.text == "rvHeckeScale" {
                         let scalar =
                             self.signed_wide("a signed Hecke coefficient", "Hecke coefficient")?;
@@ -12528,17 +12533,10 @@ impl<'src> Parser<'src> {
                     };
                     return expr(span, ExprForm::ModularHecke(operation), depth);
                 }
-                if matches!(name.text.as_str(), "rvHeckeMul" | "rvHeckeSameAction")
-                    && self.token() == Token::LParen
-                {
-                    let pair = if name.text == "rvHeckeMul" {
-                        hecke::Pair::Multiply
-                    } else {
-                        hecke::Pair::SameAction
-                    };
+                if name.text == "rvHeckeSameAction" && self.token() == Token::LParen {
                     let [left, right] = self.paren_pair(nest)?;
                     let depth = left.depth.max(right.depth) + 1;
-                    let operation = hecke::Expression::Binary(pair, Box::new([left, right]));
+                    let operation = hecke::Expression::SameAction(Box::new([left, right]));
                     return expr(span, ExprForm::ModularHecke(operation), depth);
                 }
                 if name.text == "rvSiegelWeight" && self.eat(Token::LBracket)? {
@@ -14094,13 +14092,10 @@ impl<'src> Parser<'src> {
                         depth,
                     );
                 }
-                if matches!(name.text.as_str(), "rvHeckeT" | "rvHeckeKL")
-                    && self.eat(Token::LBracket)?
-                {
-                    let canonical = name.text == "rvHeckeKL";
+                if name.text == "rvHeckeKL" && self.eat(Token::LBracket)? {
                     let window = self.affine_window()?;
                     self.expect(Token::RBracket)?;
-                    return expr(span, ExprForm::HeckeBasis(canonical, window), 0);
+                    return expr(span, ExprForm::HeckeBasis(true, window), 0);
                 }
                 if matches!(name.text.as_str(), "rvHeckeId" | "rvHeckeQ")
                     && self.eat(Token::LBracket)?

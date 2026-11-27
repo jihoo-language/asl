@@ -16,15 +16,6 @@ pub(crate) enum Pair {
     SameAction,
 }
 
-impl Pair {
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Multiply => "rvHeckeMul",
-            Self::SameAction => "rvHeckeSameAction",
-        }
-    }
-}
-
 pub(crate) enum Report {
     Trace,
     Characteristic,
@@ -68,7 +59,7 @@ impl Report {
 pub(crate) enum Expression {
     Basis(u128, u128),
     Scale(i128, Box<ParsedExpr>),
-    Binary(Pair, Box<[ParsedExpr; 2]>),
+    SameAction(Box<[ParsedExpr; 2]>),
 }
 
 type Support = BTreeMap<u128, Integer>;
