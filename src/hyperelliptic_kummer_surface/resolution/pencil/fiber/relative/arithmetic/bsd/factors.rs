@@ -10,6 +10,8 @@ use crate::wide_integer::Natural;
 use super::super::field;
 use super::{fraction_text, special_overflow, unsigned, BadPlace, Integer, Kodaira, Pencil, LIMBS};
 
+mod regulator;
+
 const MAX_DIVISOR_SCAN: u128 = 100_000;
 
 type Magnitude = Natural<LIMBS>;

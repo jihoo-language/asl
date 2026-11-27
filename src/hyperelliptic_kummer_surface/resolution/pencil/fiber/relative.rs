@@ -145,7 +145,13 @@ impl RelativeJacobian {
         let [_, v] = parameter.coordinates();
         let mut valuations = [None; 6];
         for (out, (form, degree)) in valuations.iter_mut().zip(self.forms()) {
-            *out = order(model, field, form, degree, uniformizer.as_ref())?;
+            *out = order(
+                model,
+                field,
+                form,
+                degree,
+                uniformizer.as_ref().map(|linear| linear.as_slice()),
+            )?;
         }
         let [a2, a4, a6, c4, c6, discriminant] = valuations.map(display_order);
         let chart = if uniformizer.is_some() {
@@ -200,7 +206,7 @@ fn order(
     field: Field<'_>,
     p: &[Scalar],
     degree: usize,
-    uniformizer: Option<&[Scalar; 2]>,
+    uniformizer: Option<&[Scalar]>,
 ) -> Result<Option<usize>> {
     if p.is_empty() {
         return Ok(None);

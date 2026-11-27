@@ -96,6 +96,26 @@ impl Section {
         ))
     }
 
+    pub(crate) fn multiple(
+        &self,
+        model: &mut Model,
+        pencil: &Pencil,
+        mut multiple: u128,
+    ) -> Result<Self> {
+        let mut sum = Self::Infinity;
+        let mut power = self.clone();
+        while multiple != 0 {
+            if multiple & 1 != 0 {
+                sum = sum.add(model, pencil, &power)?;
+            }
+            multiple >>= 1;
+            if multiple != 0 {
+                power = power.add(model, pencil, &power)?;
+            }
+        }
+        Ok(sum)
+    }
+
     pub(crate) fn add(&self, model: &mut Model, pencil: &Pencil, rhs: &Self) -> Result<Self> {
         let (Self::Affine(x, y), Self::Affine(u, v)) = (self, rhs) else {
             let point = if matches!(self, Self::Infinity) {

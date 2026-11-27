@@ -28,6 +28,9 @@ pub(crate) enum Command {
     LFunction(Label),
     Bsd(Label),
     BsdFactors(Label),
+    SectionHeight(Label, Box<ParsedExpr>),
+    SectionPair(Label, Box<[ParsedExpr; 2]>),
+    Regulator(Label, Vec<ParsedExpr>),
     Torsion2(Label),
     Selmer(Label),
 }

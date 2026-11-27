@@ -150,6 +150,13 @@ impl Curve {
     }
 
     pub(crate) fn elements(&self, model: &mut Model, limit: usize) -> Result<Vec<Value>> {
+        self.raw_points(model, limit)?
+            .into_iter()
+            .map(|point| persist_point(model, point))
+            .collect()
+    }
+
+    pub(crate) fn raw_points(&self, model: &mut Model, limit: usize) -> Result<Vec<Point>> {
         let q = self.ring.size_of_residue_field()?;
         if q > 4 * limit as u64 {
             return Err(Error::plain(
@@ -191,10 +198,7 @@ impl Curve {
         }
         model.spend(points.len() * (1 + points.len().ilog2() as usize) * field.cells())?;
         points.sort_unstable();
-        points
-            .into_iter()
-            .map(|point| persist_point(model, point))
-            .collect()
+        Ok(points)
     }
 
     pub(crate) fn point(&self, model: &mut Model, x: Scalar, y: Scalar) -> Result<Point> {

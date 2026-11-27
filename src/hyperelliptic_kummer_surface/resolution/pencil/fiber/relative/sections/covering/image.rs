@@ -25,9 +25,40 @@ impl MordellImage {
         let rank = relative.arithmetic_mordell_weil_rank(model, &pencil)?;
         let selmer = pencil.selmer_space(model)?;
         let sha_dimension = selmer.sha_dimension(rank)?;
+        let (rows, pivots) = Self::span_rows(model, &pencil, generators)?;
+        if pivots.len() != rank + 2 {
+            return Err(Error::plain(format!(
+                "K3 pencil Mordell-Weil mod-2 image has dimension {}, expected {} from arithmetic rank {rank} and split two-torsion",
+                pivots.len(), rank + 2,
+            )));
+        }
+        model.allocate(7 + 2 * rows.len())?;
+        Ok(Self {
+            pencil,
+            rank,
+            image_rows: rows,
+            pivots,
+            sha_dimension,
+        })
+    }
+
+    pub(crate) fn dimension_of(
+        model: &mut Model,
+        pencil: &Pencil,
+        generators: &[Rc<Section>],
+    ) -> Result<usize> {
+        Ok(Self::span_rows(model, pencil, generators)?.0.len())
+    }
+
+    fn span_rows(
+        model: &mut Model,
+        pencil: &Pencil,
+        generators: &[Rc<Section>],
+    ) -> Result<(Vec<u32>, Vec<usize>)> {
+        let selmer = pencil.selmer_space(model)?;
         let mut rows = Vec::new();
         let mut add_point = |model: &mut Model, point: &Section| -> Result<()> {
-            let class = point.descent(model, &pencil)?;
+            let class = point.descent(model, pencil)?;
             let vector = selmer.encode_local(model, &class)?.ok_or_else(|| {
                 Error::plain("K3 pencil global section failed a local Kummer test")
             })?;
@@ -43,21 +74,8 @@ impl MordellImage {
         }
         model.spend(rows.len().saturating_mul(selmer.width()))?;
         let pivots = binary_rref(&mut rows, selmer.width());
-        if pivots.len() != rank + 2 {
-            return Err(Error::plain(format!(
-                "K3 pencil Mordell-Weil mod-2 image has dimension {}, expected {} from arithmetic rank {rank} and split two-torsion",
-                pivots.len(), rank + 2,
-            )));
-        }
         rows.truncate(pivots.len());
-        model.allocate(7 + 2 * rows.len())?;
-        Ok(Self {
-            pencil,
-            rank,
-            image_rows: rows,
-            pivots,
-            sha_dimension,
-        })
+        Ok((rows, pivots))
     }
 
     pub(crate) fn report(&self, name: &str) -> String {

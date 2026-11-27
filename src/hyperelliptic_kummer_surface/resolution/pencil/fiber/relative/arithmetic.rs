@@ -12,6 +12,7 @@ use super::{
 };
 
 mod bsd;
+mod heights;
 
 type Uniformizer = [Scalar; 2];
 
@@ -237,6 +238,15 @@ impl RelativeJacobian {
         model: &mut Model,
         field: Field<'_>,
         place: Option<&Uniformizer>,
+    ) -> Result<MinimalReduction> {
+        self.minimal_at_factor(model, field, place.map(|linear| linear.as_slice()))
+    }
+
+    fn minimal_at_factor(
+        &self,
+        model: &mut Model,
+        field: Field<'_>,
+        place: Option<&[Scalar]>,
     ) -> Result<MinimalReduction> {
         let c4 = order(model, field, &self.0.c4, 8, place)?;
         let c6 = order(model, field, &self.0.c6, 12, place)?;

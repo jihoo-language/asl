@@ -1920,6 +1920,48 @@ impl Engine {
                         let pencil = self.model.k3_pencil(&name)?;
                         pencil.bsd_factors(&mut self.model, &name.text).map(Some)
                     }
+                    Command::SectionHeight(name, input) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let ty = self.model.k3_pencil_section_type(&name)?;
+                        let section =
+                            self.pencil_section_input(ty, *input, "K3 pencil height section")?;
+                        pencil
+                            .section_height_report(&mut self.model, &name.text, &section, None)
+                            .map(Some)
+                    }
+                    Command::SectionPair(name, inputs) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let ty = self.model.k3_pencil_section_type(&name)?;
+                        let [left, right] = *inputs;
+                        let left = self.pencil_section_input(
+                            ty,
+                            left,
+                            "K3 pencil height-pairing section",
+                        )?;
+                        let right = self.pencil_section_input(
+                            ty,
+                            right,
+                            "K3 pencil height-pairing section",
+                        )?;
+                        pencil
+                            .section_height_report(&mut self.model, &name.text, &left, Some(&right))
+                            .map(Some)
+                    }
+                    Command::Regulator(name, inputs) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let ty = self.model.k3_pencil_section_type(&name)?;
+                        let mut basis = Vec::with_capacity(inputs.len());
+                        for input in inputs {
+                            basis.push(self.pencil_section_input(
+                                ty,
+                                input,
+                                "K3 pencil regulator section",
+                            )?);
+                        }
+                        pencil
+                            .regulator(&mut self.model, &name.text, &basis)
+                            .map(Some)
+                    }
                     Command::Torsion2(name) => {
                         let pencil = self.model.k3_pencil(&name)?;
                         pencil.torsion_report(&mut self.model, &name.text).map(Some)
@@ -7420,6 +7462,20 @@ impl Engine {
         .persist(&mut self.model)
     }
 
+    fn pencil_section_input(
+        &mut self,
+        ty: TypeId,
+        input: ParsedExpr,
+        operation: &str,
+    ) -> Result<Rc<pencil::sections::Section>> {
+        let input = self.checker().expr(input)?;
+        self.checker().require_type(ty, &input, operation)?;
+        let Value::K3PencilSection(section) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok(section)
+    }
+
     fn pencil_cover_command(
         &mut self,
         command: pencil::sections::covering::Command,
@@ -7441,15 +7497,11 @@ impl Engine {
                 let ty = self.model.k3_pencil_section_type(&pencil)?;
                 let mut sections = Vec::with_capacity(inputs.len());
                 for input in inputs {
-                    let input = self.checker().expr(input)?;
-                    self.checker().require_type(
+                    let section = self.pencil_section_input(
                         ty,
-                        &input,
+                        input,
                         "K3 pencil Mordell-Weil certificate section",
                     )?;
-                    let Value::K3PencilSection(section) = self.eval(&input)? else {
-                        unreachable!()
-                    };
                     sections.push(section);
                 }
                 self.model

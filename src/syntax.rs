@@ -6031,6 +6031,15 @@ impl<'src> Parser<'src> {
                 "rvK3PencilLFunction" => Command::LFunction(name),
                 "rvK3PencilBSD" => Command::Bsd(name),
                 "rvK3PencilBSDFactors" => Command::BsdFactors(name),
+                "rvK3PencilSectionHeight" => {
+                    Command::SectionHeight(name, Box::new(self.paren_expr(0)?))
+                }
+                "rvK3PencilSectionPair" => {
+                    Command::SectionPair(name, Box::new(self.paren_pair(0)?))
+                }
+                "rvK3PencilRegulator" => {
+                    Command::Regulator(name, self.set_named_rows(|p| p.expr(0))?)
+                }
                 "rvK3PencilTorsion2" => Command::Torsion2(name),
                 "rvK3PencilSelmer" => Command::Selmer(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
@@ -7640,6 +7649,9 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilLFunction"
                 | "rvK3PencilBSD"
                 | "rvK3PencilBSDFactors"
+                | "rvK3PencilSectionHeight"
+                | "rvK3PencilSectionPair"
+                | "rvK3PencilRegulator"
                 | "rvK3PencilTorsion2"
                 | "rvK3PencilSelmer"),
             ) => self.k3_pencil_statement(op)?,
