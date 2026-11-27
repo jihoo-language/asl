@@ -140,6 +140,7 @@ pub(crate) enum TypeForm {
     Lee(Label, crate::lee::Grade),
     LeeDual(Label, i64),
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
+    KhovanovMod(Label, usize, Option<usize>, crate::khovanov::Grade, i64),
     CMOrder(Label, usize),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
@@ -2322,6 +2323,16 @@ impl<'src> Parser<'src> {
         self.signed_number("Khovanov annular degree")
     }
 
+    fn kh_page_indices(&mut self) -> Result<(usize, usize, crate::khovanov::Grade, i64)> {
+        self.expect(Token::Comma)?;
+        let p = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let r = self.number()?.0;
+        let grade = self.kh_grade()?;
+        let k = self.kh_k()?;
+        Ok((p, r, grade, k))
+    }
+
     fn kh_statement(&mut self, command: &str) -> Result<StatementForm> {
         use crate::khovanov::Command;
         self.advance()?;
@@ -2341,6 +2352,10 @@ impl<'src> Parser<'src> {
                 "khAnnularEuler" => Command::AnnularEuler(name),
                 "khAnnularCheck" => Command::AnnularCheck(name),
                 "khActionCheck" => Command::ActionCheck(name),
+                "khPageDim" => {
+                    let (p, r, grade, k) = self.kh_page_indices()?;
+                    Command::PageDimension(name, p, r, grade, k)
+                }
                 "khIrreps" => {
                     let grade = self.kh_grade()?;
                     Command::Irreps(name, grade.i, grade.j)
@@ -2513,9 +2528,28 @@ impl<'src> Parser<'src> {
     }
 
     fn kh_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
-        use crate::khovanov::{Action, Generator, Operation, Query};
+        use crate::khovanov::{
+            page::{Map, Operation as Page},
+            Action, Generator, Operation, Query,
+        };
         let operation = match command {
             "khD" => Some(Operation::Differential),
+            "khMod" | "khPageClass" => {
+                self.expect(Token::LBracket)?;
+                let index = self.number()?.0;
+                let k = self.kh_k()?;
+                self.expect(Token::RBracket)?;
+                Some(Operation::Page(if command == "khMod" {
+                    Page::Reduce(index, k)
+                } else {
+                    Page::Class(index, k)
+                }))
+            }
+            "khPageRep" => Some(Operation::Page(Page::Representative)),
+            "khPageD" => Some(Operation::Page(Page::Map(Map::Differential))),
+            "khPageNext" => Some(Operation::Page(Page::Map(Map::Next))),
+            "khPagePrev" => Some(Operation::Page(Page::Map(Map::Previous))),
+            "khPageBoundary" => Some(Operation::Page(Page::Map(Map::Boundary))),
             "khE" => Some(Operation::Action(Action::E)),
             "khF" => Some(Operation::Action(Action::F)),
             "khH" => Some(Operation::Action(Action::H)),
@@ -2584,6 +2618,11 @@ impl<'src> Parser<'src> {
                 "khPsi" => Query::Psi(name),
                 "khKappaNull" => Query::KappaNull(name),
                 "khKappaDual" => Query::KappaDual(name),
+                "khPageGen" => {
+                    let (p, r, grade, k) = self.kh_page_indices()?;
+                    self.expect(Token::Comma)?;
+                    Query::PageGenerator(name, p, r, grade, k, self.number()?.0)
+                }
                 "khHighest" => {
                     let grade = self.kh_grade()?;
                     let weight = self.kh_k()?;
@@ -3153,7 +3192,8 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 command @ ("khbraid" | "khGroup" | "khEuler" | "khAnnularGroup" | "khAnnularEuler"
-                | "khAnnularCheck" | "khActionCheck" | "khIrreps" | "khKappa"),
+                | "khAnnularCheck" | "khActionCheck" | "khIrreps" | "khPageDim"
+                | "khKappa"),
             ) => self.kh_statement(command)?,
             Token::Word(
                 command @ ("rvhyperelliptic" | "rvHWStatus" | "rvHWPoints" | "rvHWWeil"
@@ -6418,6 +6458,21 @@ impl<'src> Parser<'src> {
             let grade = self.lee_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Lee(braid, grade), 0);
+        }
+        if matches!(name.text.as_str(), "KhPC" | "KhPage") && self.eat(Token::LParen)? {
+            let braid = self.label()?;
+            self.expect(Token::Comma)?;
+            let p = self.number()?.0;
+            let r = if name.text == "KhPage" {
+                self.expect(Token::Comma)?;
+                Some(self.number()?.0)
+            } else {
+                None
+            };
+            let grade = self.kh_grade()?;
+            let k = self.kh_k()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KhovanovMod(braid, p, r, grade, k), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -9963,6 +10018,9 @@ impl<'src> Parser<'src> {
                         | "khKappaNull"
                         | "khKappaDual"
                         | "khHighest"
+                        | "khMod"
+                        | "khPageGen"
+                        | "khPageClass"
                 ) && self.token() == Token::LBracket
                     || matches!(
                         name.text.as_str(),
@@ -9981,6 +10039,11 @@ impl<'src> Parser<'src> {
                             | "khWPlus"
                             | "khLee0"
                             | "khLeePlus"
+                            | "khPageRep"
+                            | "khPageD"
+                            | "khPageNext"
+                            | "khPagePrev"
+                            | "khPageBoundary"
                     ) && self.token() == Token::LParen
                 {
                     return self.kh_expression(&name.text, span, nest + 1);

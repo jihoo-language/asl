@@ -4853,6 +4853,27 @@ impl Model {
             Kind::Lee(name, grade) => out.push(&format!("LeeC({name}, {}, {})", grade.i, grade.f)),
             Kind::LeeDual(name, i) => out.push(&format!("LeeDual({name}, {i})")),
             Kind::Khovanov(name, grade, form) => {
+                match form {
+                    KhForm::Modular(prime, k) => {
+                        return out.push(&format!(
+                            "KhPC({name}, {}, {}, {}, {k})",
+                            prime.get(),
+                            grade.i,
+                            grade.j
+                        ));
+                    }
+                    KhForm::Page(spec) => {
+                        return out.push(&format!(
+                            "KhPage({name}, {}, {}, {}, {}, {})",
+                            spec.prime.get(),
+                            spec.r,
+                            grade.i,
+                            grade.j,
+                            spec.k
+                        ));
+                    }
+                    _ => {}
+                }
                 out.push(&format!("{}({name}, {}, {}", form.name(), grade.i, grade.j))?;
                 if let Some(k) = form.annular().or_else(|| form.cutoff()) {
                     out.push(&format!(", {k}"))?;
@@ -5714,7 +5735,11 @@ impl Model {
                 }
                 Kind::Khovanov(ref name, grade, form) => {
                     let braid = self.kh_braid(name)?;
-                    if let Some(k) = form.cutoff() {
+                    if let KhForm::Modular(prime, k) = form {
+                        braid.modular_elements(self, grade, prime, k, MAX_ELEMENTS)?
+                    } else if let KhForm::Page(spec) = form {
+                        braid.page_elements(self, grade, spec, MAX_ELEMENTS)?
+                    } else if let Some(k) = form.cutoff() {
                         braid.binary_elements(self, grade, k, MAX_ELEMENTS)?
                     } else if form.is_class() {
                         braid

@@ -1197,6 +1197,16 @@ impl Engine {
                             .irreps(&mut self.model, i, difference)?;
                     format!("khIrreps[{}, {i}, {difference}] = {irreps:?}", name.text)
                 }
+                khovanov::Command::PageDimension(name, p, r, grade, k) => {
+                    let prime = khovanov::page::field(&mut self.model, p)?;
+                    let spec = khovanov::page::Spec { prime, r, k };
+                    let braid = self.model.kh_braid(&name.text)?;
+                    let rank = braid.page_rank(&mut self.model, grade, spec)?;
+                    format!(
+                        "khPageDim[{}, {p}, {r}, {}, {}, {k}] = {rank}",
+                        name.text, grade.i, grade.j
+                    )
+                }
                 khovanov::Command::Kappa(name) => {
                     let result = self
                         .model
@@ -4730,7 +4740,9 @@ impl Engine {
                         let Kind::Khovanov(_, _, form) = self.model.kind(expr.ty) else {
                             unreachable!()
                         };
-                        let chain = if form.cutoff().is_some() {
+                        let chain = if let Some((prime, _)) = form.modular() {
+                            khovanov::page::add_chain(&mut self.model, prime, &a, &b)?
+                        } else if form.cutoff().is_some() {
                             khovanov::add_binary(&mut self.model, &a, &b)?
                         } else {
                             khovanov::add_chains(&mut self.model, &a, &b)?
@@ -4741,6 +4753,15 @@ impl Engine {
                         let Kind::Khovanov(name, grade, form) = self.model.kind(expr.ty) else {
                             unreachable!()
                         };
+                        if let KhForm::Page(spec) = form {
+                            let prime = spec.prime;
+                            return Ok(Value::KhClass(khovanov::page::add_class(
+                                &mut self.model,
+                                prime,
+                                &a,
+                                &b,
+                            )?));
+                        }
                         let (grade, k) = (*grade, form.annular());
                         let group = self
                             .model
@@ -6222,8 +6243,23 @@ impl Engine {
                 let (grade, form) = (*grade, *form);
                 let braid = self.model.kh_braid(name)?;
                 match (operation, value) {
+                    (Operation::Page(operation), value) => {
+                        let Kind::Khovanov(_, target_grade, target_form) =
+                            *self.model.kind(expr.ty)
+                        else {
+                            unreachable!()
+                        };
+                        operation.apply(
+                            &mut self.model,
+                            &braid,
+                            (grade, form, value),
+                            (target_grade, target_form),
+                        )
+                    }
                     (Operation::Differential, Value::KhChain(chain)) => {
-                        let chain = if let Some(k) = form.cutoff() {
+                        let chain = if let Some((prime, _)) = form.modular() {
+                            braid.modular_differential(&mut self.model, prime, &chain)?
+                        } else if let Some(k) = form.cutoff() {
                             braid.binary_differential(
                                 &mut self.model,
                                 &chain,
@@ -6273,6 +6309,14 @@ impl Engine {
                         ))
                     }
                     (Operation::Scale(factor), Value::KhChain(chain)) => {
+                        if let Some((prime, _)) = form.modular() {
+                            return Ok(Value::KhChain(khovanov::page::scale_chain(
+                                &mut self.model,
+                                prime,
+                                &chain,
+                                *factor,
+                            )?));
+                        }
                         let factor = if form.cutoff().is_some() {
                             factor.rem_euclid(2)
                         } else {
@@ -6285,6 +6329,14 @@ impl Engine {
                         )?))
                     }
                     (Operation::Scale(factor), Value::KhClass(class)) => {
+                        if let KhForm::Page(spec) = form {
+                            return Ok(Value::KhClass(khovanov::page::scale_class(
+                                &mut self.model,
+                                spec.prime,
+                                &class,
+                                *factor,
+                            )?));
+                        }
                         let group = braid.group(&mut self.model, grade, form.annular())?;
                         Ok(Value::KhClass(group.scale(
                             &mut self.model,
@@ -8247,6 +8299,13 @@ impl Checker<'_> {
             }
             TypeForm::Lee(braid, grade) => self.model.lee_type(braid.text.into(), grade),
             TypeForm::LeeDual(braid, i) => self.model.lee_dual_type(braid.text.into(), i),
+            TypeForm::KhovanovMod(braid, p, r, grade, k) => {
+                let prime = khovanov::page::field(self.model, p)?;
+                let form = r.map_or(KhForm::Modular(prime, k), |r| {
+                    KhForm::Page(khovanov::page::Spec { prime, r, k })
+                });
+                self.model.kh_type(braid.text.into(), grade, form)
+            }
             TypeForm::Khovanov(braid, grade, form) => {
                 self.model.kh_type(braid.text.into(), grade, form)
             }
@@ -15272,6 +15331,16 @@ impl Checker<'_> {
                 };
                 (self.model.kh_type(name.text.into(), grade, form)?, value)
             }
+            Query::PageGenerator(name, p, r, grade, k, index) => {
+                let prime = khovanov::page::field(self.model, p)?;
+                let spec = khovanov::page::Spec { prime, r, k };
+                let braid = self.model.kh_braid(&name.text)?;
+                let class = braid.page_generator(self.model, grade, spec, index)?;
+                let ty = self
+                    .model
+                    .kh_type(name.text.into(), grade, KhForm::Page(spec))?;
+                (ty, Value::KhClass(class))
+            }
             Query::Highest(name, difference, k, index) => {
                 let grade = khovanov::Grade {
                     i: difference.i,
@@ -15356,6 +15425,10 @@ impl Checker<'_> {
                 };
                 let (grade, form) = match (op, form) {
                     (Operation::Action(action), form) => action.target(grade, form)?,
+                    (Operation::Page(operation), form) => {
+                        operation.target(self.model, grade, form)?
+                    }
+                    (Operation::Differential, KhForm::Modular(..)) => (grade.shift(1)?, form),
                     (Operation::Differential, KhForm::Chain | KhForm::AnnularChain(_)) => {
                         (grade.shift(1)?, KhForm::Chain)
                     }

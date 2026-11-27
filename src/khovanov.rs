@@ -6,12 +6,14 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::integer_smith::{self as integral, Matrix, Track, Vector};
 use crate::model::{Model, Value};
+use crate::odd_cobar::Prime;
 use crate::rv_lens::{self, Rational};
 use crate::rv_tl;
 use crate::syntax::{Label, ParsedExpr};
 
 mod annular;
 mod annular_action;
+pub(crate) mod page;
 pub(crate) use annular::{add_binary, pair};
 pub(crate) use annular_action::Action;
 
@@ -24,6 +26,7 @@ pub(crate) enum Command {
     AnnularCheck(Label),
     ActionCheck(Label),
     Irreps(Label, i64, i64),
+    PageDimension(Label, usize, usize, Grade, i64),
     Kappa(Label),
 }
 
@@ -36,6 +39,7 @@ pub(crate) enum Query {
     KappaNull(Label),
     KappaDual(Label),
     Highest(Label, Grade, i64, usize),
+    PageGenerator(Label, usize, usize, Grade, i64, usize),
     Pair(Box<[ParsedExpr; 2]>),
 }
 
@@ -50,6 +54,7 @@ pub(crate) enum Generator {
 pub(crate) enum Operation {
     Differential,
     Action(Action),
+    Page(page::Operation),
     AnnularDifferential(i64),
     AnnularPart(i64),
     ForgetK,
@@ -64,6 +69,7 @@ impl Operation {
         match self {
             Self::Differential => "khD",
             Self::Action(action) => action.name(),
+            Self::Page(operation) => operation.name(),
             Self::AnnularDifferential(0) => "khD0",
             Self::AnnularDifferential(_) => "khDMinus2",
             Self::AnnularPart(_) => "khAnnular",
@@ -84,6 +90,8 @@ pub(crate) enum Form {
     AnnularClass(i64),
     Filtered(i64),
     Dual(i64),
+    Modular(Prime, i64),
+    Page(page::Spec),
 }
 
 impl Form {
@@ -95,6 +103,8 @@ impl Form {
             Self::AnnularClass(_) => "KhAH",
             Self::Filtered(_) => "KhFC",
             Self::Dual(_) => "KhFD",
+            Self::Modular(..) => "KhPC",
+            Self::Page(_) => "KhPage",
         }
     }
 
@@ -112,8 +122,15 @@ impl Form {
         }
     }
 
+    pub(crate) fn modular(self) -> Option<(Prime, i64)> {
+        match self {
+            Self::Modular(prime, k) => Some((prime, k)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_class(self) -> bool {
-        matches!(self, Self::Class | Self::AnnularClass(_))
+        matches!(self, Self::Class | Self::AnnularClass(_) | Self::Page(_))
     }
 }
 
@@ -163,6 +180,8 @@ pub(crate) struct Braid {
     negative: usize,
     groups: RefCell<HashMap<GroupKey, Rc<Group>>>,
     transverse: RefCell<Option<Rc<annular::Transverse>>>,
+    page_cochains: RefCell<HashMap<Grade, Rc<page::Cochains>>>,
+    page_differentials: RefCell<HashMap<(Prime, Grade), Rc<page::Differential>>>,
 }
 
 impl Braid {
@@ -208,6 +227,8 @@ impl Braid {
             negative,
             groups: RefCell::default(),
             transverse: RefCell::default(),
+            page_cochains: RefCell::default(),
+            page_differentials: RefCell::default(),
         })
     }
 
@@ -294,9 +315,14 @@ impl Braid {
         self.grading(grade).is_some()
             && form
                 .annular()
+                .or(match form {
+                    Form::Page(spec) => Some(spec.k),
+                    _ => None,
+                })
                 .is_none_or(|k| self.possible_slice(Slice::Exact(k)))
             && form
                 .cutoff()
+                .or_else(|| form.modular().map(|(_, k)| k))
                 .is_none_or(|k| self.possible_slice(Slice::AtMost(k)))
     }
 
