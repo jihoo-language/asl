@@ -7,6 +7,7 @@ pub(crate) mod hecke;
 mod identity;
 
 pub(crate) use fiber::{base_report, define, fiber_report, map, Invariant};
+pub(crate) use identity::{certify_endpoint_quadratic, ENDPOINT_PRODUCT, ENDPOINT_SUM};
 
 pub(crate) enum Report {
     Series(usize),

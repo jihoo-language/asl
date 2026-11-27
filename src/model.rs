@@ -819,6 +819,7 @@ pub(crate) struct Model {
     >,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
+    fricke_cm_polynomials: HashMap<String, Rc<crate::cm_class_poly::fricke::Polynomial>>,
     cm_class_polynomials: HashMap<String, Rc<crate::cm_class_poly::Polynomial>>,
     cm_class_discriminants: HashMap<i128, Rc<crate::cm_class_poly::Polynomial>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
@@ -981,6 +982,7 @@ impl Model {
             partition_fibers: HashMap::new(),
             hilbert_strata: HashMap::new(),
             specht_strata: HashMap::new(),
+            fricke_cm_polynomials: HashMap::new(),
             cm_class_polynomials: HashMap::new(),
             cm_class_discriminants: HashMap::new(),
             nakajima_gram: None,
@@ -6763,6 +6765,37 @@ impl Model {
         self.elliptic_modular_polynomials
             .insert(level.get(), Rc::clone(&polynomial));
         Ok(polynomial)
+    }
+
+    pub(crate) fn define_fricke_cm_polynomial(
+        &mut self,
+        name: Label,
+        polynomial: crate::cm_class_poly::fricke::Polynomial,
+    ) -> Result<()> {
+        if self.fricke_cm_polynomials.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "Fricke CM polynomial is already defined",
+            ));
+        }
+        self.fricke_cm_polynomials
+            .insert(name.text, Rc::new(polynomial));
+        Ok(())
+    }
+
+    pub(crate) fn fricke_cm_polynomial(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::cm_class_poly::fricke::Polynomial>> {
+        self.fricke_cm_polynomials
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Fricke CM polynomial '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn cm_class_polynomial(

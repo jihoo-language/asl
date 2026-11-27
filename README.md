@@ -2027,6 +2027,20 @@ The norm $\operatorname{Res}_X(H_D(X),\Phi_\ell(X,Y))$ is the determinant of mul
 
 `rvCMClassPolyData[H];` reports the discriminant and degree. `rvCMClassPolyCoeff[H,i];` gives the exact coefficient of $Y^i$. `rvCMClassPolyModCoeff[H,F,i]` reduces that coefficient in a named precision-one `RVUnram` field, and `rvCMClassPolyEval[H](x)` evaluates there. Reduction retains root multiplicities. For the singular moduli and class polynomials, see Cox, *Primes of the Form $x^2+ny^2$*. For the kernel counts, see Bröker, Lauter and Sutherland, *Modular Polynomials via Isogeny Volcanoes*. [Ring class polynomial example](examples/ring-class-polynomial-norms.asl)
 
+#### CM edge class polynomials on the Fricke curve
+
+At \(H=t+24+4096/t\), the unordered elliptic endpoint polynomial is \(J^2-S(H)J+P(H)\), where \(S(H)=H^2+H-7256\) and \(P(H)=(H+248)^3\). The calculation checks these identities from the two Laurent expressions for \(j_1(t)\) and \(j_2(t)\).
+
+`rvfrickecmnorm R[D];` uses a registered CM class polynomial `D` to construct
+$$R_D(H)=\operatorname{Res}_J(H_D(J),J^2-S(H)J+P(H)).$$
+It reduces \(H_D\) to \(A+BJ\) in the quadratic algebra and takes the norm \(A^2+SAB+PB^2\). A separate fraction-free determinant in \(\mathbb Z[H][J]/H_D\) checks the result and the monic degree \(3h(D)\). Exact squarefree stratification retains directed multiplicities, including \(R_{-3}=(H+248)^3\).
+
+`rvfrickecmedge E[D,K];` constructs the squarefree support of edges with endpoint orders indicated by the registered class polynomials `D` and `K`. For distinct orders it takes the gcd of the two norm radicals and certifies the separate endpoints in characteristic zero. For equal orders it detects distinct horizontal endpoints from the vanishing of both remainder coefficients. At a repeated endpoint it tests the class residual at \(S/2\) and distinguishes the Fricke-fixed loops at \(H=-104,152\) from coincident endpoints at exchanged parameters. The directed exponents of every stratum are checked against the exact cyclic CM neighbor counts. In particular \(D=-7\) has two directed horizontal kernels at \(H=-23\), and the \(-12,-48\) edge polynomial is \(H^2-53504H+13399504\). [Sutherland, *Isogeny volcanoes*](https://arxiv.org/abs/1208.5370)
+
+`rvFrickeCMPolyData[E];` reports the coefficients, orientation multiplicities, and horizontal strata. `rvFrickeCMPolyCoeff[E,i];` gives one exact integer coefficient. `rvFrickeCMPolyModCoeff[E,W,i]` and `rvFrickeCMPolyEval[E](h)` use the full modulus \(p^s\) of the named unramified coefficient ring. `rvFrickeCMPairCoeff[i](h)` gives a typed coefficient of the endpoint polynomial, indexed by the ascending power of \(J\).
+
+Over a residue field of precision one, `rvFrickeCMPolyFactors[E,F];` gives factor multiplicities and reductions of the directed strata. `rvFrickeCMEndpoints(h);` factors the endpoint polynomial and certifies Frobenius exchange in the nonsplit case. `rvFrickeCMEdgeEndpoints[E](h);` first tests membership in the reduction of the exact edge support, then reports the factors compatible with each order and any overlap of residue labels. Characteristic two is reported as polynomial reduction. [Runnable CM edge example](examples/fricke-cm-edge-class-polynomials.asl)
+
 #### Ordinary elliptic endomorphism orders
 
 `rvecendorder R[E,H];` certifies the endomorphism order of a named short Weierstrass curve $E/\mathbb F_q$ using a certified ring class polynomial $H_D$. It computes $j(E)$ and the Frobenius trace $a=q+1-\#E(\mathbb F_q)$. It requires $p\nmid a$, $H_D(j(E))=0$, a split characteristic $p$ prime to $D$, and $a^2-4q=Dm^2$ with $m>0$. The ordinary reduction and canonical lift correspondence identifies the endomorphism order with $\mathcal O_D$. In the ordinary case the geometric endomorphisms commute with Frobenius and are defined over the field of the curve. `rvECEndCheck[E,H];` reports the evidence and the certification result, including the polynomial residual. `rvECEndJ[E]` returns $j(E)$ in the curve's named field.

@@ -7,6 +7,9 @@ use crate::odd_cobar::Prime;
 
 use super::{arithmetic, certificate};
 
+pub(crate) const ENDPOINT_SUM: [i128; 3] = [-7256, 1, 1];
+pub(crate) const ENDPOINT_PRODUCT: [i128; 4] = [248i128.pow(3), 3 * 248i128.pow(2), 3 * 248, 1];
+
 type Coefficients = [(i32, i128)];
 
 #[derive(Clone, Eq, PartialEq)]
@@ -70,7 +73,7 @@ impl Laurent {
     }
 }
 
-pub(super) fn report(model: &mut Model) -> Result<String> {
+fn endpoint_functions() -> (Laurent, Laurent) {
     let j1 = Laurent::new(&[
         (-2, 256i128.pow(3)),
         (-1, 3 * 256i128.pow(2)),
@@ -78,6 +81,32 @@ pub(super) fn report(model: &mut Model) -> Result<String> {
         (1, 1),
     ]);
     let j2 = Laurent::new(&[(-1, 16i128.pow(3)), (0, 3 * 16i128.pow(2)), (1, 48), (2, 1)]);
+    (j1, j2)
+}
+
+pub(crate) fn certify_endpoint_quadratic() -> Result<()> {
+    let (j1, j2) = endpoint_functions();
+    let h = Laurent::new(&[(-1, 4096), (0, 24), (1, 1)]);
+    let powers = h.powers()?;
+    let mut sum = Laurent::new(&[]);
+    for (power, coefficient) in powers.iter().zip(ENDPOINT_SUM) {
+        sum.add_into(power, coefficient)?;
+    }
+    let mut product = Laurent::new(&[]);
+    for (power, coefficient) in powers.iter().zip(ENDPOINT_PRODUCT) {
+        product.add_into(power, coefficient)?;
+    }
+    let mut actual_sum = j1.clone();
+    actual_sum.add_into(&j2, 1)?;
+    if actual_sum != sum || j1.product(&j2)? != product {
+        return Err(certificate());
+    }
+    Ok(())
+}
+
+pub(super) fn report(model: &mut Model) -> Result<String> {
+    certify_endpoint_quadratic()?;
+    let (j1, j2) = endpoint_functions();
     let v = Laurent::new(&[(-1, 4096), (0, 128), (1, 1)]);
     let constant = Laurent::new(&[(0, 1)]);
     let mut sum = j1.clone();

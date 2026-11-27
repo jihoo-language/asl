@@ -9,6 +9,8 @@ use crate::rv_qp_quad::Wide;
 use crate::rv_unram::{self, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod fricke;
+
 const LIMBS: usize = 128;
 type Integer = Wide<LIMBS>;
 
@@ -207,6 +209,19 @@ fn resultant(
     modular: &elliptic_modular::Polynomial,
     degree: usize,
 ) -> Result<Poly> {
+    monic_norm(model, source, degree, |j| {
+        (0..=degree)
+            .map(|i| modular.wide_coefficient(i, j))
+            .collect()
+    })
+}
+
+fn monic_norm(
+    model: &mut Model,
+    source: &Poly,
+    degree: usize,
+    mut coefficient: impl FnMut(usize) -> Result<Vec<Integer>>,
+) -> Result<Poly> {
     let h = source.0.len() - 1;
     model
         .spend(
@@ -219,9 +234,7 @@ fn resultant(
     let mut matrix = vec![vec![Poly(vec![zero; degree + 1]); h]; h];
     // The j-th coefficient in Y acts by multiplication in Z[X]/(H).
     for j in 0..=degree {
-        let mut coefficients = (0..=degree)
-            .map(|i| modular.wide_coefficient(i, j))
-            .collect::<Result<Vec<Integer>>>()?;
+        let mut coefficients = coefficient(j)?;
         for i in (h..coefficients.len()).rev() {
             let value = coefficients[i];
             if !value.is_zero() {

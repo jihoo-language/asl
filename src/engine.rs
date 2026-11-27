@@ -1043,6 +1043,12 @@ enum TypedForm {
     ECCMActionApply(Rc<ec_cm_action::Realization>, Box<[TypedExpr; 2]>),
     ECCMActionMap(Rc<ec_cm_action::Realization>, Box<TypedExpr>),
     ECLevel(Rc<ec_level::Level>, ECLevelAction),
+    FrickeCMPolyEval(
+        Rc<cm_class_poly::fricke::Polynomial>,
+        Rc<UnramRing>,
+        Box<TypedExpr>,
+    ),
+    FrickeCMPairCoeff(usize, Rc<UnramRing>, Box<TypedExpr>),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -2601,6 +2607,49 @@ impl Engine {
             StatementForm::CMClass(command) => return self.cm_class_statement(*command),
             StatementForm::EllipticModular(command) => {
                 return self.elliptic_modular_statement(command).map(Some)
+            }
+            StatementForm::FrickeCMDefine(name, left, right) => {
+                let left = self.model.cm_class_polynomial(&left)?;
+                let value = if let Some(right) = right {
+                    let right = self.model.cm_class_polynomial(&right)?;
+                    cm_class_poly::fricke::Polynomial::edge(&mut self.model, left, right)?
+                } else {
+                    cm_class_poly::fricke::Polynomial::norm(&mut self.model, &left)?
+                };
+                self.model.define_fricke_cm_polynomial(name, value)?;
+                return Ok(None);
+            }
+            StatementForm::FrickeCMData(name, index) => {
+                let value = self.model.fricke_cm_polynomial(&name)?;
+                if let Some(index) = index {
+                    format!(
+                        "rvFrickeCMPolyCoeff[{}, {index}] = {}",
+                        name.text,
+                        value.coefficient(index)
+                    )
+                } else {
+                    value.report(&name.text)
+                }
+            }
+            StatementForm::FrickeCMFactors(name, ring) => {
+                let value = self.model.fricke_cm_polynomial(&name)?;
+                let ring = self.model.rv_unram(&ring)?;
+                value.factors(&mut self.model, &name.text, &ring)?
+            }
+            StatementForm::FrickeCMEndpoints(name, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self
+                    .checker()
+                    .unram_ring(&input, "Fricke CM endpoint recovery")?;
+                let Value::RVUnram(h) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                if let Some(name) = name {
+                    let value = self.model.fricke_cm_polynomial(&name)?;
+                    value.endpoints(&mut self.model, &name.text, &ring, &h)?
+                } else {
+                    cm_class_poly::fricke::endpoint_report(&mut self.model, &ring, &h)?
+                }
             }
             StatementForm::CMClassPolynomial(command) => {
                 return self.cm_class_poly_statement(*command)
@@ -13721,6 +13770,21 @@ impl Engine {
                 let result = cycle.apply(&mut self.model, point.as_ref().clone())?;
                 elliptic::persist_point(&mut self.model, result)
             }
+            TypedForm::FrickeCMPolyEval(polynomial, ring, input) => {
+                let Value::RVUnram(h) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = polynomial.eval(&mut self.model, ring, &h)?;
+                rv_unram::persist(&mut self.model, value)
+            }
+            TypedForm::FrickeCMPairCoeff(index, ring, input) => {
+                let Value::RVUnram(h) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value =
+                    cm_class_poly::fricke::pair_coefficient(&mut self.model, ring, &h, *index)?;
+                rv_unram::persist(&mut self.model, value)
+            }
             TypedForm::CMClassPolynomialEval(polynomial, field, input) => {
                 let Value::RVUnram(input) = self.eval(input)? else {
                     unreachable!()
@@ -21047,6 +21111,33 @@ impl Checker<'_> {
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
+            ExprForm::FrickeCMPolyEval(name, input) => {
+                let polynomial = self.model.fricke_cm_polynomial(&name)?;
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, "rvFrickeCMPolyEval")?;
+                Ok((
+                    input.ty,
+                    TypedForm::FrickeCMPolyEval(polynomial, ring, Box::new(input)),
+                ))
+            }
+            ExprForm::FrickeCMPolyModCoeff(name, field, index) => {
+                let polynomial = self.model.fricke_cm_polynomial(&name)?;
+                let ring = self.model.rv_unram(&field)?;
+                let ty = self.model.rv_unram_type(&field)?;
+                let coefficient = polynomial.modular_coefficient(self.model, &ring, index)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(rv_unram::persist(self.model, coefficient)?),
+                ))
+            }
+            ExprForm::FrickeCMPairCoeff(index, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, "rvFrickeCMPairCoeff")?;
+                Ok((
+                    input.ty,
+                    TypedForm::FrickeCMPairCoeff(index, ring, Box::new(input)),
+                ))
+            }
             ExprForm::CMClassPolynomial(expression) => self.cm_class_poly_expression(*expression),
             ExprForm::CMArtin(expression) => self.cm_artin_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),

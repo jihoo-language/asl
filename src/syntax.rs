@@ -1117,6 +1117,9 @@ pub(crate) enum ExprForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
+    FrickeCMPolyEval(Label, Box<ParsedExpr>),
+    FrickeCMPolyModCoeff(Label, Label, usize),
+    FrickeCMPairCoeff(usize, Box<ParsedExpr>),
     CMClassPolynomial(Box<crate::cm_class_poly::Expression>),
     CMArtin(Box<crate::cm_artin::Expression>),
     ECEndOrder(Box<crate::elliptic_end_order::Expression>),
@@ -1394,6 +1397,10 @@ pub(crate) enum StatementForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
+    FrickeCMDefine(Label, Label, Option<Label>),
+    FrickeCMData(Label, Option<usize>),
+    FrickeCMFactors(Label, Label),
+    FrickeCMEndpoints(Option<Label>, ParsedExpr),
     CMClassPolynomial(Box<crate::cm_class_poly::Statement>),
     CMArtin(Box<crate::cm_artin::Statement>),
     ECEndOrder(Box<crate::elliptic_end_order::Statement>),
@@ -6104,6 +6111,50 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn fricke_cm_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        self.advance()?;
+        let definition = matches!(operation, "rvfrickecmnorm" | "rvfrickecmedge");
+        let name = if definition {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        if operation == "rvFrickeCMEndpoints" {
+            return Ok(StatementForm::FrickeCMEndpoints(None, self.paren_expr(0)?));
+        }
+        self.expect(Token::LBracket)?;
+        let source = self.label()?;
+        let result = match operation {
+            "rvfrickecmnorm" | "rvfrickecmedge" => {
+                let target = if operation == "rvfrickecmedge" {
+                    self.expect(Token::Comma)?;
+                    Some(self.label()?)
+                } else {
+                    None
+                };
+                StatementForm::FrickeCMDefine(name.unwrap(), source, target)
+            }
+            "rvFrickeCMPolyData" => StatementForm::FrickeCMData(source, None),
+            "rvFrickeCMPolyCoeff" => {
+                self.expect(Token::Comma)?;
+                StatementForm::FrickeCMData(source, Some(self.number()?.0))
+            }
+            "rvFrickeCMPolyFactors" => {
+                self.expect(Token::Comma)?;
+                StatementForm::FrickeCMFactors(source, self.label()?)
+            }
+            _ => {
+                self.expect(Token::RBracket)?;
+                return Ok(StatementForm::FrickeCMEndpoints(
+                    Some(source),
+                    self.paren_expr(0)?,
+                ));
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(result)
     }
 
     fn cm_class_poly_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -12162,6 +12213,15 @@ impl<'src> Parser<'src> {
                 name @ ("rvcmclasspoly" | "rvcmclasspolylift" | "rvCMClassPolyData"
                 | "rvCMClassPolyCoeff"),
             ) => self.cm_class_poly_statement(name)?,
+            Token::Word(
+                name @ ("rvfrickecmnorm"
+                | "rvfrickecmedge"
+                | "rvFrickeCMPolyData"
+                | "rvFrickeCMPolyCoeff"
+                | "rvFrickeCMPolyFactors"
+                | "rvFrickeCMEndpoints"
+                | "rvFrickeCMEdgeEndpoints"),
+            ) => self.fricke_cm_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -18901,6 +18961,44 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.cm_class_poly_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrickeCMPolyEval" | "rvFrickeCMPolyModCoeff" | "rvFrickeCMPairCoeff"
+                ) && self.eat(Token::LBracket)?
+                {
+                    if name.text == "rvFrickeCMPairCoeff" {
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::FrickeCMPairCoeff(index, Box::new(input)),
+                            depth,
+                        );
+                    }
+                    let polynomial = self.label()?;
+                    if name.text == "rvFrickeCMPolyEval" {
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        return expr(
+                            span,
+                            ExprForm::FrickeCMPolyEval(polynomial, Box::new(input)),
+                            depth,
+                        );
+                    }
+                    self.expect(Token::Comma)?;
+                    let ring = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::FrickeCMPolyModCoeff(polynomial, ring, index),
+                        0,
+                    );
                 }
                 if matches!(name.text.as_str(), "rvCMArtinClass" | "rvCMArtinTranslate")
                     && self.token() == Token::LBracket
