@@ -18,6 +18,7 @@ use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
 use crate::rv_as_odd::Query as AsOddQuery;
 use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
+use crate::rv_as_odd_derham::Operation as AsOddDeRhamOp;
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -108,6 +109,8 @@ pub(crate) enum TypeForm {
     RVBar(RvBarSpec),
     CurveDiff(DiffFamily, Label, usize),
     ASOddDiff(Label),
+    ASOddDeRham(Label),
+    PrimeScalar(usize),
     ASDeRham(Label, usize),
     BinaryScalar(usize),
     EOType(usize),
@@ -432,6 +435,7 @@ pub(crate) enum BinaryOp {
     RvBCMul,
     MixEval,
     RvBarPair,
+    AsOddDeRhamPair,
     AsDeRhamPair,
     EOBruhat,
     EOClosure,
@@ -463,6 +467,7 @@ impl BinaryOp {
             "rvBCMul" => Some(Self::RvBCMul),
             "mixEval" => Some(Self::MixEval),
             "rvBarPair" => Some(Self::RvBarPair),
+            "rvASOddDeRhamPair" => Some(Self::AsOddDeRhamPair),
             "rvASDeRhamPair" => Some(Self::AsDeRhamPair),
             "eoBruhat" => Some(Self::EOBruhat),
             "eoClosure" => Some(Self::EOClosure),
@@ -739,6 +744,9 @@ pub(crate) enum ExprForm {
     AsOddCoefficient(Label, usize, usize),
     AsOddOmega(Label, usize, usize),
     AsOddDiffOperation(AsOddDiffOp, Box<ParsedExpr>),
+    AsOddDeRhamGen(Label, usize),
+    AsOddDeRhamOperation(AsOddDeRhamOp, Box<ParsedExpr>),
+    PrimeScalar(usize, i128),
     RvOmega(DiffFamily, Label, usize, usize),
     RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
     RvCartier(DiffFamily, Box<ParsedExpr>),
@@ -2366,6 +2374,8 @@ impl<'src> Parser<'src> {
                 | "rvASOddBasis"
                 | "rvASOddCartierRank"
                 | "rvASOddaNumber"
+                | "rvASOddEO"
+                | "rvASOddGram"
                 | "rvASOddGenus"
                 | "rvASOddPrank"
                 | "rvASOddCharacterL"
@@ -2382,6 +2392,8 @@ impl<'src> Parser<'src> {
                     Token::Word("rvASOddReduced") => AsOddQuery::Reduced,
                     Token::Word("rvASOddBasis") => AsOddQuery::Basis,
                     Token::Word("rvASOddaNumber") => AsOddQuery::ANumber,
+                    Token::Word("rvASOddEO") => AsOddQuery::FinalType,
+                    Token::Word("rvASOddGram") => AsOddQuery::Gram,
                     Token::Word("rvASOddCartierRank") => {
                         self.expect(Token::Comma)?;
                         AsOddQuery::CartierRank(self.number()?.0)
@@ -3569,6 +3581,16 @@ impl<'src> Parser<'src> {
             let modulus = self.number()?.0;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BinaryScalar(modulus), 0);
+        }
+        if name.text == "ASOddDeRham" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASOddDeRham(cover), 0);
+        }
+        if name.text == "PrimeScalar" && self.eat(Token::LParen)? {
+            let p = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::PrimeScalar(p), 0);
         }
         if name.text == "ASOddDiff" && self.eat(Token::LParen)? {
             let cover = self.label()?;
@@ -4775,6 +4797,55 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::AsDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASOddDeRhamGen" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsOddDeRhamGen(cover, index), 0);
+                }
+                if name.text == "rvPrimeElt" && self.eat(Token::LBracket)? {
+                    let prime = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let coefficient =
+                        self.signed_wide("a prime field coefficient", "prime field coefficient")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::PrimeScalar(prime, coefficient), 0);
+                }
+                if name.text == "rvASOddDeRhamTranslate" && self.eat(Token::LBracket)? {
+                    let scalar = self.signed_wide(
+                        "a signed translation",
+                        "odd Artin–Schreier de Rham translation",
+                    )?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let operation = AsOddDeRhamOp::Translate(scalar);
+                    return expr(
+                        span,
+                        ExprForm::AsOddDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvASOddF" | "rvASOddV" | "rvASOddDeRhamIncl"
+                ) && self.token() == Token::LParen
+                {
+                    let operation = match name.text.as_str() {
+                        "rvASOddF" => AsOddDeRhamOp::Frobenius,
+                        "rvASOddV" => AsOddDeRhamOp::Verschiebung,
+                        "rvASOddDeRhamIncl" => AsOddDeRhamOp::Include,
+                        _ => unreachable!(),
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsOddDeRhamOperation(operation, Box::new(input)),
                         depth,
                     );
                 }

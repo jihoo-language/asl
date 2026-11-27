@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::rv_as_odd_cartier::Cartier;
+use crate::rv_as_odd_derham::DeRham;
 use crate::{rv_cyclotomic as cyclo, rv_newton};
 
 type Character = Rc<[Vec<i128>]>;
@@ -17,6 +18,8 @@ pub(crate) enum Query {
     Basis,
     CartierRank(usize),
     ANumber,
+    FinalType,
+    Gram,
     Genus,
     PRank,
     Character(usize),
@@ -33,6 +36,8 @@ impl Query {
             Self::Basis => "rvASOddBasis",
             Self::CartierRank(_) => "rvASOddCartierRank",
             Self::ANumber => "rvASOddaNumber",
+            Self::FinalType => "rvASOddEO",
+            Self::Gram => "rvASOddGram",
             Self::Genus => "rvASOddGenus",
             Self::PRank => "rvASOddPrank",
             Self::Character(_) => "rvASOddCharacterL",
@@ -50,6 +55,7 @@ pub(crate) struct Cover {
     factor_degree: usize,
     genus: usize,
     cartier: OnceCell<Rc<Cartier>>,
+    derham: OnceCell<Rc<DeRham>>,
     character: OnceCell<Character>,
     numerator: OnceCell<Rc<[i128]>>,
 }
@@ -92,6 +98,7 @@ impl Cover {
             factor_degree,
             genus,
             cartier: OnceCell::new(),
+            derham: OnceCell::new(),
             character: OnceCell::new(),
             numerator: OnceCell::new(),
         })
@@ -119,6 +126,14 @@ impl Cover {
         }
         let cartier = Rc::new(Cartier::build(model, self)?);
         Ok(self.cartier.get_or_init(|| cartier).clone())
+    }
+
+    pub(crate) fn derham(&self, model: &mut Model) -> Result<Rc<DeRham>> {
+        if let Some(derham) = self.derham.get() {
+            return Ok(derham.clone());
+        }
+        let derham = Rc::new(DeRham::build(model, self)?);
+        Ok(self.derham.get_or_init(|| derham).clone())
     }
 
     pub(crate) fn order(&self) -> usize {
@@ -173,6 +188,8 @@ impl Cover {
                 return Ok(format!("{operation}[{name}, {power}] = {rank}"));
             }
             Query::ANumber => (self.genus - self.cartier(model)?.rank(model, self, 1)?).to_string(),
+            Query::FinalType => format!("{:?}", self.derham(model)?.final_type(model, self)?),
+            Query::Gram => format!("{:?}", self.derham(model)?.gram(model, self)?),
             Query::Genus => self.genus.to_string(),
             Query::PRank => "0".to_owned(),
             Query::Character(j) => {

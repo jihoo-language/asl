@@ -1,0 +1,21 @@
+rvasodd Curve[3] {(4,1),(2,1)};
+let a = rvASOddDeRhamGen[Curve,3];
+let b = rvASOddDeRhamGen[Curve,5];
+show rvASOddF(a);
+show rvASOddV(a);
+show rvASOddDeRhamTranslate[1](a);
+show rvASOddDeRhamPair(a,b);
+show rvASOddDeRhamPair(b,a);
+rvASOddGram[Curve];
+rvASOddEO[Curve];
+let regular = rvASOddOmega[Curve,0,1];
+assert rvASOddV(rvASOddDeRhamIncl(regular)) == rvASOddDeRhamIncl(rvASOddCartier(regular));
+
+rvasodd Pure[5] {(6,1)};
+rvasodd Cubic[5] {(6,1),(3,1)};
+rvasodd Quartic[5] {(6,1),(4,1)};
+rvASOddEO[Pure];
+rvASOddaNumber[Cubic];
+rvASOddaNumber[Quartic];
+rvASOddEO[Cubic];
+rvASOddEO[Quartic];

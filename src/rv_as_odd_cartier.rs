@@ -10,8 +10,8 @@ use crate::odd_ext;
 use crate::prime_linear::{self, add_scaled, Basis, Coordinate};
 use crate::rv_as_odd::Cover;
 
-type Polynomial = Rc<[(u128, u32)]>;
-type Column = Rc<[Coordinate]>;
+pub(crate) type Polynomial = Rc<[(u128, u32)]>;
+pub(crate) type Column = Rc<[Coordinate]>;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -66,7 +66,8 @@ impl Cartier {
         if offsets.last() != Some(&cover.genus()) {
             return Err(basis_error());
         }
-        let max_r = offsets.len().saturating_sub(2);
+        // The Čech overlap basis can have y-exponent p-1.
+        let max_r = (prime.get() - 1) as usize;
         let mut factorials = vec![1; max_r + 1];
         let mut inverse_factorials = vec![1; max_r + 1];
         model.spend(2 * max_r)?;
@@ -99,13 +100,13 @@ impl Cartier {
         (coordinate - self.offsets[r], r)
     }
 
-    fn coordinate(&self, b: usize, r: usize) -> Option<usize> {
+    pub(crate) fn coordinate(&self, b: usize, r: usize) -> Option<usize> {
         let start = *self.offsets.get(r)?;
         let end = *self.offsets.get(r.checked_add(1)?)?;
         (b < end - start).then(|| start + b)
     }
 
-    fn choose(&self, r: usize, j: usize) -> u32 {
+    pub(crate) fn choose(&self, r: usize, j: usize) -> u32 {
         self.prime.mul(
             self.factorials[r],
             self.prime
@@ -141,7 +142,12 @@ impl Cartier {
             .collect())
     }
 
-    fn power(&self, model: &mut Model, cover: &Cover, exponent: usize) -> Result<Polynomial> {
+    pub(crate) fn power(
+        &self,
+        model: &mut Model,
+        cover: &Cover,
+        exponent: usize,
+    ) -> Result<Polynomial> {
         let mut powers = self.powers.borrow_mut();
         while powers.len() <= exponent {
             let previous = powers.last().unwrap();
@@ -174,16 +180,43 @@ impl Cartier {
         Ok(powers[exponent].clone())
     }
 
-    fn column(&self, model: &mut Model, cover: &Cover, coordinate: usize) -> Result<Column> {
+    pub(crate) fn column(
+        &self,
+        model: &mut Model,
+        cover: &Cover,
+        coordinate: usize,
+    ) -> Result<Column> {
         if let Some(column) = self.columns.borrow().get(&coordinate) {
             model.spend(1)?;
             return Ok(column.clone());
         }
-        let p = self.prime.get() as u128;
         let (b, r) = self.exponent(coordinate);
+        let result = self
+            .monomial_image(model, cover, b as i128, r)?
+            .into_iter()
+            .map(|(b, r, coefficient)| {
+                let b = usize::try_from(b).map_err(|_| basis_error())?;
+                let destination = self.coordinate(b, r).ok_or_else(basis_error)?;
+                Ok((destination, coefficient))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.retain(model, 5 + 2 * result.len())?;
+        let result: Column = result.into();
+        self.columns.borrow_mut().insert(coordinate, result.clone());
+        Ok(result)
+    }
+
+    pub(crate) fn monomial_image(
+        &self,
+        model: &mut Model,
+        cover: &Cover,
+        b: i128,
+        r: usize,
+    ) -> Result<Vec<(i128, usize, u32)>> {
+        let p = i128::from(self.prime.get());
         let mut result = Vec::new();
-        // Expand y^r = (y^p - f)^r. In the x p-basis only the
-        // powers congruent to p-1 survive the Cartier operator.
+        // Expand y^r = (y^p - f)^r. This formula on Laurent monomials
+        // gives both the regular Cartier matrix and the Čech chart maps.
         for j in 0..=r {
             let power = self.power(model, cover, r - j)?;
             let mut scalar = self.choose(r, j);
@@ -192,18 +225,18 @@ impl Cartier {
             }
             model.spend(1 + power.len())?;
             for &(e, coefficient) in power.iter() {
-                let exponent = e + b as u128;
-                if exponent % p == p - 1 {
-                    let x = usize::try_from(exponent / p).map_err(|_| basis_error())?;
-                    let destination = self.coordinate(x, j).ok_or_else(basis_error)?;
-                    result.push((destination, self.prime.mul(coefficient, scalar)));
-                    check_storage(self.cells.get() + 2 * result.len())?;
+                // d fits in usize and r<p is bounded by the cyclotomic order.
+                let exponent = e as i128 + b;
+                if exponent.rem_euclid(p) == p - 1 {
+                    result.push((
+                        exponent.div_euclid(p),
+                        j,
+                        self.prime.mul(coefficient, scalar),
+                    ));
+                    check_storage(self.cells.get() + 4 * result.len())?;
                 }
             }
         }
-        self.retain(model, 5 + 2 * result.len())?;
-        let result: Column = result.into();
-        self.columns.borrow_mut().insert(coordinate, result.clone());
         Ok(result)
     }
 

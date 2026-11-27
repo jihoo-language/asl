@@ -171,6 +171,8 @@ pub(crate) enum Kind {
     RVHom(rv_hom::Grade),
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
     ASOddDiff(Rc<str>, Prime),
+    ASOddDeRham(Rc<str>, Prime),
+    PrimeScalar(Prime),
     ASDeRham(Rc<str>, BinaryField),
     BinaryScalar(BinaryField),
     EOType(usize),
@@ -298,6 +300,7 @@ pub(crate) enum Value {
     RhoLoc(rho_localized::Cochain),
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
+    PrimeScalar(u32),
     SheafC(sheaf::Support),
     MapCobar(map_cochain::Support),
     QKoszul(q_koszul::Support),
@@ -713,6 +716,11 @@ impl Model {
             }
             Kind::BinaryScalar(field) => field.order(),
             Kind::EOType(genus) => support_space_size(genus),
+            Kind::PrimeScalar(prime) => prime.get() as usize,
+            Kind::ASOddDeRham(ref name, prime) => {
+                let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();
+                (prime.get() as usize).saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
+            }
             Kind::ASOddDiff(ref name, prime) => {
                 let genus = self.rv_as_odd_covers[name.as_ref()].genus();
                 (prime.get() as usize).saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
@@ -829,6 +837,8 @@ impl Model {
                 | Kind::RVHom(..)
                 | Kind::CurveDiff(..)
                 | Kind::ASOddDiff(..)
+                | Kind::ASOddDeRham(..)
+                | Kind::PrimeScalar(..)
                 | Kind::ASDeRham(..)
                 | Kind::BinaryScalar(..)
                 | Kind::EOType(..)
@@ -2080,6 +2090,28 @@ impl Model {
         self.inhabited_type(Kind::CurveDiff(family, name.text.as_str().into(), field), 0)
     }
 
+    pub(crate) fn prime_scalar_type(&mut self, prime: Prime) -> Result<TypeId> {
+        self.inhabited_type(Kind::PrimeScalar(prime), 0)
+    }
+
+    pub(crate) fn rv_as_odd_derham_type(&mut self, name: &Label) -> Result<TypeId> {
+        let cover = self.rv_as_odd_cover(name)?;
+        self.rv_as_odd_derham_named(name.text.as_str().into(), &cover)
+    }
+
+    pub(crate) fn rv_as_odd_derham_named(
+        &mut self,
+        name: Rc<str>,
+        cover: &RvAsOddCover,
+    ) -> Result<TypeId> {
+        if cover.genus().checked_mul(2).is_none() {
+            return Err(Error::plain(
+                "odd Artin–Schreier de Rham dimension is out of range",
+            ));
+        }
+        self.inhabited_type(Kind::ASOddDeRham(name, cover.prime()), 0)
+    }
+
     pub(crate) fn rv_as_odd_diff_type(&mut self, name: &Label) -> Result<TypeId> {
         let cover = self.rv_as_odd_cover(name)?;
         self.inhabited_type(Kind::ASOddDiff(name.text.as_str().into(), cover.prime()), 0)
@@ -2702,6 +2734,8 @@ impl Model {
             | Kind::RVHom(..)
             | Kind::CurveDiff(..)
             | Kind::ASOddDiff(..)
+            | Kind::ASOddDeRham(..)
+            | Kind::PrimeScalar(..)
             | Kind::ASDeRham(..)
             | Kind::BinaryScalar(..)
             | Kind::EOType(..)
@@ -3022,6 +3056,8 @@ impl Model {
             Kind::BinaryScalar(field) => out.push(&format!("BinaryScalar({})", field.modulus())),
             Kind::EOType(genus) => out.push(&format!("EOType({genus})")),
             Kind::ASOddDiff(name, _) => out.push(&format!("ASOddDiff({name})")),
+            Kind::ASOddDeRham(name, _) => out.push(&format!("ASOddDeRham({name})")),
+            Kind::PrimeScalar(prime) => out.push(&format!("PrimeScalar({})", prime.get())),
             Kind::CurveDiff(family, name, field) => out.push(&format!(
                 "{}({name}, {})",
                 family.type_name(),
@@ -3176,6 +3212,7 @@ impl Model {
                 self.spend(left.len().min(right.len()))?;
                 Ok(left == right)
             }
+            (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
@@ -3331,6 +3368,7 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
+            (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left.cmp(right)),
             (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left.cmp(right)),
             (Value::EOType(left), Value::EOType(right)) => {
                 self.spend(left.len().min(right.len()))?;
@@ -3715,6 +3753,17 @@ impl Model {
                     self.spend(size)?;
                     self.allocate(size)?;
                     (0..size).map(Value::BinaryScalar).collect()
+                }
+                Kind::PrimeScalar(prime) => {
+                    let size = prime.get() as usize;
+                    self.check_element_limit(size)?;
+                    self.spend(size)?;
+                    self.allocate(size)?;
+                    (0..prime.get()).map(Value::PrimeScalar).collect()
+                }
+                Kind::ASOddDeRham(ref name, prime) => {
+                    let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();
+                    odd_ext::elements(self, prime, dimension, MAX_ELEMENTS)?
                 }
                 Kind::ASOddDiff(ref name, prime) => {
                     let genus = self.rv_as_odd_covers[name.as_ref()].genus();
@@ -4376,24 +4425,28 @@ impl Model {
                 }
                 out.push("}")
             }
+            Value::PrimeScalar(coefficient) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{coefficient}}}"))
+            }
             Value::OddClass(support) => {
                 let mixed = if let Kind::MixedChain(grade, total) = *self.kind(ty) {
                     Some((self.mixed_complex(grade.complex), grade.b, total))
                 } else {
                     None
                 };
-                let chart = if let Kind::ASOddDiff(name, _) = self.kind(ty) {
-                    if support.is_empty() {
-                        None
-                    } else {
+                let chart = match self.kind(ty) {
+                    Kind::ASOddDiff(name, _) | Kind::ASOddDeRham(name, _)
+                        if !support.is_empty() =>
+                    {
+                        let de_rham = matches!(self.kind(ty), Kind::ASOddDeRham(..));
                         let cover = self
                             .rv_as_odd_cover_named(name)
                             .expect("registered odd Artin–Schreier cover");
                         self.spend(support.len())?;
-                        Some(cover.cartier(self)?)
+                        Some((cover.cartier(self)?, cover.genus(), de_rham))
                     }
-                } else {
-                    None
+                    _ => None,
                 };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
@@ -4414,9 +4467,16 @@ impl Model {
                         }
                         out.push(complex.name(generator))?;
                     } else {
-                        if let Some(chart) = &chart {
-                            let (b, r) = chart.exponent(generator);
-                            out.push(&format!("omega({b},{r})"))?;
+                        if let Some((chart, genus, de_rham)) = &chart {
+                            let (label, index) = if *de_rham && generator >= *genus {
+                                ("eta", generator - genus)
+                            } else if *de_rham {
+                                ("alpha", generator)
+                            } else {
+                                ("omega", generator)
+                            };
+                            let (b, r) = chart.exponent(index);
+                            out.push(&format!("{label}({b},{r})"))?;
                         } else {
                             out.push(&format!("g{generator}"))?;
                         }

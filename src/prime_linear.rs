@@ -127,6 +127,12 @@ impl Basis {
         self.rows.len()
     }
 
+    pub(crate) fn vectors(&self, prime: Prime) -> impl Iterator<Item = Vec<Coordinate>> + '_ {
+        self.rows
+            .values()
+            .map(move |row| self.entries.read(prime, row.image()).collect())
+    }
+
     pub(crate) fn has_pivot(&self, coordinate: usize) -> bool {
         self.rows.contains_key(&coordinate)
     }

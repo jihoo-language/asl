@@ -1088,6 +1088,12 @@ Four polynomial Artin–Schreier curves of genus eight have final type $[0,1,1,2
 
 At $p=5$, the genus-ten curves with $f=x^6+x^3$ and $f=x^6+x^4$ both have $a$-number six. Their Cartier rank sequences are $[10,4,1,0]$ and $[10,4,2,1,0]$. The curve with $f=x^6$ has Cartier rank zero. [Odd-prime Cartier–Manin example](examples/rank-as-odd-cartier.asl)
 
+`ASOddDeRham(C)` is the first de Rham cohomology of an odd-prime cover over $\mathbb F_p$. The first $g$ basis vectors are the regular differentials $\alpha_{b,r}=x^by^r\,dx$ in `rvASOddBasis` order. The next $g$ are their Čech lifts $\eta_{b,r}$ with overlap function $h=x^{-b-1}y^{p-1-r}$. The two forms of a lift satisfy $U-V=dh$. The affine form $U$ retains the nonnegative $x$-powers of $dh$. Use `rvASOddDeRhamGen[C,i]` with a zero-based index, or `rvASOddDeRhamIncl(w)` to include an `ASOddDiff` differential. Use `zero`, `add`, and `pscale` for vector arithmetic.
+
+`rvASOddF(w)` raises the overlap function to the $p$th power and reduces the resulting Čech class. `rvASOddV(w)` applies Cartier to the two chart forms. Over $\mathbb F_p$ both maps are linear. `rvASOddDeRhamTranslate[c](w)` pulls back the three Čech entries along $y\mapsto y+c$, commutes with both operators, and preserves the cup form. `rvASOddDeRhamPair(w,z)` computes the signed cup pairing from the residue of $U_w h_z-h_w V_z$. Its value is a `PrimeScalar(p)`, whose literals `rvPrimeElt[p,c]` reduce a signed integer `c` modulo `p`. `rvASOddGram[C];` reports the pairing matrix in the same basis order.
+
+`rvASOddEO[C];` computes the geometric final type by closing the zero and full spaces under $V$ and $F^{-1}$ over $\mathbb F_p$. The matrices and pairing use the actual reduced equation. At $p=5$ the genus-ten curves with $f=x^6+x^3$ and $f=x^6+x^4$ have equal $a$-number six and different final types. The example also shows a nonzero signed pairing of Čech lifts in characteristic three. [Odd-prime Čech de Rham example](examples/rank-as-odd-derham.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.
