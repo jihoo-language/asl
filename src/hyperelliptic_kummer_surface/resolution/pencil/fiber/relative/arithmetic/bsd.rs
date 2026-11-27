@@ -4,27 +4,71 @@ use crate::integer_smith::{self as smith, Matrix, Track};
 use crate::model::Model;
 use crate::wide_integer::Natural;
 
-use super::{k3, Components, Integer, Kodaira, LFunction, Pencil, RelativeJacobian, LIMBS};
+use super::{
+    k3, BadPlace, Components, Integer, Kodaira, LFunction, Pencil, RelativeJacobian, LIMBS,
+};
+
+mod factors;
+
+struct BsdData {
+    l_function: LFunction,
+    root_number: i128,
+    numerators: Vec<Integer>,
+    denominator: Natural<LIMBS>,
+    tamagawa: u128,
+    orbit_product: u128,
+    trivial_det: u128,
+    artin_tate_product: u128,
+    quotient: (u128, u128),
+}
 
 impl RelativeJacobian {
     pub(crate) fn bsd(&self, model: &mut Model, pencil: &Pencil, name: &str) -> Result<String> {
+        let BsdData {
+            l_function: LFunction {
+                q, rank, ns_rank, ..
+            },
+            root_number,
+            numerators,
+            denominator,
+            tamagawa,
+            orbit_product,
+            trivial_det,
+            artin_tate_product,
+            quotient,
+        } = self.bsd_data(model, pencil)?;
+        let leading = fraction(model, numerators[rank], denominator)?;
+        let central = numerators
+            .into_iter()
+            .map(|c| fraction(model, c, denominator))
+            .collect::<Result<Vec<_>>>()?
+            .join(", ");
+        let sign = if ns_rank.is_multiple_of(2) { "-" } else { "" };
+        let quotient = fraction_text(quotient);
+        Ok(format!(
+            "rvK3PencilBSD[{name}] = q={q}, rank={rank}, root number={root_number}, L*={leading}, Tamagawa product={tamagawa}, component orbit product={orbit_product}, arithmetic trivial |det|={trivial_det}, signed NS discriminant times Brauer order={sign}{artin_tate_product}, BSD quotient={quotient}, Taylor coefficients=[{central}]"
+        ))
+    }
+
+    fn bsd_data(&self, model: &mut Model, pencil: &Pencil) -> Result<BsdData> {
+        let l_function = self.l_data(model, pencil)?;
         let LFunction {
             q,
-            polynomial,
             rank,
             ns_rank,
-            node_orbits,
-            places,
+            ref polynomial,
+            ref node_orbits,
+            ref places,
             ..
-        } = self.l_data(model, pencil)?;
+        } = l_function;
         let powers = powers_of_q(q, polynomial.len() - 1)?;
-        let root_number = reciprocity(model, &polynomial, &powers)?;
+        let root_number = reciprocity(model, polynomial, &powers)?;
         if root_number != if rank.is_multiple_of(2) { 1 } else { -1 } {
             return Err(Error::plain(
                 "K3 pencil root number disagrees with central vanishing parity",
             ));
         }
-        let numerators = taylor_numerators(model, &polynomial, &powers)?;
+        let numerators = taylor_numerators(model, polynomial, &powers)?;
         let numerator = numerators[rank];
         if numerators[..rank].iter().any(|c| !c.is_zero())
             || numerator.negative
@@ -36,9 +80,9 @@ impl RelativeJacobian {
         }
         let denominator = powers[polynomial.len() - 1];
 
-        let (tamagawa, orbit_product, trivial_det) = trivial_lattice(model, pencil, &places)?;
+        let (tamagawa, orbit_product, trivial_det) = trivial_lattice(model, pencil, places)?;
         let weil = pencil.curve.weil(model)?;
-        let artin_tate = k3::artin_tate::data(model, q, weil, &node_orbits, 1)?;
+        let artin_tate = k3::artin_tate::data(model, q, weil, node_orbits, 1)?;
         let special_with_q = numerator
             .multiply(i128::from(q))
             .map_err(|_| special_overflow())?;
@@ -54,15 +98,14 @@ impl RelativeJacobian {
             ));
         }
 
-        let leading = fraction(model, numerator, denominator.magnitude)?;
         let quotient_denominator = denominator
             .magnitude
             .multiply_u128(tamagawa)
             .ok_or_else(special_overflow)?;
-        let quotient = fraction(model, special_with_q, quotient_denominator)?;
-        let artin_quotient = fraction(
+        let quotient = reduce_fraction(model, special_with_q.magnitude, quotient_denominator)?;
+        let artin_quotient = reduce_fraction(
             model,
-            unsigned(artin_tate.magnitude),
+            Natural::from_small(artin_tate.magnitude),
             Natural::from_small(trivial_det),
         )?;
         if quotient != artin_quotient {
@@ -70,24 +113,24 @@ impl RelativeJacobian {
                 "K3 pencil BSD quotient failed the trivial-lattice comparison",
             ));
         }
-
-        let sign = if ns_rank.is_multiple_of(2) { "-" } else { "" };
-        let product = artin_tate.magnitude;
-        let central = numerators
-            .into_iter()
-            .map(|c| fraction(model, c, denominator.magnitude))
-            .collect::<Result<Vec<_>>>()?
-            .join(", ");
-        Ok(format!(
-            "rvK3PencilBSD[{name}] = q={q}, rank={rank}, root number={root_number}, L*={leading}, Tamagawa product={tamagawa}, component orbit product={orbit_product}, arithmetic trivial |det|={trivial_det}, signed NS discriminant times Brauer order={sign}{product}, BSD quotient={quotient}, Taylor coefficients=[{central}]"
-        ))
+        Ok(BsdData {
+            l_function,
+            root_number,
+            numerators,
+            denominator: denominator.magnitude,
+            tamagawa,
+            orbit_product,
+            trivial_det,
+            artin_tate_product: artin_tate.magnitude,
+            quotient,
+        })
     }
 }
 
 fn trivial_lattice(
     model: &mut Model,
     pencil: &Pencil,
-    places: &[(Kodaira, Components)],
+    places: &[BadPlace],
 ) -> Result<(u128, u128, u128)> {
     let fiber = pencil.fiber_class(model)?;
     let section = Divisor::generator(
@@ -106,7 +149,7 @@ fn trivial_lattice(
     let mut determinant = (fiber_square * section_square - pairing * pairing).unsigned_abs();
     let mut tamagawa = 1u128;
     let mut orbit_product = 1u128;
-    for (kind, action) in places {
+    for BadPlace { kind, action, .. } in places {
         let component_det = component_determinant(model, *kind, action)?;
         let local_orbits = action.cycles.iter().try_fold(1u128, |product, &length| {
             product
@@ -293,20 +336,31 @@ fn fraction(model: &mut Model, numerator: Integer, denominator: Natural<LIMBS>) 
     if numerator.is_zero() {
         return Ok("0".into());
     }
-    let gcd = numerator.magnitude.gcd(model, denominator)?;
+    let exact = reduce_fraction(model, numerator.magnitude, denominator)?;
+    let sign = if numerator.negative { "-" } else { "" };
+    Ok(format!("{sign}{}", fraction_text(exact)))
+}
+
+fn reduce_fraction(
+    model: &mut Model,
+    numerator: Natural<LIMBS>,
+    denominator: Natural<LIMBS>,
+) -> Result<(u128, u128)> {
+    let gcd = numerator.gcd(model, denominator)?;
     let reduced = |model: &mut Model, value: Natural<LIMBS>| -> Result<u128> {
         value
             .divide_exact(model, gcd)?
             .and_then(Natural::small)
             .ok_or_else(special_overflow)
     };
-    let magnitude = reduced(model, numerator.magnitude)?;
-    let denominator = reduced(model, denominator)?;
-    let sign = if numerator.negative { "-" } else { "" };
+    Ok((reduced(model, numerator)?, reduced(model, denominator)?))
+}
+
+fn fraction_text((numerator, denominator): (u128, u128)) -> String {
     if denominator == 1 {
-        Ok(format!("{sign}{magnitude}"))
+        numerator.to_string()
     } else {
-        Ok(format!("{sign}{magnitude}/{denominator}"))
+        format!("{numerator}/{denominator}")
     }
 }
 

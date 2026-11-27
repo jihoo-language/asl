@@ -27,6 +27,7 @@ pub(crate) enum Command {
     Euler(Label, Box<ParsedExpr>),
     LFunction(Label),
     Bsd(Label),
+    BsdFactors(Label),
     Torsion2(Label),
     Selmer(Label),
 }

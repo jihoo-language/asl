@@ -7,7 +7,7 @@ use crate::model::Model;
 use super::{field, from_polynomial, on_curve, Pencil, Section};
 
 impl Pencil {
-    pub(super) fn torsion_roots(&self, model: &mut Model) -> Result<&[Polynomial]> {
+    pub(crate) fn torsion_roots(&self, model: &mut Model) -> Result<&[Polynomial]> {
         if let Some(roots) = self.torsion_roots.get() {
             return Ok(roots);
         }

@@ -1817,6 +1817,12 @@ impl Engine {
                         let marked = self.model.k3_mordell(&name)?;
                         marked.lattice(&mut self.model, &name.text).map(Some)
                     }
+                    Command::BsdFactors(name, mask, multiple) => {
+                        let marked = self.model.k3_mordell(&name)?;
+                        marked
+                            .bsd_factors(&mut self.model, &name.text, mask, multiple)
+                            .map(Some)
+                    }
                 };
             }
             StatementForm::K3FiberEquation(command) => {
@@ -1897,6 +1903,10 @@ impl Engine {
                         let pencil = self.model.k3_pencil(&name)?;
                         let relative = pencil.relative(&mut self.model)?;
                         relative.bsd(&mut self.model, &pencil, &name.text).map(Some)
+                    }
+                    Command::BsdFactors(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil.bsd_factors(&mut self.model, &name.text).map(Some)
                     }
                     Command::Torsion2(name) => {
                         let pencil = self.model.k3_pencil(&name)?;

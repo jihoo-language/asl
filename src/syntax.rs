@@ -5709,6 +5709,16 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
+            if operation == "rvK3MordellBSDFactors" {
+                let mask = self.kummer_theta_index("K3 BSD section trope mask", 15)? as u8;
+                self.expect(Token::Comma)?;
+                let multiple =
+                    self.signed_wide("a signed section multiple", "K3 BSD section multiple")?;
+                self.expect(Token::RBracket)?;
+                return Ok(StatementForm::K3Mordell(Box::new(Command::BsdFactors(
+                    name, mask, multiple,
+                ))));
+            }
             self.expect(Token::RBracket)?;
             match operation {
                 "rvK3MordellCoord" => Command::Coord(name, Box::new(self.paren_expr(0)?)),
@@ -5801,6 +5811,7 @@ impl<'src> Parser<'src> {
                 "rvK3FiberEuler" => Command::Euler(name, Box::new(self.paren_expr(0)?)),
                 "rvK3PencilLFunction" => Command::LFunction(name),
                 "rvK3PencilBSD" => Command::Bsd(name),
+                "rvK3PencilBSDFactors" => Command::BsdFactors(name),
                 "rvK3PencilTorsion2" => Command::Torsion2(name),
                 "rvK3PencilSelmer" => Command::Selmer(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
@@ -7289,6 +7300,7 @@ impl<'src> Parser<'src> {
                 | "rvK3FiberEuler"
                 | "rvK3PencilLFunction"
                 | "rvK3PencilBSD"
+                | "rvK3PencilBSDFactors"
                 | "rvK3PencilTorsion2"
                 | "rvK3PencilSelmer"),
             ) => self.k3_pencil_statement(op)?,
@@ -7297,8 +7309,11 @@ impl<'src> Parser<'src> {
                 @ ("rvk3fiberjac" | "rvK3FiberQuartic" | "rvK3FiberJacobian" | "rvK3FiberPoints"),
             ) => self.k3_fiber_equation_statement(op)?,
             Token::Word(
-                op @ ("rvk3mordell" | "rvK3MordellCoord" | "rvK3MordellHeight"
-                | "rvK3MordellLattice"),
+                op @ ("rvk3mordell"
+                | "rvK3MordellCoord"
+                | "rvK3MordellHeight"
+                | "rvK3MordellLattice"
+                | "rvK3MordellBSDFactors"),
             ) => self.k3_mordell_statement(op)?,
             Token::Word(
                 command @ ("rvKummerK3Zeta"

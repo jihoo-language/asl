@@ -18,6 +18,7 @@ pub(crate) enum Command {
     Coord(Label, Box<ParsedExpr>),
     Height(Label, Box<[ParsedExpr; 2]>),
     Lattice(Label),
+    BsdFactors(Label, u8, i128),
 }
 
 pub(crate) struct Expression(
@@ -147,6 +148,86 @@ impl Mordell {
         point: Rc<ResolvedPoint>,
     ) -> Result<Value> {
         self.word.iterate(model, point, steps)
+    }
+
+    pub(crate) fn certified_trope_height(&self, model: &mut Model, mask: u8) -> Result<()> {
+        self.pencil.check_section(self.zero)?;
+        self.pencil.check_section(mask)?;
+        let section = self.class(model, Class::Trope(usize::from(mask)))?;
+        let (degree, coordinate) = self.coordinates(model, &section)?;
+        if degree != 1 || !matches!(coordinate, -1 | 1) {
+            return Err(Error::plain(
+                "K3 pencil BSD section must have positive height",
+            ));
+        }
+
+        // The pencil and its marking are defined over the coefficient field
+        // of the very same curve used for the arithmetic L polynomial.
+        let basis = &self.pencil.basis;
+        let frobenius = basis.frobenius(model, &self.pencil.curve, 1)?;
+        if (0..basis.len())
+            .any(|i| (0..basis.len()).any(|j| *frobenius.matrix.entry(i, j) != u64::from(i == j)))
+        {
+            return Err(Error::plain(
+                "K3 pencil BSD section requires a rational level-2 marking",
+            ));
+        }
+
+        let frame = self.trivial_frame(model)?;
+        if gram_order(model, &frame.classes, true)? != 1024 {
+            return Err(inconsistent_frame());
+        }
+        let [fiber, zero, ..] = frame.classes.as_slice() else {
+            return Err(inconsistent_frame());
+        };
+        let [i, j] = self.pencil.masks;
+        let left = self.class(model, Class::Node(usize::from(i)))?;
+        let right = self
+            .class(model, Class::Node(usize::from(j)))?
+            .scale(model, -1)?;
+        let shift = left.add(model, &right)?;
+        let zero_pair = zero.pair(model, &shift)?;
+        let zero_correction = fiber.scale(model, -zero_pair)?;
+        let orthogonal = shift.add(model, &zero_correction)?;
+        if zero_pair != self.zero_pair || orthogonal.pair(model, &orthogonal)? != -4 {
+            return Err(inconsistent_frame());
+        }
+        for class in &frame.classes {
+            if orthogonal.pair(model, class)? != 0 {
+                return Err(inconsistent_frame());
+            }
+        }
+        if section.pair(model, &orthogonal)? != 2 * coordinate {
+            return Err(inconsistent_frame());
+        }
+
+        // Projection from either base node preserves every plane through the
+        // secant. Their product permutes the components of each geometric
+        // fiber. Its verified actions on F, S and O imply G^k(O)=O+kS+uF.
+        // Intersect with any component C and use a k>0 fixing C to get S.C=0.
+        // Thus S-(S.O)F is orthogonal to the complete trivial lattice, even
+        // when the surface has additional vertical components. The marked
+        // frame and this vector span the marked rank-17 space, so projection
+        // of this trope has Shioda height (section.S')²/4 = 1.
+        let zero_translation = fiber.scale(model, 2 - zero_pair)?;
+        let shifted_zero = zero.add(model, &shift)?.add(model, &zero_translation)?;
+        let four_fibers = fiber.scale(model, 4)?;
+        let shifted_shift = shift.add(model, &four_fibers)?;
+        for (input, expected) in [
+            (fiber, fiber),
+            (&shift, &shifted_shift),
+            (zero, &shifted_zero),
+        ] {
+            let actual = self.word.apply(model, input)?;
+            if actual.coefficients() != expected.coefficients() {
+                return Err(inconsistent_frame());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn zero_mask(&self) -> u8 {
+        self.zero
     }
 
     pub(crate) fn lattice(&self, model: &mut Model, name: &str) -> Result<String> {

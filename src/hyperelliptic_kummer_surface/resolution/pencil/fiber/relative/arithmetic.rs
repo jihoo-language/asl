@@ -21,6 +21,12 @@ struct Components {
     split: Option<bool>,
 }
 
+struct BadPlace {
+    uniformizer: Option<Uniformizer>,
+    kind: Kodaira,
+    action: Components,
+}
+
 struct LFunction {
     q: u64,
     polynomial: Vec<Integer>,
@@ -29,7 +35,7 @@ struct LFunction {
     rank: usize,
     trivial_rank: usize,
     node_orbits: Vec<usize>,
-    places: Vec<(Kodaira, Components)>,
+    places: Vec<BadPlace>,
 }
 
 impl Kodaira {
@@ -149,8 +155,8 @@ impl RelativeJacobian {
 
         let mut local = Vec::with_capacity(places.len());
         let mut conductor = 0;
-        for place in &places {
-            let place = place.as_ref();
+        for uniformizer in places {
+            let place = uniformizer.as_ref();
             let reduction = self.minimal_at(model, field, place)?;
             let action = self
                 .components(model, field, q, place, &reduction)?
@@ -160,7 +166,11 @@ impl RelativeJacobian {
                     reduction.kodaira.symbol()
                 ))
                 })?;
-            local.push((reduction.kodaira, action));
+            local.push(BadPlace {
+                uniformizer,
+                kind: reduction.kodaira,
+                action,
+            });
             conductor += reduction.kodaira.conductor_order();
         }
 
@@ -179,7 +189,7 @@ impl RelativeJacobian {
         let ns_rank = root_multiplicity(model, &polynomial, q)?;
         let component_cycles = local
             .iter()
-            .flat_map(|(_, action)| action.cycles.iter().copied());
+            .flat_map(|place| place.action.cycles.iter().copied());
         let trivial_rank = 2 + component_cycles.clone().count();
         for length in [1, 1].into_iter().chain(component_cycles) {
             polynomial = divide_cycle(model, &polynomial, q, length)?.ok_or_else(|| {

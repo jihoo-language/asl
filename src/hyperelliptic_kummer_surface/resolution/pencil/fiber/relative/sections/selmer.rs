@@ -44,15 +44,13 @@ impl Pencil {
 
     pub(crate) fn selmer_report(&self, model: &mut Model, name: &str) -> Result<String> {
         let space = self.selmer_space(model)?;
-        let dimension = space.basis.len();
+        let dimension = space.dimension();
         let rank_and_sha = if field(&self.curve).ring.prime() < 5 {
             "Mordell-Weil rank and dim Sha[2] unavailable in characteristic 3".into()
         } else {
             let relative = self.relative(model)?;
             let rank = relative.arithmetic_mordell_weil_rank(model, self)?;
-            let sha = dimension.checked_sub(rank + 2).ok_or_else(|| {
-                Error::plain("K3 pencil Selmer dimension disagrees with the Mordell-Weil rank")
-            })?;
+            let sha = space.sha_dimension(rank)?;
             format!("Mordell-Weil rank={rank}, dim Sha[2]={sha}")
         };
         let finite: Vec<_> = space
@@ -68,6 +66,16 @@ impl Pencil {
 }
 
 impl Selmer {
+    pub(crate) fn dimension(&self) -> usize {
+        self.basis.len()
+    }
+
+    pub(crate) fn sha_dimension(&self, rank: usize) -> Result<usize> {
+        self.dimension().checked_sub(rank + 2).ok_or_else(|| {
+            Error::plain("K3 pencil Selmer dimension disagrees with the Mordell-Weil rank")
+        })
+    }
+
     fn new(model: &mut Model, field: Field<'_>, roots: [&Polynomial; 3]) -> Result<Self> {
         let factors = finite_support(model, field, roots)?;
         let width = factors.len() + 1;
