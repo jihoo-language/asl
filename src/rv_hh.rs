@@ -466,9 +466,23 @@ pub(crate) fn basis_at(
         return Ok(Vec::new());
     }
     let b = usize::try_from(degree).map_err(|_| degree_limit())?;
-    let factors = eligible_factors(model, grade, b)?;
+    enumerate_basis(model, grade, Some(b), limit)
+}
+
+pub(crate) fn weight_basis(model: &mut Model, grade: &Grade, limit: usize) -> Result<Vec<Word>> {
+    enumerate_basis(model, grade, None, limit)
+}
+
+fn enumerate_basis(
+    model: &mut Model,
+    grade: &Grade,
+    degree: Option<usize>,
+    limit: usize,
+) -> Result<Vec<Word>> {
+    let bound = degree.unwrap_or(usize::MAX);
+    let factors = eligible_factors(model, grade, bound)?;
     let mut remaining = grade.weight.to_vec();
-    let mut degree = b;
+    let mut remaining_degree = bound;
     let mut active: Vec<usize> = Vec::new();
     let mut next = 0;
     let mut basis = Vec::new();
@@ -479,7 +493,7 @@ pub(crate) fn basis_at(
                 break;
             };
             let factor = &factors[previous];
-            degree += factor.s + usize::from(!active.is_empty());
+            remaining_degree += factor.s + usize::from(!active.is_empty());
             for (remaining, value) in remaining.iter_mut().zip(factor.weight.iter()) {
                 *remaining += value;
             }
@@ -490,18 +504,18 @@ pub(crate) fn basis_at(
         let reduced = !active.is_empty();
         let cost = factor.s + usize::from(reduced);
         model.spend(1 + remaining.len())?;
-        if cost > degree || factor.weight.iter().zip(&remaining).any(|(a, b)| a > b) {
+        if cost > remaining_degree || factor.weight.iter().zip(&remaining).any(|(a, b)| a > b) {
             next += 1;
             continue;
         }
         for (remaining, value) in remaining.iter_mut().zip(factor.weight.iter()) {
             *remaining -= value;
         }
-        degree -= cost;
+        remaining_degree -= cost;
         active.push(next);
         check_storage(active.len())?;
         if remaining.iter().all(|&v| v == 0) {
-            if degree == 0 {
+            if degree.is_none() || remaining_degree == 0 {
                 if basis.len() == limit {
                     return Err(basis_limit());
                 }
@@ -511,7 +525,7 @@ pub(crate) fn basis_at(
                 basis.push(word);
             }
             next = factors.len();
-        } else if degree < 2 {
+        } else if remaining_degree < 2 {
             next = factors.len();
         } else {
             // The initial (unit) factor is unavailable in a reduced slot.

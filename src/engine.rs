@@ -67,6 +67,7 @@ use crate::rv_fusion;
 use crate::rv_gauss;
 use crate::rv_hh;
 use crate::rv_hh_homology;
+use crate::rv_hh_mixed;
 use crate::rv_hive;
 use crate::rv_hochster;
 use crate::rv_hodge;
@@ -161,6 +162,7 @@ enum CobarOp {
     MixDown,
     MixUp,
     MixD,
+    RvMixedToHH,
     MixClass,
     MixRep,
     MixNext,
@@ -228,6 +230,7 @@ impl CobarOp {
             "rvNCd" => Some(Self::RvNCd),
             "rvNCClass" => Some(Self::RvNCClass),
             "rvNCRep" => Some(Self::RvNCRep),
+            "rvMixedToHH" => Some(Self::RvMixedToHH),
             "mixb" => Some(Self::MixDown),
             "mixB" => Some(Self::MixUp),
             "mixD" => Some(Self::MixD),
@@ -404,6 +407,7 @@ enum TypedForm {
         SheafPageGrade,
         Box<TypedExpr>,
     ),
+    RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
@@ -474,6 +478,13 @@ impl Engine {
                 self.model.check_new_mixed(&name)?;
                 let complex = mixed::Complex::build(&mut self.model, prime, generators, b, big_b)?;
                 self.model.define_mixed(name.text, complex);
+                return Ok(None);
+            }
+            StatementForm::RvHHMixed(name, ideal, weight) => {
+                self.model.check_new_mixed(&name)?;
+                let grade = self.checker().rv_hh_grade((ideal, 0, weight))?;
+                let (origin, complex) = rv_hh_mixed::Origin::build(&mut self.model, grade)?;
+                self.model.define_hh_mixed(name.text, complex, origin);
                 return Ok(None);
             }
             StatementForm::MixedDimension(spec) => {
@@ -2450,6 +2461,19 @@ impl Engine {
                         _ => unreachable!(),
                     }
                 }
+                (CobarOp::RvMixedToHH, Value::OddClass(terms)) => {
+                    let (id, is_chain) = match *self.model.kind(input.ty) {
+                        Kind::MixedChain(grade, false) => (grade.complex, true),
+                        Kind::MixedPage(grade) => (grade.chain.complex, false),
+                        _ => unreachable!(),
+                    };
+                    let origin = self.model.mixed_hh_origin(id)?;
+                    if is_chain {
+                        origin.chain_to_hh(&mut self.model, &terms)
+                    } else {
+                        origin.class_to_hh(&mut self.model, input.ty, expr.ty, &terms)
+                    }
+                }
                 (CobarOp::MixClass, Value::OddClass(terms)) => {
                     mixed_page::class(&mut self.model, expr.ty, &terms)
                 }
@@ -3601,6 +3625,13 @@ impl Engine {
                     }
                 }
             }
+            TypedForm::RvHHToMixed(origin, input) => match self.eval(input)? {
+                Value::RVHHChain(terms) => origin.chain_to_mixed(&mut self.model, &terms),
+                Value::Class(class) => {
+                    origin.class_to_mixed(&mut self.model, input.ty, expr.ty, &class)
+                }
+                _ => unreachable!(),
+            },
             TypedForm::MixedEmbed(input) => self.eval(input),
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
@@ -4564,6 +4595,47 @@ impl Checker<'_> {
                 let ((s, t), value) = odd_cobar::literal(self.model, prime, factors)?;
                 let ty = self.model.pcobar_type(prime, s, t)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::RvHHToMixed(name, f, input) => {
+                let input = self.expr(*input)?;
+                let complex = self.model.mixed_id(&name)?;
+                let origin = self.model.mixed_hh_origin(complex)?;
+                let ty = match self.model.kind(input.ty) {
+                    Kind::RVHHChain(grade) => {
+                        origin.check_weight(grade)?;
+                        if f.is_some() {
+                            return Err(Error::plain(
+                                "rvHHToMixed on a Hochschild chain takes only a mixed complex name",
+                            ));
+                        }
+                        self.model.mixed_chain_type(
+                            mixed::Grade {
+                                complex,
+                                b: grade.b,
+                            },
+                            false,
+                        )?
+                    }
+                    Kind::RvHochschild(grade) => {
+                        origin.check_weight(grade)?;
+                        let f = f.unwrap_or(0);
+                        let chain = mixed::Grade {
+                            complex,
+                            b: grade.b,
+                        }
+                        .shift(-2 * f as i128)?;
+                        self.model
+                            .mixed_page_type(mixed_page::Grade { chain, r: 1, f })?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "rvHHToMixed",
+                            "an RVHHChain or RVHH class",
+                        ))
+                    }
+                };
+                Ok((ty, TypedForm::RvHHToMixed(origin, Box::new(input))))
             }
             ExprForm::MixedLiteral(name, b, terms) => {
                 let complex = self.model.mixed_id(&name)?;
@@ -7707,6 +7779,25 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(argument, name, "an RVNC class"));
                 };
                 return self.model.rv_negative_type(grade.clone(), false);
+            }
+            CobarOp::RvMixedToHH => {
+                return match *self.model.kind(argument.ty) {
+                    Kind::MixedChain(grade, false) => {
+                        let origin = self.model.mixed_hh_origin(grade.complex)?;
+                        self.model
+                            .rv_hh_type(origin.original_grade(grade.b.into())?)
+                    }
+                    Kind::MixedPage(grade) if grade.r == 1 => {
+                        let origin = self.model.mixed_hh_origin(grade.chain.complex)?;
+                        let b = i128::from(grade.chain.b) + 2 * grade.f as i128;
+                        self.model.rv_hh_class_type(origin.original_grade(b)?)
+                    }
+                    _ => Err(self.invalid_operand(
+                        argument,
+                        name,
+                        "an imported MixedChain or page-1 MixedE class",
+                    )),
+                };
             }
             CobarOp::MixDown | CobarOp::MixUp => {
                 let Kind::MixedChain(grade, false) = *self.model.kind(argument.ty) else {

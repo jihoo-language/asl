@@ -1176,6 +1176,14 @@ awk -v r=720 -v p=3 -f examples/mixed-page-staircase.awk | nix run path:. -- -
 
 The program checks every preceding differential, the nonzero $d_{720}$, and the vanishing of its source and target on page $721$. Its final line is `MixedE(Stair, 720, -1, 720){g0}`. With `-v control=1`, the last $B$ column is omitted and the corrected class survives onto page $721$.
 
+#### Importing a Hochschild weight
+
+`rvHHMixed C[J,[mu]];` materializes the normalized Hochschild complex of $J$ at weight $\mu$ as a finite mixed complex over $\mathbb F_2$. Its generators `w0`, `w1`, and so on follow the ordered Hochschild word basis at that weight. The interpreter computes the columns of $b$ and $B$ on those words and checks the mixed-complex identities before registering the declaration. The computation is bounded by the finite basis and storage limits.
+
+`rvHHToMixed[C](x)` takes an `RVHHChain` in the imported ideal and weight to `MixedChain(C,b)`. The inverse is `rvMixedToHH`. For a Hochschild homology class of degree $b$, `rvHHToMixed[C,f]` gives the corresponding class of `MixedE(C,1,b-2f,f)`. The filtration $f$ defaults to zero. The inverse on page one restores ordinary degree $b$. Under these identifications $d_1$ from filtration $f$ to $f+1$ is the induced Connes operator.
+
+In odd exterior weight the example gives a nonzero $d_1$ at filtration four. In even weight it gives a class that survives to page two. In the Flag weight $(1,\ldots,1)$ the imported differential keeps the actual $m_3$ term. The only nonzero Hochschild groups are in degrees four, five and six with dimensions $1,3,2$, and the Connes ranks from four to five and from five to six are $1,2$. Thus the $B$ complex on these groups is exact and page two is supported at filtration zero in this weight. Every later differential there vanishes. [Hochschild import example](examples/rank-hoch-mixed.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

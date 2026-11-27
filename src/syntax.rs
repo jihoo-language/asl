@@ -523,6 +523,7 @@ pub(crate) enum ExprForm {
     PCeAnGenerator(usize, usize, usize, usize, usize, usize, usize, Span),
     MixedLiteral(Label, i64, crate::mixed::Terms),
     MixedEmbed(usize, Box<ParsedExpr>),
+    RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
     MixedGenerator(MixedSpec, usize, Span),
     MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
@@ -711,6 +712,7 @@ pub(crate) enum StatementForm {
         crate::mixed::Rules,
         crate::mixed::Rules,
     ),
+    RvHHMixed(Label, Label, Vec<usize>),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
@@ -1382,6 +1384,16 @@ impl<'src> Parser<'src> {
                 let selected = self.exponents()?;
                 let presentation = self.q_module_body()?;
                 StatementForm::QModule(name, selected, presentation)
+            }
+            Token::Word("rvHHMixed") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let ideal = self.label()?;
+                self.expect(Token::Comma)?;
+                let weight = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvHHMixed(name, ideal, weight)
             }
             Token::Word("mixedcomplex") => {
                 self.advance()?;
@@ -3518,6 +3530,18 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::RvPathGenerator(spec, index, at), 0);
+                }
+                if name.text == "rvHHToMixed" && self.eat(Token::LBracket)? {
+                    let name = self.label()?;
+                    let f = if self.eat(Token::Comma)? {
+                        Some(self.number()?.0)
+                    } else {
+                        None
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RvHHToMixed(name, f, Box::new(input)), depth);
                 }
                 if name.text == "mixchain" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

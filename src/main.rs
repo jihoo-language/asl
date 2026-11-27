@@ -78,6 +78,7 @@ mod rv_fusion;
 mod rv_gauss;
 mod rv_hh;
 mod rv_hh_homology;
+mod rv_hh_mixed;
 mod rv_hive;
 mod rv_hochster;
 mod rv_hodge;

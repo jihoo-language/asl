@@ -48,6 +48,7 @@ use crate::rv_cyclic_homology;
 use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
+use crate::rv_hh_mixed;
 use crate::rv_hive::{self, Boundary as HiveBoundary};
 use crate::rv_hom::{self, Hom};
 use crate::rv_ideal::Ideal as RvIdeal;
@@ -377,6 +378,7 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
+    mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
@@ -413,6 +415,7 @@ impl Model {
         let mut model = Self {
             types: Vec::new(),
             mixed_complexes: Vec::new(),
+            mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
@@ -829,10 +832,28 @@ impl Model {
         Ok(())
     }
 
-    pub(crate) fn define_mixed(&mut self, name: String, complex: mixed::Complex) {
-        self.mixed_indices
-            .insert(name.clone(), mixed::Id(self.mixed_complexes.len()));
+    pub(crate) fn define_mixed(&mut self, name: String, complex: mixed::Complex) -> mixed::Id {
+        let id = mixed::Id(self.mixed_complexes.len());
+        self.mixed_indices.insert(name.clone(), id);
         self.mixed_complexes.push((name, Rc::new(complex)));
+        id
+    }
+
+    pub(crate) fn define_hh_mixed(
+        &mut self,
+        name: String,
+        complex: mixed::Complex,
+        origin: rv_hh_mixed::Origin,
+    ) {
+        let id = self.define_mixed(name, complex);
+        self.mixed_hh_origins.insert(id, Rc::new(origin));
+    }
+
+    pub(crate) fn mixed_hh_origin(&self, id: mixed::Id) -> Result<Rc<rv_hh_mixed::Origin>> {
+        self.mixed_hh_origins
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Error::plain("operation requires a mixed complex imported by rvHHMixed"))
     }
 
     pub(crate) fn mixed_id(&self, name: &Label) -> Result<mixed::Id> {

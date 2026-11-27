@@ -86,18 +86,66 @@ impl Complex {
         }
         complex.down = complex.columns(model, down, Differential::Down)?;
         complex.up = complex.columns(model, up, Differential::Up)?;
-        complex.validate(model)?;
+        complex.finish(model)
+    }
+
+    pub(crate) fn from_columns(
+        model: &mut Model,
+        prime: Prime,
+        degrees: Vec<i64>,
+        down: Vec<Vec<Coordinate>>,
+        up: Vec<Vec<Coordinate>>,
+    ) -> Result<Self> {
+        if down.len() != degrees.len() || up.len() != degrees.len() {
+            return Err(Error::plain(
+                "imported mixed differential has the wrong number of columns",
+            ));
+        }
+        let mut names = Vec::with_capacity(degrees.len());
+        let mut indices = HashMap::with_capacity(degrees.len());
+        for index in 0..degrees.len() {
+            let name = format!("w{index}");
+            model.spend(1 + name.len())?;
+            indices.insert(name.clone(), index);
+            names.push(name);
+        }
+        for (columns, op) in [(&down, Differential::Down), (&up, Differential::Up)] {
+            for (source, column) in columns.iter().enumerate() {
+                let expected = i128::from(degrees[source]) + op.degree();
+                model.spend(1 + column.len())?;
+                if column.iter().any(|&(target, _)| {
+                    degrees.get(target).map(|&d| i128::from(d)) != Some(expected)
+                }) {
+                    return Err(Error::plain(
+                        "imported mixed differential has the wrong homological degree",
+                    ));
+                }
+            }
+        }
+        Self {
+            prime,
+            names,
+            degrees,
+            indices,
+            down,
+            up,
+        }
+        .finish(model)
+    }
+
+    fn finish(self, model: &mut Model) -> Result<Self> {
+        self.validate(model)?;
         model.allocate(
-            1 + 6 * complex.len()
-                + complex
+            1 + 6 * self.len()
+                + self
                     .down
                     .iter()
-                    .chain(&complex.up)
+                    .chain(&self.up)
                     .map(|column| 2 * column.len())
                     .sum::<usize>()
-                + 2 * complex.names.iter().map(String::len).sum::<usize>(),
+                + 2 * self.names.iter().map(String::len).sum::<usize>(),
         )?;
-        Ok(complex)
+        Ok(self)
     }
 
     pub(crate) fn len(&self) -> usize {
