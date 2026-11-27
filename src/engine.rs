@@ -2817,6 +2817,24 @@ impl Engine {
             StatementForm::FrickeSS(command) => return command.execute(&mut self.model),
             StatementForm::FrickeOrder(command) => return command.execute(&mut self.model),
             StatementForm::FrickeManin(command) => return command.execute(&mut self.model),
+            StatementForm::ManinFrobenius(command) => command.execute(&mut self.model)?,
+            StatementForm::ManinCurveLines(name, pair) => {
+                let space = self.model.manin_space(&name)?;
+                let [a, b] = *pair;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                let ring = self.checker().unram_ring(&a, "rvManinCurveLines")?;
+                self.checker().require_type(a.ty, &b, "rvManinCurveLines")?;
+                let Kind::RVUnram(field_name) = self.model.kind(a.ty) else {
+                    unreachable!()
+                };
+                let field_name = field_name.clone();
+                let (Value::RVUnram(a), Value::RVUnram(b)) = (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    unreachable!()
+                };
+                space.geometric_lines(&mut self.model, field_name, ring, &a, &b)?
+            }
             StatementForm::FrickeManinBoundary(input) => {
                 let input = self.checker().expr(input)?;
                 let space = self.checker().manin_operand(&input)?;
@@ -24053,6 +24071,12 @@ impl Checker<'_> {
             ExprForm::FrickeSS(expression) => self.fricke_ss_expression(*expression),
             ExprForm::FrickeOrder(expression) => self.fricke_order_expression(*expression),
             ExprForm::FrickeManin(expression) => self.fricke_manin_expression(*expression),
+            ExprForm::ManinFrobPoly(name, ell, exponent) => {
+                let space = self.model.manin_space(&name)?;
+                let ty = self.model.ore_type()?;
+                let value = space.frob_polynomial(self.model, ell, exponent)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::FrickeCMPolyEval(name, input) => {
                 let polynomial = self.model.fricke_cm_polynomial(&name)?;
                 let input = self.expr(*input)?;

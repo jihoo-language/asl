@@ -13,6 +13,7 @@ use geometry::Geometry;
 use linear::{self as lin, Frame, Matrix, Vector, ONE, ZERO};
 
 mod comparison;
+pub(crate) mod frobenius;
 mod geometry;
 mod linear;
 

@@ -1176,6 +1176,7 @@ pub(crate) enum ExprForm {
     FrickeSS(Box<crate::dwork_k3::fricke::brandt::Expression>),
     FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Expression>),
     FrickeManin(Box<crate::dwork_k3::fricke::brandt::manin::Expression>),
+    ManinFrobPoly(Label, usize, usize),
     FrickeCMPolyEval(Label, Box<ParsedExpr>),
     FrickeCMPolyModCoeff(Label, Label, usize),
     FrickeCMPairCoeff(usize, Box<ParsedExpr>),
@@ -1473,6 +1474,8 @@ pub(crate) enum StatementForm {
     FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Command>),
     FrickeManin(Box<crate::dwork_k3::fricke::brandt::manin::Command>),
     FrickeManinBoundary(ParsedExpr),
+    ManinFrobenius(Box<crate::dwork_k3::fricke::brandt::manin::frobenius::Command>),
+    ManinCurveLines(Label, Box<[ParsedExpr;2]>),
     FrickeCMDefine(Label, Label, Option<Label>),
     FrickeCMData(Label, Option<usize>),
     FrickeCMFactors(Label, Label),
@@ -6971,6 +6974,46 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn manin_frob_grade(&mut self) -> Result<(Label, usize, usize)> {
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let ell = self.number()?.0;
+        let exponent = if self.eat(Token::Comma)? {
+            self.number()?.0
+        } else {
+            1
+        };
+        self.expect(Token::RBracket)?;
+        Ok((name, ell, exponent))
+    }
+
+    fn manin_frob_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::dwork_k3::fricke::brandt::manin::frobenius::Command;
+        self.advance()?;
+        if operation == "rvManinZeta" {
+            let (name, ell, exponent) = self.manin_frob_grade()?;
+            return Ok(StatementForm::ManinFrobenius(Box::new(Command::Zeta(
+                name, ell, exponent,
+            ))));
+        }
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        if operation == "rvManinCurveLines" {
+            self.expect(Token::RBracket)?;
+            return Ok(StatementForm::ManinCurveLines(
+                name,
+                Box::new(self.paren_pair(0)?),
+            ));
+        }
+        self.expect(Token::Comma)?;
+        let field = self.label()?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::ManinFrobenius(Box::new(Command::Geometry(
+            name, field,
+        ))))
     }
 
     fn fricke_manin_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -14650,6 +14693,9 @@ impl<'src> Parser<'src> {
                 name @ ("rvmanin" | "rvfrickejl" | "rvManinData" | "rvManinSpectrum"
                 | "rvManinBoundary" | "rvFrickeJLData"),
             ) => self.fricke_manin_statement(name)?,
+            Token::Word(name @ ("rvManinZeta" | "rvManinPointCount" | "rvManinCurveLines")) => {
+                self.manin_frob_statement(name)?
+            }
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -21958,6 +22004,10 @@ impl<'src> Parser<'src> {
                 ) && matches!(self.token(), Token::LBracket | Token::LParen)
                 {
                     return self.fricke_manin_expression(&name.text, span, nest);
+                }
+                if name.text == "rvManinFrobPoly" && self.token() == Token::LBracket {
+                    let (manin, ell, exponent) = self.manin_frob_grade()?;
+                    return expr(span, ExprForm::ManinFrobPoly(manin, ell, exponent), 0);
                 }
                 if matches!(
                     name.text.as_str(),
