@@ -12,6 +12,7 @@ use crate::prime_linear::{Basis, Coordinate};
 use crate::rv_unram::Ring;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod miller;
 pub(crate) mod point_halving;
 
 pub(crate) enum Command {
@@ -35,6 +36,7 @@ pub(crate) enum Expression {
 pub(crate) enum Pairing {
     Weil,
     Tate,
+    MillerTate(u64),
 }
 
 impl Pairing {
@@ -42,6 +44,7 @@ impl Pairing {
         match self {
             Self::Weil => "rvJacWeil2",
             Self::Tate => "rvJacTate2",
+            Self::MillerTate(_) => "rvJacTate",
         }
     }
 
@@ -52,6 +55,9 @@ impl Pairing {
         left: &Divisor,
         right: &Divisor,
     ) -> Result<Scalar> {
+        if let Self::MillerTate(n) = self {
+            return miller::tate(model, curve, n, left, right);
+        }
         // In reduced Mumford form, negation fixes u and sends v to −v.
         if !left.v.is_empty() {
             return Err(Error::plain(format!(
@@ -81,6 +87,7 @@ impl Pairing {
                 })
             }
             Self::Tate => left.tate_pairing(model, curve, right, common),
+            Self::MillerTate(_) => unreachable!(),
         }
     }
 }
@@ -100,6 +107,15 @@ pub(crate) enum Operation {
 pub(crate) struct Divisor {
     pub(crate) u: Polynomial,
     pub(crate) v: Polynomial,
+}
+
+enum CantorFactor<'a> {
+    Composition(&'a [Scalar]),
+    Reduction {
+        interpolation: &'a [Scalar],
+        complement: &'a [Scalar],
+        norm: &'a [Scalar],
+    },
 }
 
 impl Divisor {
@@ -148,12 +164,22 @@ impl Divisor {
         Self::new(model, curve, vec![constant, curve.ring.scalar(1)], vec![y])
     }
 
-    fn reduce(mut self, model: &mut Model, curve: &Curve) -> Result<Self> {
+    fn reduce(self, model: &mut Model, curve: &Curve) -> Result<Self> {
+        self.reduce_with(model, curve, |_, _| Ok(()))
+    }
+
+    fn reduce_with(
+        mut self,
+        model: &mut Model,
+        curve: &Curve,
+        mut on_factor: impl FnMut(&mut Model, CantorFactor<'_>) -> Result<()>,
+    ) -> Result<Self> {
         let field = field(curve);
         while self.u.len() - 1 > curve.grade.genus {
             // The conjugate complementary effective divisor is obtained from
             // the zeros of y−v after removing the zeros prescribed by u.
-            let quotient = self.norm_quotient(model, curve)?;
+            let norm = norm(model, curve, &self.v)?;
+            let quotient = poly::exact_divide(model, field, &norm, &self.u)?;
             if quotient.is_empty() || quotient.len() >= self.u.len() {
                 return Err(Error::plain(
                     "Cantor reduction did not decrease the divisor degree",
@@ -161,6 +187,14 @@ impl Divisor {
             }
             let inverse = field.inverse_unit(model, quotient.last().unwrap())?;
             let u = poly::scale(model, field, &quotient, &inverse)?;
+            on_factor(
+                model,
+                CantorFactor::Reduction {
+                    interpolation: &self.v,
+                    complement: &u,
+                    norm: &norm,
+                },
+            )?;
             let v = poly::scale(model, field, &self.v, &field.signed(-1))?;
             let v = poly::remainder(model, field, v, &u)?;
             self = Self { u, v };
@@ -179,15 +213,36 @@ impl Divisor {
     }
 
     pub(crate) fn add(&self, model: &mut Model, curve: &Curve, rhs: &Self) -> Result<Self> {
+        self.add_with(model, curve, rhs, |_, _| Ok(()))
+    }
+
+    fn add_with(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        rhs: &Self,
+        mut on_factor: impl FnMut(&mut Model, CantorFactor<'_>) -> Result<()>,
+    ) -> Result<Self> {
         if self.is_zero() || rhs.is_zero() {
             let result = if self.is_zero() { rhs } else { self };
             model.spend(result.cells(curve))?;
             return Ok(result.clone());
         }
-        self.compose(model, curve, rhs)?.reduce(model, curve)
+        let (semireduced, gcd) = self.compose_with_gcd(model, curve, rhs)?;
+        on_factor(model, CantorFactor::Composition(&gcd))?;
+        semireduced.reduce_with(model, curve, on_factor)
     }
 
     pub(crate) fn compose(&self, model: &mut Model, curve: &Curve, rhs: &Self) -> Result<Self> {
+        self.compose_with_gcd(model, curve, rhs).map(|(sum, _)| sum)
+    }
+
+    fn compose_with_gcd(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        rhs: &Self,
+    ) -> Result<(Self, Polynomial)> {
         let field = field(curve);
         let v_sum = poly::sum(model, field, &self.v, &rhs.v, false)?;
         let (d0, e1, e2) = poly::bezout(model, field, &self.u, &rhs.u)?;
@@ -207,7 +262,7 @@ impl Divisor {
         let square = poly::multiply(model, field, &d, &d)?;
         let u = poly::exact_divide(model, field, &product, &square)?;
         let v = poly::remainder(model, field, v, &u)?;
-        Ok(Self { u, v })
+        Ok((Self { u, v }, d))
     }
 
     pub(crate) fn scale(&self, model: &mut Model, curve: &Curve, n: i128) -> Result<Self> {
