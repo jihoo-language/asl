@@ -713,6 +713,8 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    HilbertCohomologyLlvLower(Box<[TypedExpr; 2]>),
+    HilbertCohomologyRotate(Box<[TypedExpr; 3]>),
     HilbertCohomologyLefschetz(
         nakajima::cohomology::lefschetz::Operation,
         Box<[TypedExpr; 2]>,
@@ -5312,6 +5314,24 @@ impl Engine {
     ) -> Result<String> {
         use nakajima::cohomology::Report;
         let (input, name, integral) = match report {
+            Report::Beauville(inputs) => {
+                let [a, b] = *inputs;
+                let mut checker = self.checker();
+                let a = checker.expr(a)?;
+                let b = checker.expr(b)?;
+                let grade = checker.hilbert_cohomology_grade(&b, "rvHilbCohBeauville")?;
+                checker.hilbert_divisor(&a, grade, "rvHilbCohBeauville")?;
+                checker.hilbert_divisor(&b, grade, "rvHilbCohBeauville")?;
+                let length = grade.length;
+                let (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) =
+                    (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    unreachable!()
+                };
+                let pair =
+                    nakajima::cohomology::llv::beauville_report(&mut self.model, &a, &b, length)?;
+                return Ok(format!("rvHilbCohBeauville = {pair}"));
+            }
             Report::ExteriorEuler(length, power, inputs) => {
                 let [line, twist] = *inputs;
                 let mut checker = self.checker();
@@ -9330,6 +9350,39 @@ impl Engine {
                     unreachable!()
                 };
                 word.apply_lattice(&mut self.model, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyLlvLower(inputs) => {
+                let Kind::HilbertCohomology(grade) = self.model.kind(inputs[1].ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let (Value::HilbertCohomology(b), Value::HilbertCohomology(x)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                nakajima::cohomology::llv::lower(&mut self.model, &b, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyRotate(inputs) => {
+                let Kind::HilbertCohomology(grade) = self.model.kind(inputs[2].ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let (
+                    Value::HilbertCohomology(a),
+                    Value::HilbertCohomology(b),
+                    Value::HilbertCohomology(x),
+                ) = (
+                    self.eval(&inputs[0])?,
+                    self.eval(&inputs[1])?,
+                    self.eval(&inputs[2])?,
+                )
+                else {
+                    unreachable!()
+                };
+                nakajima::cohomology::llv::rotate(&mut self.model, &a, &b, &x, &grade)?
                     .persist(&mut self.model)
             }
             TypedForm::HilbertCohomologyLefschetz(operation, inputs) => {
@@ -21365,6 +21418,19 @@ impl Checker<'_> {
         self.model.hilbert_cohomology_type(basis, length, degree)
     }
 
+    fn hilbert_divisor(
+        &self,
+        divisor: &TypedExpr,
+        grade: &nakajima::Grade,
+        operation: &str,
+    ) -> Result<()> {
+        let source = self.hilbert_cohomology_grade(divisor, operation)?;
+        if source.basis != grade.basis || source.length != grade.length || source.degree != 2 {
+            return Err(Error::new(divisor.span, format!("{operation} requires a degree-two divisor on the same named level basis and length")));
+        }
+        Ok(())
+    }
+
     fn hilbert_cohomology_expression(
         &mut self,
         expression: nakajima::cohomology::Expression,
@@ -21420,18 +21486,42 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyToFock(scale, Box::new(input)),
                 ))
             }
+            Expression::LlvLower(inputs) => {
+                let [b, x] = *inputs;
+                let b = self.expr(b)?;
+                let x = self.expr(x)?;
+                let grade = self.hilbert_cohomology_grade(&x, "rvHilbCohLLVLower")?;
+                self.hilbert_divisor(&b, grade, "rvHilbCohLLVLower")?;
+                let marking = Label {
+                    text: grade.basis.to_string(),
+                    span: x.span,
+                };
+                let degree =
+                    nakajima::cohomology::lefschetz::Operation::Lower.output_degree(grade)?;
+                let ty = self
+                    .model
+                    .hilbert_cohomology_type(&marking, grade.length, degree)?;
+                Ok((ty, TypedForm::HilbertCohomologyLlvLower(Box::new([b, x]))))
+            }
+            Expression::Rotate(inputs) => {
+                let [a, b, x] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let x = self.expr(x)?;
+                let grade = self.hilbert_cohomology_grade(&x, "rvHilbCohRotate")?;
+                self.hilbert_divisor(&a, grade, "rvHilbCohRotate")?;
+                self.hilbert_divisor(&b, grade, "rvHilbCohRotate")?;
+                Ok((
+                    x.ty,
+                    TypedForm::HilbertCohomologyRotate(Box::new([a, b, x])),
+                ))
+            }
             Expression::Lefschetz(operation, inputs) => {
                 let [h, x] = *inputs;
                 let h = self.expr(h)?;
                 let x = self.expr(x)?;
-                let divisor = self.hilbert_cohomology_grade(&h, operation.name())?;
                 let grade = self.hilbert_cohomology_grade(&x, operation.name())?;
-                if divisor.basis != grade.basis
-                    || divisor.length != grade.length
-                    || divisor.degree != 2
-                {
-                    return Err(Error::new(h.span, format!("{} requires a degree-two divisor on the same named level basis and length", operation.name())));
-                }
+                self.hilbert_divisor(&h, grade, operation.name())?;
                 let degree = operation.output_degree(grade)?;
                 let marking = Label {
                     text: grade.basis.to_string(),

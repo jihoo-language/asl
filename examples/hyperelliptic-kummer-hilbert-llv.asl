@@ -1,0 +1,20 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let a=rvHilbCohQ[1,2](rvNakajimaMonomial[B]{(1,0,2),(1,1,1)});
+let b=rvHilbCohQ[1,2](rvNakajimaMonomial[B]{(1,0,2),(1,2,1)});
+let delta=rvHilbCohQ[1,2](rvNakajimaMonomial[B]{(1,0,1),(2,0,1)});
+rvHilbCohBeauville(a,b);
+rvHilbCohBeauville(delta,delta);
+let extra=rvHilbCohQ[1,1](rvNakajimaMonomial[B]{(2,0,1),(1,1,1)});
+let other=rvHilbCohQ[1,1](rvNakajimaMonomial[B]{(2,0,1),(1,2,1)});
+assert rvHilbCohRotate(a,b,extra)==add(neg(extra),rvHilbCohScale[2,1](other));
+assert rvHilbCohLLVLower(a,a)==rvHilbCohScale[-12,1](rvHilbCohUnit[B,3]);

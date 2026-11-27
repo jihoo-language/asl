@@ -4139,13 +4139,7 @@ impl<'src> Parser<'src> {
                 (Expression::Llv(operation, Box::new(inputs)), depth)
             }
             "rvHilbSquareRotate" => {
-                self.expect(Token::LParen)?;
-                let a = self.expr(nest + 1)?;
-                self.expect(Token::Comma)?;
-                let b = self.expr(nest + 1)?;
-                self.expect(Token::Comma)?;
-                let class = self.expr(nest + 1)?;
-                self.expect(Token::RParen)?;
+                let [a, b, class] = self.paren_triple(nest)?;
                 let depth = 1 + a.depth.max(b.depth).max(class.depth);
                 (Expression::Rotate(Box::new([a, b, class])), depth)
             }
@@ -4517,9 +4511,13 @@ impl<'src> Parser<'src> {
         nest: usize,
     ) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression;
-        let (expression, depth) = if matches!(
+        let (expression, depth) = if name == "rvHilbCohRotate" {
+            let [a, b, class] = self.paren_triple(nest)?;
+            let depth = 1 + a.depth.max(b.depth).max(class.depth);
+            (Expression::Rotate(Box::new([a, b, class])), depth)
+        } else if matches!(
             name,
-            "rvHilbCohCup" | "rvHilbCohLefschetzInverse" | "rvHilbCohLower"
+            "rvHilbCohCup" | "rvHilbCohLefschetzInverse" | "rvHilbCohLower" | "rvHilbCohLLVLower"
         ) {
             let inputs = self.paren_pair(nest)?;
             let depth = 1 + inputs[0].depth.max(inputs[1].depth);
@@ -4529,6 +4527,7 @@ impl<'src> Parser<'src> {
                     Expression::Lefschetz(Operation::Inverse, Box::new(inputs))
                 }
                 "rvHilbCohLower" => Expression::Lefschetz(Operation::Lower, Box::new(inputs)),
+                "rvHilbCohLLVLower" => Expression::LlvLower(Box::new(inputs)),
                 _ => Expression::Cup(Box::new(inputs)),
             };
             (expression, depth)
@@ -6658,6 +6657,13 @@ impl<'src> Parser<'src> {
             ) => self.k3_period_statement(command)?,
             Token::Word(name @ ("rvHilbTautChernDen" | "rvHilbTautSegre")) => {
                 self.hilbert_tautological_statement(name)?
+            }
+            Token::Word("rvHilbCohBeauville") => {
+                use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report;
+                self.advance()?;
+                StatementForm::HilbertCohomology(Box::new(Report::Beauville(Box::new(
+                    self.paren_pair(0)?,
+                ))))
             }
             Token::Word("rvHilbExteriorEuler") => {
                 use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report;
@@ -11916,7 +11922,11 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
-                        "rvHilbCohCup" | "rvHilbCohLefschetzInverse" | "rvHilbCohLower"
+                        "rvHilbCohCup"
+                            | "rvHilbCohLefschetzInverse"
+                            | "rvHilbCohLower"
+                            | "rvHilbCohLLVLower"
+                            | "rvHilbCohRotate"
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_cohomology_expression(&name.text, span, nest);
@@ -15199,6 +15209,17 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBracket)?;
         Ok(mu)
+    }
+
+    fn paren_triple(&mut self, nest: usize) -> Result<[ParsedExpr; 3]> {
+        self.expect(Token::LParen)?;
+        let a = self.expr(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let b = self.expr(nest + 1)?;
+        self.expect(Token::Comma)?;
+        let c = self.expr(nest + 1)?;
+        self.expect(Token::RParen)?;
+        Ok([a, b, c])
     }
 
     fn paren_pair(&mut self, nest: usize) -> Result<[ParsedExpr; 2]> {

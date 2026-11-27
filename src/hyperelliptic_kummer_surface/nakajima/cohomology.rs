@@ -13,6 +13,7 @@ use super::super::unimodular::Vector;
 use super::{tautological, Accumulator, Factor, Integer, Mode, State, LIMBS, POINT};
 
 pub(crate) mod lefschetz;
+pub(crate) mod llv;
 pub(crate) mod schur;
 
 type Denominator = Natural<LIMBS>;
@@ -25,6 +26,8 @@ pub(crate) enum Expression {
     ToFock(i128, Box<ParsedExpr>),
     Cup(Box<[ParsedExpr; 2]>),
     Lefschetz(lefschetz::Operation, Box<[ParsedExpr; 2]>),
+    LlvLower(Box<[ParsedExpr; 2]>),
+    Rotate(Box<[ParsedExpr; 3]>),
     Chern(u128, u128, bool, Box<ParsedExpr>),
     Schur(u128, u128, Vec<u128>, Box<ParsedExpr>),
 }
@@ -33,6 +36,7 @@ pub(crate) enum Report {
     Integral(Box<ParsedExpr>),
     Denominator(Box<ParsedExpr>),
     ExteriorEuler(u128, u128, Box<[ParsedExpr; 2]>),
+    Beauville(Box<[ParsedExpr; 2]>),
 }
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]

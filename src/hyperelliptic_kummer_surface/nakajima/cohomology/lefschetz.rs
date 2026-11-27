@@ -353,7 +353,12 @@ fn lower_divisor(model: &mut Model, h: &Class, x: &Class, length: i128) -> Resul
     scalar_unit(model, n, numerator, denominator, square.negative)
 }
 
-fn divisor_pair(model: &mut Model, h: &Class, x: &Class, length: i128) -> Result<Integer> {
+pub(super) fn divisor_pair(
+    model: &mut Model,
+    h: &Class,
+    x: &Class,
+    length: i128,
+) -> Result<Integer> {
     let coordinates = |class: &Class| {
         let mut coords = [0i128; COLORS];
         for (monomial, &value) in &class.numerator.terms {
