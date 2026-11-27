@@ -720,6 +720,7 @@ enum TypedForm {
     K3Pencil(Rc<pencil::Pencil>, PencilAction),
     K3PencilSectionNegate(Rc<pencil::Pencil>, Box<TypedExpr>),
     K3PencilDescent(Rc<pencil::Pencil>, bool, Box<TypedExpr>),
+    K3PencilSelmerContains(Rc<pencil::Pencil>, Box<TypedExpr>),
     K3Mordell(Rc<mordell::Mordell>, mordell::Shift, i128, Box<TypedExpr>),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
@@ -1881,6 +1882,10 @@ impl Engine {
                     Command::Torsion2(name) => {
                         let pencil = self.model.k3_pencil(&name)?;
                         pencil.torsion_report(&mut self.model, &name.text).map(Some)
+                    }
+                    Command::Selmer(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil.selmer_report(&mut self.model, &name.text).map(Some)
                     }
                 };
             }
@@ -9236,6 +9241,15 @@ impl Engine {
                 } else {
                     descent.persist(&mut self.model)
                 }
+            }
+            TypedForm::K3PencilSelmerContains(pencil, input) => {
+                let Value::K3PencilKummer2(descent) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let space = pencil.selmer_space(&mut self.model)?;
+                Ok(Value::Point(usize::from(
+                    space.contains(&mut self.model, &descent)?,
+                )))
             }
             TypedForm::K3PencilSectionNegate(pencil, input) => {
                 let Value::K3PencilSection(section) = self.eval(input)? else {
@@ -23294,6 +23308,34 @@ impl Checker<'_> {
                 let ty = self.model.k3_pencil_section_type(&name)?;
                 let value = pencil.torsion_at(self.model, index)?.persist(self.model)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::SelmerBasis(name, index) => {
+                let pencil = self.model.k3_pencil(&name)?;
+                let ty = self.model.k3_pencil_kummer2_type(&name)?;
+                let value = pencil
+                    .selmer_space(self.model)?
+                    .basis_at(self.model, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::SelmerContains(input) => {
+                let input = self.expr(*input)?;
+                let Kind::K3PencilKummer2(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "K3 pencil Selmer membership",
+                        "an RVK3PencilKummer2 class",
+                    ));
+                };
+                let name = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let pencil = self.model.k3_pencil(&name)?;
+                Ok((
+                    self.model.named("S").unwrap(),
+                    TypedForm::K3PencilSelmerContains(pencil, Box::new(input)),
+                ))
             }
             Expression::Descent(input, divisible) => {
                 let input = self.expr(*input)?;

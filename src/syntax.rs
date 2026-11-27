@@ -5502,6 +5502,7 @@ impl<'src> Parser<'src> {
                 "rvK3PencilLFunction" => Command::LFunction(name),
                 "rvK3PencilBSD" => Command::Bsd(name),
                 "rvK3PencilTorsion2" => Command::Torsion2(name),
+                "rvK3PencilSelmer" => Command::Selmer(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
                 "rvK3PencilDiscriminant" => Command::Discriminant(name),
                 _ => Command::Census(name),
@@ -5536,21 +5537,28 @@ impl<'src> Parser<'src> {
                 ];
                 (Expression::Literal(pencil, Box::new(coordinates)), 0)
             }
-            "rvK3PencilTorsion2At" => {
+            "rvK3PencilTorsion2At" | "rvK3PencilSelmerBasis" => {
                 self.expect(Token::LBracket)?;
                 let pencil = self.label()?;
                 self.expect(Token::Comma)?;
                 let index = self.number()?.0;
                 self.expect(Token::RBracket)?;
-                (Expression::Torsion(pencil, index), 0)
+                let expression = if name == "rvK3PencilSelmerBasis" {
+                    Expression::SelmerBasis(pencil, index)
+                } else {
+                    Expression::Torsion(pencil, index)
+                };
+                (expression, 0)
             }
             _ => {
                 let input = self.paren_expr(nest)?;
                 let depth = 1 + input.depth;
-                (
-                    Expression::Descent(Box::new(input), name == "rvK3PencilDivisible2"),
-                    depth,
-                )
+                let expression = if name == "rvK3PencilSelmerContains" {
+                    Expression::SelmerContains(Box::new(input))
+                } else {
+                    Expression::Descent(Box::new(input), name == "rvK3PencilDivisible2")
+                };
+                (expression, depth)
             }
         };
         expr(span, ExprForm::K3PencilSection(Box::new(expression)), depth)
@@ -6955,7 +6963,8 @@ impl<'src> Parser<'src> {
                 | "rvK3FiberEuler"
                 | "rvK3PencilLFunction"
                 | "rvK3PencilBSD"
-                | "rvK3PencilTorsion2"),
+                | "rvK3PencilTorsion2"
+                | "rvK3PencilSelmer"),
             ) => self.k3_pencil_statement(op)?,
             Token::Word(
                 op
@@ -12555,11 +12564,11 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvK3PencilSectionPoint" | "rvK3PencilTorsion2At"
+                    "rvK3PencilSectionPoint" | "rvK3PencilTorsion2At" | "rvK3PencilSelmerBasis"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
-                        "rvK3PencilDescent2" | "rvK3PencilDivisible2"
+                        "rvK3PencilDescent2" | "rvK3PencilDivisible2" | "rvK3PencilSelmerContains"
                     ) && self.token() == Token::LParen)
                 {
                     return self.k3_pencil_section_expression(&name.text, span, nest);

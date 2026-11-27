@@ -117,6 +117,14 @@ impl RelativeJacobian {
         ))
     }
 
+    pub(super) fn arithmetic_mordell_weil_rank(
+        &self,
+        model: &mut Model,
+        pencil: &Pencil,
+    ) -> Result<usize> {
+        Ok(self.l_data(model, pencil)?.rank)
+    }
+
     fn l_data(&self, model: &mut Model, pencil: &Pencil) -> Result<LFunction> {
         let field = field(&pencil.curve);
         require_tame(field)?;

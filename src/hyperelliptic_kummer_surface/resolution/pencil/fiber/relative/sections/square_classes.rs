@@ -21,6 +21,10 @@ struct SquareClass {
 pub(crate) struct Descent([SquareClass; 3]);
 
 impl Descent {
+    pub(super) fn from_coordinates(coordinates: [(bool, Vec<Polynomial>); 3]) -> Self {
+        Self(coordinates.map(|(nonsquare, support)| SquareClass { nonsquare, support }))
+    }
+
     pub(crate) fn coordinates(&self) -> impl Iterator<Item = (bool, &[Polynomial])> {
         self.0
             .iter()

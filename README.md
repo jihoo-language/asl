@@ -1758,6 +1758,14 @@ For each fixed $i$, evaluating the squared chord or tangent at $e_i$ gives the p
 
 The example over $\mathbb F_{13}$ uses the section $(t+6t^3,7t^2+6t^3+3t^4)$, whose good specializations at $t=1$ and $t=5$ have orders three and four. These distinct orders prime to the characteristic certify infinite order. Its Kummer class is nontrivial and its double has trivial class. [Pencil two-descent example](examples/hyperelliptic-k3-pencil-two-descent.asl)
 
+##### Global two-Selmer space
+
+`rvK3PencilSelmer[P];` computes the global $\mathbb F_2$-Selmer space for the full-split generic Jacobian. The two independent square classes are supported on the constant nonsquare and the monic factors of the differences of the three torsion roots. At other finite places the Kummer image consists of the unramified classes. At each finite place of the support and at infinity, the calculation checks exact local solubility by expanding residue prefixes that contain at least two roots. Once a prefix contains exactly one root, the product-square condition forces its torsion class. The infinity chart uses $s=1/t$ and the integral coordinates $s^4x,s^6y$.
+
+The local codes use two bits per square class, with the valuation parity first and the angular nonsquare bit second. The first two torsion-root coordinates supply the four bits and their sum gives the third square class. Every reported local image has dimension two. The computation currently requires rational places in the finite support. `rvK3PencilSelmerBasis[P,i]` returns the zero-based basis as `RVK3PencilKummer2(P)` values. `rvK3PencilSelmerContains(c)` tests a typed class against the local conditions, including classes obtained with `rvK3PencilDescent2`.
+
+When the pencil's L-function calculation certifies the arithmetic Mordell–Weil rank $r$, the Selmer exact sequence gives $\dim\Sha(E/K)[2]=\dim\operatorname{Sel}_2(E/K)-r-2$. In characteristic three the report gives the Selmer dimension and local images. The example over $\mathbb F_{23}$ has Selmer dimension six and rank two, so $\Sha(E/K)[2]\cong (\mathbb Z/2)^2$. [Pencil Selmer example](examples/hyperelliptic-k3-pencil-selmer.asl) [Silverman, *The Arithmetic of Elliptic Curves*, X.1 and X.4](https://www.math.ens.psl.eu/~obenoist/refs/Silverman.pdf)
+
 #### Geometric Kummer automorphism words
 
 `rvk3autom W[B]{translate(a),switch(b),project(c),...};` registers a word on the marked Kummer resolution. Each index is a node mask between 0 and 15, and the word acts from left to right. Translation fixes $H$ and takes $E_v$ to $E_{v+a}$. The Gauss switch takes $E_v$ to $T_v$ and $H$ to $3H-\sum_v E_v$. `switch(b)` applies this switch and then translates by $b$. Projection from node $c$ takes $(H,E_c)$ to $(3H-4E_c,2H-3E_c)$ and fixes the other exceptional curves. Each generator squares to the identity. `rvK3AutoDiv[W](D)` computes the word's action on `RVKummerDiv(B)`.

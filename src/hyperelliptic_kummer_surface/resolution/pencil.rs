@@ -28,6 +28,7 @@ pub(crate) enum Command {
     LFunction(Label),
     Bsd(Label),
     Torsion2(Label),
+    Selmer(Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Operation);
@@ -100,6 +101,7 @@ pub(crate) struct Pencil {
     counts: OnceCell<Box<[usize]>>,
     relative: OnceCell<fiber::relative::RelativeJacobian>,
     torsion_roots: OnceCell<Vec<crate::ec_poly::Polynomial>>,
+    selmer: OnceCell<sections::Selmer>,
 }
 
 impl Pencil {
@@ -160,6 +162,7 @@ impl Pencil {
             counts: OnceCell::new(),
             relative: OnceCell::new(),
             torsion_roots: OnceCell::new(),
+            selmer: OnceCell::new(),
         })
     }
 

@@ -10,14 +10,18 @@ use crate::syntax::{Label, ParsedExpr};
 
 use super::{field, Pencil, RelativeJacobian};
 
+mod selmer;
 mod square_classes;
 mod torsion;
 
+pub(crate) use selmer::Selmer;
 pub(crate) use square_classes::Descent;
 
 pub(crate) enum Expression {
     Literal(Label, Box<[Vec<Vec<i128>>; 4]>),
     Torsion(Label, usize),
+    SelmerBasis(Label, usize),
+    SelmerContains(Box<ParsedExpr>),
     Descent(Box<ParsedExpr>, bool),
 }
 
