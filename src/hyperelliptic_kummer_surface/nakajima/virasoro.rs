@@ -69,6 +69,30 @@ impl State {
         if index == 0 {
             return self.scale(model, length);
         }
+        self.shifted_virasoro(model, index)?.finish()
+    }
+
+    pub(crate) fn is_primary(&self, model: &mut Model, length: i128) -> Result<bool> {
+        if self.terms.is_empty() {
+            return Ok(true);
+        }
+        // Inspect the wide sums directly. Even a nonzero image outside the
+        // Fock coordinate range certifies failure of the highest-weight test.
+        for index in [1, 2] {
+            if index <= length
+                && self
+                    .shifted_virasoro(model, index)?
+                    .terms
+                    .values()
+                    .any(|coefficient| !coefficient.is_zero())
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn shifted_virasoro(&self, model: &mut Model, index: i128) -> Result<Accumulator> {
         let added = if index < -1 {
             let added = index.checked_neg().ok_or_else(grade_range)?;
             // Every pair of lengths has nonzero inverse-Gram entries. Charge a
@@ -117,7 +141,7 @@ impl State {
                 }
             }
         }
-        output.finish()
+        Ok(output)
     }
 }
 

@@ -1177,6 +1177,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
+    NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
@@ -3336,6 +3337,32 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::K3Lattice(Box::new(expression)), depth)
     }
 
+    fn nakajima_grade_args(&mut self) -> Result<(Label, i128, i128)> {
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a signed Nakajima length grade", "Nakajima length grade")?;
+        self.expect(Token::Comma)?;
+        let degree = self.signed_wide(
+            "a signed Nakajima cohomological degree",
+            "Nakajima cohomological degree",
+        )?;
+        Ok((basis, length, degree))
+    }
+
+    fn nakajima_primary_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::nakajima::primary::Command;
+        self.advance()?;
+        let command = if name == "rvNakajimaPrimaryDim" {
+            self.expect(Token::LBracket)?;
+            let (basis, length, degree) = self.nakajima_grade_args()?;
+            self.expect(Token::RBracket)?;
+            Command::Dimension(basis, length, degree)
+        } else {
+            Command::IsPrimary(self.paren_expr(0)?)
+        };
+        Ok(StatementForm::NakajimaPrimary(Box::new(command)))
+    }
+
     fn nakajima_mode(&mut self) -> Result<crate::hyperelliptic_kummer_surface::nakajima::Mode> {
         let span = self.span();
         let length = self.wide_unsigned("Nakajima mode length")?;
@@ -3349,6 +3376,16 @@ impl<'src> Parser<'src> {
         use crate::hyperelliptic_kummer_surface::nakajima::{Expression, Factor, Operation};
         self.expect(Token::LBracket)?;
         let (expression, depth) = match name {
+            "rvNakajimaPrimaryGen" => {
+                let (basis, length, degree) = self.nakajima_grade_args()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (
+                    Expression::PrimaryGenerator(basis, length, degree, index),
+                    0,
+                )
+            }
             "rvNakajimaVac" | "rvNakajimaMonomial" => {
                 let basis = self.label()?;
                 self.expect(Token::RBracket)?;
@@ -4878,6 +4915,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(name @ ("rvNakajimaPrimaryDim" | "rvNakajimaIsPrimary")) => {
+                self.nakajima_primary_statement(name)?
+            }
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
@@ -8189,15 +8229,7 @@ impl<'src> Parser<'src> {
             return ty(span, form, 0);
         }
         if name.text == "RVNakajima" && self.eat(Token::LParen)? {
-            let basis = self.label()?;
-            self.expect(Token::Comma)?;
-            let length =
-                self.signed_wide("a signed Nakajima length grade", "Nakajima length grade")?;
-            self.expect(Token::Comma)?;
-            let degree = self.signed_wide(
-                "a signed Nakajima cohomological degree",
-                "Nakajima cohomological degree",
-            )?;
+            let (basis, length, degree) = self.nakajima_grade_args()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Nakajima(basis, length, degree), 0);
         }
@@ -10237,6 +10269,7 @@ impl<'src> Parser<'src> {
                     name.text.as_str(),
                     "rvNakajimaVac"
                         | "rvNakajimaMonomial"
+                        | "rvNakajimaPrimaryGen"
                         | "rvNakajimaCreate"
                         | "rvNakajimaAnn"
                         | "rvNakajimaScale"

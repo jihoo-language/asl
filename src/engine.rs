@@ -1703,6 +1703,9 @@ impl Engine {
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
+            StatementForm::NakajimaPrimary(command) => {
+                return self.nakajima_primary(*command).map(Some)
+            }
             StatementForm::K3AutoPeriod(expression) => {
                 return self.k3_auto_period(*expression).map(Some)
             }
@@ -4756,6 +4759,35 @@ impl Engine {
                 };
                 let pair = left.pair(&mut self.model, &right)?;
                 Ok(format!("rvK3LatticePair = {pair}"))
+            }
+        }
+    }
+
+    fn nakajima_primary(&mut self, command: nakajima::primary::Command) -> Result<String> {
+        use nakajima::primary::{self, Command};
+        match command {
+            Command::Dimension(name, length, degree) => {
+                let ty = self.model.nakajima_type(&name, length, degree)?;
+                let Kind::Nakajima(grade) = self.model.kind(ty).clone() else {
+                    unreachable!();
+                };
+                let dimension = primary::dimension(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvNakajimaPrimaryDim[{}, {length}, {degree}] = {dimension}",
+                    name.text
+                ))
+            }
+            Command::IsPrimary(input) => {
+                let input = self.checker().expr(input)?;
+                let length = self
+                    .checker()
+                    .nakajima_grade(&input, "rvNakajimaIsPrimary")?
+                    .length;
+                let Value::Nakajima(state) = self.eval(&input)? else {
+                    unreachable!();
+                };
+                let primary = state.is_primary(&mut self.model, length)?;
+                Ok(format!("rvNakajimaIsPrimary = {primary}"))
             }
         }
     }
@@ -19560,6 +19592,14 @@ impl Checker<'_> {
                 let ty = self.model.nakajima_type(&name, length, degree)?;
                 let value = state.persist(self.model)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::PrimaryGenerator(name, length, degree, index) => {
+                let ty = self.model.nakajima_type(&name, length, degree)?;
+                let Kind::Nakajima(grade) = self.model.kind(ty).clone() else {
+                    unreachable!();
+                };
+                let state = nakajima::primary::generator(self.model, &grade, index)?;
+                Ok((ty, TypedForm::Constant(state.persist(self.model)?)))
             }
             Expression::Apply(operation, input) => {
                 let input = self.expr(*input)?;

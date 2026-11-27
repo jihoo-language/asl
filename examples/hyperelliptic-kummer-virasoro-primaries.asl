@@ -1,0 +1,27 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zeroW = rvUnramElem[W]{};
+let oneW = rvUnramElem[W]{1};
+let a = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zeroW,zeroW);
+let r1 = rvJacPoint[L](oneW,zeroW);
+let r2 = rvJacPoint[L](neg(oneW),zeroW);
+let ra = rvJacPoint[L](a,zeroW);
+rvjactorsionbasis B[L,2](neg(oneW)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),ra)};
+
+let vacuum = rvNakajimaVac[B];
+assert rvNakajimaPrimaryGen[B,0,0,0] == vacuum;
+rvNakajimaPrimaryDim[B,2,4];
+let primary = rvNakajimaPrimaryGen[B,2,4,0];
+assert primary == add(rvNakajimaMonomial[B]{(1,0,1),(1,23,1)},rvNakajimaMonomial[B]{(1,1,1),(1,2,1)});
+assert rvVirasoro[1](primary) == zero[RVNakajima(B,1,2)];
+assert rvVirasoro[2](primary) == zero[RVNakajima(B,0,0)];
+rvNakajimaIsPrimary(primary);
+let descendant = rvVirasoro[-2](vacuum);
+assert rvVirasoro[1](descendant) == zero[RVNakajima(B,1,2)];
+assert rvVirasoro[2](descendant) == rvNakajimaScale[12](vacuum);
+rvNakajimaIsPrimary(descendant);
