@@ -11,24 +11,51 @@ use super::eta::eisenstein_difference;
 
 const AUDIT: usize = 8;
 
-pub(crate) fn level(ell: usize) -> Result<Prime> {
+pub(crate) mod composition;
+
+pub(crate) fn degree(level: usize) -> Result<usize> {
+    if level == 9 {
+        return Ok(12);
+    }
+    Ok(elliptic_modular::degree(prime_level(level)?))
+}
+
+pub(crate) fn prime_level(ell: usize) -> Result<Prime> {
     if matches!(ell, 3 | 5) {
         Ok(Prime::validated(ell as u32))
     } else {
         Err(Error::plain(
-            "Dwork Fricke Hecke equations support good levels 3 and 5",
+            "Dwork Fricke prime Hecke equations support good levels 3 and 5",
         ))
     }
 }
 
-pub(crate) fn construct(model: &mut Model, prime: Prime) -> Result<Polynomial> {
+pub(crate) fn construct(model: &mut Model, level: usize) -> Result<Polynomial> {
+    let d = degree(level)?;
+    let prime = prime_level(if level == 9 { 3 } else { level })?;
+    let polynomial = if level == 9 {
+        Polynomial::from_cyclic_square(model, prime, AUDIT, shifted_hauptmodul)?
+    } else {
+        Polynomial::from_hauptmodul(model, prime, AUDIT, shifted_hauptmodul)?
+    };
     let ell = prime.get();
-    let polynomial = Polynomial::from_hauptmodul(model, prime, AUDIT, shifted_hauptmodul)?;
-    // Check the integral polynomial against both Frobenius components
-    // of its reduction at the isogeny characteristic.
-    let d = ell as usize;
-    for i in 0..=d + 1 {
-        for j in 0..=d + 1 {
+    let mut expected = vec![vec![0i32; d + 1]; d + 1];
+    let k = if level == 9 { 9 } else { ell as usize };
+    let kronecker = [(0, k + 1, 1), (k + 1, 0, 1), (1, 1, -1), (k, k, -1)];
+    if level == 9 {
+        // (Y-X^9)(Y^9-X)(Y-X)^2 in the level characteristic.
+        for (i, j, coefficient) in kronecker {
+            for (x, y, c) in [(2, 0, 1), (1, 1, -2), (0, 2, 1)] {
+                expected[i + x][j + y] += coefficient * c;
+            }
+        }
+    } else {
+        for (i, j, c) in kronecker {
+            expected[i][j] = c;
+        }
+    }
+    for (i, row) in expected.iter().enumerate() {
+        for (j, &c) in row.iter().enumerate() {
             let coefficient = polynomial.wide_coefficient::<40>(i, j)?;
             let residue = coefficient.magnitude.residue(ell);
             let residue = if coefficient.negative {
@@ -36,24 +63,21 @@ pub(crate) fn construct(model: &mut Model, prime: Prime) -> Result<Polynomial> {
             } else {
                 residue
             };
-            let expected = match (i, j) {
-                (0, b) | (b, 0) if b == d + 1 => 1,
-                (1, 1) => ell - 1,
-                (a, b) if a == d && b == d => ell - 1,
-                _ => 0,
-            };
-            if residue != expected {
+            if residue != c.rem_euclid(ell as i32) as u32 {
                 return Err(Error::plain(
                     "Dwork Fricke Hecke equation failed the Kronecker congruence",
                 ));
             }
         }
     }
+    if level == 9 {
+        composition::certify_nine(model, &polynomial)?;
+    }
     Ok(polynomial)
 }
 
 pub(crate) fn equation_report(model: &mut Model, ell: usize) -> Result<String> {
-    let d = elliptic_modular::degree(level(ell)?);
+    let d = degree(ell)?;
     let polynomial = model.dwork_hecke_equation(ell)?;
     let mut terms = Vec::new();
     for j in 0..=d {
@@ -64,8 +88,13 @@ pub(crate) fn equation_report(model: &mut Model, ell: usize) -> Result<String> {
             }
         }
     }
+    let resultant = if ell == 9 {
+        ", certified Res(Phi_3,Phi_3)=(X-Y)^4 Phi_9 over Z"
+    } else {
+        ""
+    };
     Ok(format!(
-        "rvDworkHeckeEquation[{ell}] = bidegree=({d}, {d}), terms={} [{}], certified symmetry, q coefficients through {AUDIT}, and Kronecker congruence",
+        "rvDworkHeckeEquation[{ell}] = bidegree=({d}, {d}), terms={} [{}], certified symmetry, q coefficients through {AUDIT}, and Kronecker congruence{resultant}",
         terms.len(), terms.join(", ")
     ))
 }
@@ -148,13 +177,42 @@ impl Coordinate {
 
 pub(crate) fn neighbors(model: &mut Model, ell: usize, ring: &Ring, x: &[u64]) -> Result<String> {
     require_field(ring)?;
-    let d = elliptic_modular::degree(level(ell)?);
+    let d = degree(ell)?;
     let equation = model.dwork_hecke_equation(ell)?;
+    let specialized = composition::specialize(model, &equation, ring, x, d)?;
+    let data = factors(model, ring, &specialized)?;
+    let characteristic = if ring.prime() == 3 && ell == 9 {
+        ", cyclic level in characteristic three, schematic multiplicities"
+    } else if ring.prime() == ell as u64 {
+        ", characteristic equals level, Frobenius correspondence"
+    } else {
+        ""
+    };
+    Ok(format!(
+        "rvDworkHeckeNeighbors[{ell}] = H={x:?}, {}{characteristic}",
+        data.describe()
+    ))
+}
+
+type Factor = (usize, usize, poly::Polynomial);
+
+struct Factorization {
+    factors: Vec<Factor>,
+    roots: Vec<(poly::Scalar, usize)>,
+}
+
+impl Factorization {
+    fn describe(&self) -> String {
+        format!(
+            "factors (degree, multiplicity, coefficients)={:?}, rational roots (value, multiplicity)={:?}",
+            self.factors, self.roots
+        )
+    }
+}
+
+fn factors(model: &mut Model, ring: &Ring, polynomial: &[poly::Scalar]) -> Result<Factorization> {
     let f = Field { ring };
-    let specialized = (0..=d)
-        .map(|j| equation.specialization(model, ring, x, j))
-        .collect::<Result<Vec<_>>>()?;
-    let factors = factor_with_multiplicity(model, f, &specialized)?;
+    let factors = factor_with_multiplicity(model, f, polynomial)?;
     let mut roots = Vec::new();
     let mut product = vec![f.one()];
     for (degree, multiplicity, factor) in &factors {
@@ -165,20 +223,13 @@ pub(crate) fn neighbors(model: &mut Model, ell: usize, ring: &Ring, x: &[u64]) -
             product = poly::multiply(model, f, &product, factor)?;
         }
     }
-    if product != specialized {
+    if product != polynomial {
         return Err(Error::plain(
             "Dwork Fricke Hecke factors failed their product check",
         ));
     }
     roots.sort_unstable();
-    let characteristic = if ring.prime() == ell as u64 {
-        ", characteristic equals level, Frobenius correspondence"
-    } else {
-        ""
-    };
-    Ok(format!(
-        "rvDworkHeckeNeighbors[{ell}] = H={x:?}, factors (degree, multiplicity, coefficients)={factors:?}, rational roots (value, multiplicity)={roots:?}{characteristic}"
-    ))
+    Ok(Factorization { factors, roots })
 }
 
 fn require_field(ring: &Ring) -> Result<()> {

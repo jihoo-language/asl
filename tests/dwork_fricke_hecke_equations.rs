@@ -78,7 +78,7 @@ fn verifies_the_nontrivial_elliptic_isogeny_square_as_morphisms() {
 fn rejects_bad_levels_and_neighbor_coefficient_domains() {
     for (source, fragment) in [
         ("rvDworkHeckeEquation[2];", "support good levels 3 and 5"),
-        ("rvDworkHeckeEquation[9];", "support good levels 3 and 5"),
+        ("rvDworkHeckeEquation[15];", "support good levels 3 and 5"),
         (
             "rvunram F[3,2]{0,1}; rvDworkHeckeNeighbors[3](rvUnramElem[F]{1});",
             "odd residue field at precision one",

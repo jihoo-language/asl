@@ -6658,7 +6658,7 @@ impl Model {
         if let Some(polynomial) = self.dwork_hecke_equations.get(&ell) {
             return Ok(polynomial.clone());
         }
-        let polynomial = Rc::new(hecke::construct(self, hecke::level(ell)?)?);
+        let polynomial = Rc::new(hecke::construct(self, ell)?);
         self.dwork_hecke_equations.insert(ell, polynomial.clone());
         Ok(polynomial)
     }

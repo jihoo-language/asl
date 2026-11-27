@@ -887,6 +887,8 @@ pub(crate) enum ExprForm {
     RVCTRead(Box<ParsedExpr>),
     DworkMirrorOperator(crate::dwork_k3::mirror::Operator),
     DworkHeckeEval(usize, Box<[ParsedExpr; 2]>),
+    DworkHeckeCompose([usize; 2], Box<[ParsedExpr; 2]>),
+    DworkHeckeCyclicCoefficient([usize; 2], usize, Box<ParsedExpr>),
     DworkHeckeSpecialize(usize, usize, Box<ParsedExpr>),
     DworkHauptmodul(crate::dwork_k3::fricke::hecke::Coordinate, Box<ParsedExpr>),
     DworkFrickeValue(crate::dwork_k3::fricke::Invariant, Box<ParsedExpr>),
@@ -1442,6 +1444,7 @@ pub(crate) enum StatementForm {
     DworkHeckeEquation(usize),
     DworkHeckeCoefficient(usize, usize, usize),
     DworkHeckeNeighbors(usize, ParsedExpr),
+    DworkHeckeTower([usize; 2], ParsedExpr),
     DworkFricke(crate::dwork_k3::fricke::Report),
     DworkFrickeField(bool, ParsedExpr),
     DworkFrickeDefine([Label; 2], ParsedExpr),
@@ -2464,6 +2467,17 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBrace)?;
         Ok(rows)
+    }
+
+    fn dwork_hecke_levels(&mut self) -> Result<[usize; 2]> {
+        self.expect(Token::LBracket)?;
+        let a = self.number()?.0;
+        let b = if self.eat(Token::Comma)? {
+            self.number()?.0
+        } else {
+            a
+        };
+        Ok([a, b])
     }
 
     fn dwork_curvature_point(
@@ -12430,6 +12444,12 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
+            Token::Word("rvDworkHeckeTower") => {
+                self.advance()?;
+                let levels = self.dwork_hecke_levels()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkHeckeTower(levels, self.paren_expr(0)?)
+            }
             Token::Word("rvDworkFrickeIdentity") => {
                 self.advance()?;
                 StatementForm::DworkFricke(crate::dwork_k3::fricke::Report::Identity)
@@ -21309,6 +21329,33 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::DworkHauptmodul(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDworkHeckeCompose" | "rvDworkHeckeCyclicCoeff"
+                ) && self.token() == Token::LBracket
+                {
+                    let levels = self.dwork_hecke_levels()?;
+                    if name.text == "rvDworkHeckeCompose" {
+                        self.expect(Token::RBracket)?;
+                        let args = self.paren_pair(nest)?;
+                        let depth = 1 + args[0].depth.max(args[1].depth);
+                        return expr(
+                            span,
+                            ExprForm::DworkHeckeCompose(levels, Box::new(args)),
+                            depth,
+                        );
+                    }
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::DworkHeckeCyclicCoefficient(levels, index, Box::new(input)),
                         depth,
                     );
                 }

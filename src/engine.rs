@@ -1102,6 +1102,8 @@ enum TypedForm {
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     DworkHeckeEval(usize, Rc<UnramRing>, Box<[TypedExpr; 2]>),
+    DworkHeckeCompose([usize; 2], Rc<UnramRing>, Box<[TypedExpr; 2]>),
+    DworkHeckeCyclicCoefficient([usize; 2], usize, Rc<UnramRing>, Box<TypedExpr>),
     DworkHeckeSpecialize(usize, usize, Rc<UnramRing>, Box<TypedExpr>),
     DworkHauptmodul(
         crate::dwork_k3::fricke::hecke::Coordinate,
@@ -2981,6 +2983,19 @@ impl Engine {
                     unreachable!()
                 };
                 crate::dwork_k3::fricke::hecke::neighbors(&mut self.model, ell, &ring, &hauptmodul)?
+            }
+            StatementForm::DworkHeckeTower(levels, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, "rvDworkHeckeTower")?;
+                let Value::RVUnram(x) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::fricke::hecke::composition::report(
+                    &mut self.model,
+                    levels,
+                    &ring,
+                    &x,
+                )?
             }
             StatementForm::DworkFricke(report) => report.run(&mut self.model)?,
             StatementForm::DworkFrickeField(base, input) => {
@@ -14394,6 +14409,37 @@ impl Engine {
                 let value = operation.apply(&mut self.model, ring, &value)?;
                 rv_unram::persist(&mut self.model, value)
             }
+            TypedForm::DworkHeckeCompose(levels, ring, arguments) => {
+                let [Value::RVUnram(x), Value::RVUnram(y)] =
+                    [self.eval(&arguments[0])?, self.eval(&arguments[1])?]
+                else {
+                    unreachable!()
+                };
+                let value = crate::dwork_k3::fricke::hecke::composition::pair(
+                    &mut self.model,
+                    *levels,
+                    ring,
+                    &x,
+                    &y,
+                )?;
+                crate::rv_unram::persist(&mut self.model, value)
+            }
+            TypedForm::DworkHeckeCyclicCoefficient(levels, index, ring, input) => {
+                let Value::RVUnram(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let values = crate::dwork_k3::fricke::hecke::composition::local(
+                    &mut self.model,
+                    *levels,
+                    ring,
+                    &x,
+                )?;
+                let value = values
+                    .get(*index)
+                    .cloned()
+                    .unwrap_or_else(|| ring.scalar(0));
+                crate::rv_unram::persist(&mut self.model, value)
+            }
             TypedForm::DworkHeckeEval(ell, ring, arguments) => {
                 let [Value::RVUnram(x), Value::RVUnram(y)] =
                     [self.eval(&arguments[0])?, self.eval(&arguments[1])?]
@@ -16787,6 +16833,8 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::DworkMirrorOperator(..)
             | ExprForm::DworkFrickeValue(..)
             | ExprForm::DworkHeckeEval(..)
+            | ExprForm::DworkHeckeCompose(..)
+            | ExprForm::DworkHeckeCyclicCoefficient(..)
             | ExprForm::DworkHeckeSpecialize(..)
             | ExprForm::DworkHauptmodul(..)
             | ExprForm::DworkFrickeMap(..)
@@ -22347,19 +22395,44 @@ impl Checker<'_> {
                 let ty = self.model.rv_ct_residue_type(grade.level)?;
                 Ok((ty, TypedForm::PeriodRead(grade, Box::new(input))))
             }
+            ExprForm::DworkHeckeCompose(levels, arguments) => {
+                let [x, y] = *arguments;
+                let x = self.expr(x)?;
+                let ring = self.unram_ring(&x, "rvDworkHeckeCompose")?;
+                let y = self.expr(y)?;
+                self.require_type(x.ty, &y, "rvDworkHeckeCompose")?;
+                for ell in levels {
+                    crate::dwork_k3::fricke::hecke::prime_level(ell)?;
+                }
+                Ok((
+                    x.ty,
+                    TypedForm::DworkHeckeCompose(levels, ring, Box::new([x, y])),
+                ))
+            }
+            ExprForm::DworkHeckeCyclicCoefficient(levels, index, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, "rvDworkHeckeCyclicCoeff")?;
+                for ell in levels {
+                    crate::dwork_k3::fricke::hecke::prime_level(ell)?;
+                }
+                Ok((
+                    input.ty,
+                    TypedForm::DworkHeckeCyclicCoefficient(levels, index, ring, Box::new(input)),
+                ))
+            }
             ExprForm::DworkHeckeEval(ell, arguments) => {
                 let [x, y] = *arguments;
                 let x = self.expr(x)?;
                 let ring = self.unram_ring(&x, "rvDworkHeckeEval")?;
                 let y = self.expr(y)?;
                 self.require_type(x.ty, &y, "rvDworkHeckeEval")?;
-                crate::dwork_k3::fricke::hecke::level(ell)?;
+                crate::dwork_k3::fricke::hecke::degree(ell)?;
                 Ok((x.ty, TypedForm::DworkHeckeEval(ell, ring, Box::new([x, y]))))
             }
             ExprForm::DworkHeckeSpecialize(ell, index, input) => {
                 let input = self.expr(*input)?;
                 let ring = self.unram_ring(&input, "rvDworkHeckeSpecCoeff")?;
-                crate::dwork_k3::fricke::hecke::level(ell)?;
+                crate::dwork_k3::fricke::hecke::degree(ell)?;
                 Ok((
                     input.ty,
                     TypedForm::DworkHeckeSpecialize(ell, index, ring, Box::new(input)),

@@ -53,16 +53,42 @@ impl Polynomial {
         audit: usize,
         shifted: impl FnOnce(&mut Model, usize) -> Result<Vec<Integer>>,
     ) -> Result<Self> {
-        let ell = level.get() as usize;
-        let r = degree(level);
-        let m = ell.saturating_mul(r);
+        Self::reconstruct(
+            model,
+            level.get() as usize,
+            degree(level),
+            None,
+            audit,
+            shifted,
+        )
+    }
+
+    pub(crate) fn from_cyclic_square(
+        model: &mut Model,
+        prime: Prime,
+        audit: usize,
+        shifted: impl FnOnce(&mut Model, usize) -> Result<Vec<Integer>>,
+    ) -> Result<Self> {
+        let ell = prime.get() as usize;
+        Self::reconstruct(model, ell * ell, ell * (ell + 1), Some(ell), audit, shifted)
+    }
+
+    fn reconstruct(
+        model: &mut Model,
+        step: usize,
+        r: usize,
+        middle: Option<usize>,
+        audit: usize,
+        shifted: impl FnOnce(&mut Model, usize) -> Result<Vec<Integer>>,
+    ) -> Result<Self> {
+        let m = step.saturating_mul(r);
         // The trace of the k-th power has cusp pole at most ell*k.
         // The extra widths admit the positive trace coefficients and
         // direct substitution on the separate F(q^ell) branch.
         let low_extra = if audit == 0 {
             0
         } else {
-            (ell * audit).max(m + audit)
+            (step * audit).max(m + audit)
         };
         let width = (m + audit).max(r + low_extra);
         let cubic = (m as u128)
@@ -84,7 +110,13 @@ impl Polynomial {
                     .saturating_mul(width as u128)
                     .saturating_mul(width as u128),
             )
-            .saturating_mul((LIMBS * 2) as u128);
+            // Primitive prime-square levels have a separate bounded
+            // width envelope and a separate wide arithmetic budget.
+            .saturating_mul(if middle.is_some() {
+                24
+            } else {
+                (LIMBS * 2) as u128
+            });
         let work = usize::try_from(work).map_err(|_| computation_limit())?;
         model.spend(work).map_err(|_| computation_limit())?;
         model.allocate((r + 1) * (r + 1) * (LIMBS + 1))?;
@@ -99,12 +131,12 @@ impl Polynomial {
         let powers = shifted_powers(&series, precision)?;
         let mut traces = vec![Vec::new()];
         for k in 1..=r {
-            traces.push(trace_polynomial(ell, k, audit, &powers)?);
+            traces.push(trace_polynomial(step, k, middle, audit, &powers)?);
         }
 
         let mut elementary = vec![vec![Integer::from_i128(1)]];
         for k in 1..=r {
-            let mut next = vec![Integer::from_i128(0); ell * k + 1];
+            let mut next = vec![Integer::from_i128(0); step * k + 1];
             for i in 1..=k {
                 add_convolution(&mut next, &elementary[k - i], &traces[i], i % 2 == 0)?;
             }
@@ -142,7 +174,7 @@ impl Polynomial {
             }
         }
         if audit > 0 {
-            check_neighbor_branch(model, ell, audit, &rows, &powers)?;
+            check_neighbor_branch(model, step, audit, &rows, &powers)?;
         }
         Ok(Self { rows })
     }
@@ -164,6 +196,17 @@ impl Polynomial {
             .resize()
     }
 
+    pub(crate) fn field_coefficient(
+        &self,
+        model: &mut Model,
+        field: &Ring,
+        i: usize,
+        j: usize,
+    ) -> Result<Vec<u64>> {
+        let coefficient = self.wide_coefficient::<LIMBS>(i, j)?;
+        Ok(field.scalar(residue(model, coefficient, field.modulus())?))
+    }
+
     pub(crate) fn specialization(
         &self,
         model: &mut Model,
@@ -178,16 +221,8 @@ impl Polynomial {
         let p = field.modulus();
         for coefficient in row.iter().rev() {
             result = field.multiply(model, &result, x)?;
-            if !coefficient.is_zero() {
-                let (_, remainder) = coefficient.magnitude.divide(model, u128::from(p))?;
-                let remainder = remainder as u64;
-                let residue = if coefficient.negative && remainder != 0 {
-                    p - remainder
-                } else {
-                    remainder
-                };
-                result[0] = crate::rv_unram::add_mod(result[0], residue, p);
-            }
+            let value = residue(model, *coefficient, p)?;
+            result[0] = crate::rv_unram::add_mod(result[0], value, p);
         }
         Ok(result)
     }
@@ -207,6 +242,19 @@ impl Polynomial {
         }
         Ok(result)
     }
+}
+
+fn residue(model: &mut Model, coefficient: Integer, modulus: u64) -> Result<u64> {
+    if coefficient.is_zero() {
+        return Ok(0);
+    }
+    let (_, remainder) = coefficient.magnitude.divide(model, u128::from(modulus))?;
+    let remainder = remainder as u64;
+    Ok(if coefficient.negative && remainder != 0 {
+        modulus - remainder
+    } else {
+        remainder
+    })
 }
 
 pub(crate) fn special_char_evaluate(
@@ -249,6 +297,7 @@ pub(crate) fn special_char_coefficient(
 fn trace_polynomial(
     ell: usize,
     k: usize,
+    middle: Option<usize>,
     audit: usize,
     powers: &[Vec<Integer>],
 ) -> Result<Vec<Integer>> {
@@ -266,6 +315,19 @@ fn trace_polynomial(
             if contracted <= audit as i64 {
                 let n = (pole as i64 + contracted) as usize;
                 expansion[n] = expansion[n].add(coefficient.multiply(ell as i128)?)?;
+            }
+        }
+        if let Some(p) = middle {
+            if exponent <= audit as i64 {
+                // The middle cyclic cosets are q times the nontrivial
+                // p-th roots of unity, so the sum is c_p(exponent).
+                let ramanujan = if exponent % p as i64 == 0 {
+                    p as i128 - 1
+                } else {
+                    -1
+                };
+                let n = (pole as i64 + exponent) as usize;
+                expansion[n] = expansion[n].add(coefficient.multiply(ramanujan)?)?;
             }
         }
     }

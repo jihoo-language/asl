@@ -1229,6 +1229,18 @@ The good-level Hecke correspondence permutes the branches, so the symmetric coef
 
 The example over \(\mathbb F_{23}\) certifies a commuting square with degree-three Vélu maps and degree-two Fricke maps at \(t=1,12\), whose Hauptmodul values are \(4,17\). It checks both classical \(j\)-equations and equality of the two degree-six elliptic morphisms. The Hecke equation concerns the modular parameters of the mirror family. [Runnable Hecke equation example](examples/dwork-fricke-hecke-equations.asl)
 
+#### Cyclic towers of degrees nine, fifteen, and twenty-five
+
+`rvDworkHeckeEquation[9];` constructs the global \(\Phi_9\) of bidegree \((12,12)\). Its twelve cyclic branches are \(H(q^9)\), \(H(\zeta_3 q)\), \(H(\zeta_3^2q)\), and \(H(\zeta_9^bq^{1/9})\) for \(0\le b<9\). The two middle branches contribute the Ramanujan weight \(2\) when \(3\) divides the exponent and \(-1\) otherwise. The sum of all cusp pole orders is \(9+2+1=12\). The same exact Newton and Faber calculation, extra trace coefficients, direct \(H(q^9)\)-branch substitution, and symmetry checks certify the equation. The coefficient commands, typed evaluation, and neighbor factorization also accept level nine.
+
+An independent certificate checks the integral identity
+$$\operatorname{Res}_Z(\Phi_3(X,Z),\Phi_3(Z,Y))=(X-Y)^4\Phi_9(X,Y).$$
+The resultant is the determinant of multiplication in the algebra modulo the first monic polynomial. Each side has degree at most \(16\) in each variable, so equality on the symmetric half of the \(17\times17\) integer grid proves equality everywhere. The characteristic-three coefficient check gives \(\Phi_9=(Y-X^9)(Y^9-X)(Y-X)^2\).
+
+`rvDworkHeckeCompose[l,m](x,y)` returns the resultant evaluated in the common named coefficient ring for \(l,m\in\{3,5\}\). Use a single index to repeat the same level. `rvDworkHeckeTower[l,m](x);` forms the full output polynomial over an odd residue field and factors its cyclic part. At a repeated level it removes the backtracking factor \((Y-x)^{l+1}\) by exact division and reports any diagonal multiplicity still present in the cyclic part. It compares the local \(3,3\) answer with the global \(\Phi_9\). The coprime \(3,5\) composition has degree \(24\) and is checked in both orders. The local \(5,5\) calculation has cyclic degree \(30\). `rvDworkHeckeCyclicCoeff[l,m,j](x)` gives an individual coefficient from these local calculations.
+
+In characteristic prime to the isogeny degree the two equal-level steps give a cyclic subgroup unless the second kernel is the image of the full first-level torsion, which gives the backtracking isogeny. Distinct cyclic paths can have the same endpoint, including a diagonal endpoint. In the level characteristic the reports retain the inseparable multiplicities of the polynomial. The \(\mathbb F_{41}\) example checks both level-three edges \(H=7\to0\to26\) and their cyclic level-nine endpoint. It certifies the two Vélu maps and their composite on the short elliptic models, and checks that the degree-nine map kills a point of exact order nine. [Sutherland, *Modular polynomials*](https://www-math.mit.edu/~drew/ClassicalModPolys.html) · [Runnable cyclic tower example](examples/dwork-fricke-cyclic-isogeny-towers.asl)
+
 ## Dwork unit roots of Legendre elliptic curves
 
 For an odd prime $p$ and $\lambda\in\mathbb F_p\setminus\{0,1\}$, `legendreTrace[p,lambda];` counts points of $y^2=x(x-1)(x-\lambda)$ over $\mathbb F_p$ using the quadratic character and includes the point at infinity. It reports the trace $a_p=p+1-\#E$ of Frobenius on $H^1(E)$. The parameter uses its representative in $0,\ldots,p-1$.
