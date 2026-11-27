@@ -332,7 +332,7 @@ impl Order<'_> {
         Element([(); 3].map(|()| zero(&self.coefficients.base)))
     }
 
-    fn unit(&self, n: u64) -> Element {
+    pub(super) fn unit(&self, n: u64) -> Element {
         let mut result = self.zero();
         result.0[0] = self.coefficients.scalar(n);
         result
@@ -366,9 +366,13 @@ impl Order<'_> {
         self.reduce(result)
     }
 
-    pub(crate) fn reduce(&self, mut x: Element) -> Result<Element> {
+    pub(crate) fn reduce(&self, x: Element) -> Result<Element> {
+        self.truncate(x, self.extension.precision)
+    }
+
+    pub(super) fn truncate(&self, mut x: Element, precision: usize) -> Result<Element> {
         for (j, w) in x.0.iter_mut().enumerate() {
-            let digits = self.extension.digits(j);
+            let digits = precision.saturating_sub(j).div_ceil(3);
             if digits == 0 {
                 *w = zero(&self.coefficients.base);
             } else {
@@ -463,13 +467,61 @@ impl Order<'_> {
     }
 
     pub(crate) fn conjugate_pi(&self, model: &mut Model, x: &Element) -> Result<Element> {
+        self.conjugate_pi_power(model, 1, x)
+    }
+
+    pub(super) fn conjugate_pi_power(
+        &self,
+        model: &mut Model,
+        power: usize,
+        x: &Element,
+    ) -> Result<Element> {
         let mut result = self.zero();
         for (out, coefficient) in result.0.iter_mut().zip(&x.0) {
-            *out = self
-                .coefficients
-                .frobenius(model, self.extension.frobenius, coefficient)?;
+            *out = self.coefficients.frobenius(
+                model,
+                self.extension.frobenius * power,
+                coefficient,
+            )?;
         }
         self.reduce(result)
+    }
+
+    pub(super) fn divide_right_pi(&self, model: &mut Model, x: &Element) -> Result<Element> {
+        if self.is_unit(x) {
+            return Err(Error::plain(
+                "right division by Pi requires an element of the maximal ideal",
+            ));
+        }
+        if self.extension.precision <= 1 {
+            return Ok(self.zero());
+        }
+        let digits = self.extension.digits(0);
+        let mut wrapped = zero(&self.coefficients.base);
+        if digits > 1 {
+            for (out, c) in wrapped.iter_mut().zip(&x.0[0]) {
+                *out = divide_by_lambda(model, &self.extension.base, digits, c.clone(), 1)?;
+            }
+        }
+        let shifted = Element([x.0[1].clone(), x.0[2].clone(), wrapped]);
+        self.truncate(shifted, self.extension.precision - 1)
+    }
+
+    pub(super) fn graded_digit(
+        &self,
+        model: &mut Model,
+        grade: usize,
+        digit: usize,
+    ) -> Result<Element> {
+        let mut out = self.zero();
+        if grade >= self.extension.precision || digit == 0 {
+            return Ok(out);
+        }
+        let w = &self.coefficients;
+        let d = [digit / 9, (digit / 3) % 3, digit % 3].map(|a| w.base.scalar(a as u64));
+        let lambda = w.base.power(model, w.base.pi(), (grade / 3) as u64)?;
+        out.0[grade % 3] = w.scale(model, &d, &lambda)?;
+        self.reduce(out)
     }
 
     pub(crate) fn commutator(

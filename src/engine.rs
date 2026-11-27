@@ -155,7 +155,7 @@ use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_tree,
     kummer as local_kummer,
 };
 use crate::rv_field;
@@ -1217,6 +1217,13 @@ enum TypedForm {
     CubicClassFrom(Option<usize>, Box<TypedExpr>),
     CubicClassNegate(Box<TypedExpr>),
     CubicPair(cubic::Pair, Box<[TypedExpr; 2]>),
+    CubicTreeLine(usize, Box<[TypedExpr; 2]>),
+    CubicTreeMatrix(Box<[TypedExpr; 4]>),
+    CubicTreeVertexUnary(cubic_tree::VertexUnary, Box<TypedExpr>),
+    CubicTreeVertexBinary(cubic_tree::VertexBinary, Box<[TypedExpr; 2]>),
+    CubicTreeAct(bool, Box<[TypedExpr; 2]>),
+    CubicTreeCompose(Box<[TypedExpr; 2]>),
+    CubicTreeInverse(Box<TypedExpr>),
     CubicDivUnary(cubic_division::Unary, Box<TypedExpr>),
     CubicDivBinary(cubic_division::Binary, Box<[TypedExpr; 2]>),
     CubicDivConvert(cubic_division::Conversion, Box<TypedExpr>),
@@ -3035,6 +3042,9 @@ impl Engine {
                     }
                 };
                 return Ok(Some(output));
+            }
+            StatementForm::CubicTreeReport(report) => {
+                return self.cubic_tree_report(report).map(Some)
             }
             StatementForm::CubicDivisionDeclaration(declaration) => {
                 self.model.register_cubic_division(declaration)?;
@@ -12171,8 +12181,77 @@ impl Engine {
         }
     }
 
+    fn cubic_tree_report(&mut self, report: cubic_tree::Report) -> Result<String> {
+        use cubic_tree::Report;
+        let path = matches!(&report, Report::Path(_));
+        let hecke = match &report {
+            Report::Hecke(r, _) => Some(*r),
+            _ => None,
+        };
+        match report {
+            Report::Sphere(name, radius) => {
+                let extension = self.model.cubic_division(&name)?;
+                cubic_tree::Tree::sphere_report(
+                    &mut self.model,
+                    &name.text,
+                    extension.precision,
+                    radius,
+                )
+            }
+            Report::Level(input) | Report::Path(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().cubic_tree_grade(
+                    &input,
+                    false,
+                    if path {
+                        "rvCubicTreePath"
+                    } else {
+                        "rvCubicTreeLevel"
+                    },
+                )?;
+                let extension = self.cubic_division_type(input.ty);
+                let Value::CubicTreeVertex(x) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                if path {
+                    cubic_tree::Tree::new(&mut self.model, &extension)?
+                        .path_report(&mut self.model, &x)
+                } else {
+                    Ok(format!("rvCubicTreeLevel = {}", x.level()))
+                }
+            }
+            Report::Distance(inputs) | Report::Hecke(_, inputs) => {
+                let r = hecke;
+                let operation = if r.is_some() {
+                    "rvCubicTreeHecke"
+                } else {
+                    "rvCubicTreeDistance"
+                };
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                self.checker().cubic_tree_grade(&a, false, operation)?;
+                self.checker().require_type(a.ty, &b, operation)?;
+                let extension = self.cubic_division_type(a.ty);
+                let (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) =
+                    (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    unreachable!()
+                };
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                if let Some(radius) = r {
+                    tree.hecke_report(&mut self.model, &a, &b, radius)
+                } else {
+                    Ok(format!("rvCubicTreeDistance = {}", tree.distance(&a, &b)?))
+                }
+            }
+        }
+    }
+
     fn cubic_division_type(&self, ty: TypeId) -> Rc<cubic_division::Extension> {
-        let Kind::CubicDiv(name) = self.model.kind(ty) else {
+        let (Kind::CubicDiv(name) | Kind::CubicTreeVertex(name) | Kind::CubicTreeOperator(name)) =
+            self.model.kind(ty)
+        else {
             unreachable!()
         };
         self.model
@@ -15765,6 +15844,102 @@ impl Engine {
                 disc.root(&mut self.model, &grade, *residue)?
                     .persist(&mut self.model)
             }
+            TypedForm::CubicTreeLine(radius, inputs) => {
+                let (Value::CubicDiv(a), Value::CubicDiv(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                cubic_tree::Tree::new(&mut self.model, &extension)?
+                    .line(&mut self.model, *radius, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicTreeMatrix(inputs) => {
+                let [a, b, c, d] = &**inputs;
+                let (
+                    Value::CubicDiv(a),
+                    Value::CubicDiv(b),
+                    Value::CubicDiv(c),
+                    Value::CubicDiv(d),
+                ) = (self.eval(a)?, self.eval(b)?, self.eval(c)?, self.eval(d)?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                cubic_tree::Tree::new(&mut self.model, &extension)?
+                    .matrix(&mut self.model, [a, b, c, d].map(|x| (*x).clone()))?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicTreeVertexUnary(operation, input) => {
+                let Value::CubicTreeVertex(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(input.ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                use cubic_tree::VertexUnary;
+                match *operation {
+                    VertexUnary::Ancestor(n) => tree.ancestor(&x, n)?,
+                    VertexUnary::Child(j) => tree.child(&mut self.model, &x, j)?,
+                    VertexUnary::Translate => tree.translate(&mut self.model, &x)?,
+                    VertexUnary::TranslateBack => tree.translate_back(&mut self.model, &x)?,
+                }
+                .persist(&mut self.model)
+            }
+            TypedForm::CubicTreeVertexBinary(operation, inputs) => {
+                let (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(inputs[0].ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                match operation {
+                    cubic_tree::VertexBinary::Lca => tree.lca(&a, &b)?.persist(&mut self.model),
+                    cubic_tree::VertexBinary::Adjacent => {
+                        Ok(Value::Point(usize::from(tree.distance(&a, &b)? == 1)))
+                    }
+                }
+            }
+            TypedForm::CubicTreeAct(fixes, inputs) => {
+                let (Value::CubicTreeOperator(g), Value::CubicTreeVertex(x)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(inputs[0].ty);
+                let tree = cubic_tree::Tree::new(&mut self.model, &extension)?;
+                if *fixes {
+                    Ok(Value::Point(usize::from(tree.fixes(
+                        &mut self.model,
+                        &g,
+                        &x,
+                    )?)))
+                } else {
+                    tree.apply(&mut self.model, &g, &x)?
+                        .persist(&mut self.model)
+                }
+            }
+            TypedForm::CubicTreeCompose(inputs) => {
+                let (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                cubic_tree::Tree::new(&mut self.model, &extension)?
+                    .compose(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::CubicTreeInverse(input) => {
+                let Value::CubicTreeOperator(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let extension = self.cubic_division_type(expr.ty);
+                cubic_tree::Tree::new(&mut self.model, &extension)?
+                    .inverse(&mut self.model, &x)?
+                    .persist(&mut self.model)
+            }
             TypedForm::CubicDivUnary(operation, input) => {
                 let Value::CubicDiv(x) = self.eval(input)? else {
                     unreachable!()
@@ -19233,6 +19408,10 @@ impl Checker<'_> {
             }
             TypeForm::CubicAlg(name) => self.model.cubic_alg_type(&name),
             TypeForm::CubicDiv(name) => self.model.cubic_div_type(&name),
+            TypeForm::CubicTree(name, matrix) => {
+                self.model.cubic_division(&name)?;
+                self.model.cubic_tree_type(name.text.into(), matrix)
+            }
             TypeForm::CubicSplitMatrix(name) => self.model.cubic_split_type(&name),
             TypeForm::CubicClass(name) => {
                 let field = self.model.eisenstein(&name)?;
@@ -22888,6 +23067,7 @@ impl Checker<'_> {
             ExprForm::Cubic(operation) => self.cubic_expression(operation),
             ExprForm::CubicAlgebra(operation) => self.cubic_algebra_expression(operation),
             ExprForm::CubicDivision(operation) => self.cubic_division_expression(operation),
+            ExprForm::CubicTree(operation) => self.cubic_tree_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -34152,6 +34332,144 @@ impl Checker<'_> {
         self.cubic_class_operand(&left, operation)?;
         self.require_type(left.ty, &right, operation)?;
         Ok([left, right])
+    }
+
+    fn cubic_tree_expression(
+        &mut self,
+        expression: cubic_tree::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cubic_tree::{Expression, Tree, VertexBinary, VertexUnary};
+        match expression {
+            Expression::Root(ref name)
+            | Expression::At(ref name, ..)
+            | Expression::Normalizer(ref name) => {
+                let extension = self.model.cubic_division(name)?;
+                let tree = Tree::new(self.model, &extension)?;
+                let (matrix, value) = match expression {
+                    Expression::Root(_) => (false, tree.root().persist(self.model)?),
+                    Expression::At(_, n, i) => {
+                        (false, tree.at(self.model, n, i)?.persist(self.model)?)
+                    }
+                    _ => (true, tree.normalizer().persist(self.model)?),
+                };
+                let ty = self
+                    .model
+                    .cubic_tree_type(name.text.as_str().into(), matrix)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Line(radius, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let extension = self.cubic_div_operand(&a, "rvCubicTreeLine")?;
+                let Kind::CubicDiv(chart) = self.model.kind(a.ty) else {
+                    unreachable!()
+                };
+                let chart = chart.clone();
+                self.require_type(a.ty, &b, "rvCubicTreeLine")?;
+                Tree::require_radius(extension.precision, radius)?;
+                let ty = self.model.cubic_tree_type(chart, false)?;
+                Ok((ty, TypedForm::CubicTreeLine(radius, Box::new([a, b]))))
+            }
+            Expression::Matrix(inputs) => {
+                let [a, b, c, d] = *inputs;
+                let a = self.expr(a)?;
+                self.cubic_div_operand(&a, "rvCubicTreeMatrix")?;
+                let Kind::CubicDiv(chart) = self.model.kind(a.ty) else {
+                    unreachable!()
+                };
+                let chart = chart.clone();
+                let b = self.expr(b)?;
+                let c = self.expr(c)?;
+                let d = self.expr(d)?;
+                for input in [&b, &c, &d] {
+                    self.require_type(a.ty, input, "rvCubicTreeMatrix")?;
+                }
+                let ty = self.model.cubic_tree_type(chart, true)?;
+                Ok((ty, TypedForm::CubicTreeMatrix(Box::new([a, b, c, d]))))
+            }
+            Expression::VertexUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let name = match operation {
+                    VertexUnary::Ancestor(_) => "rvCubicTreeAncestor",
+                    VertexUnary::Child(_) => "rvCubicTreeChild",
+                    VertexUnary::Translate => "rvCubicTreeTranslate",
+                    VertexUnary::TranslateBack => "rvCubicTreeTranslateBack",
+                };
+                self.cubic_tree_grade(&input, false, name)?;
+                Ok((
+                    input.ty,
+                    TypedForm::CubicTreeVertexUnary(operation, Box::new(input)),
+                ))
+            }
+            Expression::VertexBinary(operation, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let name = match operation {
+                    VertexBinary::Lca => "rvCubicTreeLca",
+                    VertexBinary::Adjacent => "rvCubicTreeAdjacent",
+                };
+                self.cubic_tree_grade(&a, false, name)?;
+                self.require_type(a.ty, &b, name)?;
+                let ty = if matches!(operation, VertexBinary::Adjacent) {
+                    self.model.named("S").expect("built-in truth type")
+                } else {
+                    a.ty
+                };
+                Ok((
+                    ty,
+                    TypedForm::CubicTreeVertexBinary(operation, Box::new([a, b])),
+                ))
+            }
+            Expression::Act(fixes, inputs) => {
+                let [g, x] = *inputs;
+                let g = self.expr(g)?;
+                let x = self.expr(x)?;
+                let name = if fixes {
+                    "rvCubicTreeFixes"
+                } else {
+                    "rvCubicTreeApply"
+                };
+                let chart = self.cubic_tree_grade(&g, true, name)?;
+                let vertex = self.model.cubic_tree_type(chart, false)?;
+                self.require_type(vertex, &x, name)?;
+                let ty = if fixes {
+                    self.model.named("S").expect("built-in truth type")
+                } else {
+                    vertex
+                };
+                Ok((ty, TypedForm::CubicTreeAct(fixes, Box::new([g, x]))))
+            }
+            Expression::Compose(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.cubic_tree_grade(&a, true, "rvCubicTreeCompose")?;
+                self.require_type(a.ty, &b, "rvCubicTreeCompose")?;
+                Ok((a.ty, TypedForm::CubicTreeCompose(Box::new([a, b]))))
+            }
+            Expression::Inverse(input) => {
+                let input = self.expr(*input)?;
+                self.cubic_tree_grade(&input, true, "rvCubicTreeInverse")?;
+                Ok((input.ty, TypedForm::CubicTreeInverse(Box::new(input))))
+            }
+        }
+    }
+
+    fn cubic_tree_grade(
+        &self,
+        input: &TypedExpr,
+        matrix: bool,
+        operation: &str,
+    ) -> Result<Box<str>> {
+        match (self.model.kind(input.ty), matrix) {
+            (Kind::CubicTreeVertex(chart), false) | (Kind::CubicTreeOperator(chart), true) => {
+                Ok(chart.clone())
+            }
+            (_, true) => Err(self.invalid_operand(input, operation, "an RVCubicTreeOp(D)")),
+            _ => Err(self.invalid_operand(input, operation, "an RVCubicTreeVertex(D)")),
+        }
     }
 
     fn cubic_division_expression(

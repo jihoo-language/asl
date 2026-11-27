@@ -34,7 +34,7 @@ use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_tree,
     kummer as local_kummer,
 };
 use crate::rv_gauss::Operation as GaussOp;
@@ -233,6 +233,7 @@ pub(crate) enum TypeForm {
     CubicClass(Label),
     CubicAlg(Label),
     CubicDiv(Label),
+    CubicTree(Label, bool),
     CubicSplitMatrix(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
@@ -1196,6 +1197,7 @@ pub(crate) enum ExprForm {
     Cubic(cubic::Expression),
     CubicAlgebra(cubic_algebra::Expression),
     CubicDivision(cubic_division::Expression),
+    CubicTree(cubic_tree::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1497,6 +1499,7 @@ pub(crate) enum StatementForm {
     CubicAlgebraDeclaration(cubic_algebra::Declaration),
     CubicDivisionDeclaration(cubic_division::Declaration),
     CubicDivisionReport(cubic_division::Report),
+    CubicTreeReport(cubic_tree::Report),
     CubicSplitDeclaration(cubic_algebra::SplitDeclaration),
     CubicAlgebraReport(cubic_algebra::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
@@ -8005,6 +8008,113 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Cubic(operation), depth)
     }
 
+    fn cubic_tree_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use cubic_tree::Report;
+        self.advance()?;
+        let report = match name {
+            "rvCubicTreeSphere" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                self.expect(Token::Comma)?;
+                let (radius, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                Report::Sphere(label, radius)
+            }
+            "rvCubicTreeLevel" => Report::Level(Box::new(self.paren_expr(0)?)),
+            "rvCubicTreePath" => Report::Path(Box::new(self.paren_expr(0)?)),
+            "rvCubicTreeDistance" => Report::Distance(Box::new(self.paren_pair(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let (radius, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                Report::Hecke(radius, Box::new(self.paren_pair(0)?))
+            }
+        };
+        Ok(StatementForm::CubicTreeReport(report))
+    }
+
+    fn cubic_tree_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use cubic_tree::{Expression, VertexBinary, VertexUnary};
+        let (operation, depth) = match name {
+            "rvCubicTreeRoot" | "rvCubicTreeAt" | "rvCubicTreePi" => {
+                self.expect(Token::LBracket)?;
+                let chart = self.label()?;
+                let operation = match name {
+                    "rvCubicTreeRoot" => Expression::Root(chart),
+                    "rvCubicTreePi" => Expression::Normalizer(chart),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let (radius, index) = self.cubic_indices()?;
+                        Expression::At(chart, radius, index)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+            "rvCubicTreeMatrix" => {
+                self.expect(Token::LParen)?;
+                let a = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let b = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let c = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let d = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let depth = [a.depth, b.depth, c.depth, d.depth]
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0);
+                (Expression::Matrix(Box::new([a, b, c, d])), depth + 1)
+            }
+            "rvCubicTreeLine" | "rvCubicTreeAncestor" | "rvCubicTreeChild" => {
+                self.expect(Token::LBracket)?;
+                let (index, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                if name == "rvCubicTreeLine" {
+                    let pair = self.paren_pair(nest)?;
+                    let depth = pair[0].depth.max(pair[1].depth) + 1;
+                    (Expression::Line(index, Box::new(pair)), depth)
+                } else {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let op = if name == "rvCubicTreeAncestor" {
+                        VertexUnary::Ancestor(index)
+                    } else {
+                        VertexUnary::Child(index)
+                    };
+                    (Expression::VertexUnary(op, Box::new(input)), depth)
+                }
+            }
+            "rvCubicTreeInverse" | "rvCubicTreeTranslate" | "rvCubicTreeTranslateBack" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let input = Box::new(input);
+                let operation = match name {
+                    "rvCubicTreeInverse" => Expression::Inverse(input),
+                    "rvCubicTreeTranslate" => {
+                        Expression::VertexUnary(VertexUnary::Translate, input)
+                    }
+                    _ => Expression::VertexUnary(VertexUnary::TranslateBack, input),
+                };
+                (operation, depth)
+            }
+            _ => {
+                let pair = self.paren_pair(nest)?;
+                let depth = pair[0].depth.max(pair[1].depth) + 1;
+                let pair = Box::new(pair);
+                let operation = match name {
+                    "rvCubicTreeLca" => Expression::VertexBinary(VertexBinary::Lca, pair),
+                    "rvCubicTreeAdjacent" => Expression::VertexBinary(VertexBinary::Adjacent, pair),
+                    "rvCubicTreeCompose" => Expression::Compose(pair),
+                    _ => Expression::Act(name == "rvCubicTreeFixes", pair),
+                };
+                (operation, depth)
+            }
+        };
+        expr(span, ExprForm::CubicTree(operation), depth)
+    }
+
     fn cubic_division_statement(&mut self, name: &str) -> Result<StatementForm> {
         use cubic_division::{Declaration, Report};
         self.advance()?;
@@ -13647,6 +13757,13 @@ impl<'src> Parser<'src> {
                 | "rvCubicDivVal"
                 | "rvCubicDivCommutatorCheck"),
             ) => self.cubic_division_statement(name)?,
+            Token::Word(
+                name @ ("rvCubicTreeSphere"
+                | "rvCubicTreeLevel"
+                | "rvCubicTreePath"
+                | "rvCubicTreeDistance"
+                | "rvCubicTreeHecke"),
+            ) => self.cubic_tree_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -17888,6 +18005,17 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CubicDiv(chart), 0);
         }
+        if matches!(name.text.as_str(), "RVCubicTreeVertex" | "RVCubicTreeOp")
+            && self.eat(Token::LParen)?
+        {
+            let chart = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::CubicTree(chart, name.text == "RVCubicTreeOp"),
+                0,
+            );
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -21102,6 +21230,30 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.cubic_division_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCubicTreeRoot"
+                        | "rvCubicTreeAt"
+                        | "rvCubicTreePi"
+                        | "rvCubicTreeLine"
+                        | "rvCubicTreeAncestor"
+                        | "rvCubicTreeChild"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCubicTreeMatrix"
+                            | "rvCubicTreeInverse"
+                            | "rvCubicTreeTranslate"
+                            | "rvCubicTreeTranslateBack"
+                            | "rvCubicTreeLca"
+                            | "rvCubicTreeAdjacent"
+                            | "rvCubicTreeApply"
+                            | "rvCubicTreeFixes"
+                            | "rvCubicTreeCompose"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cubic_tree_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

@@ -103,7 +103,7 @@ use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_eisenstein::{
-    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic,
+    self as eisenstein, cubic_algebra, cubic_division, cubic_hilbert as cubic, cubic_tree,
     kummer as local_kummer,
 };
 use crate::rv_fusion;
@@ -383,6 +383,8 @@ pub(crate) enum Kind {
     CubicClass(Box<str>),
     CubicAlg(Box<str>),
     CubicDiv(Box<str>),
+    CubicTreeVertex(Box<str>),
+    CubicTreeOperator(Box<str>),
     CubicSplitMatrix(Box<str>),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
@@ -641,6 +643,8 @@ pub(crate) enum Value {
     CubicClass(cubic::Class),
     CubicAlg(Rc<cubic_algebra::Element>),
     CubicDiv(Rc<cubic_division::Element>),
+    CubicTreeVertex(Rc<cubic_tree::Vertex>),
+    CubicTreeOperator(Rc<cubic_tree::Operator>),
     CubicSplitMatrix(Rc<cubic_algebra::SplitMatrix>),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
@@ -1719,6 +1723,8 @@ impl Model {
             | Kind::CubicLocal(..)
             | Kind::CubicAlg(..)
             | Kind::CubicDiv(..)
+            | Kind::CubicTreeVertex(..)
+            | Kind::CubicTreeOperator(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
@@ -2102,6 +2108,8 @@ impl Model {
                 | Kind::CubicClass(..)
                 | Kind::CubicAlg(..)
                 | Kind::CubicDiv(..)
+                | Kind::CubicTreeVertex(..)
+                | Kind::CubicTreeOperator(..)
                 | Kind::CubicSplitMatrix(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
@@ -6517,6 +6525,15 @@ impl Model {
         })
     }
 
+    pub(crate) fn cubic_tree_type(&mut self, name: Box<str>, matrix: bool) -> Result<TypeId> {
+        let kind = if matrix {
+            Kind::CubicTreeOperator(name)
+        } else {
+            Kind::CubicTreeVertex(name)
+        };
+        self.inhabited_type(kind, 0)
+    }
+
     pub(crate) fn cubic_div_type(&mut self, name: &Label) -> Result<TypeId> {
         self.cubic_division(name)?;
         self.inhabited_type(Kind::CubicDiv(name.text.as_str().into()), 0)
@@ -8064,6 +8081,8 @@ impl Model {
             | Kind::CubicClass(..)
             | Kind::CubicAlg(..)
             | Kind::CubicDiv(..)
+            | Kind::CubicTreeVertex(..)
+            | Kind::CubicTreeOperator(..)
             | Kind::CubicSplitMatrix(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
@@ -8737,6 +8756,8 @@ impl Model {
             )),
             Kind::CubicAlg(name) => out.push(&format!("RVCubicAlg({name})")),
             Kind::CubicDiv(name) => out.push(&format!("RVCubicDiv({name})")),
+            Kind::CubicTreeVertex(name) => out.push(&format!("RVCubicTreeVertex({name})")),
+            Kind::CubicTreeOperator(name) => out.push(&format!("RVCubicTreeOp({name})")),
             Kind::CubicSplitMatrix(name) => out.push(&format!("RVCubicSplitMatrix({name})")),
             Kind::CubicClass(field) => out.push(&format!("RVCubicClass({field})")),
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
@@ -9172,6 +9193,8 @@ impl Model {
             (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a == b),
             (Value::CubicAlg(a), Value::CubicAlg(b)) => Ok(a == b),
             (Value::CubicDiv(a), Value::CubicDiv(b)) => Ok(a == b),
+            (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) => Ok(a == b),
+            (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a == b),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries() == b.entries())
             }
@@ -9596,6 +9619,8 @@ impl Model {
             (Value::CubicClass(a), Value::CubicClass(b)) => Ok(a.cmp(b)),
             (Value::CubicAlg(a), Value::CubicAlg(b)) => Ok(a.cmp(b)),
             (Value::CubicDiv(a), Value::CubicDiv(b)) => Ok(a.cmp(b)),
+            (Value::CubicTreeVertex(a), Value::CubicTreeVertex(b)) => Ok(a.cmp(b)),
+            (Value::CubicTreeOperator(a), Value::CubicTreeOperator(b)) => Ok(a.cmp(b)),
             (Value::CubicSplitMatrix(a), Value::CubicSplitMatrix(b)) => {
                 Ok(a.entries().cmp(b.entries()))
             }
@@ -10204,6 +10229,11 @@ impl Model {
                 Kind::MazurAmice(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
+                    ));
+                }
+                Kind::CubicTreeVertex(..) | Kind::CubicTreeOperator(..) => {
+                    return Err(Error::plain(
+                        "query a radius or index to enumerate a cubic tree shell",
                     ));
                 }
                 Kind::CubicAlg(..) | Kind::CubicDiv(..) | Kind::CubicSplitMatrix(..) => {
@@ -12268,6 +12298,14 @@ impl Model {
             Value::CubicLocal(element) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", element.write()))
+            }
+            Value::CubicTreeVertex(vertex) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", vertex.description()))
+            }
+            Value::CubicTreeOperator(operator) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", operator.description()))
             }
             Value::CubicDiv(element) => {
                 self.write_type(out, ty, 0)?;
