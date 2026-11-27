@@ -2510,6 +2510,9 @@ impl Engine {
             StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
+            StatementForm::DoubleBoundary(command) => {
+                return self.double_boundary_command(*command)
+            }
             StatementForm::DoubleFusion(command) => {
                 return self.double_fusion_command(*command).map(Some)
             }
@@ -8452,6 +8455,57 @@ impl Engine {
                 let cochain = self.eval_postnikov_cochain(&input)?;
                 let value = post.coefficient(&mut self.model, &cochain, &indices)?;
                 format!("rvPostnikovCoeff{indices:?} = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn double_boundary_command(
+        &mut self,
+        command: dd::boundaries::Command,
+    ) -> Result<Option<String>> {
+        use dd::boundaries::Command;
+        let report = match command {
+            Command::Declare(name, bulk, members, supplied) => {
+                let double = self.model.drinfeld_double(&bulk)?;
+                let boundary = dd::boundaries::Boundary::new(
+                    &mut self.model,
+                    bulk.text.into(),
+                    &double,
+                    members,
+                    supplied,
+                )?;
+                self.model.define_double_boundary(name, boundary)?;
+                return Ok(None);
+            }
+            Command::Shift(name, base, shift) => {
+                let source = self.model.double_boundary(&base)?;
+                let bulk = Label {
+                    text: source.double_name.to_string(),
+                    span: base.span,
+                };
+                let double = self.model.drinfeld_double(&bulk)?;
+                let boundary = source.shifted(&mut self.model, &double, shift)?;
+                self.model.define_double_boundary(name, boundary)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self.model.double_boundary(&name)?.data(&name.text),
+            Command::Witness(name) => self.model.double_boundary(&name)?.witness(&name.text)?,
+            Command::Cycle(bulk, members, terms) => {
+                let double = self.model.drinfeld_double(&bulk)?;
+                dd::boundaries::Boundary::cycle(
+                    &mut self.model,
+                    &double,
+                    &bulk.text,
+                    members,
+                    terms,
+                )?
+            }
+            Command::Annulus(a, b) => {
+                let first = self.model.double_boundary(&a)?;
+                let second = self.model.double_boundary(&b)?;
+                let overlap = first.annulus(&mut self.model, &second)?;
+                format!("rvDoubleAnnulus[{},{}] = {overlap}", a.text, b.text)
             }
         };
         Ok(Some(report))
@@ -17631,6 +17685,7 @@ impl Checker<'_> {
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
             ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
+            ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
@@ -29218,6 +29273,34 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Flat(action)))
+    }
+
+    fn double_boundary_expression(
+        &mut self,
+        expression: dd::boundaries::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::boundaries::Expression;
+        let (ty, value) = match expression {
+            Expression::Cochain(name, pair) => {
+                let boundary = self.model.double_boundary(&name)?;
+                (
+                    self.model.qz_type()?,
+                    boundary.cochain(pair)?.persist(self.model)?,
+                )
+            }
+            Expression::Condensate(name) => {
+                let boundary = self.model.double_boundary(&name)?;
+                let bulk = Label {
+                    text: boundary.double_name.to_string(),
+                    span: name.span,
+                };
+                (
+                    self.model.double_sector_type(&bulk)?,
+                    Value::DoubleSector(boundary.sector()?),
+                )
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn double_fusion_expression(

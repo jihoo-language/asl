@@ -7,7 +7,7 @@ use crate::wide_integer::Natural;
 
 const LIMBS: usize = 8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Scalar {
     numerator: Natural<LIMBS>,
     denominator: Natural<LIMBS>,
@@ -106,6 +106,15 @@ impl Scalar {
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
         model.allocate(2 * LIMBS)?;
         Ok(Value::QZ(self))
+    }
+
+    pub(crate) fn root_index(self, order: usize) -> Option<usize> {
+        let denominator = self.denominator.small()?;
+        let order = order as u128;
+        if !order.is_multiple_of(denominator) {
+            return None;
+        }
+        Some((self.numerator.small()? * (order / denominator)) as usize)
     }
 
     pub(crate) fn order(self) -> String {

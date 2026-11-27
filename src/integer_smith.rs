@@ -302,6 +302,7 @@ impl Frame {
 pub(crate) enum Track {
     None,
     Basis,
+    Coordinate,
     Both,
 }
 
@@ -313,10 +314,10 @@ pub(crate) struct Coordinates {
 
 impl Coordinates {
     fn new(model: &mut Model, width: usize, track: Track) -> Result<Self> {
-        let basis = (!matches!(track, Track::None))
+        let basis = matches!(track, Track::Basis | Track::Both)
             .then(|| Frame::identity(model, width))
             .transpose()?;
-        let coordinate = matches!(track, Track::Both)
+        let coordinate = matches!(track, Track::Coordinate | Track::Both)
             .then(|| Frame::identity(model, width))
             .transpose()?;
         Ok(Self { basis, coordinate })

@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::path_integral::Quotient;
 use super::postnikov::{Cochain, Postnikov};
 
+pub(crate) mod boundaries;
 pub(crate) mod braid;
 mod characters;
 pub(crate) mod fusion_symbols;
@@ -206,6 +207,18 @@ impl Double {
         let count = double.simples.len();
         model.allocate(n * n * n + 4 * n * n + count * (9 + 2 * n + 3 * count) + 12)?;
         Ok(double)
+    }
+
+    fn cocycle_phase(&self, [g, h, j]: [usize; 3]) -> usize {
+        let n = self.group.order();
+        self.cocycle[(g * n + h) * n + j]
+    }
+
+    fn tensor_phase(&self, x: usize, g: usize, h: usize) -> usize {
+        (self.cocycle_phase([x, g, h])
+            + self.cocycle_phase([g, h, x])
+            + negate_phase(self.conductor, self.cocycle_phase([g, x, h])))
+            % self.conductor
     }
 
     pub(crate) fn count(&self) -> usize {

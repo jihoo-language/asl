@@ -749,6 +749,7 @@ pub(crate) enum ExprForm {
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Expression>),
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Expression>),
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Expression>),
+    DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1226,6 +1227,7 @@ pub(crate) enum StatementForm {
     DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Command>),
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Command>),
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Command>),
+    DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3964,6 +3966,84 @@ impl<'src> Parser<'src> {
             *i = self.number()?.0;
         }
         Ok(indices)
+    }
+
+    fn double_boundary_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::boundaries::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvdoubleboundary" | "rvdoubleboundaryshift" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::RBracket)?;
+                if operation == "rvdoubleboundaryshift" {
+                    Command::Shift(name, base, self.boundary_fractions()?)
+                } else {
+                    self.expect(Token::LBrace)?;
+                    let members = self.unsigned_list(Token::RBrace)?;
+                    let fractions = if self.token() == Token::LBrace {
+                        Some(self.boundary_fractions()?)
+                    } else {
+                        None
+                    };
+                    Command::Declare(name, base, members, fractions)
+                }
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                if operation == "rvDoubleAnnulus" {
+                    self.expect(Token::Comma)?;
+                    let other = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    Command::Annulus(name, other)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    match operation {
+                        "rvDoubleBoundaryData" => Command::Data(name),
+                        "rvDoubleBoundaryWitness" => Command::Witness(name),
+                        _ => {
+                            self.expect(Token::LBrace)?;
+                            let members = self.unsigned_list(Token::RBrace)?;
+                            let terms = self.set_named_rows(|parser| {
+                                parser.expect(Token::LParen)?;
+                                let a = parser.number()?.0;
+                                let [b, c] = parser.following_indices()?;
+                                parser.expect(Token::Comma)?;
+                                let value = parser
+                                    .signed_wide("an integer", "subgroup bar chain coefficient")?;
+                                parser.expect(Token::RParen)?;
+                                Ok(([a, b, c], value))
+                            })?;
+                            Command::Cycle(name, members, terms)
+                        }
+                    }
+                }
+            }
+        };
+        Ok(StatementForm::DoubleBoundary(Box::new(command)))
+    }
+
+    fn boundary_fractions(
+        &mut self,
+    ) -> Result<crate::rv_crossed::drinfeld_double::boundaries::Fractions> {
+        self.set_named_rows(|parser| {
+            parser.rational_entry("boundary cochain numerator", "boundary cochain denominator")
+        })
+    }
+
+    fn double_boundary_expression(&mut self, operation: &str, span: Span) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::boundaries::Expression;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let operation = if operation == "rvDoubleCondensate" {
+            Expression::Condensate(name)
+        } else {
+            Expression::Cochain(name, self.following_indices()?)
+        };
+        self.expect(Token::RBracket)?;
+        expr(span, ExprForm::DoubleBoundary(Box::new(operation)), 0)
     }
 
     fn double_fusion_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -11347,6 +11427,14 @@ impl<'src> Parser<'src> {
                 | "rvDoublePentagon"
                 | "rvDoubleHexagon"),
             ) => self.double_fusion_statement(op)?,
+            Token::Word(
+                op @ ("rvdoubleboundary"
+                | "rvdoubleboundaryshift"
+                | "rvDoubleBoundaryData"
+                | "rvDoubleBoundaryWitness"
+                | "rvDoubleBoundaryCycle"
+                | "rvDoubleAnnulus"),
+            ) => self.double_boundary_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -18232,6 +18320,13 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.double_fusion_expression(&name.text, span);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDoubleBoundaryMu" | "rvDoubleCondensate"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.double_boundary_expression(&name.text, span);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

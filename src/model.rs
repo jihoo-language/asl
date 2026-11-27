@@ -694,6 +694,7 @@ pub(crate) struct Model {
     homotopy_integrals: HashMap<Rc<str>, Rc<path_integral::Integral>>,
     dw_integrals: HashMap<Rc<str>, Rc<dw::Integral>>,
     drinfeld_doubles: HashMap<Rc<str>, Rc<dd::Double>>,
+    double_boundaries: HashMap<Rc<str>, Rc<dd::boundaries::Boundary>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -856,6 +857,7 @@ impl Model {
             homotopy_integrals: HashMap::new(),
             dw_integrals: HashMap::new(),
             drinfeld_doubles: HashMap::new(),
+            double_boundaries: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1105,6 +1107,31 @@ impl Model {
     pub(crate) fn postnikov_cell_type(&mut self, name: &Label) -> Result<TypeId> {
         self.postnikov(name)?;
         self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_double_boundary(
+        &mut self,
+        name: Label,
+        boundary: dd::boundaries::Boundary,
+    ) -> Result<()> {
+        if self.double_boundaries.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "double boundary is already defined"));
+        }
+        self.double_boundaries
+            .insert(name.text.into(), Rc::new(boundary));
+        Ok(())
+    }
+
+    pub(crate) fn double_boundary(&self, name: &Label) -> Result<Rc<dd::boundaries::Boundary>> {
+        self.double_boundaries
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown double boundary '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn define_double(&mut self, name: Label, data: dd::Double) -> Result<()> {

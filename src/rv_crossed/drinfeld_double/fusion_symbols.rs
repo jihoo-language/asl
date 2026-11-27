@@ -68,18 +68,6 @@ impl Channel {
 }
 
 impl Double {
-    pub(super) fn cocycle_phase(&self, [g, h, j]: [usize; 3]) -> usize {
-        let n = self.group.order();
-        self.cocycle[(g * n + h) * n + j]
-    }
-
-    fn tensor_phase(&self, x: usize, g: usize, h: usize) -> usize {
-        (self.cocycle_phase([x, g, h])
-            + self.cocycle_phase([g, h, x])
-            + negate_phase(self.conductor, self.cocycle_phase([g, x, h])))
-            % self.conductor
-    }
-
     fn treeshift(&self, fluxes: [usize; 3], inverse: bool) -> usize {
         let phase = self.cocycle_phase(fluxes);
         if inverse {
