@@ -201,6 +201,10 @@ pub(crate) enum TypeForm {
     FrickeSSDiv(Label),
     FrickeSSQDiv(Label),
     FrickeManin(Label),
+    FrickeBad(
+        Label,
+        crate::dwork_k3::fricke::brandt::manin::semistable::Grade,
+    ),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
@@ -1188,6 +1192,7 @@ pub(crate) enum ExprForm {
     FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Expression>),
     FrickeManin(Box<crate::dwork_k3::fricke::brandt::manin::Expression>),
     ManinFrobPoly(Label, usize, usize),
+    FrickeBad(Box<crate::dwork_k3::fricke::brandt::manin::semistable::Expression>),
     FrickeCMPolyEval(Label, Box<ParsedExpr>),
     FrickeCMPolyModCoeff(Label, Label, usize),
     FrickeCMPairCoeff(usize, Box<ParsedExpr>),
@@ -1490,6 +1495,8 @@ pub(crate) enum StatementForm {
     FrickeManinBoundary(ParsedExpr),
     ManinFrobenius(Box<crate::dwork_k3::fricke::brandt::manin::frobenius::Command>),
     ManinCurveLines(Label, Box<[ParsedExpr;2]>),
+    FrickeBad(Box<crate::dwork_k3::fricke::brandt::manin::semistable::Command>),
+    FrickeBadLink(Box<[ParsedExpr;2]>),
     FrickeCMDefine(Label, Label, Option<Label>),
     FrickeCMData(Label, Option<usize>),
     FrickeCMFactors(Label, Label),
@@ -7227,6 +7234,95 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn fricke_bad_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::dwork_k3::fricke::brandt::manin::semistable::Command;
+        self.advance()?;
+        if operation == "rvFrickeLink" {
+            return Ok(StatementForm::FrickeBadLink(Box::new(self.paren_pair(0)?)));
+        }
+        let name = if operation == "rvfrickebad" {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        self.expect(Token::LBracket)?;
+        let value = if operation == "rvFrickeOrderedHeckeCoeff" {
+            let ell = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let i = self.number()?.0;
+            self.expect(Token::Comma)?;
+            Command::Equation(ell, i, self.number()?.0)
+        } else {
+            let setting = self.label()?;
+            match operation {
+                "rvfrickebad" => {
+                    self.expect(Token::Comma)?;
+                    Command::Define(name.unwrap(), setting, self.label()?)
+                }
+                "rvFrickeBadData" => Command::Describe(setting),
+                "rvFrickeBadWD" => Command::WeilDeligne(setting),
+                _ => {
+                    self.expect(Token::Comma)?;
+                    Command::Hecke(setting, self.number()?.0)
+                }
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::FrickeBad(Box::new(value)))
+    }
+
+    fn fricke_bad_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::dwork_k3::fricke::brandt::manin::semistable::{Action, Expression};
+        let action = match name {
+            "rvFrickeMonodromy" => Some(Action::Monodromy),
+            "rvFrickeComponentClass" => Some(Action::Class),
+            "rvFrickeComponentLift" => Some(Action::Lift),
+            "rvFrickeBadFrob" => Some(Action::Frobenius),
+            "rvFrickeBadHecke" | "rvFrickeBadAtkin" => {
+                self.expect(Token::LBracket)?;
+                let level = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Some(if name == "rvFrickeBadHecke" {
+                    Action::Hecke(level)
+                } else {
+                    Action::Atkin(level)
+                })
+            }
+            _ => None,
+        };
+        if let Some(action) = action {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::FrickeBad(Box::new(Expression::Action(action, Box::new(input)))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let setting = self.label()?;
+        let output = if matches!(name, "rvFrickeCycle" | "rvFrickeDual") {
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LBrace)?;
+            let values = self.signed_list(
+                Token::RBrace,
+                "a signed cycle coordinate",
+                "semistable cycle coordinate",
+            )?;
+            Expression::Vector(setting, name == "rvFrickeDual", values)
+        } else {
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            if name == "rvFrickeComponent" {
+                Expression::Component(setting, index)
+            } else {
+                Expression::Node(setting, index)
+            }
+        };
+        expr(span, ExprForm::FrickeBad(Box::new(output)), 0)
     }
 
     fn manin_frob_grade(&mut self) -> Result<(Label, usize, usize)> {
@@ -15263,6 +15359,14 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvManinZeta" | "rvManinPointCount" | "rvManinCurveLines")) => {
                 self.manin_frob_statement(name)?
             }
+            Token::Word(
+                name @ ("rvfrickebad"
+                | "rvFrickeBadData"
+                | "rvFrickeBadWD"
+                | "rvFrickeBadHeckeData"
+                | "rvFrickeOrderedHeckeCoeff"
+                | "rvFrickeLink"),
+            ) => self.fricke_bad_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -19885,6 +19989,9 @@ impl<'src> Parser<'src> {
                 | "RVFrickeSSDiv"
                 | "RVFrickeSSQDiv"
                 | "RVManin"
+                | "RVFrickeCycle"
+                | "RVFrickeDual"
+                | "RVFrickeComponent"
                 | "RVK3Lattice"
                 | "RVMukai"
                 | "RVKummerWeil"
@@ -19909,6 +20016,18 @@ impl<'src> Parser<'src> {
                 "RVFrickeSSDiv" => TypeForm::FrickeSSDiv(endpoint),
                 "RVFrickeSSQDiv" => TypeForm::FrickeSSQDiv(endpoint),
                 "RVManin" => TypeForm::FrickeManin(endpoint),
+                "RVFrickeCycle" => TypeForm::FrickeBad(
+                    endpoint,
+                    crate::dwork_k3::fricke::brandt::manin::semistable::Grade::Cycle,
+                ),
+                "RVFrickeDual" => TypeForm::FrickeBad(
+                    endpoint,
+                    crate::dwork_k3::fricke::brandt::manin::semistable::Grade::Dual,
+                ),
+                "RVFrickeComponent" => TypeForm::FrickeBad(
+                    endpoint,
+                    crate::dwork_k3::fricke::brandt::manin::semistable::Grade::Component,
+                ),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVOG10" => TypeForm::OG10(endpoint),
@@ -22680,6 +22799,22 @@ impl<'src> Parser<'src> {
                 ) && matches!(self.token(), Token::LBracket | Token::LParen)
                 {
                     return self.fricke_manin_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrickeCycle"
+                        | "rvFrickeDual"
+                        | "rvFrickeComponent"
+                        | "rvFrickeBadNode"
+                        | "rvFrickeMonodromy"
+                        | "rvFrickeComponentClass"
+                        | "rvFrickeComponentLift"
+                        | "rvFrickeBadFrob"
+                        | "rvFrickeBadAtkin"
+                        | "rvFrickeBadHecke"
+                ) && matches!(self.token(), Token::LBracket | Token::LParen)
+                {
+                    return self.fricke_bad_expression(&name.text, span, nest);
                 }
                 if name.text == "rvManinFrobPoly" && self.token() == Token::LBracket {
                     let (manin, ell, exponent) = self.manin_frob_grade()?;

@@ -16,6 +16,7 @@ mod comparison;
 pub(crate) mod frobenius;
 mod geometry;
 mod linear;
+pub(crate) mod semistable;
 
 pub(crate) use comparison::Comparison;
 

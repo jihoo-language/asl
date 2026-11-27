@@ -32,7 +32,10 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
-use crate::dwork_k3::fricke::brandt::{self as fricke_ss, manin};
+use crate::dwork_k3::fricke::brandt::{
+    self as fricke_ss,
+    manin::{self, semistable},
+};
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
@@ -1246,6 +1249,12 @@ enum TypedForm {
     FrickeOrderExtract(bool, Box<TypedExpr>),
     FrickeManinAction(Rc<manin::Space>, manin::Operator, Box<TypedExpr>),
     FrickeManinTransfer(Rc<manin::Comparison>, bool, Box<TypedExpr>),
+    FrickeBadAction(
+        Rc<semistable::Semistable>,
+        semistable::Action,
+        semistable::Grade,
+        Box<TypedExpr>,
+    ),
     FrickeCMPolyEval(
         Rc<cm_class_poly::fricke::Polynomial>,
         Rc<UnramRing>,
@@ -2867,6 +2876,28 @@ impl Engine {
             StatementForm::FrickeSS(command) => return command.execute(&mut self.model),
             StatementForm::FrickeOrder(command) => return command.execute(&mut self.model),
             StatementForm::FrickeManin(command) => return command.execute(&mut self.model),
+            StatementForm::FrickeBad(command) => return command.execute(&mut self.model),
+            StatementForm::FrickeBadLink(pair) => {
+                let [left, right] = *pair;
+                let left = self.checker().expr(left)?;
+                let right = self.checker().expr(right)?;
+                let (name, grade) = self.checker().fricke_bad_operand(&left)?;
+                if grade != semistable::Grade::Component {
+                    return Err(self.checker().invalid_operand(
+                        &left,
+                        "rvFrickeLink",
+                        "an RVFrickeComponent",
+                    ));
+                }
+                self.checker()
+                    .require_type(left.ty, &right, "rvFrickeLink")?;
+                let (Value::FrickeComponent(a), Value::FrickeComponent(b)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                self.model.fricke_bad(&name)?.link(a, b)?
+            }
             StatementForm::ManinFrobenius(command) => command.execute(&mut self.model)?,
             StatementForm::ManinCurveLines(name, pair) => {
                 let space = self.model.manin_space(&name)?;
@@ -14292,6 +14323,19 @@ impl Engine {
                             .group(&mut self.model, grade, k)?;
                         Ok(Value::KhClass(group.add(&mut self.model, &a, &b)?))
                     }
+                    (BinaryOp::Add, Value::FrickeBadVector(a), Value::FrickeBadVector(b)) => {
+                        semistable::add(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::FrickeComponent(a), Value::FrickeComponent(b)) => {
+                        let Kind::FrickeComponent(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let data = self.model.fricke_bad(&Label {
+                            text: name.to_string(),
+                            span: expr.span,
+                        })?;
+                        Ok(Value::FrickeComponent((a + b) % data.order()))
+                    }
                     (BinaryOp::Add, Value::FrickeManin(a), Value::FrickeManin(b)) => {
                         manin::add(&mut self.model, &a, &b)
                     }
@@ -16350,6 +16394,10 @@ impl Engine {
                     ));
                 }
                 fricke_ss::persist(&mut self.model, fraction.numerator.clone())
+            }
+            TypedForm::FrickeBadAction(data, action, grade, input) => {
+                let input = self.eval(input)?;
+                data.apply(&mut self.model, *action, *grade, input)
             }
             TypedForm::FrickeManinAction(space, operation, input) => {
                 let Value::FrickeManin(value) = self.eval(input)? else {
@@ -20934,6 +20982,7 @@ impl Checker<'_> {
             TypeForm::FrickeSSDiv(name) => self.model.fricke_ss_type(&name),
             TypeForm::FrickeSSQDiv(name) => self.model.fricke_ss_qdiv_type(&name),
             TypeForm::FrickeManin(name) => self.model.manin_type(&name),
+            TypeForm::FrickeBad(name, grade) => self.model.fricke_bad_type(&name, grade),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
@@ -22349,6 +22398,11 @@ impl Checker<'_> {
                     Kind::Kummer(name) => {
                         let curve = self.model.kummer_curve(name)?;
                         KummerPoint::identity(&curve).persist(self.model)?
+                    }
+                    Kind::FrickeComponent(..) => Value::FrickeComponent(0),
+                    Kind::FrickeBadVector(name,_) => {
+                        let data=self.model.fricke_bad(&Label {text:name.to_string(),span})?;
+                        semistable::persist(self.model,vec![0;data.rank()])?
                     }
                     Kind::FrickeManin(name) => {
                         let space = self.model.manin_space(&Label { text: name.to_string(), span })?;
@@ -24629,6 +24683,7 @@ impl Checker<'_> {
             ExprForm::FrickeSS(expression) => self.fricke_ss_expression(*expression),
             ExprForm::FrickeOrder(expression) => self.fricke_order_expression(*expression),
             ExprForm::FrickeManin(expression) => self.fricke_manin_expression(*expression),
+            ExprForm::FrickeBad(expression) => self.fricke_bad_expression(*expression),
             ExprForm::ManinFrobPoly(name, ell, exponent) => {
                 let space = self.model.manin_space(&name)?;
                 let ty = self.model.ore_type()?;
@@ -26004,6 +26059,22 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::FrickeBadVector(..) | Kind::FrickeComponent(..)
+                ) {
+                    let (name, grade) = self.fricke_bad_operand(&input)?;
+                    let data = self.model.fricke_bad(&name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::FrickeBadAction(
+                            data,
+                            semistable::Action::Negate,
+                            grade,
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::FrickeManin(..)) {
@@ -29908,6 +29979,8 @@ impl Checker<'_> {
                         | Kind::KummerDiv(..)
                         | Kind::FrickeSSDiv(..)
                         | Kind::FrickeManin(..)
+                        | Kind::FrickeBadVector(..)
+                        | Kind::FrickeComponent(..)
                         | Kind::K3PencilSection(..)
                         | Kind::K3PencilKummer2(..)
                         | Kind::ECPoint(..)
@@ -39021,6 +39094,84 @@ impl Checker<'_> {
             return Err(self.invalid_operand(input, operation, "an RVKummerDisc element"));
         };
         Ok(name)
+    }
+
+    fn fricke_bad_operand(&self, input: &TypedExpr) -> Result<(Label, semistable::Grade)> {
+        use semistable::Grade;
+        let (name, grade) = match self.model.kind(input.ty) {
+            Kind::FrickeBadVector(name, false) => (name, Grade::Cycle),
+            Kind::FrickeBadVector(name, true) => (name, Grade::Dual),
+            Kind::FrickeComponent(name) => (name, Grade::Component),
+            _ => {
+                return Err(self.invalid_operand(
+                    input,
+                    "semistable Fricke action",
+                    "an integral cycle, its dual, or a component class",
+                ))
+            }
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            grade,
+        ))
+    }
+
+    fn fricke_bad_expression(
+        &mut self,
+        expression: semistable::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use semistable::{Expression, Grade};
+        match expression {
+            Expression::Vector(name, dual, values) => {
+                let data = self.model.fricke_bad(&name)?;
+                if values.len() != data.rank() {
+                    return Err(Error::new(
+                        name.span,
+                        format!(
+                            "semistable lattice vector requires {} coordinates",
+                            data.rank()
+                        ),
+                    ));
+                }
+                let grade = if dual { Grade::Dual } else { Grade::Cycle };
+                let ty = self.model.fricke_bad_type(&name, grade)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(semistable::persist(self.model, values)?),
+                ))
+            }
+            Expression::Component(name, index) => {
+                let data = self.model.fricke_bad(&name)?;
+                if index >= data.order() {
+                    return Err(Error::new(
+                        name.span,
+                        "semistable component Smith residue is out of range",
+                    ));
+                }
+                let ty = self.model.fricke_bad_type(&name, Grade::Component)?;
+                Ok((ty, TypedForm::Constant(Value::FrickeComponent(index))))
+            }
+            Expression::Node(name, index) => {
+                let data = self.model.fricke_bad(&name)?;
+                let ty = self.model.rv_unram_type(&data.field_label(name.span))?;
+                let value = rv_unram::persist(self.model, data.node(index)?)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Action(action, input) => {
+                let input = self.expr(*input)?;
+                let (name, grade) = self.fricke_bad_operand(&input)?;
+                let data = self.model.fricke_bad(&name)?;
+                let output = data.check_action(action, grade)?;
+                let ty = self.model.fricke_bad_type(&name, output)?;
+                Ok((
+                    ty,
+                    TypedForm::FrickeBadAction(data, action, grade, Box::new(input)),
+                ))
+            }
+        }
     }
 
     fn manin_operand(&self, input: &TypedExpr) -> Result<Rc<manin::Space>> {

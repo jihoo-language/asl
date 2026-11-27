@@ -26,7 +26,10 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
-use crate::dwork_k3::fricke::brandt::{self as fricke_ss, manin};
+use crate::dwork_k3::fricke::brandt::{
+    self as fricke_ss,
+    manin::{self, semistable},
+};
 use crate::ec_morphism::Morphism as ECMap;
 use crate::ec_poly::Scalar as ECScalar;
 use crate::elliptic::{
@@ -360,6 +363,8 @@ pub(crate) enum Kind {
     FrickeSSDiv(Rc<str>),
     FrickeSSQDiv(Rc<str>),
     FrickeManin(Rc<str>),
+    FrickeBadVector(Rc<str>, bool),
+    FrickeComponent(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
@@ -645,6 +650,8 @@ pub(crate) enum Value {
     FrickeSSDiv(Rc<[i128]>),
     FrickeSSQDiv(Rc<fricke_ss::eigen::Fraction>),
     FrickeManin(Rc<fricke_ss::eigen::Fraction>),
+    FrickeBadVector(Rc<[i128]>),
+    FrickeComponent(usize),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
@@ -886,6 +893,8 @@ pub(crate) struct Model {
     fricke_hecke_orders: HashMap<String, Rc<fricke_ss::eigen::Order>>,
     manin_spaces: HashMap<String, Rc<manin::Space>>,
     manin_comparisons: HashMap<String, Rc<manin::Comparison>>,
+    fricke_bad_fibers: HashMap<String, Rc<semistable::Semistable>>,
+    fricke_oriented_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     dwork_hecke_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
@@ -1080,6 +1089,8 @@ impl Model {
             fricke_hecke_orders: HashMap::new(),
             manin_spaces: HashMap::new(),
             manin_comparisons: HashMap::new(),
+            fricke_bad_fibers: HashMap::new(),
+            fricke_oriented_equations: HashMap::new(),
             dwork_hecke_equations: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
@@ -1797,6 +1808,14 @@ impl Model {
                 }
             }
             Kind::FrickeSSDiv(..) | Kind::FrickeSSQDiv(..) | Kind::FrickeManin(..) => usize::MAX,
+            Kind::FrickeBadVector(ref name, _) => {
+                if self.fricke_bad_fibers[name.as_ref()].rank() == 0 {
+                    1
+                } else {
+                    usize::MAX
+                }
+            }
+            Kind::FrickeComponent(ref name) => self.fricke_bad_fibers[name.as_ref()].order(),
             Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
                 usize::MAX
             }
@@ -2244,6 +2263,8 @@ impl Model {
                 | Kind::FrickeSSDiv(..)
                 | Kind::FrickeSSQDiv(..)
                 | Kind::FrickeManin(..)
+                | Kind::FrickeBadVector(..)
+                | Kind::FrickeComponent(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
@@ -7692,6 +7713,64 @@ impl Model {
             })
     }
 
+    pub(crate) fn define_fricke_bad(
+        &mut self,
+        name: Label,
+        value: semistable::Semistable,
+    ) -> Result<()> {
+        if self.fricke_bad_fibers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "semistable Fricke fiber is already defined",
+            ));
+        }
+        self.fricke_bad_fibers.insert(name.text, Rc::new(value));
+        Ok(())
+    }
+
+    pub(crate) fn fricke_bad(&self, name: &Label) -> Result<Rc<semistable::Semistable>> {
+        self.fricke_bad_fibers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown semistable Fricke fiber '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn fricke_bad_type(
+        &mut self,
+        name: &Label,
+        grade: semistable::Grade,
+    ) -> Result<TypeId> {
+        use semistable::Grade;
+        self.fricke_bad(name)?;
+        let label: Rc<str> = name.text.as_str().into();
+        let kind = match grade {
+            Grade::Cycle => Kind::FrickeBadVector(label, false),
+            Grade::Dual => Kind::FrickeBadVector(label, true),
+            Grade::Component => Kind::FrickeComponent(label),
+        };
+        self.inhabited_type(kind, 0)
+    }
+
+    pub(crate) fn fricke_oriented_equation(
+        &mut self,
+        ell: usize,
+    ) -> Result<Rc<crate::elliptic_modular::Polynomial>> {
+        if let Some(polynomial) = self.fricke_oriented_equations.get(&ell) {
+            return Ok(polynomial.clone());
+        }
+        let polynomial = Rc::new(crate::dwork_k3::fricke::hecke::oriented_equation(
+            self, ell,
+        )?);
+        self.fricke_oriented_equations
+            .insert(ell, polynomial.clone());
+        Ok(polynomial)
+    }
+
     pub(crate) fn manin_type(&mut self, name: &Label) -> Result<TypeId> {
         self.manin_space(name)?;
         self.inhabited_type(Kind::FrickeManin(name.text.as_str().into()), 0)
@@ -8552,6 +8631,8 @@ impl Model {
             | Kind::FrickeSSDiv(..)
             | Kind::FrickeSSQDiv(..)
             | Kind::FrickeManin(..)
+            | Kind::FrickeBadVector(..)
+            | Kind::FrickeComponent(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
@@ -9173,6 +9254,9 @@ impl Model {
             Kind::FrickeSSDiv(name) => out.push(&format!("RVFrickeSSDiv({name})")),
             Kind::FrickeSSQDiv(name) => out.push(&format!("RVFrickeSSQDiv({name})")),
             Kind::FrickeManin(name) => out.push(&format!("RVManin({name})")),
+            Kind::FrickeBadVector(name, false) => out.push(&format!("RVFrickeCycle({name})")),
+            Kind::FrickeBadVector(name, true) => out.push(&format!("RVFrickeDual({name})")),
+            Kind::FrickeComponent(name) => out.push(&format!("RVFrickeComponent({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::VerbitskyCyclic(grade, class) => {
                 let name = if *class {
@@ -9698,10 +9782,12 @@ impl Model {
             (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
-            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
+            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b))
+            | (Value::FrickeBadVector(a), Value::FrickeBadVector(b)) => {
                 self.spend(a.len())?;
                 Ok(a == b)
             }
+            (Value::FrickeComponent(a), Value::FrickeComponent(b)) => Ok(a == b),
             (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b))
             | (Value::FrickeManin(a), Value::FrickeManin(b)) => {
                 self.spend(a.numerator.len())?;
@@ -10172,10 +10258,12 @@ impl Model {
             (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
-            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
+            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b))
+            | (Value::FrickeBadVector(a), Value::FrickeBadVector(b)) => {
                 self.spend(a.len())?;
                 Ok(a.cmp(b))
             }
+            (Value::FrickeComponent(a), Value::FrickeComponent(b)) => Ok(a.cmp(b)),
             (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b))
             | (Value::FrickeManin(a), Value::FrickeManin(b)) => {
                 self.spend(a.numerator.len())?;
@@ -10729,6 +10817,20 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kummer Weil representation",
                     ))
+                }
+                Kind::FrickeBadVector(ref name, _) => {
+                    if self.fricke_bad_fibers[name.as_ref()].rank() != 0 {
+                        return Err(Error::plain(
+                            "cannot enumerate a semistable integral cycle lattice",
+                        ));
+                    }
+                    vec![semistable::persist(self, Vec::new())?]
+                }
+                Kind::FrickeComponent(ref name) => {
+                    let order = self.fricke_bad_fibers[name.as_ref()].order();
+                    self.spend(order)?;
+                    self.allocate(order)?;
+                    (0..order).map(Value::FrickeComponent).collect()
                 }
                 Kind::FrickeManin(..) => {
                     return Err(Error::plain(
@@ -12843,7 +12945,11 @@ impl Model {
                     fraction.numerator, fraction.denominator
                 ))
             }
-            Value::FrickeSSDiv(coefficients) => {
+            Value::FrickeComponent(residue) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{residue}}}"))
+            }
+            Value::FrickeSSDiv(coefficients) | Value::FrickeBadVector(coefficients) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 for (i, coefficient) in coefficients.iter().enumerate() {

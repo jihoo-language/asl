@@ -112,7 +112,7 @@ pub(crate) fn coefficient_report(
     ))
 }
 
-fn shifted_hauptmodul(model: &mut Model, cutoff: usize) -> Result<Vec<Integer>> {
+fn eta_pair(model: &mut Model, cutoff: usize) -> Result<(Vec<Integer>, Vec<Integer>)> {
     let weights = eisenstein_difference(cutoff);
     model.spend(cutoff * cutoff)?;
     // For T=qt, theta(T)/T = -(2E2(2tau)-E2(tau)-1).
@@ -129,6 +129,11 @@ fn shifted_hauptmodul(model: &mut Model, cutoff: usize) -> Result<Vec<Integer>> 
         t.push(elliptic_modular::divide_small(a, n)?);
         inv.push(elliptic_modular::divide_small(b, n)?);
     }
+    Ok((t, inv))
+}
+
+fn shifted_hauptmodul(model: &mut Model, cutoff: usize) -> Result<Vec<Integer>> {
+    let (mut t, inv) = eta_pair(model, cutoff)?;
     // qH=T+24q+4096q^2/T.
     if cutoff > 0 {
         t[1] = t[1].add(Integer::from_i128(24))?;
@@ -146,6 +151,39 @@ fn shifted_hauptmodul(model: &mut Model, cutoff: usize) -> Result<Vec<Integer>> 
         return Err(Error::plain("Dwork Fricke Hauptmodul normalization failed"));
     }
     Ok(t)
+}
+
+pub(crate) fn oriented_equation(model: &mut Model, level: usize) -> Result<Polynomial> {
+    let prime = prime_level(level)?;
+    let polynomial = Polynomial::from_hauptmodul(model, prime, AUDIT, |model, cutoff| {
+        let (t, _) = eta_pair(model, cutoff)?;
+        Ok(t)
+    })?;
+    let ell = level;
+    // The Kronecker congruence uses the same determinant-ell
+    // correspondences on the ordered eta Hauptmodul.
+    for j in 0..=ell + 1 {
+        for i in 0..=ell + 1 {
+            let coefficient = polynomial.wide_coefficient::<20>(i, j)?;
+            let residue = coefficient.magnitude.residue(prime.get());
+            let residue = if coefficient.negative {
+                prime.negate(residue)
+            } else {
+                residue
+            };
+            let expected = match (i, j) {
+                (a, b) if a == ell && b == ell || a == 1 && b == 1 => ell - 1,
+                (a, 0) | (0, a) if a == ell + 1 => 1,
+                _ => 0,
+            };
+            if residue as usize != expected {
+                return Err(Error::plain(
+                    "ordered Γ0(2) Hecke equation failed the Kronecker congruence",
+                ));
+            }
+        }
+    }
+    Ok(polynomial)
 }
 
 #[derive(Clone, Copy)]
