@@ -15,6 +15,7 @@ mod diagram;
 mod dimension;
 pub(crate) mod karoubi;
 pub(crate) mod local;
+pub(crate) mod recoupling;
 pub(crate) mod square;
 pub(crate) mod vacillating;
 use diagram::Diagram;
@@ -37,6 +38,9 @@ pub(crate) enum Expression {
     SquareUnit(usize, usize),
     TowerOperator(usize, usize),
     PathProjector(vacillating::Path),
+    MatrixUnit(recoupling::Key, [u128; 2]),
+    BlockEntry(recoupling::Key, [u128; 2], Box<ParsedExpr>),
+    OverlapEntry(recoupling::Key, [u128; 2]),
 }
 
 #[derive(Clone, Copy)]

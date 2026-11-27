@@ -259,36 +259,163 @@ impl LocalAlgebra {
             return Self::embed(numerator);
         }
         let rank = numerator.rank;
-        let mut polys = BTreeMap::<Diagram, Dense>::new();
-        for ((diagram, degree), coefficient) in numerator.terms {
-            insert_dense(
-                model,
-                polys.entry(diagram).or_default(),
-                degree,
-                Integer::from_i128(coefficient),
-            )?;
-        }
-        let (diagrams, mut coefficients): (Vec<_>, Vec<_>) = polys.into_iter().unzip();
+        let (diagrams, mut coefficients): (Vec<_>, Vec<_>) =
+            split_dense(model, numerator)?.into_iter().unzip();
         let denominator = reduce(model, &mut coefficients, denominator)?;
-        let mut terms = BTreeMap::new();
-        for (diagram, coefficients) in diagrams.into_iter().zip(coefficients) {
-            if coefficients.len() as u128 > DEGREE_LIMIT + 1 {
-                return Err(degree_limit());
-            }
-            for (degree, coefficient) in coefficients
-                .into_iter()
-                .enumerate()
-                .filter(|(_, c)| !c.is_zero())
-            {
-                let coefficient = coefficient.signed().ok_or_else(coefficient_overflow)?;
-                super::require_terms(terms.len() + 1)?;
-                terms.insert((diagram.clone(), degree as u128), coefficient);
-            }
-        }
+        let numerator = pack_dense(rank, diagrams.into_iter().zip(coefficients))?;
         Ok(Self {
-            numerator: Algebra { rank, terms },
+            numerator,
             denominator,
         })
+    }
+
+    pub(super) fn trace_scalar(&self, model: &mut Model) -> Result<Self> {
+        let polynomial = self.numerator.trace_polynomial(model)?;
+        Self::scalar(model, polynomial, self.denominator)
+    }
+
+    pub(super) fn trace_pair(&self, model: &mut Model, rhs: &Self) -> Result<Self> {
+        debug_assert_eq!(self.rank(), rhs.rank());
+        if self.is_zero() || rhs.is_zero() {
+            return Ok(Self::zero(0));
+        }
+        let rank = self.rank();
+        let left = self.numerator.diagram_groups(model)?;
+        let right: Vec<_> = rhs
+            .numerator
+            .diagram_groups(model)?
+            .into_iter()
+            .map(|(diagram, polynomial)| (diagram.reflect(rank), polynomial))
+            .collect();
+        let mut polynomial = Polynomial::new();
+        for (a, p) in &left {
+            for (b, q) in &right {
+                model.spend(1 + 2 * rank + p.len() * q.len())?;
+                let loops = a.joint_components(b, rank) as u128;
+                for &(i, x) in p {
+                    for &(j, y) in q {
+                        super::accumulate(&mut polynomial, i + j + loops, Integer::product(x, y))?;
+                    }
+                }
+            }
+        }
+        Self::scalar(
+            model,
+            polynomial,
+            self.denominator.product(rhs.denominator)?,
+        )
+    }
+
+    fn scalar(model: &mut Model, polynomial: Polynomial, denominator: Denominator) -> Result<Self> {
+        let mut dense = Vec::new();
+        for (degree, value) in polynomial {
+            insert_dense(model, &mut dense, degree, value)?;
+        }
+        let denominator = reduce(model, std::slice::from_mut(&mut dense), denominator)?;
+        let numerator = pack_dense(0, [(Diagram::identity(0), dense)])?;
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub(super) fn divide_by_scalar(&self, model: &mut Model, divisor: &Self) -> Result<Self> {
+        debug_assert_eq!(divisor.rank(), 0);
+        if divisor.is_zero() {
+            return Err(Error::plain("division by a zero partition scalar"));
+        }
+        if self.is_zero() {
+            return Ok(self.clone());
+        }
+        let mut factor = split_dense(model, divisor.numerator.clone())?
+            .into_values()
+            .next()
+            .unwrap();
+        let mut powers = [0; FACTORS.len()];
+        for (index, (_, kind)) in FACTORS.into_iter().enumerate() {
+            model.spend(factor.len())?;
+            while let Some(quotient) = divide_factor(&factor, kind)? {
+                powers[index] += 1;
+                if powers[index] > u128::from(DENOMINATOR_LIMIT) {
+                    return Err(denominator_limit());
+                }
+                factor = quotient;
+                model.spend(factor.len())?;
+            }
+        }
+        // The divisor denominator is an integral polynomial in the
+        // localization generators. Multiplying it back uses the same lift
+        // as ordinary rational addition. Cancel any remaining factor exactly.
+        let numerator = self.lift(model, self.denominator.product(divisor.denominator)?)?;
+        let numerator = if factor.len() == 1 && factor[0].signed() == Some(1) {
+            numerator
+        } else {
+            let mut polys = split_dense(model, numerator)?;
+            for polynomial in polys.values_mut() {
+                *polynomial = exact_quotient(model, polynomial, &factor)?;
+            }
+            pack_dense(self.rank(), polys)?
+        };
+        let denominator = self.denominator.product(Denominator::extended(powers)?)?;
+        Self::normalized(model, numerator, denominator)
+    }
+
+    pub(super) fn rotate(&self, model: &mut Model) -> Result<Self> {
+        let rank = self.rank();
+        model.spend((1 + 2 * rank) * self.numerator.terms.len())?;
+        let terms = self
+            .numerator
+            .terms
+            .iter()
+            .map(|((diagram, degree), &value)| ((diagram.rotate(rank), *degree), value))
+            .collect();
+        Ok(Self {
+            numerator: Algebra { rank, terms },
+            denominator: self.denominator,
+        })
+    }
+
+    pub(super) fn require_regular_at(&self, n: u128) -> Result<()> {
+        self.denominator.require_regular(n)
+    }
+
+    pub(super) fn scalar_display(
+        &self,
+        model: &mut Model,
+        dimension: Option<u128>,
+    ) -> Result<String> {
+        debug_assert_eq!(self.rank(), 0);
+        let polynomial = self.numerator.trace_polynomial(model)?;
+        match dimension {
+            Some(n) => {
+                let denominator = self.denominator.at(model, n)?;
+                let value = evaluate_polynomial(model, polynomial, n)?;
+                rational(model, value, denominator)
+            }
+            None if polynomial.keys().all(|&degree| degree == 0)
+                && self
+                    .denominator
+                    .0
+                    .iter()
+                    .zip(FACTORS)
+                    .all(|(&power, (_, factor))| {
+                        power == 0 || matches!(factor, Factor::Prime(_))
+                    }) =>
+            {
+                let denominator = self.denominator.at(model, 0)?;
+                let value = polynomial
+                    .get(&0)
+                    .copied()
+                    .unwrap_or_else(|| Integer::from_i128(0));
+                rational(model, value, denominator)
+            }
+            None if self.denominator == Denominator::default() => Ok(polynomial_report(polynomial)),
+            None => Ok(format!(
+                "({})/{}",
+                polynomial_report(polynomial),
+                self.denominator.render()
+            )),
+        }
     }
 
     fn trace_polynomial(&self, model: &mut Model) -> Result<(Polynomial, Denominator)> {
@@ -346,6 +473,66 @@ impl LocalAlgebra {
             }
         }
     }
+}
+
+fn split_dense(model: &mut Model, numerator: Algebra) -> Result<BTreeMap<Diagram, Dense>> {
+    let mut polys = BTreeMap::<Diagram, Dense>::new();
+    for ((diagram, degree), coefficient) in numerator.terms {
+        insert_dense(
+            model,
+            polys.entry(diagram).or_default(),
+            degree,
+            Integer::from_i128(coefficient),
+        )?;
+    }
+    Ok(polys)
+}
+
+fn pack_dense(
+    rank: usize,
+    diagrams: impl IntoIterator<Item = (Diagram, Dense)>,
+) -> Result<Algebra> {
+    let mut terms = BTreeMap::new();
+    for (diagram, coefficients) in diagrams {
+        if coefficients.len() as u128 > DEGREE_LIMIT + 1 {
+            return Err(degree_limit());
+        }
+        for (degree, coefficient) in coefficients
+            .into_iter()
+            .enumerate()
+            .filter(|(_, c)| !c.is_zero())
+        {
+            let coefficient = coefficient.signed().ok_or_else(coefficient_overflow)?;
+            super::require_terms(terms.len() + 1)?;
+            terms.insert((diagram.clone(), degree as u128), coefficient);
+        }
+    }
+    Ok(Algebra { rank, terms })
+}
+
+fn exact_quotient(model: &mut Model, dividend: &[Integer], divisor: &[Integer]) -> Result<Dense> {
+    let nonlocal = || Error::plain("Deligne scalar quotient lies outside the diagram localization");
+    if dividend.len() < divisor.len() {
+        return Err(nonlocal());
+    }
+    let mut remainder = dividend.to_vec();
+    let mut quotient = vec![Integer::from_i128(0); dividend.len() - divisor.len() + 1];
+    let leading = *divisor.last().unwrap();
+    for (degree, value) in quotient.iter_mut().enumerate().rev() {
+        let top = remainder[degree + divisor.len() - 1];
+        if top.is_zero() {
+            continue;
+        }
+        *value = top.divide_exact(model, leading)?.ok_or_else(nonlocal)?;
+        model.spend(divisor.len())?;
+        for (coefficient, &factor) in remainder[degree..].iter_mut().zip(divisor) {
+            *coefficient = coefficient.add(value.multiply_wide(factor)?.negate())?;
+        }
+    }
+    if remainder.iter().any(|coefficient| !coefficient.is_zero()) {
+        return Err(nonlocal());
+    }
+    Ok(quotient)
 }
 
 fn insert_dense(

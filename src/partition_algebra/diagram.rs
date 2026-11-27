@@ -84,6 +84,28 @@ impl Diagram {
         (diagram, internal)
     }
 
+    pub(super) fn rotate(&self, rank: usize) -> Self {
+        Self::canonical(
+            self.0
+                .chunks(rank.max(1))
+                .flat_map(|row| row.last().into_iter().chain(&row[..row.len() - 1]).copied()),
+        )
+    }
+
+    pub(super) fn propagating(&self, rank: usize) -> usize {
+        let blocks = |row: &[u8]| row.iter().fold(0u64, |seen, &label| seen | (1u64 << label));
+        (blocks(&self.0[..rank]) & blocks(&self.0[rank..])).count_ones() as usize
+    }
+
+    pub(super) fn joint_components(&self, rhs: &Self, rank: usize) -> usize {
+        let mut graph = Connectivity::new(2 * rank);
+        graph.install(self, 0);
+        graph.install(rhs, 0);
+        (0..2 * rank)
+            .filter(|&i| graph.parents[i] as usize == i)
+            .count()
+    }
+
     pub(super) fn closure_components(&self, rank: usize) -> usize {
         let mut graph = Connectivity::new(2 * rank);
         graph.install(self, 0);

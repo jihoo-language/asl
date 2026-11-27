@@ -1399,6 +1399,7 @@ pub(crate) enum StatementForm {
     PartitionQuery(crate::partition_algebra::Query, Box<ParsedExpr>),
     PartitionReport(crate::partition_algebra::Report),
     DelignePathReport(crate::partition_algebra::vacillating::Report),
+    DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -7265,9 +7266,36 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Karoubi(Box::new(form)), depth)
     }
 
+    fn deligne_block_key(&mut self) -> Result<crate::partition_algebra::recoupling::Key> {
+        let span = self.span();
+        let rank = self.partition_rank()?;
+        self.expect(Token::Comma)?;
+        let tail = self.partition_labels(true)?;
+        crate::partition_algebra::recoupling::Key::new(rank, tail).map_err(|error| error.at(span))
+    }
+
     fn partition_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::partition_algebra::{Binary, Expression, Unary};
         let (expression, depth) = match name {
+            "rvDeligneMatrixUnit" | "rvDeligneBlockEntry" | "rvDeligneRacahEntry" => {
+                self.expect(Token::LBracket)?;
+                let key = self.deligne_block_key()?;
+                self.expect(Token::Comma)?;
+                let row = self.wide_unsigned("Deligne block row")?;
+                self.expect(Token::Comma)?;
+                let column = self.wide_unsigned("Deligne block column")?;
+                self.expect(Token::RBracket)?;
+                let indices = [row, column];
+                match name {
+                    "rvDeligneMatrixUnit" => (Expression::MatrixUnit(key, indices), 0),
+                    "rvDeligneRacahEntry" => (Expression::OverlapEntry(key, indices), 0),
+                    _ => {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        (Expression::BlockEntry(key, indices, Box::new(input)), depth)
+                    }
+                }
+            }
             "rvDeligneTowerOperator" | "rvDelignePathProjector" => {
                 self.expect(Token::LBracket)?;
                 let rank = self.partition_rank()?;
@@ -11213,6 +11241,33 @@ impl<'src> Parser<'src> {
                     }
                 };
                 StatementForm::Karoubi(Box::new(statement))
+            }
+            Token::Word(
+                name @ ("rvDeligneBlockPaths"
+                | "rvDeligneBlock"
+                | "rvDeligneBlockAt"
+                | "rvDeligneRacah"
+                | "rvDeligneRacahAt"),
+            ) => {
+                use crate::partition_algebra::recoupling::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let key = self.deligne_block_key()?;
+                let n = if name.ends_with("At") {
+                    self.expect(Token::Comma)?;
+                    Some(self.wide_unsigned("finite permutation dimension")?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                let report = match name {
+                    "rvDeligneBlockPaths" => Report::Paths(key),
+                    "rvDeligneBlock" | "rvDeligneBlockAt" => {
+                        Report::Matrix(key, n, Box::new(self.paren_expr(0)?))
+                    }
+                    _ => Report::Overlaps(key, n),
+                };
+                StatementForm::DeligneRecouplingReport(report)
             }
             Token::Word(name @ ("rvDelignePathCounts" | "rvDelignePathEigenvalues")) => {
                 use crate::partition_algebra::vacillating::Report;
@@ -18708,6 +18763,9 @@ impl<'src> Parser<'src> {
                         | "rvDeligneSquareUnit"
                         | "rvDeligneTowerOperator"
                         | "rvDelignePathProjector"
+                        | "rvDeligneMatrixUnit"
+                        | "rvDeligneBlockEntry"
+                        | "rvDeligneRacahEntry"
                         | "rvPartitionOrbit"
                         | "rvPartitionIdentity"
                         | "rvPartitionReflect"

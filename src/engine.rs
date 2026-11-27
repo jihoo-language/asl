@@ -892,6 +892,11 @@ enum TypedForm {
     StableSchurFunctor(crate::rv_witt_spectrum::character::Functor, Box<TypedExpr>),
     PartitionUnary(crate::partition_algebra::Unary, Box<TypedExpr>),
     PartitionBinary(crate::partition_algebra::Binary, Box<[TypedExpr; 2]>),
+    DeligneBlockEntry(
+        crate::partition_algebra::recoupling::Key,
+        [u128; 2],
+        Box<TypedExpr>,
+    ),
     PartitionLocalize(Box<TypedExpr>),
     PartitionDivide(crate::partition_algebra::local::Denominator, Box<TypedExpr>),
     KaroubiCorner(Box<[Label; 2]>, Box<TypedExpr>),
@@ -2219,6 +2224,36 @@ impl Engine {
             }
             StatementForm::DelignePathReport(report) => {
                 return report.execute(&mut self.model).map(Some)
+            }
+            StatementForm::DeligneRecouplingReport(report) => {
+                use crate::partition_algebra::recoupling::Report;
+                return match report {
+                    Report::Paths(key) => {
+                        let tower = self.model.deligne_tower(key.rank)?;
+                        Ok(tower.block(&mut self.model, &key)?.path_report())
+                    }
+                    Report::Matrix(key, n, input) => {
+                        let input = self.checker().expr(*input)?;
+                        self.checker().deligne_block_operand(&key, &input)?;
+                        let diagram = self.eval_partition_local(&input)?;
+                        let tower = self.model.deligne_tower(key.rank)?;
+                        tower.block(&mut self.model, &key)?.matrix(
+                            &mut self.model,
+                            &tower,
+                            &diagram,
+                            n,
+                        )
+                    }
+                    Report::Overlaps(key, n) => {
+                        let tower = self.model.deligne_tower(key.rank)?;
+                        tower.block(&mut self.model, &key)?.overlap_matrix(
+                            &mut self.model,
+                            &tower,
+                            n,
+                        )
+                    }
+                }
+                .map(Some);
             }
             StatementForm::PartitionReport(report) => {
                 return report.execute(&mut self.model).map(Some)
@@ -9530,6 +9565,20 @@ impl Engine {
         }
     }
 
+    fn eval_partition_local(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::local::LocalAlgebra>> {
+        match self.eval(input)? {
+            Value::RVPartitionAlgebra(diagram) => {
+                crate::partition_algebra::local::LocalAlgebra::embed((*diagram).clone())
+                    .map(Rc::new)
+            }
+            Value::RVPartitionLocal(diagram) => Ok(diagram),
+            _ => unreachable!(),
+        }
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -12712,6 +12761,14 @@ impl Engine {
                 };
                 value
                     .specialize(&mut self.model, *rank)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::DeligneBlockEntry(key, indices, input) => {
+                let diagram = self.eval_partition_local(input)?;
+                let tower = self.model.deligne_tower(key.rank)?;
+                tower
+                    .block(&mut self.model, key)?
+                    .entry(&mut self.model, &tower, *indices, &diagram)?
                     .persist(&mut self.model)
             }
             TypedForm::PartitionUnary(operation, input) => match self.eval(input)? {
@@ -25694,6 +25751,31 @@ impl Checker<'_> {
                     TypedForm::PartitionDivide(denominator, Box::new(input)),
                 ))
             }
+            Expression::MatrixUnit(key, indices) => {
+                let ty = self.model.partition_local_type(key.rank)?;
+                let tower = self.model.deligne_tower(key.rank)?;
+                let unit = tower
+                    .block(self.model, &key)?
+                    .unit(self.model, &tower, indices)?;
+                Ok((ty, TypedForm::Constant(unit.persist(self.model)?)))
+            }
+            Expression::BlockEntry(key, indices, input) => {
+                let input = self.expr(*input)?;
+                self.deligne_block_operand(&key, &input)?;
+                let ty = self.model.partition_local_type(0)?;
+                Ok((
+                    ty,
+                    TypedForm::DeligneBlockEntry(key, indices, Box::new(input)),
+                ))
+            }
+            Expression::OverlapEntry(key, indices) => {
+                let ty = self.model.partition_local_type(0)?;
+                let tower = self.model.deligne_tower(key.rank)?;
+                let overlap = tower
+                    .block(self.model, &key)?
+                    .overlap_entry(self.model, &tower, indices)?;
+                Ok((ty, TypedForm::Constant(overlap.persist(self.model)?)))
+            }
             Expression::TowerOperator(rank, level) => {
                 let ty = self.model.partition_local_type(rank)?;
                 let tower = self.model.deligne_tower(rank)?;
@@ -25714,6 +25796,21 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Constant(unit)))
             }
         }
+    }
+
+    fn deligne_block_operand(
+        &self,
+        key: &crate::partition_algebra::recoupling::Key,
+        input: &TypedExpr,
+    ) -> Result<()> {
+        let (rank, _) = self.partition_operand(input, "Deligne block projection")?;
+        if rank != key.rank {
+            return Err(Error::new(
+                input.span,
+                "Deligne block projection requires a diagram of the same rank",
+            ));
+        }
+        Ok(())
     }
 
     fn partition_operand(&self, input: &TypedExpr, operation: &str) -> Result<(usize, bool)> {

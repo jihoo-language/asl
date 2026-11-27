@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::elliptic_modular::decimal;
 use crate::error::{Error, Result};
@@ -7,6 +8,7 @@ use crate::model::Model;
 
 use super::dimension::dimensions;
 use super::local::{Denominator, Factor, LocalAlgebra};
+use super::recoupling::{Block, Key};
 use super::{
     accumulate, coefficient_overflow, diagram, evaluate_polynomial, intermediate_overflow, natural,
     Algebra, Binary, Diagram, Integer, Unary,
@@ -14,7 +16,7 @@ use super::{
 
 const LITERAL_RANK: usize = 3;
 const COUNT_RANK: usize = 16;
-type Tail = Vec<u8>;
+pub(super) type Tail = Vec<u8>;
 type Eigenvalue = [i128; 3];
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
@@ -30,15 +32,9 @@ impl Path {
         }
         let mut out = vec![Vec::new()];
         for (i, tail) in tails.into_iter().enumerate().skip(1) {
-            if tail.len() > rank
-                || tail.iter().any(|&row| row == 0 || row > rank as u128)
-                || tail.windows(2).any(|w| w[0] < w[1])
-            {
-                return Err(Error::plain(format!(
-                    "invalid Deligne path tail at doubled level {i}"
-                )));
-            }
-            let tail = tail.into_iter().map(|row| row as u8).collect::<Tail>();
+            let tail = checked_tail(rank, tail).ok_or_else(|| {
+                Error::plain(format!("invalid Deligne path tail at doubled level {i}"))
+            })?;
             if !children(out.last().unwrap(), i).contains(&tail) {
                 return Err(Error::plain(format!(
                     "invalid Deligne path branch at doubled level {i}"
@@ -51,6 +47,10 @@ impl Path {
 
     pub(crate) fn rank(&self) -> usize {
         (self.0.len() - 1) / 2
+    }
+
+    pub(super) fn vertices(&self) -> &[Tail] {
+        &self.0
     }
 
     fn eigenvalues_at(&self, model: &mut Model, n: u128) -> Result<String> {
@@ -80,6 +80,36 @@ impl Path {
     }
 }
 
+pub(super) fn checked_tail(rank: usize, tail: Vec<u128>) -> Option<Tail> {
+    (tail.len() <= rank
+        && tail.iter().all(|&row| row > 0 && row <= rank as u128)
+        && tail.windows(2).all(|w| w[0] >= w[1]))
+    .then(|| tail.into_iter().map(|row| row as u8).collect())
+}
+
+pub(super) fn terminal_paths(model: &mut Model, rank: usize, tail: &[u8]) -> Result<Vec<Path>> {
+    let mut states = vec![vec![vec![]]];
+    for level in 1..=2 * rank {
+        let mut next = Vec::new();
+        for path in &states {
+            let children = children(path.last().unwrap(), level);
+            model.spend(path.len() * children.len())?;
+            for child in children {
+                let mut extended = path.clone();
+                extended.push(child);
+                next.push(extended);
+            }
+        }
+        states = next;
+    }
+    states.retain(|path| path.last().is_some_and(|row| row == tail));
+    states.sort_unstable();
+    if states.is_empty() {
+        return Err(Error::plain("Deligne terminal has no vacillating paths"));
+    }
+    Ok(states.into_iter().map(Path).collect())
+}
+
 pub(crate) enum Report {
     Counts(usize),
     Eigenvalues(Path, u128),
@@ -107,6 +137,7 @@ pub(crate) struct Tower {
     rank: usize,
     operators: Vec<LocalAlgebra>,
     projectors: RefCell<BTreeMap<Vec<Tail>, LocalAlgebra>>,
+    blocks: RefCell<BTreeMap<Tail, Rc<Block>>>,
 }
 
 impl Tower {
@@ -140,8 +171,21 @@ impl Tower {
         Ok(Self {
             rank,
             operators,
-            projectors: RefCell::new(BTreeMap::new()),
+            projectors: RefCell::default(),
+            blocks: RefCell::default(),
         })
+    }
+
+    pub(crate) fn block(&self, model: &mut Model, key: &Key) -> Result<Rc<Block>> {
+        debug_assert_eq!(self.rank, key.rank);
+        if let Some(block) = self.blocks.borrow().get(&key.tail) {
+            return Ok(block.clone());
+        }
+        let block = Rc::new(Block::new(model, self, key)?);
+        self.blocks
+            .borrow_mut()
+            .insert(key.tail.clone(), block.clone());
+        Ok(block)
     }
 
     pub(crate) fn operator(&self, level: usize) -> Result<LocalAlgebra> {

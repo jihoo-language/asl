@@ -1,0 +1,11 @@
+rvDeligneBlockPaths[3,[2,1]];
+let lastSwap = rvPartitionDiagram[3]{0,1,2,0,2,1};
+rvDeligneBlock[3,[2,1]](lastSwap);
+let m01 = rvDeligneMatrixUnit[3,[2,1],0,1];
+let m10 = rvDeligneMatrixUnit[3,[2,1],1,0];
+assert rvPartitionCompose(m01,m10) == rvDeligneMatrixUnit[3,[2,1],0,0];
+rvDeligneBlockAt[3,[2,1],6](m01);
+rvDeligneRacah[3,[2,1]];
+let trivialPair = rvDeligneRacahEntry[3,[1],3,3];
+rvPartitionTrace(trivialPair);
+rvPartitionTraceAt[6](trivialPair);
