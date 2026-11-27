@@ -455,3 +455,189 @@ fn isotropic_rejections_are_nominal_and_checked_at_the_coordinate_boundary() {
         assert!(error.contains(expected), "{error}");
     }
 }
+
+#[test]
+fn ogrady_example_checks_exceptional_gluing_fujiki_and_rr() {
+    assert_eq!(
+        stdout(example("hyperelliptic-ogradys-tenfold")),
+        concat!(
+            "rvOG10Lattice[M] = n=5, dimension=10, rank=24, signature=(3,21), determinant=-3, discriminant=Z/3, q=-2/3 mod 2, index=2\n",
+            "rvOG10Pair = -6\n",
+            "rvOG10Pair = -3\n",
+            "rvOG10Div = 3\n",
+            "rvOG10Fujiki[0] = -7348320\n",
+            "rvOG10Fujiki[1] = -3674160\n",
+            "rvOG10RR = 6\n",
+            "rvOG10RR = 0\n",
+            "rvOG10RR = -252\n",
+        )
+    );
+}
+
+#[test]
+fn ogrady_gram_determinant_and_pairing_hold_in_a_nontrivial_marking() {
+    let mut source = format!(
+        r"{}
+        let h=rvK3FromKummerDiv(rvKummerHyperplane[B]);
+        let e=rvK3FromKummerDiv(rvKummerNodeDiv[B,0]);
+        let odd=rvK3LatticeBasis[B,1];
+        let w=rvMukai[0,0](add(add(h,odd),e));
+        rvmukaimoduli M(w);
+        let g=rvMukaiModuliGlue[M];
+        let sigma=rvOG10Exc[M];
+        let gen=rvOG10Basis[M,23];
+        assert add(gen,gen)==add(rvOG10[M,0](g),sigma);
+        rvMukaiPair(w,w);
+        rvMukaiPair(g,g);
+        rvOG10Pair(gen,gen);
+        rvOG10Div(sigma);
+        ",
+        marking(),
+    );
+    for i in 0..24 {
+        writeln!(source, "let x{i}=rvOG10Basis[M,{i}];").unwrap();
+        if i < 23 {
+            writeln!(source, "let u{i}=rvMukaiModuliBasis[M,{i}]; rvMukaiPair(g,u{i}); rvOG10Pair(gen,x{i}); rvOG10Pair(sigma,x{i});").unwrap();
+        }
+    }
+    for i in 0..24 {
+        for j in i..24 {
+            writeln!(source, "rvOG10Pair(x{i},x{j});").unwrap();
+        }
+    }
+    let output = stdout(interpret(&source));
+    let mut values = output
+        .lines()
+        .map(|line| line.split_once(" = ").unwrap().1.parse::<i128>().unwrap());
+    assert_eq!(values.next(), Some(2));
+    let glue_square = values.next().unwrap();
+    let gen_square = values.next().unwrap();
+    assert_eq!(glue_square.rem_euclid(8), 6);
+    assert_eq!(4 * gen_square, glue_square - 6);
+    assert_eq!(values.next(), Some(3));
+
+    let mut nontrivial_cross_pair = false;
+    for _ in 0..23 {
+        let glue = values.next().unwrap();
+        let gen = values.next().unwrap();
+        assert_eq!(glue, 2 * gen);
+        assert_eq!(values.next(), Some(0));
+        nontrivial_cross_pair |= gen != 0;
+    }
+    assert!(nontrivial_cross_pair);
+
+    let mut gram = [[0i128; 24]; 24];
+    for i in 0..24 {
+        for j in i..24 {
+            let value = values.next().unwrap();
+            gram[i][j] = value;
+            gram[j][i] = value;
+        }
+        assert_eq!(gram[i][i] % 2, 0);
+    }
+    assert_eq!(values.next(), None);
+    assert_eq!(determinant(gram), -3);
+}
+
+#[test]
+fn ogrady_pairing_is_bilinear_and_retains_wide_exact_cancellation() {
+    let large = 1i128 << 125;
+    let doubled = 2 * large;
+    assert_eq!(
+        stdout(interpret(&format!(
+            r"{}
+            rvmukaimoduli M(rvMukaiIdeal[B,2]);
+            let h=rvK3Lattice[B]{{[0,{doubled},0,0,{doubled},0],[{doubled},0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}};
+            let x=rvOG10[M,{large}](rvMukai[0,0](h));
+            let exc=rvOG10Exc[M];
+            rvOG10Pair(x,x);
+            rvOG10Pair(x,neg(x));
+            rvOG10Fujiki[5](x,x);
+            rvOG10RR(x);
+            let a=rvOG10Basis[M,23];
+            let b=rvOG10Basis[M,0];
+            rvOG10Pair(exc,add(a,b));
+            rvOG10Pair(exc,a);
+            rvOG10Pair(exc,b);
+            rvOG10Div(zero[RVOG10(M)]);
+            ",
+            marking()
+        ))),
+        concat!(
+            "rvOG10Pair = 0\n",
+            "rvOG10Pair = 0\n",
+            "rvOG10Fujiki[5] = 0\n",
+            "rvOG10RR = 6\n",
+            "rvOG10Pair = -3\n",
+            "rvOG10Pair = -3\n",
+            "rvOG10Pair = 0\n",
+            "rvOG10Div = 0\n",
+        )
+    );
+}
+
+#[test]
+fn ogrady_requires_square_two_perpendicular_and_nominal_inputs() {
+    let setup = format!(
+        r"{}
+        let w=rvMukaiIdeal[B,2];
+        rvmukaimoduli M(w);
+        rvmukaimoduli Same(w);
+        rvmukaimoduli SquareFour(rvMukaiIdeal[B,3]);
+        rvmukaimoduli Isotropic(rvMukaiIdeal[B,1]);
+        let zeroM=zero[RVMukai(B)];
+        ",
+        marking()
+    );
+    for (source, expected) in [
+        (
+            "show zero[RVOG10(Isotropic)];",
+            "requires a Mukai moduli lattice of square two",
+        ),
+        (
+            "rvOG10Lattice[SquareFour];",
+            "requires a Mukai moduli lattice of square two",
+        ),
+        (
+            "show rvOG10Exc[Isotropic];",
+            "requires a Mukai moduli lattice of square two",
+        ),
+        ("show rvOG10Basis[M,24];", "between 0 and 23"),
+        (
+            "show rvOG10[M,0](w);",
+            "requires a Mukai vector perpendicular",
+        ),
+        (
+            "rvOG10Pair(zero[RVOG10(M)],zero[RVOG10(Same)]);",
+            "expected type RVOG10(M)",
+        ),
+        ("rvOG10Div(zeroM);", "an RVOG10 class"),
+        (
+            "rvOG10Fujiki[11](zero[RVOG10(M)],zero[RVOG10(M)]);",
+            "between zero and 2n",
+        ),
+        (
+            "rvjactorsionbasis D[C,2](neg(o)){e1,e2,f1,f2}; show rvOG10[M,0](zero[RVMukai(D)]);",
+            "expected type RVMukai(B)",
+        ),
+        (
+            "show add(rvOG10[M,170141183460469231731687303715884105727](zeroM),rvOG10Basis[M,23]);",
+            "OG10 gluing coefficient exceeds",
+        ),
+        (
+            "show neg(rvOG10[M,-170141183460469231731687303715884105728](zeroM));",
+            "OG10 gluing coefficient exceeds",
+        ),
+        (
+            "let x=rvOG10[M,170141183460469231731687303715884105727](zeroM); rvOG10Pair(x,x);",
+            "OG10 pairing exceeds",
+        ),
+        (
+            "rvOG10RR(rvOG10[M,100000000000000000000000000](zeroM));",
+            "Riemann–Roch value exceeds",
+        ),
+    ] {
+        let error = diagnostic(interpret(&format!("{setup}{source}")));
+        assert!(error.contains(expected), "{error}");
+    }
+}

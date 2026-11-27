@@ -268,6 +268,7 @@ pub(crate) enum Kind {
     K3Clifford(Rc<str>, u8),
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
+    OG10(Rc<str>),
     MukaiQuotient(Rc<str>),
     HilbertSquare(Rc<str>, i128),
     SiegelWeight,
@@ -446,6 +447,7 @@ pub(crate) enum Value {
     K3Clifford(Rc<clifford::Element>),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
+    OG10(Rc<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Class>),
     MukaiQuotient(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
     SiegelWeight(crate::siegel::Weight),
@@ -1028,6 +1030,7 @@ impl Model {
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
+            | Kind::OG10(..)
             | Kind::SiegelWeight => usize::MAX,
             Kind::Nakajima(ref grade) => {
                 if grade.supports_states() {
@@ -1263,6 +1266,7 @@ impl Model {
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
+                | Kind::OG10(..)
                 | Kind::HilbertSquare(..)
                 | Kind::SiegelWeight
                 | Kind::ECMap(..)
@@ -4036,6 +4040,11 @@ impl Model {
         })
     }
 
+    pub(crate) fn og10_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.mukai_moduli(name)?.require_og10()?;
+        self.inhabited_type(Kind::OG10(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn mukai_quotient_type(&mut self, name: &Label) -> Result<TypeId> {
         self.mukai_moduli(name)?
             .require_isotropic("RVMukaiQuotient")?;
@@ -5242,6 +5251,7 @@ impl Model {
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
+            | Kind::OG10(..)
             | Kind::HilbertSquare(..)
             | Kind::SiegelWeight
             | Kind::ECMap(..)
@@ -5757,6 +5767,7 @@ impl Model {
             Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
+            Kind::OG10(name) => out.push(&format!("RVOG10({name})")),
             Kind::MukaiQuotient(name) => out.push(&format!("RVMukaiQuotient({name})")),
             Kind::HilbertSquare(name, degree) => {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
@@ -6050,6 +6061,7 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6388,6 +6400,7 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
+            (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
@@ -6724,6 +6737,7 @@ impl Model {
                     return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
                 Kind::Mukai(..) => return Err(Error::plain("cannot enumerate a Mukai lattice")),
+                Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
                 }
@@ -8258,6 +8272,15 @@ impl Model {
             }
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
+            Value::OG10(class) => {
+                let (vector, k) = class.coordinates();
+                let (w, b) = vector.c.coordinates();
+                self.write_type(out, ty, 0)?;
+                out.push(&format!(
+                    "{{r={}, w={w:?}, b={b:?}, s={}, k={k}}}",
+                    vector.r, vector.s
+                ))
+            }
             Value::Mukai(vector) | Value::MukaiQuotient(vector) => {
                 let (w, b) = vector.c.coordinates();
                 self.write_type(out, ty, 0)?;

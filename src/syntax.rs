@@ -136,6 +136,7 @@ pub(crate) enum TypeForm {
     K3Spinor(Label, u8),
     Mukai(Label),
     MukaiQuotient(Label),
+    OG10(Label),
     HilbertSquare(Label, i128),
     SiegelWeight,
     ECMap(Label, Label),
@@ -990,6 +991,7 @@ pub(crate) enum ExprForm {
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
+    OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1192,6 +1194,7 @@ pub(crate) enum StatementForm {
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
+    OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -2938,6 +2941,56 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
+    }
+
+    fn og10_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvOG10Lattice" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Lattice(name)
+            }
+            "rvOG10Pair" => Command::Pair(Box::new(self.paren_pair(0)?)),
+            "rvOG10Fujiki" => {
+                self.expect(Token::LBracket)?;
+                let exponent = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Fujiki(exponent, Box::new(self.paren_pair(0)?))
+            }
+            "rvOG10Div" => Command::Divisibility(Box::new(self.paren_expr(0)?)),
+            _ => Command::RiemannRoch(Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::OG10(Box::new(command)))
+    }
+
+    fn og10_expression(&mut self, operation: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let (expression, depth) = match operation {
+            "rvOG10Basis" => {
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(name, index), 0)
+            }
+            "rvOG10Exc" => {
+                self.expect(Token::RBracket)?;
+                (Expression::Exceptional(name), 0)
+            }
+            _ => {
+                self.expect(Token::Comma)?;
+                let generator = self.signed_wide("a signed integer", "OG10 gluing coefficient")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Build(name, generator, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::OG10(Box::new(expression)), depth)
     }
 
     fn mukai_moduli_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -5263,6 +5316,10 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerHodgeSpectrum"),
             ) => self.hodge_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word(
+                operation @ ("rvOG10Lattice" | "rvOG10Pair" | "rvOG10Div" | "rvOG10Fujiki"
+                | "rvOG10RR"),
+            ) => self.og10_statement(operation)?,
             Token::Word(
                 operation @ ("rvmukaimoduli"
                 | "rvMukaiModuliLattice"
@@ -8633,6 +8690,7 @@ impl<'src> Parser<'src> {
                 | "RVMukai"
                 | "RVKummerWeil"
                 | "RVMukaiQuotient"
+                | "RVOG10"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -8646,6 +8704,7 @@ impl<'src> Parser<'src> {
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
+                "RVOG10" => TypeForm::OG10(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
                 "RVKummerWeil" => TypeForm::KummerWeil(endpoint),
                 _ => TypeForm::K3Lattice(endpoint),
@@ -10715,6 +10774,11 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.nakajima_expression(&name.text, span, nest);
+                }
+                if matches!(name.text.as_str(), "rvOG10" | "rvOG10Basis" | "rvOG10Exc")
+                    && self.token() == Token::LBracket
+                {
+                    return self.og10_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

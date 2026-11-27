@@ -34,7 +34,7 @@ use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Diviso
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::mukai;
+use crate::hyperelliptic_kummer_surface::mukai::{self, moduli::og10};
 use crate::hyperelliptic_kummer_surface::period as k3_period;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
@@ -674,6 +674,8 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     Mukai(MukaiAction),
+    OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
+    OG10Negate(Box<TypedExpr>),
     MukaiQuotient(Rc<mukai::moduli::Lattice>, Box<TypedExpr>),
     MukaiQuotientLift(Box<TypedExpr>),
     MukaiQuotientNegate(Box<TypedExpr>),
@@ -1741,6 +1743,7 @@ impl Engine {
             StatementForm::K3SpinorCoefficient(command) => {
                 return self.spinor_coefficient(command).map(Some)
             }
+            StatementForm::OG10(command) => return self.og10_command(*command).map(Some),
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::K3Period(command) => return self.k3_period_statement(*command),
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
@@ -5559,6 +5562,62 @@ impl Engine {
         }
     }
 
+    fn og10_command(&mut self, command: og10::Command) -> Result<String> {
+        use og10::Command;
+        let divisibility = matches!(&command, Command::Divisibility(_));
+        match command {
+            Command::Lattice(name) => {
+                self.model.mukai_moduli(&name)?.require_og10()?;
+                Ok(og10::report(&name.text))
+            }
+            Command::Pair(_) | Command::Fujiki(..) => {
+                let (inputs, exponent, operation) = match command {
+                    Command::Pair(inputs) => (inputs, None, "rvOG10Pair"),
+                    Command::Fujiki(j, inputs) => (inputs, Some(j), "rvOG10Fujiki"),
+                    _ => unreachable!(),
+                };
+                let [left, right] = *inputs;
+                let checker = &mut self.checker();
+                let left = checker.expr(left)?;
+                let right = checker.expr(right)?;
+                let label = checker.og10_operand(&left, operation)?;
+                checker.require_type(left.ty, &right, operation)?;
+                let lattice = self.model.mukai_moduli(&label)?;
+                let (Value::OG10(left), Value::OG10(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                if let Some(j) = exponent {
+                    let value = left.fujiki(&mut self.model, &lattice, &right, j)?;
+                    Ok(format!("{operation}[{j}] = {value}"))
+                } else {
+                    let value = left.pair(&mut self.model, &lattice, &right)?;
+                    Ok(format!("{operation} = {value}"))
+                }
+            }
+            Command::Divisibility(input) | Command::RiemannRoch(input) => {
+                let operation = if divisibility {
+                    "rvOG10Div"
+                } else {
+                    "rvOG10RR"
+                };
+                let input = self.checker().expr(*input)?;
+                let label = self.checker().og10_operand(&input, operation)?;
+                let lattice = self.model.mukai_moduli(&label)?;
+                let Value::OG10(input) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let value = if divisibility {
+                    input.divisibility(&mut self.model, &lattice)?
+                } else {
+                    input.riemann_roch(&mut self.model, &lattice)?
+                };
+                Ok(format!("{operation} = {value}"))
+            }
+        }
+    }
+
     fn mukai_moduli_command(&mut self, command: mukai::moduli::Command) -> Result<Option<String>> {
         use mukai::moduli::Command;
         let result = match command {
@@ -6563,6 +6622,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Spinor(a), Value::K3Spinor(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::OG10(a), Value::OG10(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a
@@ -8062,6 +8124,19 @@ impl Engine {
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
+            TypedForm::OG10(lattice, generator, input) => {
+                let Value::Mukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                og10::Class::new(&mut self.model, lattice, vector, *generator)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG10Negate(input) => {
+                let Value::OG10(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                class.negate(&mut self.model)?.persist(&mut self.model)
+            }
             TypedForm::MukaiQuotient(lattice, input) => {
                 let Value::Mukai(input) = self.eval(input)? else {
                     unreachable!()
@@ -10589,6 +10664,7 @@ impl Checker<'_> {
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
+            TypeForm::OG10(name) => self.model.og10_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
             TypeForm::SiegelWeight => self.model.siegel_weight_type(),
@@ -11636,6 +11712,7 @@ impl Checker<'_> {
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
+                    Kind::OG10(..) => og10::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
                     Kind::SiegelWeight => Value::SiegelWeight(crate::siegel::Weight::ZERO),
@@ -13777,6 +13854,7 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
+            ExprForm::OG10(expression) => self.og10_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
@@ -14514,6 +14592,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::K3Spinor(SpinorAction::Negate(Box::new(input))),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::OG10(..)) {
+                    return Ok((input.ty, TypedForm::OG10Negate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::MukaiQuotient(..)) {
                     return Ok((input.ty, TypedForm::MukaiQuotientNegate(Box::new(input))));
@@ -18277,6 +18358,7 @@ impl Checker<'_> {
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
+                        | Kind::OG10(..)
                         | Kind::HilbertSquare(..)
                         | Kind::SiegelWeight
                         | Kind::ASDeRham(..)
@@ -20180,6 +20262,44 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Clifford(action)))
+    }
+
+    fn og10_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
+        let Kind::OG10(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVOG10 class"));
+        };
+        Ok(Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn og10_expression(&mut self, expression: og10::Expression) -> Result<(TypeId, TypedForm)> {
+        use og10::Expression;
+        let (name, index) = match expression {
+            Expression::Basis(name, index) => (name, Some(index)),
+            Expression::Exceptional(name) => (name, None),
+            Expression::Build(name, generator, input) => {
+                let lattice = self.model.mukai_moduli(&name)?;
+                let ty = self.model.og10_type(&name)?;
+                let input = self.expr(*input)?;
+                let marking = Label {
+                    text: lattice.marking.to_string(),
+                    span: input.span,
+                };
+                let expected = self.model.mukai_type(&marking)?;
+                self.require_type(expected, &input, "rvOG10 perpendicular component")?;
+                return Ok((ty, TypedForm::OG10(lattice, generator, Box::new(input))));
+            }
+        };
+        let ty = self.model.og10_type(&name)?;
+        let lattice = self.model.mukai_moduli(&name)?;
+        let value = if let Some(index) = index {
+            og10::Class::basis(self.model, &lattice, index)?
+        } else {
+            og10::Class::exceptional(self.model, &lattice)?
+        };
+        Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
     }
 
     fn mukai_quotient_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {

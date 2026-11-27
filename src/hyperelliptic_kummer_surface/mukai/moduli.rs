@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use super::{polarized, unimodular, Integer, K3Vector, Vector};
@@ -5,6 +6,8 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
+
+pub(crate) mod og10;
 
 const AMBIENT_RANK: usize = unimodular::RANK + 2;
 const RANK: usize = AMBIENT_RANK - 1;
@@ -44,6 +47,7 @@ pub(crate) struct Lattice {
     columns: Vec<Column>,
     bezout: Column,
     dual_correction: Option<ColumnInteger>,
+    og10: OnceCell<Box<og10::Form>>,
 }
 
 impl Lattice {
@@ -88,11 +92,7 @@ impl Lattice {
             "rvmukaimoduli requires a primitive Mukai vector",
         )?;
         let dual_correction = if square == 0 {
-            let mut row = Vec::with_capacity(AMBIENT_RANK);
-            for value in &ambient {
-                let pairings = ambient_pairings(model, &ambient, value)?;
-                row.push(column_pair(model, &bezout, &pairings)?);
-            }
+            let row = bezout_pairings(model, &ambient, &bezout)?;
             let square = column_pair(model, &bezout, &row)?;
             let (half, remainder) = square.magnitude.divide_u32(2);
             if remainder != 0 {
@@ -125,6 +125,7 @@ impl Lattice {
             columns,
             bezout,
             dual_correction,
+            og10: OnceCell::new(),
         })
     }
 
@@ -232,18 +233,8 @@ impl Lattice {
 
     pub(crate) fn riemann_roch(&self, model: &mut Model, x: &Vector) -> Result<i128> {
         self.require_perpendicular(model, x, "rvMukaiModuliRR")?;
-        let q = x.wide_pair(model, x)?;
-        let (half, remainder) = q.magnitude.divide_u32(2);
-        if remainder != 0 {
-            return Err(Error::plain("Mukai lattice must have even squares"));
-        }
-        let n = self.n();
-        let upper = Integer {
-            magnitude: half,
-            negative: q.negative,
-        }
-        .add(Integer::from_i128(n + 1))?;
-        generalized_binomial(model, upper, n)
+        let square = x.wide_pair(model, x)?;
+        riemann_roch_polynomial(model, square, self.n())
     }
 
     fn n(&self) -> i128 {
@@ -319,6 +310,15 @@ fn ambient_pairings(model: &mut Model, ambient: &[Vector], vector: &Vector) -> R
     let mut row = [column_integer(0); AMBIENT_RANK];
     for (entry, basis) in row.iter_mut().zip(ambient) {
         *entry = vector.wide_pair(model, basis)?.resize()?;
+    }
+    Ok(row)
+}
+
+fn bezout_pairings(model: &mut Model, ambient: &[Vector], bezout: &Column) -> Result<PairingRow> {
+    let mut row = [column_integer(0); AMBIENT_RANK];
+    for (entry, value) in row.iter_mut().zip(ambient) {
+        let pairings = ambient_pairings(model, ambient, value)?;
+        *entry = column_pair(model, bezout, &pairings)?;
     }
     Ok(row)
 }
@@ -418,6 +418,19 @@ fn bezout(
     ))
 }
 
+fn riemann_roch_polynomial(model: &mut Model, q: Integer, n: i128) -> Result<i128> {
+    let (half, remainder) = q.magnitude.divide_u32(2);
+    if remainder != 0 {
+        return Err(Error::plain("Mukai lattice must have even squares"));
+    }
+    let upper = Integer {
+        magnitude: half,
+        negative: q.negative,
+    }
+    .add(Integer::from_i128(n + 1))?;
+    generalized_binomial(model, upper, n)
+}
+
 fn generalized_binomial(model: &mut Model, mut upper: Integer, n: i128) -> Result<i128> {
     let negative = upper.negative && !upper.is_zero();
     let negative_output = negative && n % 2 != 0;
@@ -448,7 +461,7 @@ fn generalized_binomial(model: &mut Model, mut upper: Integer, n: i128) -> Resul
 }
 
 fn rr_range() -> Error {
-    Error::plain("Mukai moduli Riemann–Roch value exceeds the signed 128-bit range")
+    Error::plain("Riemann–Roch value exceeds the signed 128-bit range")
 }
 
 fn one() -> Integer {
