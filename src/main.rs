@@ -121,6 +121,7 @@ mod rv_newton;
 mod rv_ore;
 mod rv_pcurv;
 mod rv_period;
+mod rv_phodge;
 mod rv_poly;
 mod rv_qconnection;
 mod rv_qgr;

@@ -76,6 +76,7 @@ use crate::rv_negative;
 use crate::rv_ore;
 use crate::rv_pcurv;
 use crate::rv_period::{self, Grade as PeriodGrade, Level as PeriodLevel, Period};
+use crate::rv_phodge::{Module as PHodgeModule, Specification as PHodgeSpec};
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
 use crate::rv_satake;
@@ -485,6 +486,7 @@ pub(crate) struct Model {
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_periods: HashMap<String, Rc<Period>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
+    rv_phodge_modules: HashMap<String, Rc<PHodgeModule>>,
     rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
@@ -549,6 +551,7 @@ impl Model {
             rv_curves: HashMap::new(),
             rv_periods: HashMap::new(),
             rv_as_covers: HashMap::new(),
+            rv_phodge_modules: HashMap::new(),
             rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
@@ -2841,6 +2844,30 @@ impl Model {
 
     pub(crate) fn rv_ct_residue_type(&mut self, level: PeriodLevel) -> Result<TypeId> {
         self.inhabited_type(Kind::RVCTResidue(level), 0)
+    }
+
+    pub(crate) fn rv_phodge(&self, name: &Label) -> Result<Rc<PHodgeModule>> {
+        self.rv_phodge_modules
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown filtered module '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn register_rv_phodge(&mut self, name: Label, spec: PHodgeSpec) -> Result<()> {
+        if self.rv_phodge_modules.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("filtered module '{}' is already defined", name.text),
+            ));
+        }
+        let module = PHodgeModule::build(self, spec).map_err(|error| error.at(name.span))?;
+        self.rv_phodge_modules.insert(name.text, Rc::new(module));
+        Ok(())
     }
 
     pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {

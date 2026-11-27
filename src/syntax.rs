@@ -29,6 +29,7 @@ use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_gauss::Operation as GaussOp;
+use crate::rv_phodge::{Query as PHodgeQuery, Specification as PHodgeSpec};
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
@@ -1095,6 +1096,8 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
+    RvPHodge(Label, PHodgeSpec),
+    RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
     RVCTExact(Label, u128),
     RvAsOdd(Label, usize, Vec<(usize, i128)>),
@@ -1566,6 +1569,75 @@ impl<'src> Parser<'src> {
         };
         self.advance()?;
         Ok(value)
+    }
+
+    fn phodge_rational(&mut self) -> Result<(i128, i128)> {
+        let numerator = self.signed_wide("an integer numerator", "filtered module numerator")?;
+        self.expect(Token::Comma)?;
+        let denominator =
+            self.signed_wide("a positive denominator", "filtered module denominator")?;
+        Ok((numerator, denominator))
+    }
+
+    fn phodge_spec(&mut self, prime: usize) -> Result<PHodgeSpec> {
+        self.expect(Token::LBrace)?;
+        self.expect(Token::LBrace)?;
+        let mut eigenvalues = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            eigenvalues.push(self.phodge_rational()?);
+            self.expect(Token::RParen)?;
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::Comma)?;
+        self.expect(Token::LBrace)?;
+        let mut monodromy = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let (row, column) = self.bidegree()?;
+            self.expect(Token::Comma)?;
+            let (a, b) = self.phodge_rational()?;
+            self.expect(Token::RParen)?;
+            monodromy.push((row, column, a, b));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::Comma)?;
+        self.expect(Token::LBrace)?;
+        let mut filtration = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let weight = self.signed_number("Hodge weight")?;
+            self.expect(Token::Comma)?;
+            self.expect(Token::LBracket)?;
+            let mut column = Vec::new();
+            while self.token() != Token::RBracket {
+                column
+                    .push(self.signed_wide("an integer column entry", "filtration column entry")?);
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            self.expect(Token::RParen)?;
+            filtration.push((weight, column));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::RBrace)?;
+        Ok(PHodgeSpec {
+            prime,
+            eigenvalues,
+            monodromy,
+            filtration,
+        })
     }
 
     fn exponents(&mut self) -> Result<Vec<usize>> {
@@ -3315,6 +3387,33 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RvCrystalQuery(name, query)
+            }
+            Token::Word("rvphodge") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::RvPHodge(name, self.phodge_spec(prime)?)
+            }
+            Token::Word("rvPHodgeData" | "rvPHodgeWeak" | "rvPHodgeHN") => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvPHodgeData") => {
+                        let coordinates = self
+                            .eat(Token::Comma)?
+                            .then(|| self.exponents())
+                            .transpose()?;
+                        PHodgeQuery::Data(coordinates)
+                    }
+                    Token::Word("rvPHodgeWeak") => PHodgeQuery::WeakAdmissibility,
+                    _ => PHodgeQuery::HarderNarasimhan,
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvPHodgeQuery(name, query)
             }
             Token::Word("rvascover") => {
                 self.advance()?;

@@ -2183,6 +2183,15 @@ impl Engine {
                     .rv_as_odd_cover(&name)?
                     .report(&mut self.model, &name.text, query)?
             }
+            StatementForm::RvPHodge(name, spec) => {
+                self.model.register_rv_phodge(name, spec)?;
+                return Ok(None);
+            }
+            StatementForm::RvPHodgeQuery(name, query) => {
+                self.model
+                    .rv_phodge(&name)?
+                    .report(&mut self.model, &name.text, query)?
+            }
             StatementForm::RvAsQuery(query, name) => {
                 let cover = self.model.rv_as_cover(&name)?;
                 cover.report(&mut self.model, &name.text, query)?
