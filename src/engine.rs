@@ -2,6 +2,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use verbitsky_resolution::deformation;
 
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
@@ -908,6 +909,8 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    VerbitskyTangentLiteral(Vec<(usize, TypedExpr)>),
+    VerbitskyDeformationCast(bool, Box<TypedExpr>),
     VerbitskyFreeTimes(Vec<u128>, Box<TypedExpr>),
     VerbitskyFreeDifferential(Box<TypedExpr>),
     VerbitskyFreeAugment(Box<TypedExpr>),
@@ -2467,6 +2470,9 @@ impl Engine {
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
+            StatementForm::VerbitskyDeformation(command) => {
+                return self.verbitsky_deformation_command(*command).map(Some)
+            }
             StatementForm::VerbitskyFree(command) => {
                 return self.verbitsky_free_command(*command).map(Some)
             }
@@ -6132,6 +6138,52 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn verbitsky_deformation_command(&mut self, command: deformation::Command) -> Result<String> {
+        use deformation::Command;
+        match command {
+            Command::Dims(name, length, shift) => {
+                let grade = deformation::Grade {
+                    basis: name.text.into(),
+                    length,
+                    shift,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let [tangent, t1, ext1] = form.deformation_dims(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyDeformationDims[{}, {length}, {shift}] = ({tangent}, {t1}, {ext1})",
+                    grade.basis
+                ))
+            }
+            Command::Table(name, length) => {
+                let grade = deformation::Grade {
+                    basis: name.text.into(),
+                    length,
+                    shift: 0,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.deformation_table(&mut self.model, &grade)?;
+                Ok(format!(
+                    "rvVerbitskyDeformationTable[{}, {length}] = {value}",
+                    grade.basis
+                ))
+            }
+            Command::Obstruction(input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self
+                    .checker()
+                    .verbitsky_deformation_grade(&input, "rvVerbitskyObstruction", Some(false))?
+                    .0
+                    .clone();
+                let Value::VerbitskyFree(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let report = form.deformation_obstruction(&mut self.model, &grade, &value)?;
+                Ok(format!("rvVerbitskyObstruction = {report}"))
             }
         }
     }
@@ -12124,6 +12176,44 @@ impl Engine {
                     .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
             }
+            TypedForm::VerbitskyTangentLiteral(entries) => {
+                let Kind::VerbitskyDeformation(grade, false) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let mut values = Vec::new();
+                for (index, input) in entries {
+                    let Value::HodgeTensor(tensor) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    values.push((*index, tensor));
+                }
+                form.tangent_literal(
+                    &mut self.model,
+                    &grade,
+                    values.iter().map(|(i, value)| (*i, value.as_ref())),
+                )?
+                .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyDeformationCast(project, input) => {
+                let Kind::VerbitskyDeformation(grade, _) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let value = self.eval(input)?;
+                if *project {
+                    let Value::VerbitskyFree(value) = value else {
+                        unreachable!()
+                    };
+                    self.model
+                        .hodge_wick(&grade.basis)?
+                        .deformation_class(&mut self.model, &grade, &value)?
+                        .persist(&mut self.model)
+                } else {
+                    Ok(value)
+                }
+            }
             TypedForm::VerbitskyFreeTimes(powers, input) => {
                 let Kind::VerbitskyFree(grade) = self.model.kind(expr.ty) else {
                     unreachable!()
@@ -15171,6 +15261,16 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::VerbitskyDeformation(name, length, shift, abstract_class) => {
+                self.model.verbitsky_deformation_type(
+                    deformation::Grade {
+                        basis: name.text.into(),
+                        length,
+                        shift,
+                    },
+                    abstract_class,
+                )
+            }
             TypeForm::VerbitskyFree(name, length, homological, weight) => {
                 self.model.verbitsky_free_type(verbitsky_resolution::Grade {
                     basis: name.text.into(),
@@ -16317,7 +16417,7 @@ impl Checker<'_> {
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
-                    Kind::VerbitskyFree(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
+                    Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
@@ -18562,6 +18662,9 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::VerbitskyKoszul(operation) => self.koszul_expression(*operation),
+            ExprForm::VerbitskyDeformation(operation) => {
+                self.verbitsky_deformation_expression(*operation)
+            }
             ExprForm::VerbitskyFree(operation) => self.verbitsky_free_expression(*operation),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
@@ -19458,7 +19561,10 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
-                if matches!(self.model.kind(input.ty), Kind::VerbitskyFree(..)) {
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..)
+                ) {
                     return Ok((
                         input.ty,
                         TypedForm::VerbitskyFreeScale((-1, 1), Box::new(input)),
@@ -23439,6 +23545,7 @@ impl Checker<'_> {
                         | Kind::Verbitsky(..)
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
+                        | Kind::VerbitskyDeformation(..)
                         | Kind::VerbitskyFree(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
@@ -25135,6 +25242,108 @@ impl Checker<'_> {
                 Ok((
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn verbitsky_deformation_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+        abstract_class: Option<bool>,
+    ) -> Result<(&deformation::Grade, bool)> {
+        match self.model.kind(input.ty) {
+            Kind::VerbitskyDeformation(grade, kind)
+                if abstract_class.is_none_or(|class| class == *kind) =>
+            {
+                Ok((grade, *kind))
+            }
+            _ => Err(self.invalid_operand(
+                input,
+                operation,
+                match abstract_class {
+                    Some(false) => "an RVVerbitskyTangent vector",
+                    Some(true) => "an RVVerbitskyTOne class",
+                    None => "an RVVerbitskyTangent or RVVerbitskyTOne vector",
+                },
+            )),
+        }
+    }
+
+    fn verbitsky_deformation_expression(
+        &mut self,
+        operation: deformation::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use deformation::Expression;
+        match operation {
+            Expression::Basis(abstract_class, name, length, shift, index) => {
+                let grade = deformation::Grade {
+                    basis: name.text.into(),
+                    length,
+                    shift,
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.deformation_basis(self.model, &grade, abstract_class, index)?;
+                let ty = self
+                    .model
+                    .verbitsky_deformation_type(grade, abstract_class)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Literal(name, length, shift, entries) => {
+                let grade = deformation::Grade {
+                    basis: name.text.into(),
+                    length,
+                    shift,
+                };
+                let ty = self
+                    .model
+                    .verbitsky_deformation_type(grade.clone(), false)?;
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let mut typed = Vec::new();
+                for (index, entry) in entries {
+                    let input = self.expr(entry)?;
+                    let slot = form.deformation_slot(self.model, &grade, index)?;
+                    if !matches!(self.model.kind(input.ty), Kind::Verbitsky(found) if *found == slot)
+                    {
+                        let expected = format!(
+                            "an RVVerbitsky({},{},{}) coordinate",
+                            slot.basis, slot.length, slot.degree
+                        );
+                        return Err(self.invalid_operand(&input, "rvVerbitskyTangent", &expected));
+                    }
+                    typed.push((index, input));
+                }
+                Ok((ty, TypedForm::VerbitskyTangentLiteral(typed)))
+            }
+            Expression::Cast(project, input) => {
+                let input = self.expr(*input)?;
+                let operation = if project {
+                    "rvVerbitskyDeformationClass"
+                } else {
+                    "rvVerbitskyDeformationRepresentative"
+                };
+                let (grade, _) =
+                    self.verbitsky_deformation_grade(&input, operation, Some(!project))?;
+                let ty = self
+                    .model
+                    .verbitsky_deformation_type(grade.clone(), project)?;
+                Ok((
+                    ty,
+                    TypedForm::VerbitskyDeformationCast(project, Box::new(input)),
+                ))
+            }
+            Expression::Scale(scalar, input) => {
+                if scalar.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                self.verbitsky_deformation_grade(&input, "rvVerbitskyDeformationScale", None)?;
+                Ok((
+                    input.ty,
+                    TypedForm::VerbitskyFreeScale(scalar, Box::new(input)),
                 ))
             }
         }

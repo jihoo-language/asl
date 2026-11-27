@@ -157,6 +157,7 @@ pub(crate) enum TypeForm {
     HodgeTensor(Label, i128, i128),
     Verbitsky(Label, i128, i128),
     VerbitskyKoszul(Label, i128, i128, i128, bool),
+    VerbitskyDeformation(Label, i128, i128, bool),
     VerbitskyFree(Label, i128, i128, i128),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
@@ -1047,6 +1048,7 @@ pub(crate) enum ExprForm {
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
+    VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Expression>),
     VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     OG6Clifford(
@@ -1306,6 +1308,7 @@ pub(crate) enum StatementForm {
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
+    VerbitskyDeformation(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Command>),
     VerbitskyFree(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Command>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
@@ -6759,6 +6762,107 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn verbitsky_deformation_grade(&mut self) -> Result<(Label, i128, i128)> {
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+        self.expect(Token::Comma)?;
+        let shift = self.signed_wide("a signed shift", "Verbitsky deformation shift")?;
+        Ok((basis, length, shift))
+    }
+
+    fn verbitsky_deformation_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Command;
+        self.advance()?;
+        let command = match name {
+            "rvVerbitskyObstruction" => Command::Obstruction(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let command = if name == "rvVerbitskyDeformationTable" {
+                    let basis = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let length = self.signed_wide("a Hilbert length", "Hilbert length")?;
+                    Command::Table(basis, length)
+                } else {
+                    let (basis, length, shift) = self.verbitsky_deformation_grade()?;
+                    Command::Dims(basis, length, shift)
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::VerbitskyDeformation(Box::new(command)))
+    }
+
+    fn verbitsky_deformation_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::deformation::Expression;
+        let (expression, depth) = match name {
+            "rvVerbitskyTangentBasis" | "rvVerbitskyTOneBasis" => {
+                self.expect(Token::LBracket)?;
+                let (basis, length, shift) = self.verbitsky_deformation_grade()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (
+                    Expression::Basis(name == "rvVerbitskyTOneBasis", basis, length, shift, index),
+                    0,
+                )
+            }
+            "rvVerbitskyTangent" => {
+                self.expect(Token::LBracket)?;
+                let (basis, length, shift) = self.verbitsky_deformation_grade()?;
+                self.expect(Token::RBracket)?;
+                let entries = self.set_named_rows(|parser| {
+                    parser.expect(Token::LParen)?;
+                    let index = parser.number()?.0;
+                    parser.expect(Token::Comma)?;
+                    let value = parser.expr(nest + 1)?;
+                    parser.expect(Token::RParen)?;
+                    Ok((index, value))
+                })?;
+                let depth = entries
+                    .iter()
+                    .map(|(_, value)| value.depth + 1)
+                    .max()
+                    .unwrap_or(0);
+                (Expression::Literal(basis, length, shift, entries), depth)
+            }
+            "rvVerbitskyDeformationScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("an integer numerator", "deformation numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator =
+                    self.signed_wide("a positive denominator", "deformation denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Scale((numerator, denominator), Box::new(input)),
+                    depth,
+                )
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Cast(name == "rvVerbitskyDeformationClass", Box::new(input)),
+                    depth,
+                )
+            }
+        };
+        expr(
+            span,
+            ExprForm::VerbitskyDeformation(Box::new(expression)),
+            depth,
+        )
+    }
+
     fn verbitsky_free_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution::Command;
         self.advance()?;
@@ -9854,6 +9958,11 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyTorTable"
                 | "rvVerbitskyMinimalRelation"),
             ) => self.koszul_statement(command)?,
+            Token::Word(
+                command @ ("rvVerbitskyDeformationDims"
+                | "rvVerbitskyDeformationTable"
+                | "rvVerbitskyObstruction"),
+            ) => self.verbitsky_deformation_statement(command)?,
             Token::Word(
                 command @ ("rvVerbitskyResolution"
                 | "rvVerbitskyResolutionEntry"
@@ -13929,6 +14038,22 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
+        if matches!(name.text.as_str(), "RVVerbitskyTangent" | "RVVerbitskyTOne")
+            && self.eat(Token::LParen)?
+        {
+            let (basis, length, shift) = self.verbitsky_deformation_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::VerbitskyDeformation(
+                    basis,
+                    length,
+                    shift,
+                    name.text == "RVVerbitskyTOne",
+                ),
+                0,
+            );
+        }
         if name.text == "RVVerbitskyFree" && self.eat(Token::LParen)? {
             let (basis, length, p, w) = self.koszul_grade()?;
             self.expect(Token::RParen)?;
@@ -15778,6 +15903,20 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvVerbitskyTangent"
+                        | "rvVerbitskyTangentBasis"
+                        | "rvVerbitskyTOneBasis"
+                        | "rvVerbitskyDeformationScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvVerbitskyDeformationClass" | "rvVerbitskyDeformationRepresentative"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.verbitsky_deformation_expression(&name.text, span, nest);
                 }
                 if (name.text == "rvVerbitskyFreeTimes" && self.token() == Token::LBrace)
                     || (matches!(

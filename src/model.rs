@@ -3,6 +3,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbits
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
+use verbitsky_resolution::deformation;
 
 use crate::adams::Adams;
 use crate::binary_field::BinaryField;
@@ -301,6 +302,7 @@ pub(crate) enum Kind {
     Verbitsky(nakajima::Grade),
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
+    VerbitskyDeformation(deformation::Grade, bool),
     VerbitskyFree(verbitsky_resolution::Grade),
     K3Clifford(Rc<str>, u8),
     OG6Clifford(Rc<str>, u8),
@@ -1429,6 +1431,7 @@ impl Model {
                     1
                 }
             }
+            Kind::VerbitskyDeformation(..) => usize::MAX,
             Kind::VerbitskyFree(ref grade) => {
                 if self.hodge_wick_forms[grade.basis.as_ref()].supports_free(grade) {
                     usize::MAX
@@ -1700,6 +1703,7 @@ impl Model {
                 | Kind::Verbitsky(..)
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
+                | Kind::VerbitskyDeformation(..)
                 | Kind::VerbitskyFree(..)
                 | Kind::K3Clifford(..)
                 | Kind::OG6Clifford(..)
@@ -5298,6 +5302,16 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn verbitsky_deformation_type(
+        &mut self,
+        grade: deformation::Grade,
+        abstract_class: bool,
+    ) -> Result<TypeId> {
+        self.hodge_wick(&grade.basis)?
+            .validate_deformation(&grade)?;
+        self.inhabited_type(Kind::VerbitskyDeformation(grade, abstract_class), 0)
+    }
+
     pub(crate) fn verbitsky_free_type(
         &mut self,
         grade: verbitsky_resolution::Grade,
@@ -6872,6 +6886,7 @@ impl Model {
             | Kind::Verbitsky(..)
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
+            | Kind::VerbitskyDeformation(..)
             | Kind::VerbitskyFree(..)
             | Kind::K3Clifford(..)
             | Kind::OG6Clifford(..)
@@ -7424,6 +7439,17 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::VerbitskyDeformation(grade, abstract_class) => {
+                let name = if *abstract_class {
+                    "RVVerbitskyTOne"
+                } else {
+                    "RVVerbitskyTangent"
+                };
+                out.push(&format!(
+                    "{name}({},{},{})",
+                    grade.basis, grade.length, grade.shift
+                ))
+            }
             Kind::VerbitskyFree(grade) => out.push(&format!(
                 "RVVerbitskyFree({},{},{},{})",
                 grade.basis, grade.length, grade.homological, grade.weight
@@ -8673,6 +8699,11 @@ impl Model {
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
+                Kind::VerbitskyDeformation(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational Verbitsky deformation space",
+                    ));
                 }
                 Kind::VerbitskyFree(ref grade) => {
                     if self.hodge_wick(&grade.basis)?.supports_free(grade) {
@@ -10503,10 +10534,12 @@ impl Model {
                 self.write_nakajima_terms(out, state, 1)
             }
             Value::VerbitskyFree(vector) => {
-                let Kind::VerbitskyFree(grade) = self.kind(ty) else {
-                    unreachable!()
+                let basis = match self.kind(ty) {
+                    Kind::VerbitskyFree(grade) => &grade.basis,
+                    Kind::VerbitskyDeformation(grade, _) => &grade.basis,
+                    _ => unreachable!(),
                 };
-                let form = self.hodge_wick(&grade.basis)?;
+                let form = self.hodge_wick(basis)?;
                 self.write_type(out, ty, 0)?;
                 out.push(&vector.text(self, &form)?)
             }

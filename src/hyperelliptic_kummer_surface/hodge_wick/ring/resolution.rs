@@ -13,6 +13,7 @@ use super::super::{multiply_powers, storage, work_limit, Entry, Form, Power, Ten
 use super::{koszul, Grade as RingGrade, Monomial};
 
 mod builder;
+pub(crate) mod deformation;
 mod pfaffian;
 pub(crate) use builder::Resolution;
 

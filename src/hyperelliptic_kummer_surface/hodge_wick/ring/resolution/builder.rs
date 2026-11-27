@@ -36,6 +36,11 @@ impl Resolution {
             .ok_or_else(invalid_index)
     }
 
+    pub(super) fn column(&self, p: usize, index: usize) -> Result<&Vector> {
+        self.shift(p, index)?;
+        Ok(&self.stages[p].columns[index])
+    }
+
     pub(super) fn entry(&self, p: usize, i: usize, j: usize) -> Result<Option<&Tensor>> {
         let prev = p.checked_sub(1).ok_or_else(invalid_index)?;
         self.shift(prev, i)?;
@@ -99,6 +104,11 @@ impl Form {
                 };
                 let koszul = grade.koszul_grade();
                 let betti = self.tor_betti(model, &koszul)?;
+                // A zero Tor slice certifies there are no minimal generators
+                // of this weight. Avoid expanding their redundant multiples.
+                if betti == 0 {
+                    continue;
+                }
                 let columns = if p == 1 {
                     let mut columns = Vec::with_capacity(betti);
                     for index in 0..betti {
@@ -244,6 +254,10 @@ impl Axis {
         Ok(Self(axis))
     }
 
+    pub(super) fn entries(&self) -> &[(usize, Monomial)] {
+        &self.0
+    }
+
     pub(super) fn len(&self) -> usize {
         self.0.len()
     }
@@ -258,7 +272,7 @@ impl Axis {
             })
     }
 
-    fn vector(&self, model: &mut Model, entries: &[Rational]) -> Result<Vector> {
+    pub(super) fn vector(&self, model: &mut Model, entries: &[Rational]) -> Result<Vector> {
         let mut result = Vector::default();
         for ((i, powers), &value) in self.0.iter().zip(entries) {
             result.insert(model, *i, powers.clone(), value)?;
