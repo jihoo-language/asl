@@ -82,6 +82,7 @@ pub(crate) enum TypeForm {
     DoubleRelative(Label),
     DoubleDefectSixJ(Label, usize),
     DoubleCentralMap(Label, usize),
+    DoubleTube(Label),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -806,6 +807,7 @@ pub(crate) enum ExprForm {
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Expression>),
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Expression>),
+    DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1311,6 +1313,7 @@ pub(crate) enum StatementForm {
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Command>),
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Command>),
+    DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4769,6 +4772,90 @@ impl<'src> Parser<'src> {
             (entry, depth)
         };
         expr(span, ExprForm::DoubleDefectSixJ(Box::new(form)), depth + 1)
+    }
+
+    fn tube_statement(&mut self, op: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::tube::Command;
+        self.advance()?;
+        let command = if op == "rvdoubletube" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let cat = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Declare(name, cat)
+        } else if op == "rvDoubleTubeDecompose" {
+            Command::Decompose(Box::new(self.paren_expr(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            let command = match op {
+                "rvDoubleTubeData" => Command::Data(name),
+                "rvDoubleTubeAnnular" => Command::Annular(name, self.following_indices()?),
+                "rvDoubleTubeStack" => Command::Stack(name, self.following_indices()?),
+                "rvDoubleTubeBasisData" => {
+                    let [i] = self.following_indices()?;
+                    Command::BasisData(name, i)
+                }
+                _ => {
+                    let [i] = self.following_indices()?;
+                    Command::BlockData(name, i)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::DoubleTube(Box::new(command)))
+    }
+
+    fn tube_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::tube::Expression;
+        let (form, depth) = match op {
+            "rvDoubleTubeAdd" | "rvDoubleTubeProduct" | "rvDoubleTubeScale" => {
+                let inputs = Box::new(self.paren_pair(nest)?);
+                let depth = inputs.iter().map(|x| x.depth).max().unwrap() + 1;
+                let form = match op {
+                    "rvDoubleTubeAdd" => Expression::Add(inputs),
+                    "rvDoubleTubeProduct" => Expression::Product(inputs),
+                    _ => Expression::Scale(inputs),
+                };
+                (form, depth)
+            }
+            "rvDoubleTubeCoefficient" | "rvDoubleTubeBlockEntry" => {
+                if op == "rvDoubleTubeCoefficient" {
+                    let [i] = self.relative_indices()?;
+                    let input = Box::new(self.paren_expr(nest)?);
+                    let depth = input.depth + 1;
+                    (Expression::Coefficient(i, input), depth)
+                } else {
+                    let key = self.relative_indices()?;
+                    let input = Box::new(self.paren_expr(nest)?);
+                    let depth = input.depth + 1;
+                    (Expression::BlockEntry(key, input), depth)
+                }
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let form = match op {
+                    "rvDoubleTubeZero" => Expression::Zero(name),
+                    "rvDoubleTubeUnit" => Expression::Unit(name),
+                    "rvDoubleTubeMatrixUnit" => {
+                        Expression::MatrixUnit(name, self.following_indices()?)
+                    }
+                    _ => {
+                        let [i] = self.following_indices()?;
+                        if op == "rvDoubleTubeBasis" {
+                            Expression::Basis(name, i)
+                        } else {
+                            Expression::Central(name, i)
+                        }
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                (form, 0)
+            }
+        };
+        expr(span, ExprForm::DoubleTube(Box::new(form)), depth)
     }
 
     fn central_statement(&mut self, op: &str) -> Result<StatementForm> {
@@ -14295,6 +14382,15 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
             Token::Word(
+                op @ ("rvdoubletube"
+                | "rvDoubleTubeData"
+                | "rvDoubleTubeAnnular"
+                | "rvDoubleTubeBasisData"
+                | "rvDoubleTubeBlockData"
+                | "rvDoubleTubeStack"
+                | "rvDoubleTubeDecompose"),
+            ) => self.tube_statement(op)?,
+            Token::Word(
                 op @ ("rvDoubleBulkBoundaryValidate"
                 | "rvDoubleBulkBoundaryFusion"
                 | "rvDoubleCentralUnit"
@@ -18769,6 +18865,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleTube" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleTube(name), 0);
+        }
         if name.text == "RVDoubleCentralMap" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::Comma)?;
@@ -22042,6 +22143,23 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.central_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvDoubleTubeAdd" | "rvDoubleTubeProduct" | "rvDoubleTubeScale"
+                ) && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvDoubleTubeZero"
+                            | "rvDoubleTubeUnit"
+                            | "rvDoubleTubeBasis"
+                            | "rvDoubleTubeCentral"
+                            | "rvDoubleTubeMatrixUnit"
+                            | "rvDoubleTubeCoefficient"
+                            | "rvDoubleTubeBlockEntry"
+                    ) && self.token() == Token::LBracket)
+                {
+                    return self.tube_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

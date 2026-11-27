@@ -1,24 +1,14 @@
 use crate::error::{Error, Result};
 use crate::model::Model;
 
+use super::super::tensor::Layout;
 use super::super::{tree, Ambient, Balanced, Image, Module, Pair};
 use super::branch::{bulk_image, Bulk};
 
 #[derive(Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct Map(pub(super) Vec<Vec<Image>>);
-
-#[derive(Clone, Copy)]
-pub(super) struct Layout<'a> {
-    pub(super) product: &'a Balanced,
-    pub(super) factors: [&'a Module; 2],
-}
-
-impl Layout<'_> {
-    pub(super) fn reduce(&self, ambient: &Ambient<'_>, pair: Pair, phase: usize) -> Result<Image> {
-        let [a, b] = self.factors;
-        self.product.canonical(ambient, a, b, pair, phase)
-    }
-}
+pub(in crate::rv_crossed::drinfeld_double::defects::relative) struct Map(
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) Vec<Vec<Image>>,
+);
 
 impl Map {
     fn build(
@@ -147,13 +137,13 @@ impl Map {
     }
 }
 
-pub(super) struct Central {
-    pub(super) products: [Balanced; 2],
-    pub(super) maps: [Map; 2],
+pub(in crate::rv_crossed::drinfeld_double::defects::relative) struct Central {
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) products: [Balanced; 2],
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) maps: [Map; 2],
 }
 
 impl Central {
-    pub(super) fn new(
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) fn new(
         model: &mut Model,
         ambient: &Ambient<'_>,
         bulk: [&Bulk; 2],

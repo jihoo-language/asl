@@ -11,8 +11,9 @@ use super::{check_categories, Ambient, Category, Double, Image, Operand, Pair};
 mod branch;
 mod coherence;
 mod movement;
-use branch::Bulk;
-use movement::{Central, Map};
+pub(super) use branch::Bulk;
+pub(super) use movement::Central;
+use movement::Map;
 
 pub(crate) use branch::fusion as validate_branching;
 pub(crate) use branch::self_boundary;

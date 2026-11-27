@@ -1,12 +1,13 @@
 use crate::error::{Error, Result};
 use crate::model::Model;
 
+use super::super::tensor::Layout;
 use super::super::{
     tree::{self, Node, Tree},
     Ambient, Balanced, Category, Module,
 };
 use super::branch::Bulk;
-use super::movement::{Central, Layout, Map};
+use super::movement::{Central, Map};
 
 pub(super) fn unit(
     model: &mut Model,

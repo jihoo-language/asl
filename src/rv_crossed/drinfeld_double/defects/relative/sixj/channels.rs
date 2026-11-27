@@ -4,8 +4,10 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::rv_lens::Rational;
 
+use super::super::linear::{self, GradedMap};
+use super::super::tensor::Layout;
 use super::super::tree::{self, Branch, Node, Tree};
-use super::super::{decompose, Ambient, Balanced, Hom, Image, Module, Pair};
+use super::super::{decompose, Ambient, Balanced, Hom, Image, Module};
 use super::matrix::{self, Field, Matrix};
 use super::{Category, Interval};
 
@@ -52,10 +54,6 @@ pub(super) struct Transition {
     pub(super) matrices: [Matrix; 2],
     pub(super) norms: [Vec<Rational>; 2],
     pub(super) grades: Vec<Vec<Image>>,
-}
-
-struct GradedMap {
-    grades: Vec<Matrix>,
 }
 
 impl<'a> Work<'a> {
@@ -266,98 +264,22 @@ impl<'a> Work<'a> {
         inclusions: [&Channel; 2],
         grade: usize,
     ) -> Result<Matrix> {
-        let mut result = Matrix::zero(
-            branch.product.bases[grade].len(),
-            space.product.bases[grade].len(),
-        )?;
-        for (col, &pair) in space.product.bases[grade].iter().enumerate() {
-            self.tensor_terms(branch, inclusions, pair, |field, row, term| {
-                result.set(row, col, field.add(result.get(row, col), &term)?);
-                Ok(())
-            })?;
-        }
-        // Independently map the noncanonical pairs in this marked grade.
-        // Grade transport supplies all other grades.
-        for u in 0..self.ambient.order() {
-            let v = self.ambient.mul(self.ambient.inv(u), grade);
-            for i in 0..space.factors[0].fibers[u] {
-                for j in 0..space.factors[1].fibers[v] {
-                    let pair = Pair {
-                        grades: [u, v],
-                        columns: [i, j],
-                    };
-                    let image = space.product.canonical(
-                        &self.ambient,
-                        &space.factors[0],
-                        &space.factors[1],
-                        pair,
-                        0,
-                    )?;
-                    if pair == space.product.bases[grade][image.target] && image.phase == 0 {
-                        continue;
-                    }
-                    self.field.model.spend(result.rows)?;
-                    let mut column = vec![Rational::zero(); result.rows];
-                    self.tensor_terms(branch, inclusions, pair, |field, row, term| {
-                        column[row] = field.add(&column[row], &term)?;
-                        Ok(())
-                    })?;
-                    for (row, x) in column.iter().enumerate() {
-                        if *x
-                            != self
-                                .field
-                                .shift(result.get(row, image.target), image.phase)?
-                        {
-                            return Err(Error::plain(
-                                "boundary fusion inclusion fails to descend through balancing",
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(result)
-    }
-
-    fn tensor_terms(
-        &mut self,
-        branch: &Branch<'_>,
-        inclusions: [&Channel; 2],
-        pair: Pair,
-        mut term: impl FnMut(&mut Field<'_>, usize, Rational) -> Result<()>,
-    ) -> Result<()> {
-        let [left, right] = branch.children.each_ref().map(Tree::module);
-        let [u, v] = pair.grades;
-        let [i, j] = pair.columns;
-        let a = &inclusions[0].map.grades[u];
-        let b = &inclusions[1].map.grades[v];
-        self.field.model.spend(a.rows * b.rows)?;
-        for s in 0..a.rows {
-            let p = a.get(s, i);
-            if p.is_zero() {
-                continue;
-            }
-            for t in 0..b.rows {
-                let q = b.get(t, j);
-                if q.is_zero() {
-                    continue;
-                }
-                let scale = self.field.multiply(p, q)?;
-                let image = branch.product.canonical(
-                    &self.ambient,
-                    left,
-                    right,
-                    Pair {
-                        grades: [u, v],
-                        columns: [s, t],
-                    },
-                    0,
-                )?;
-                let coefficient = self.field.shift(&scale, image.phase)?;
-                term(&mut self.field, image.target, coefficient)?;
-            }
-        }
-        Ok(())
+        let from = Layout {
+            product: &space.product,
+            factors: space.factors.each_ref().map(Rc::as_ref),
+        };
+        let to = Layout {
+            product: &branch.product,
+            factors: branch.children.each_ref().map(Tree::module),
+        };
+        linear::tensor_at(
+            &mut self.field,
+            &self.ambient,
+            from,
+            to,
+            inclusions.map(|x| &x.map),
+            grade,
+        )
     }
 
     pub(super) fn transition(
@@ -421,80 +343,4 @@ impl<'a> Work<'a> {
 
 fn norms(field: &mut Field<'_>, paths: &[&Matrix]) -> Result<Vec<Rational>> {
     paths.iter().map(|m| m.inner(field, m)).collect()
-}
-
-impl GradedMap {
-    fn extend(
-        field: &mut Field<'_>,
-        ambient: &Ambient<'_>,
-        source: &Module,
-        target: &Module,
-        representative: usize,
-        base: &Matrix,
-    ) -> Result<Self> {
-        let mut sections = vec![None; ambient.order()];
-        let [left, right] = source.ends.map(|i| &ambient.boundaries[i].members);
-        field.model.spend(left.len() * right.len())?;
-        for &h in left {
-            for &k in right {
-                let g = ambient.mul(ambient.mul(h, representative), k);
-                sections[g].get_or_insert([h, k]);
-            }
-        }
-        let mut grades = Vec::with_capacity(ambient.order());
-        for (g, section) in sections.into_iter().enumerate() {
-            let (rows, cols) = (target.fibers[g], source.fibers[g]);
-            field.model.spend(1 + rows * cols)?;
-            let mut map = Matrix::zero(rows, cols)?;
-            if let Some(section) = section {
-                for i in 0..base.rows {
-                    let x = transport(ambient, target, representative, i, section);
-                    for j in 0..base.cols {
-                        let value = base.get(i, j);
-                        if value.is_zero() {
-                            continue;
-                        }
-                        let y = transport(ambient, source, representative, j, section);
-                        let exponent = ambient.sum([x.phase, ambient.neg(y.phase)]);
-                        map.set(x.target, y.target, field.shift(value, exponent)?);
-                    }
-                }
-            }
-            grades.push(map);
-        }
-        for (side, &boundary) in source.ends.iter().enumerate() {
-            for &x in &ambient.boundaries[boundary].members {
-                for (g, m) in grades.iter().enumerate() {
-                    let next = &grades[ambient.mul(g, x)];
-                    field.model.spend(m.rows * m.cols)?;
-                    for i in 0..m.rows {
-                        for j in 0..m.cols {
-                            let u = target.grade_action(ambient, side, x, g, i);
-                            let v = source.grade_action(ambient, side, x, g, j);
-                            let phase = ambient.sum([u.phase, ambient.neg(v.phase)]);
-                            if field.shift(m.get(i, j), phase)? != *next.get(u.target, v.target) {
-                                return Err(Error::plain("boundary fusion inclusion does not intertwine the induced grade actions"));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(Self { grades })
-    }
-}
-
-fn transport(
-    ambient: &Ambient<'_>,
-    module: &Module,
-    g: usize,
-    i: usize,
-    [h, k]: [usize; 2],
-) -> Image {
-    let left = module.grade_action(ambient, 0, h, g, i);
-    let right = module.grade_action(ambient, 1, k, ambient.mul(g, h), left.target);
-    Image {
-        target: right.target,
-        phase: ambient.sum([left.phase, right.phase]),
-    }
 }

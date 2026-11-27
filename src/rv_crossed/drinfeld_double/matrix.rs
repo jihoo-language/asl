@@ -54,6 +54,54 @@ impl<'a> Field<'a> {
         rv_lens::fraction(self.model, &polynomial, value.denominator)
     }
 
+    pub(super) fn inverse(&mut self, value: &Rational) -> Result<Rational> {
+        if value.is_zero() {
+            return Err(Error::plain("cannot divide by a zero cyclotomic scalar"));
+        }
+        let numerator = &value.numerator;
+        let denominator = i128::try_from(value.denominator)
+            .map_err(|_| Error::plain("cyclotomic quotient exceeds its integer bound"))?;
+        if let &[n] = numerator.as_ref() {
+            let signed = if n < 0 { -denominator } else { denominator };
+            return rv_lens::fraction(self.model, &[signed], n.unsigned_abs());
+        }
+        let degree = self.model.cyclotomic(self.conductor)?.len() - 1;
+        let mut span = crate::lee_linear::Echelon::default();
+        for j in 0..degree {
+            let column = rv_cyclotomic::shifted(self.model, self.conductor, numerator, j as i128)?;
+            let image = column
+                .into_iter()
+                .enumerate()
+                .filter(|&(_, c)| c != 0)
+                .collect();
+            if span.insert(self.model, image, vec![(j, 1)])?.is_some() {
+                return Err(Error::plain(
+                    "cyclotomic multiplication by a nonzero scalar is singular",
+                ));
+            }
+        }
+        let relation = span
+            .relation(self.model, vec![(0, 1)], vec![(degree, 1)])?
+            .ok_or_else(|| {
+                Error::plain("cyclotomic multiplication fails to span the scalar unit")
+            })?;
+        let &(j, d) = relation
+            .last()
+            .filter(|(j, _)| *j == degree)
+            .ok_or_else(|| Error::plain("cyclotomic inverse has no unit coefficient"))?;
+        let mut coefficients = vec![0; j];
+        for &(k, n) in &relation[..relation.len() - 1] {
+            coefficients[k] = if d < 0 {
+                n
+            } else {
+                n.checked_neg()
+                    .ok_or_else(|| Error::plain("cyclotomic inverse exceeds its integer bound"))?
+            };
+        }
+        let inverse = rv_lens::fraction(self.model, &coefficients, d.unsigned_abs())?;
+        self.multiply(&inverse, &Rational::integer(denominator))
+    }
+
     pub(super) fn shift(&mut self, value: &Rational, phase: usize) -> Result<Rational> {
         rv_lens::shifted(self.model, self.conductor, value, phase as i128)
     }
@@ -131,6 +179,76 @@ impl Matrix {
             }
         }
         Ok(out)
+    }
+
+    pub(super) fn inverse(&self, field: &mut Field<'_>) -> Result<Self> {
+        let n = self.rows;
+        if n != self.cols {
+            return Err(Error::plain("cannot invert a nonsquare cyclotomic matrix"));
+        }
+        let mut left = self.clone();
+        let mut right = Self::identity(n)?;
+        field.model.spend(n * n * n)?;
+        for j in 0..n {
+            let pivot = (j..n)
+                .find(|&i| !left.get(i, j).is_zero())
+                .ok_or_else(|| Error::plain("cyclotomic matrix is singular"))?;
+            for k in 0..n {
+                left.values.swap(j * n + k, pivot * n + k);
+                right.values.swap(j * n + k, pivot * n + k);
+            }
+            let scale = field.inverse(left.get(j, j))?;
+            for k in 0..n {
+                left.set(j, k, field.multiply(left.get(j, k), &scale)?);
+                right.set(j, k, field.multiply(right.get(j, k), &scale)?);
+            }
+            for i in 0..n {
+                if i == j || left.get(i, j).is_zero() {
+                    continue;
+                }
+                let factor = rv_lens::negative(field.model, left.get(i, j))?;
+                for k in 0..n {
+                    let term = field.multiply(&factor, left.get(j, k))?;
+                    left.set(i, k, field.add(left.get(i, k), &term)?);
+                    let term = field.multiply(&factor, right.get(j, k))?;
+                    right.set(i, k, field.add(right.get(i, k), &term)?);
+                }
+            }
+        }
+        if left != Self::identity(n)? {
+            return Err(Error::plain(
+                "cyclotomic matrix elimination did not reach the identity",
+            ));
+        }
+        Ok(right)
+    }
+
+    pub(super) fn adjoint(&self, field: &mut Field<'_>) -> Result<Self> {
+        let mut out = Self::zero(self.cols, self.rows)?;
+        field.model.spend(self.values.len())?;
+        for i in 0..self.rows {
+            for j in 0..self.cols {
+                out.set(j, i, field.conjugate(self.get(i, j))?);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(super) fn add_assign(&mut self, field: &mut Field<'_>, right: &Self) -> Result<()> {
+        debug_assert_eq!((self.rows, self.cols), (right.rows, right.cols));
+        field.model.spend(self.values.len())?;
+        for (x, y) in self.values.iter_mut().zip(&right.values) {
+            *x = field.add(x, y)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn scale(&mut self, field: &mut Field<'_>, scalar: &Rational) -> Result<()> {
+        field.model.spend(self.values.len())?;
+        for value in &mut self.values {
+            *value = field.multiply(value, scalar)?;
+        }
+        Ok(())
     }
 
     pub(super) fn tensor(&self, field: &mut Field<'_>, right: &Self) -> Result<Self> {

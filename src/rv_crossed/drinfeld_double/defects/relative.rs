@@ -13,9 +13,11 @@ mod associator;
 pub(crate) mod central;
 pub(crate) use associator::associate;
 mod graded;
+mod linear;
 pub(crate) mod sixj;
 mod tensor;
 mod tree;
+pub(crate) mod tube;
 use graded::{Ambient, Module};
 use tensor::{Balanced, Pair};
 

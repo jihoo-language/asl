@@ -9,10 +9,10 @@ use super::super::{
     decompose, sector_counts, Ambient, Balanced, Category, Double, Image, Module, Pair, Relative,
 };
 
-pub(super) struct Bulk {
+pub(in crate::rv_crossed::drinfeld_double::defects::relative) struct Bulk {
     pub(super) simple: usize,
     pub(super) flux: usize,
-    pub(super) module: Module,
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) module: Module,
 }
 
 pub(crate) fn self_boundary(category: &Category) -> Result<()> {
@@ -25,7 +25,7 @@ pub(crate) fn self_boundary(category: &Category) -> Result<()> {
 }
 
 impl Bulk {
-    pub(super) fn new(
+    pub(in crate::rv_crossed::drinfeld_double::defects::relative) fn new(
         model: &mut Model,
         ambient: &Ambient<'_>,
         category: &Category,

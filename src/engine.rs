@@ -874,6 +874,19 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+struct TubeAction {
+    algebra: Rc<dd::defects::relative::tube::Tube>,
+    op: TubeOp,
+}
+
+enum TubeOp {
+    Coefficient(usize, Box<TypedExpr>),
+    BlockEntry([usize; 3], Box<TypedExpr>),
+    Add(Box<[TypedExpr; 2]>),
+    Product(Box<[TypedExpr; 2]>),
+    Scale(Box<[TypedExpr; 2]>),
+}
+
 struct CentralMove {
     double: Rc<dd::Double>,
     boundaries: [Rc<dd::defects::Category>; 2],
@@ -952,6 +965,7 @@ enum TypedForm {
     DoubleRelative(RelativeAction),
     DoubleDefectSixJ(SixJAction),
     DoubleCentral(CentralAction),
+    DoubleTube(TubeAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2744,6 +2758,7 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleTube(command) => return self.tube_command(*command),
             StatementForm::DoubleCentral(command) => {
                 return self.central_command(*command).map(Some)
             }
@@ -9784,6 +9799,86 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn tube_command(
+        &mut self,
+        command: dd::defects::relative::tube::Command,
+    ) -> Result<Option<String>> {
+        use dd::defects::relative::tube::Command;
+        let report = match command {
+            Command::Declare(name, cat) => {
+                self.model.declare_double_tube(name, cat)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self.model.double_tube(&name)?.data(&name.text),
+            Command::Annular(name, key) => {
+                self.model.double_tube(&name)?.annular(&name.text, key)?
+            }
+            Command::BasisData(name, i) => {
+                self.model.double_tube(&name)?.basis_data(&name.text, i)?
+            }
+            Command::BlockData(name, i) => {
+                self.model.double_tube(&name)?.block_data(&name.text, i)?
+            }
+            Command::Stack(name, key) => {
+                let algebra = self.model.double_tube(&name)?;
+                let category = self.model.double_defects(&algebra.category)?;
+                let double = self.model.defect_bulk(&category, name.span)?;
+                algebra.stack(&mut self.model, &double, &category, key)?
+            }
+            Command::Decompose(input) => {
+                let input = self.checker().expr(*input)?;
+                let algebra = self.checker().tube_operand(&input)?;
+                let element = self.eval_tube_element(&input)?;
+                algebra.decompose(&mut self.model, &element)?
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_tube_element(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<dd::defects::relative::tube::Element>> {
+        let Value::DoubleTube(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn eval_tube(&mut self, action: &TubeAction) -> Result<Value> {
+        let algebra = &action.algebra;
+        match &action.op {
+            TubeOp::Coefficient(i, x) => {
+                let x = self.eval_tube_element(x)?;
+                rv_lens::rational_value(&mut self.model, algebra.coefficient(&x, *i)?)
+            }
+            TubeOp::BlockEntry(key, x) => {
+                let x = self.eval_tube_element(x)?;
+                let value = algebra.block_entry(&mut self.model, &x, *key)?;
+                rv_lens::rational_value(&mut self.model, value)
+            }
+            TubeOp::Add(args) | TubeOp::Product(args) => {
+                let a = self.eval_tube_element(&args[0])?;
+                let b = self.eval_tube_element(&args[1])?;
+                let x = if matches!(action.op, TubeOp::Add(_)) {
+                    algebra.add(&mut self.model, &a, &b)?
+                } else {
+                    algebra.product(&mut self.model, &a, &b)?
+                };
+                x.persist(&mut self.model)
+            }
+            TubeOp::Scale(args) => {
+                let Value::RVCycloQ(s) = self.eval(&args[0])? else {
+                    unreachable!()
+                };
+                let x = self.eval_tube_element(&args[1])?;
+                algebra
+                    .scale(&mut self.model, &s, &x)?
+                    .persist(&mut self.model)
+            }
+        }
+    }
+
     fn central_command(
         &mut self,
         command: dd::defects::relative::central::Command,
@@ -15634,6 +15729,7 @@ impl Engine {
             TypedForm::DoubleRelative(action) => self.eval_relative(action),
             TypedForm::DoubleDefectSixJ(action) => self.eval_sixj(action),
             TypedForm::DoubleCentral(action) => self.eval_central(action),
+            TypedForm::DoubleTube(action) => self.eval_tube(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -20297,6 +20393,7 @@ impl Checker<'_> {
             TypeForm::DoubleRelative(name) => self.model.double_relative_type(&name),
             TypeForm::DoubleDefectSixJ(name, n) => self.model.double_sixj_type(&name, n),
             TypeForm::DoubleCentralMap(name, n) => self.model.double_central_type(&name, n),
+            TypeForm::DoubleTube(name) => self.model.double_tube_type(&name),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -21180,6 +21277,7 @@ impl Checker<'_> {
             ExprForm::DoubleRelative(expression) => self.relative_expression(*expression),
             ExprForm::DoubleDefectSixJ(expression) => self.sixj_expression(*expression),
             ExprForm::DoubleCentral(expression) => self.central_expression(*expression),
+            ExprForm::DoubleTube(expression) => self.tube_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -33778,6 +33876,87 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn tube_operand(&self, input: &TypedExpr) -> Result<Rc<dd::defects::relative::tube::Tube>> {
+        let Kind::DoubleTube(name) = self.model.kind(input.ty) else {
+            return Err(Error::new(
+                input.span,
+                "tube operation requires an annular algebra element",
+            ));
+        };
+        self.model.double_tube(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn tube_expression(
+        &mut self,
+        expr: dd::defects::relative::tube::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::relative::tube::{self, Expression};
+        let is_add = matches!(&expr, Expression::Add(_));
+        let name = match &expr {
+            Expression::Zero(name) | Expression::Unit(name) => name,
+            Expression::Basis(name, _)
+            | Expression::Central(name, _)
+            | Expression::MatrixUnit(name, _) => name,
+            _ => {
+                let (algebra, ty, op) = match expr {
+                    Expression::Coefficient(i, input) => {
+                        let input = self.expr(*input)?;
+                        let algebra = self.tube_operand(&input)?;
+                        let ty = self.model.cyclotomic_rational_type(algebra.conductor)?;
+                        (algebra, ty, TubeOp::Coefficient(i, Box::new(input)))
+                    }
+                    Expression::BlockEntry(i, input) => {
+                        let input = self.expr(*input)?;
+                        let algebra = self.tube_operand(&input)?;
+                        let ty = self.model.cyclotomic_rational_type(algebra.conductor)?;
+                        (algebra, ty, TubeOp::BlockEntry(i, Box::new(input)))
+                    }
+                    Expression::Add(inputs) | Expression::Product(inputs) => {
+                        let [a, b] = *inputs;
+                        let a = self.expr(a)?;
+                        let b = self.expr(b)?;
+                        let algebra = self.tube_operand(&a)?;
+                        self.require_type(a.ty, &b, "tube binary operation")?;
+                        let ty = a.ty;
+                        let args = Box::new([a, b]);
+                        let op = if is_add {
+                            TubeOp::Add(args)
+                        } else {
+                            TubeOp::Product(args)
+                        };
+                        (algebra, ty, op)
+                    }
+                    Expression::Scale(inputs) => {
+                        let [s, x] = *inputs;
+                        let s = self.expr(s)?;
+                        let x = self.expr(x)?;
+                        let algebra = self.tube_operand(&x)?;
+                        let scalar = self.model.cyclotomic_rational_type(algebra.conductor)?;
+                        self.require_type(scalar, &s, "rvDoubleTubeScale")?;
+                        (algebra, x.ty, TubeOp::Scale(Box::new([s, x])))
+                    }
+                    _ => unreachable!(),
+                };
+                return Ok((ty, TypedForm::DoubleTube(TubeAction { algebra, op })));
+            }
+        };
+        let algebra = self.model.double_tube(name)?;
+        let ty = self.model.double_tube_type(name)?;
+        let value = match expr {
+            Expression::Zero(_) => tube::Element(Vec::new()),
+            Expression::Unit(_) => algebra.unit(),
+            Expression::Basis(_, i) => algebra.basis(i)?,
+            Expression::Central(_, i) => algebra.central(self.model, i)?,
+            Expression::MatrixUnit(_, key) => algebra.matrix_unit(self.model, key)?,
+            _ => unreachable!(),
+        }
+        .persist(self.model)?;
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn central_operand(&self, input: &TypedExpr) -> Result<usize> {

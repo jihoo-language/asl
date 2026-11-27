@@ -3,6 +3,7 @@ use std::borrow::Borrow;
 use crate::error::{Error, Result};
 use crate::model::Model;
 
+use super::tensor::Layout;
 use super::{Ambient, Balanced, Image, Module, Pair};
 
 pub(super) type Interval = [usize; 2];
@@ -84,6 +85,16 @@ impl<'a> Tree<'a> {
         match &self.node {
             Node::Leaf(_, module) => module,
             Node::Join(branch) => &branch.product.module,
+        }
+    }
+
+    pub(super) fn layout(&self) -> Layout<'_> {
+        let Node::Join(branch) = &self.node else {
+            unreachable!("balanced tree root");
+        };
+        Layout {
+            product: &branch.product,
+            factors: branch.children.each_ref().map(Self::module),
         }
     }
 

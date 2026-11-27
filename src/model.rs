@@ -221,6 +221,7 @@ pub(crate) enum Kind {
     DoubleRelative(Rc<str>),
     DoubleDefectSixJ(Rc<str>, usize),
     DoubleCentralMap(Rc<str>, usize),
+    DoubleTube(Rc<str>),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -537,6 +538,7 @@ pub(crate) enum Value {
     DoubleRelative(Rc<dd::defects::relative::Relative>),
     DoubleDefectSixJ(Rc<dd::defects::relative::sixj::SixJ>),
     DoubleCentralMap(Rc<dd::defects::relative::central::CentralMap>),
+    DoubleTube(Rc<dd::defects::relative::tube::Element>),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -792,6 +794,7 @@ pub(crate) struct Model {
     drinfeld_doubles: HashMap<Rc<str>, Rc<dd::Double>>,
     double_boundaries: HashMap<Rc<str>, Rc<dd::boundaries::Boundary>>,
     double_defects: HashMap<Rc<str>, Rc<dd::defects::Category>>,
+    double_tubes: HashMap<Rc<str>, Rc<dd::defects::relative::tube::Tube>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -979,6 +982,7 @@ impl Model {
             drinfeld_doubles: HashMap::new(),
             double_boundaries: HashMap::new(),
             double_defects: HashMap::new(),
+            double_tubes: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1277,6 +1281,35 @@ impl Model {
     pub(crate) fn double_relative_type(&mut self, name: &Label) -> Result<TypeId> {
         self.double_defects(name)?;
         self.inhabited_type(Kind::DoubleRelative(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn declare_double_tube(&mut self, name: Label, category: Label) -> Result<()> {
+        if self.double_tubes.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("tube algebra '{}' is already defined", name.text),
+            ));
+        }
+        let defects = self.double_defects(&category)?;
+        let double = self.defect_bulk(&defects, category.span)?;
+        let algebra = dd::defects::relative::tube::Tube::build(self, &double, &defects, category)?;
+        self.double_tubes.insert(name.text.into(), Rc::new(algebra));
+        Ok(())
+    }
+
+    pub(crate) fn double_tube(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<dd::defects::relative::tube::Tube>> {
+        self.double_tubes
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown tube algebra '{}'", name.text)))
+    }
+
+    pub(crate) fn double_tube_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.double_tube(name)?;
+        self.inhabited_type(Kind::DoubleTube(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn defect_bulk(
@@ -1868,7 +1901,8 @@ impl Model {
             | Kind::DoubleBraid(..)
             | Kind::DoubleRelative(..)
             | Kind::DoubleDefectSixJ(..)
-            | Kind::DoubleCentralMap(..) => usize::MAX,
+            | Kind::DoubleCentralMap(..)
+            | Kind::DoubleTube(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -2176,6 +2210,7 @@ impl Model {
                 | Kind::DoubleRelative(..)
                 | Kind::DoubleDefectSixJ(..)
                 | Kind::DoubleCentralMap(..)
+                | Kind::DoubleTube(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -8328,6 +8363,7 @@ impl Model {
             | Kind::DoubleRelative(..)
             | Kind::DoubleDefectSixJ(..)
             | Kind::DoubleCentralMap(..)
+            | Kind::DoubleTube(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -8519,6 +8555,7 @@ impl Model {
                 out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
             }
             Kind::DoubleRelative(name) => out.push(&format!("RVDoubleRelative({name})")),
+            Kind::DoubleTube(name) => out.push(&format!("RVDoubleTube({name})")),
             Kind::DoubleCentralMap(name, n) => out.push(&format!("RVDoubleCentralMap({name},{n})")),
             Kind::DoubleDefectSixJ(name, n) => out.push(&format!("RVDoubleDefectSixJ({name},{n})")),
             Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
@@ -9233,6 +9270,7 @@ impl Model {
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a == b),
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a == b),
             (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a == b),
+            (Value::DoubleTube(a), Value::DoubleTube(b)) => Ok(a == b),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -9621,6 +9659,7 @@ impl Model {
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a.cmp(b)),
             (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a.cmp(b)),
+            (Value::DoubleTube(a), Value::DoubleTube(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -10696,6 +10735,9 @@ impl Model {
                         "cannot enumerate a double braid operator type",
                     ));
                 }
+                Kind::DoubleTube(..) => {
+                    return Err(Error::plain("cannot enumerate a cyclotomic tube algebra"));
+                }
                 Kind::DoubleCentralMap(..) => {
                     return Err(Error::plain("cannot enumerate a bulk central map type"));
                 }
@@ -11707,6 +11749,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleTube(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", value.format()))
             }
             Value::DoubleCentralMap(value) => {
                 self.write_type(out, ty, 0)?;

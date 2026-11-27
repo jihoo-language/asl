@@ -10,6 +10,19 @@ pub(super) struct Pair {
     pub(super) columns: [usize; 2],
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct Layout<'a> {
+    pub(super) product: &'a Balanced,
+    pub(super) factors: [&'a Module; 2],
+}
+
+impl Layout<'_> {
+    pub(super) fn reduce(&self, ambient: &Ambient<'_>, pair: Pair, phase: usize) -> Result<Image> {
+        let [a, b] = self.factors;
+        self.product.canonical(ambient, a, b, pair, phase)
+    }
+}
+
 pub(super) struct Balanced {
     pub(super) module: Module,
     pub(super) bases: Vec<Vec<Pair>>,
