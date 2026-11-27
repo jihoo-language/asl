@@ -10075,6 +10075,10 @@ impl Engine {
     ) -> Result<String> {
         use crate::partition_algebra::fiber::Report;
         match report {
+            Report::Gabriel(parameter, relations) => self
+                .model
+                .partition_fiber(parameter)?
+                .gabriel_report(&mut self.model, relations),
             Report::Loewy(parameter) => self
                 .model
                 .partition_fiber(parameter)?
@@ -26942,6 +26946,17 @@ impl Checker<'_> {
                 let fiber = self.model.partition_fiber(parameter)?;
                 let value = fiber
                     .radical_basis(self.model, power, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::GabrielGenerator(parameter, generator) => {
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                let fiber = self.model.partition_fiber(parameter)?;
+                let value = fiber
+                    .gabriel_generator(self.model, generator)?
                     .persist(self.model)?;
                 Ok((ty, TypedForm::Constant(value)))
             }

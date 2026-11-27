@@ -12,6 +12,7 @@ use super::local::LocalAlgebra;
 use super::{diagram, evaluate_polynomial, Algebra, Diagram, Integer};
 
 mod elimination;
+pub(crate) mod gabriel;
 mod loewy;
 
 pub(crate) const MAX_RANK: usize = 3;
@@ -79,10 +80,12 @@ pub(crate) enum Expression {
     Scale(i128, i128, Box<ParsedExpr>),
     RadicalBasis(Parameter, u128, u128),
     NegligibleBasis(Parameter, u128),
+    GabrielGenerator(Parameter, gabriel::Generator),
 }
 
 pub(crate) enum Report {
     Loewy(Parameter),
+    Gabriel(Parameter, bool),
     Witness(Parameter, u128, u128),
     Coefficient(Vec<u128>, Box<ParsedExpr>),
     Contains(Option<u128>, Box<ParsedExpr>),
@@ -208,6 +211,7 @@ pub(crate) struct Fiber {
     traces: RefCell<Option<Rc<[i128]>>>,
     kernel: RefCell<Option<Rc<elimination::Kernel>>>,
     powers: RefCell<Option<Rc<loewy::Powers>>>,
+    gabriel: RefCell<Option<Rc<gabriel::Gabriel>>>,
 }
 
 impl Fiber {
@@ -218,6 +222,7 @@ impl Fiber {
             traces: RefCell::default(),
             kernel: RefCell::default(),
             powers: RefCell::default(),
+            gabriel: RefCell::default(),
         }
     }
 
@@ -519,6 +524,32 @@ impl Fiber {
         let powers = Rc::new(loewy::Powers::new(model, self, &radical)?);
         *self.powers.borrow_mut() = Some(powers.clone());
         Ok(powers)
+    }
+
+    fn gabriel(&self, model: &mut Model) -> Result<Rc<gabriel::Gabriel>> {
+        if let Some(data) = self.gabriel.borrow().as_ref() {
+            return Ok(data.clone());
+        }
+        let data = Rc::new(gabriel::Gabriel::new(model, self)?);
+        *self.gabriel.borrow_mut() = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn gabriel_generator(
+        &self,
+        model: &mut Model,
+        generator: gabriel::Generator,
+    ) -> Result<Element> {
+        self.gabriel(model)?.generator(self, generator)
+    }
+
+    pub(crate) fn gabriel_report(&self, model: &mut Model, relations: bool) -> Result<String> {
+        let data = self.gabriel(model)?;
+        Ok(if relations {
+            data.relations()
+        } else {
+            data.data()
+        })
     }
 
     fn negligible_indices(&self) -> impl Iterator<Item = usize> + '_ {

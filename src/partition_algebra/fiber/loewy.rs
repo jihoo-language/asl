@@ -101,17 +101,23 @@ impl Powers {
     }
 }
 
-fn integral_row(row: &Coordinates) -> Result<Vector> {
+pub(super) fn integral_row(row: &Coordinates) -> Result<Vector> {
+    Ok(clear_denominators(row)?.0)
+}
+
+pub(super) fn clear_denominators(row: &Coordinates) -> Result<(Vector, i128)> {
     let common = row.values().try_fold(1i128, |common, coefficient| {
         let factor = gcd(common as u128, coefficient.denominator as u128) as i128;
         checked_mul(common / factor, coefficient.denominator)
     })?;
-    row.iter()
+    let vector = row
+        .iter()
         .map(|(&index, coefficient)| {
             let factor = common
                 .checked_div(coefficient.denominator)
                 .ok_or_else(arithmetic)?;
             Ok((index, checked_mul(coefficient.numerator, factor)?))
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    Ok((vector, common))
 }

@@ -1,0 +1,15 @@
+rvPartitionGabriel[2,0];
+rvPartitionGabrielRelations[2,0];
+let u = rvPartitionArrow[2,0,0];
+let v = rvPartitionArrow[2,0,1];
+let e = rvPartitionBasicIdempotent[2,0,2];
+let f = rvPartitionBasicIdempotent[2,0,0];
+assert rvPartitionCompose(f,rvPartitionCompose(u,e)) == u;
+let square = rvPartitionCompose(v,u);
+assert square == rvPartitionBasicSquare[2,0,2,2,0];
+assert rvPartitionCompose(u,square) == zero[RVPartitionFiber(2,0)];
+rvPartitionRadicalContains[2](square);
+rvPartitionGabrielRelations[2,2];
+let a = rvPartitionArrow[2,2,0];
+let b = rvPartitionArrow[2,2,1];
+assert rvPartitionCompose(b,a) == zero[RVPartitionFiber(2,2)];

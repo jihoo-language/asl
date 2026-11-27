@@ -7938,6 +7938,31 @@ impl<'src> Parser<'src> {
     ) -> Result<ParsedExpr> {
         use crate::partition_algebra::fiber::{Expression, Mode};
         let (operation, depth) = match name {
+            "rvPartitionPrimitive"
+            | "rvPartitionBasicIdempotent"
+            | "rvPartitionArrow"
+            | "rvPartitionBasicSquare" => {
+                use crate::partition_algebra::fiber::gabriel::Generator;
+                self.expect(Token::LBracket)?;
+                let parameter = self.partition_parameter()?;
+                self.expect(Token::Comma)?;
+                let index = self.wide_unsigned("partition Gabriel generator index")?;
+                let generator = match name {
+                    "rvPartitionPrimitive" => Generator::Primitive(index),
+                    "rvPartitionBasicIdempotent" => Generator::Vertex(index),
+                    "rvPartitionArrow" => Generator::Arrow(index),
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let source = self.wide_unsigned("partition Gabriel source vertex")?;
+                        self.expect(Token::Comma)?;
+                        let index_in_corner =
+                            self.wide_unsigned("partition basic radical-square basis index")?;
+                        Generator::Square([index, source, index_in_corner])
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                (Expression::GabrielGenerator(parameter, generator), 0)
+            }
             "rvPartitionRadicalBasis" | "rvPartitionNegligibleBasis" => {
                 self.expect(Token::LBracket)?;
                 let parameter = self.partition_parameter()?;
@@ -12188,6 +12213,8 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 name @ ("rvPartitionLoewy"
+                | "rvPartitionGabriel"
+                | "rvPartitionGabrielRelations"
                 | "rvPartitionLoewyWitness"
                 | "rvPartitionFiberCoefficient"
                 | "rvPartitionRadicalContains"
@@ -12198,6 +12225,12 @@ impl<'src> Parser<'src> {
                 use crate::partition_algebra::fiber::Report;
                 self.advance()?;
                 let report = match name {
+                    "rvPartitionGabriel" | "rvPartitionGabrielRelations" => {
+                        self.expect(Token::LBracket)?;
+                        let parameter = self.partition_parameter()?;
+                        self.expect(Token::RBracket)?;
+                        Report::Gabriel(parameter, name == "rvPartitionGabrielRelations")
+                    }
                     "rvPartitionLoewy" | "rvPartitionLoewyWitness" => {
                         self.expect(Token::LBracket)?;
                         let parameter = self.partition_parameter()?;
@@ -19882,6 +19915,10 @@ impl<'src> Parser<'src> {
                     "rvPartitionSpecialize"
                         | "rvPartitionFiberScale"
                         | "rvPartitionRadicalBasis"
+                        | "rvPartitionPrimitive"
+                        | "rvPartitionBasicIdempotent"
+                        | "rvPartitionArrow"
+                        | "rvPartitionBasicSquare"
                         | "rvPartitionNegligibleBasis"
                         | "rvPartitionSemisimple"
                         | "rvPartitionTensorImage"
