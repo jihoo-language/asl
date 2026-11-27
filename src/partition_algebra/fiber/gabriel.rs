@@ -7,6 +7,7 @@ use crate::model::Model;
 use super::loewy::{clear_denominators, integral_row};
 use super::{add_multiple, ratio, Coordinates, Diagram, Element, Fiber, Mode, Parameter};
 
+pub(crate) mod derived;
 mod polynomial;
 
 const ONE: Rational = Rational::integer(1);

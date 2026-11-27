@@ -212,6 +212,7 @@ pub(crate) struct Fiber {
     kernel: RefCell<Option<Rc<elimination::Kernel>>>,
     powers: RefCell<Option<Rc<loewy::Powers>>>,
     gabriel: RefCell<Option<Rc<gabriel::Gabriel>>>,
+    nakayama: RefCell<Option<Rc<gabriel::derived::Nakayama>>>,
 }
 
 impl Fiber {
@@ -223,6 +224,7 @@ impl Fiber {
             kernel: RefCell::default(),
             powers: RefCell::default(),
             gabriel: RefCell::default(),
+            nakayama: RefCell::default(),
         }
     }
 
@@ -532,6 +534,16 @@ impl Fiber {
         }
         let data = Rc::new(gabriel::Gabriel::new(model, self)?);
         *self.gabriel.borrow_mut() = Some(data.clone());
+        Ok(data)
+    }
+
+    pub(crate) fn nakayama(&self, model: &mut Model) -> Result<Rc<gabriel::derived::Nakayama>> {
+        if let Some(data) = self.nakayama.borrow().as_ref() {
+            return Ok(data.clone());
+        }
+        let gabriel = self.gabriel(model)?;
+        let data = Rc::new(gabriel::derived::Nakayama::new(model, self, &gabriel)?);
+        *self.nakayama.borrow_mut() = Some(data.clone());
         Ok(data)
     }
 

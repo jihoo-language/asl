@@ -1,0 +1,15 @@
+rvPartitionResolution[2,0,2,1];
+rvPartitionGlobalDimension[2,0];
+rvPartitionGlobalDimension[2,2];
+let a = rvPartitionExtClass[2,0,2,0,1];
+let b = rvPartitionExtClass[2,0,0,2,1];
+assert rvPartitionYoneda(b,a) == zero[RVPartitionExt(2,0,2,2,2)];
+assert rvPartitionYoneda(a,b) == zero[RVPartitionExt(2,0,0,0,2)];
+rvPartitionMassey[2,0,0,1,0];
+rvPartitionMassey[2,0,1,0,1];
+let m = rvPartitionMasseyClass[2,0,0,1,0];
+assert neg(m) == rvPartitionExtClass[2,0,2,0,2];
+rvPartitionBarExtDim[2,0,2,0,2];
+let d1 = rvPartitionDifferential[2,0,2,1,1];
+let d2 = rvPartitionDifferential[2,0,2,1,2];
+assert rvPartitionCompose(d2,d1) == zero[RVPartitionFiber(2,0)];

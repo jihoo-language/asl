@@ -137,6 +137,7 @@ pub(crate) enum TypeForm {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Grade),
     RVKaroubiMap([Label; 2]),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
@@ -886,6 +887,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionExt(Box<crate::partition_algebra::fiber::gabriel::derived::Expression>),
     Karoubi(Box<crate::partition_algebra::karoubi::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
@@ -1447,6 +1449,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionExtReport(crate::partition_algebra::fiber::gabriel::derived::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -8127,6 +8130,92 @@ impl<'src> Parser<'src> {
         crate::partition_algebra::fiber::Parameter::new(rank, n).map_err(|error| error.at(span))
     }
 
+    fn partition_indices<const N: usize>(&mut self) -> Result<[u128; N]> {
+        let mut indices = [0; N];
+        for index in &mut indices {
+            self.expect(Token::Comma)?;
+            *index = self.wide_unsigned("partition homological index")?;
+        }
+        Ok(indices)
+    }
+
+    fn partition_ext_grade(
+        &mut self,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::Grade> {
+        use crate::partition_algebra::fiber::gabriel::derived::Grade;
+        let parameter = self.partition_parameter()?;
+        let [source, target, degree] = self.partition_indices()?;
+        Ok(Grade {
+            parameter,
+            source,
+            target,
+            degree,
+        })
+    }
+
+    fn partition_ext_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::Expression;
+        let (operation, depth) = match name {
+            "rvPartitionExtClass" => {
+                self.expect(Token::LBracket)?;
+                let grade = self.partition_ext_grade()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Generator(grade), 0)
+            }
+            "rvPartitionComparisonLift" => {
+                self.expect(Token::LBracket)?;
+                let grade = self.partition_ext_grade()?;
+                let [step] = self.partition_indices()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Comparison(grade, step), 0)
+            }
+            "rvPartitionYoneda" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Product(Box::new(inputs)), depth)
+            }
+            "rvPartitionExtScale" => {
+                let (n, d) = self.partition_scalar(span)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(n, d, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let parameter = self.partition_parameter()?;
+                let indices = self.partition_indices()?;
+                self.expect(Token::RBracket)?;
+                let operation = if name == "rvPartitionDifferential" {
+                    Expression::Differential(parameter, indices)
+                } else {
+                    Expression::Massey(parameter, indices)
+                };
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::PartitionExt(Box::new(operation)), depth)
+    }
+
+    fn partition_scalar(&mut self, span: Span) -> Result<(i128, i128)> {
+        self.expect(Token::LBracket)?;
+        let n = self.signed_wide("a rational numerator", "partition scalar numerator")?;
+        self.expect(Token::Comma)?;
+        let d = self.wide_unsigned("positive partition scalar denominator")?;
+        let d = i128::try_from(d).ok().filter(|&x| x > 0).ok_or_else(|| {
+            Error::new(
+                span,
+                "partition scalar denominator must be positive and fit signed 128 bits",
+            )
+        })?;
+        self.expect(Token::RBracket)?;
+        Ok((n, d))
+    }
+
     fn partition_fiber_expression(
         &mut self,
         name: &str,
@@ -8184,17 +8273,7 @@ impl<'src> Parser<'src> {
                 (Expression::Specialize(n, Box::new(input)), depth)
             }
             "rvPartitionFiberScale" => {
-                self.expect(Token::LBracket)?;
-                let n = self.signed_wide("a rational numerator", "partition scalar numerator")?;
-                self.expect(Token::Comma)?;
-                let d = self.wide_unsigned("positive partition scalar denominator")?;
-                let d = i128::try_from(d).ok().filter(|&x| x > 0).ok_or_else(|| {
-                    Error::new(
-                        span,
-                        "partition scalar denominator must be positive and fit signed 128 bits",
-                    )
-                })?;
-                self.expect(Token::RBracket)?;
+                let (n, d) = self.partition_scalar(span)?;
                 let input = self.paren_expr(nest)?;
                 let depth = 1 + input.depth;
                 (Expression::Scale(n, d, Box::new(input)), depth)
@@ -12465,6 +12544,42 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvPartitionExtDim"
+                | "rvPartitionBarExtDim"
+                | "rvPartitionResolution"
+                | "rvPartitionGlobalDimension"
+                | "rvPartitionExtCoefficient"
+                | "rvPartitionMassey"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::Report;
+                self.advance()?;
+                let report = if name == "rvPartitionExtCoefficient" {
+                    Report::Coefficient(Box::new(self.paren_expr(0)?))
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let report = if matches!(name, "rvPartitionExtDim" | "rvPartitionBarExtDim") {
+                        Report::Dimension(
+                            self.partition_ext_grade()?,
+                            name == "rvPartitionBarExtDim",
+                        )
+                    } else {
+                        let parameter = self.partition_parameter()?;
+                        match name {
+                            "rvPartitionResolution" => {
+                                Report::Resolution(parameter, self.partition_indices()?)
+                            }
+                            "rvPartitionMassey" => {
+                                Report::Massey(parameter, self.partition_indices()?)
+                            }
+                            _ => Report::Global(parameter),
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    report
+                };
+                StatementForm::PartitionExtReport(report)
+            }
+            Token::Word(
                 name @ ("rvPartitionLoewy"
                 | "rvPartitionGabriel"
                 | "rvPartitionGabrielRelations"
@@ -15379,6 +15494,11 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionExt" && self.eat(Token::LParen)? {
+            let grade = self.partition_ext_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionExt(grade), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -20192,6 +20312,17 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionExtClass"
+                        | "rvPartitionYoneda"
+                        | "rvPartitionExtScale"
+                        | "rvPartitionDifferential"
+                        | "rvPartitionComparisonLift"
+                        | "rvPartitionMasseyClass"
+                ) {
+                    return self.partition_ext_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

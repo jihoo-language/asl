@@ -941,6 +941,8 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionYoneda(Box<[TypedExpr; 2]>),
+    PartitionExtScale(i128, i128, Box<TypedExpr>),
     PartitionFiberSpecialize(crate::partition_algebra::fiber::Parameter, Box<TypedExpr>),
     PartitionFiberProject(crate::partition_algebra::fiber::Mode, Box<TypedExpr>),
     PartitionFiberScale(i128, i128, Box<TypedExpr>),
@@ -2319,6 +2321,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionExtReport(report) => {
+                return self.partition_ext_report(report).map(Some);
             }
             StatementForm::PartitionFiberReport(report) => {
                 return self.partition_fiber_report(report).map(Some);
@@ -10245,6 +10250,54 @@ impl Engine {
         }
     }
 
+    fn partition_ext_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::Report,
+    ) -> Result<String> {
+        use crate::partition_algebra::fiber::gabriel::derived::Report;
+        match report {
+            Report::Dimension(grade, bar) => {
+                let fiber = self.model.partition_fiber(grade.parameter)?;
+                fiber
+                    .nakayama(&mut self.model)?
+                    .dimension_report(&mut self.model, grade, bar)
+            }
+            Report::Resolution(parameter, [head, length]) => {
+                let fiber = self.model.partition_fiber(parameter)?;
+                fiber
+                    .nakayama(&mut self.model)?
+                    .resolution_report(head, length)
+            }
+            Report::Global(parameter) => {
+                let fiber = self.model.partition_fiber(parameter)?;
+                Ok(fiber.nakayama(&mut self.model)?.global_report())
+            }
+            Report::Coefficient(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().partition_ext_operand(&input)?;
+                let value = self.eval_partition_ext(&input)?;
+                Ok(format!("rvPartitionExtCoefficient = {}", value.coefficient))
+            }
+            Report::Massey(parameter, arrows) => {
+                let fiber = self.model.partition_fiber(parameter)?;
+                Ok(fiber
+                    .nakayama(&mut self.model)?
+                    .massey(&mut self.model, arrows)?
+                    .report())
+            }
+        }
+    }
+
+    fn eval_partition_ext(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::Class> {
+        let Value::RVPartitionExt(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_fiber_report(
         &mut self,
         report: crate::partition_algebra::fiber::Report,
@@ -11129,6 +11182,9 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => {
+                        Ok(Value::RVPartitionExt(a.add(b)?))
+                    }
                     (BinaryOp::Add, Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -13894,6 +13950,19 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionYoneda(inputs) => {
+                let beta = self.eval_partition_ext(&inputs[0])?;
+                let alpha = self.eval_partition_ext(&inputs[1])?;
+                let fiber = self.model.partition_fiber(alpha.grade.parameter)?;
+                let result =
+                    fiber
+                        .nakayama(&mut self.model)?
+                        .yoneda(&mut self.model, beta, alpha)?;
+                Ok(Value::RVPartitionExt(result))
+            }
+            TypedForm::PartitionExtScale(n, d, input) => Ok(Value::RVPartitionExt(
+                self.eval_partition_ext(input)?.scale(*n, *d)?,
+            )),
             TypedForm::PartitionFiberSpecialize(parameter, input) => {
                 let value = self.eval(input)?;
                 let fiber = self.model.partition_fiber(*parameter)?;
@@ -16443,6 +16512,7 @@ impl Checker<'_> {
             TypeForm::RVPartitionAlgebra(rank) => self.model.partition_algebra_type(rank),
             TypeForm::RVPartitionLocal(rank) => self.model.partition_local_type(rank),
             TypeForm::RVPartitionFiber(grade) => self.model.partition_fiber_type(grade),
+            TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVKaroubiMap([source, target]) => {
                 self.model.karoubi_map_type(&source, &target)
             }
@@ -17554,6 +17624,7 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionExt(grade, _) => Value::RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class::zero(*grade)),
                     Kind::RVPartitionFiber(grade) => {
                         let grade = *grade;
                         let fiber = self.model.partition_fiber(grade.parameter)?;
@@ -19751,6 +19822,7 @@ impl Checker<'_> {
             ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
             ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
             ExprForm::PartitionFiber(expression) => self.partition_fiber_expression(*expression),
+            ExprForm::PartitionExt(expression) => self.partition_ext_expression(*expression),
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -20931,6 +21003,12 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVKaroubiMap(..)) {
                     return Ok((input.ty, TypedForm::KaroubiNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionExt(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PartitionExtScale(-1, 1, Box::new(input)),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionFiber(..)) {
                     return Ok((
@@ -24794,6 +24872,7 @@ impl Checker<'_> {
                         | Kind::RVPartitionAlgebra(..)
                         | Kind::RVPartitionLocal(..)
                         | Kind::RVPartitionFiber(..)
+                        | Kind::RVPartitionExt(..)
                         | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
@@ -27219,6 +27298,84 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_ext_expression(
+        &mut self,
+        operation: crate::partition_algebra::fiber::gabriel::derived::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::{Expression, Grade};
+        match operation {
+            Expression::Generator(grade) => {
+                let ty = self.model.partition_ext_type(grade)?;
+                let fiber = self.model.partition_fiber(grade.parameter)?;
+                let class = fiber.nakayama(self.model)?.generator(grade)?;
+                Ok((ty, TypedForm::Constant(Value::RVPartitionExt(class))))
+            }
+            Expression::Product(inputs) => {
+                let [beta, alpha] = *inputs;
+                let beta = self.expr(beta)?;
+                let alpha = self.expr(alpha)?;
+                let grade = Grade::compose(
+                    self.partition_ext_operand(&beta)?,
+                    self.partition_ext_operand(&alpha)?,
+                )?;
+                let ty = self.model.partition_ext_type(grade)?;
+                Ok((ty, TypedForm::PartitionYoneda(Box::new([beta, alpha]))))
+            }
+            Expression::Scale(n, d, input) => {
+                let input = self.expr(*input)?;
+                self.partition_ext_operand(&input)?;
+                Ok((
+                    input.ty,
+                    TypedForm::PartitionExtScale(n, d, Box::new(input)),
+                ))
+            }
+            Expression::Differential(parameter, indices) => {
+                use crate::partition_algebra::fiber::{Grade, Mode};
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                let fiber = self.model.partition_fiber(parameter)?;
+                let diagram = fiber.nakayama(self.model)?.differential(&fiber, indices)?;
+                Ok((ty, TypedForm::Constant(diagram.persist(self.model)?)))
+            }
+            Expression::Comparison(grade, step) => {
+                use crate::partition_algebra::fiber::{Grade, Mode};
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter: grade.parameter,
+                    mode: Mode::Full,
+                })?;
+                let fiber = self.model.partition_fiber(grade.parameter)?;
+                let diagram = fiber
+                    .nakayama(self.model)?
+                    .comparison_diagram(self.model, &fiber, grade, step)?;
+                Ok((ty, TypedForm::Constant(diagram.persist(self.model)?)))
+            }
+            Expression::Massey(parameter, arrows) => {
+                let fiber = self.model.partition_fiber(parameter)?;
+                let class = fiber
+                    .nakayama(self.model)?
+                    .massey(self.model, arrows)?
+                    .class()?;
+                let ty = self.model.partition_ext_type(class.grade)?;
+                Ok((ty, TypedForm::Constant(Value::RVPartitionExt(class))))
+            }
+        }
+    }
+
+    fn partition_ext_operand(
+        &self,
+        input: &TypedExpr,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::Grade> {
+        match *self.model.kind(input.ty) {
+            Kind::RVPartitionExt(grade, _) => Ok(grade),
+            _ => Err(Error::new(
+                input.span,
+                "partition Ext operation requires an RVPartitionExt class",
+            )),
         }
     }
 
