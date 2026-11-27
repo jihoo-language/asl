@@ -160,3 +160,65 @@ fn euler_reduction_checks_actual_quotient_range_after_exact_cancellation() {
         "{error}"
     );
 }
+
+#[test]
+fn oversized_shifted_blocks_can_have_a_small_euler_factor() {
+    let program = r"
+        let one = rvOre[0,0];
+        let t = rvOre[0,1];
+        let large = rvOre[8,50];
+        let coprime = add(t,large);
+        assert rvOreEulerFactor(coprime) == one;
+        assert rvOreEulerReduce(coprime) == coprime;
+
+        let linear = add(t,rvOre[0,0,-8]);
+        let input = add(linear,large);
+        assert rvOreEulerFactor(input) == linear;
+        assert rvOreEulerReduce(input) == add(one,rvOre[8,49]);
+
+        let input2 = add(rvOre[0,2],add(rvOre[8,51],rvOre[8,50,8]));
+        assert rvOreEulerFactor(input2) == t;
+        assert rvOreEulerReduce(input2) == add(t,large);
+
+        let constant = add(rvOre[8,0,-7],rvOre[19,70,-3]);
+        assert rvOreEulerFactor(constant) == one;
+        assert rvOreEulerReduce(constant) == constant;
+        assert rvOreEulerFactor(zero[RVOre]) == one;
+    ";
+    assert_eq!(stdout(interpret(program)), "");
+    let huge = format!(
+        "let x = add(rvOre[0,1],rvOre[{},20,-2]);
+         assert rvOreEulerFactor(x) == rvOre[0,0];
+         assert rvOreEulerReduce(x) == x;",
+        usize::MAX
+    );
+    assert_eq!(stdout(interpret(&huge)), "");
+}
+
+#[test]
+fn shifted_cofactors_are_separately_certified_in_original_block_coordinates() {
+    let m = 1i128 << 126;
+    let program = format!(
+        "let f = add(rvOre[0,1,{m}],rvOre[0,0,{}]);
+         let input = add(f,add(rvOre[2,2,{}],add(rvOre[2,1,-1],rvOre[2,0,{}])));
+         assert rvOreEulerFactor(input) == f;
+         assert rvOreEulerReduce(input) == add(rvOre[0,0],add(rvOre[2,0],rvOre[2,1,-1]));
+         let single = add(rvOre[8,50,-6],rvOre[8,0,12]);
+         assert rvOreEulerReduce(single) == rvOre[8,0,-6];
+         assert rvOreEulerReduce(rvOre[8,50,{}]) == rvOre[8,0,{}];
+         let shifted = rvOreMul(rvOre[8,0],rvOreFactorial[50](rvOre[1,0]));
+         assert rvOreEulerReduce(add(rvOre[8,50],shifted)) == add(rvOre[8,0],rvOre[9,0]);",
+        1 - m,
+        -m,
+        m + 1,
+        i128::MIN,
+        i128::MIN,
+    );
+    assert_eq!(stdout(interpret(&program)), "");
+
+    let unrepresentable = diagnostic(interpret("show rvOreEulerFactor(rvOre[8,50]);"));
+    assert!(
+        unrepresentable.contains("integer arithmetic is out of range"),
+        "{unrepresentable}"
+    );
+}

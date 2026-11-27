@@ -6,6 +6,9 @@ use crate::prime_linear::invert;
 
 use super::{arithmetic, checked_divide, gcd, storage, Division, Polynomial, Result};
 
+mod translated;
+pub(crate) use translated::{translated_gcd, translated_quotient};
+
 // If the primitive gcd fits i128, scaling it by the gcd of the input
 // leading coefficients gives magnitudes at most 2^254. Reconstruction
 // needs a modulus above 2^255 and one last prime of up to 32 bits.
@@ -220,28 +223,33 @@ impl Reconstruction {
         if self.modulus.cmp(twice_lead).is_le() {
             return Ok(None);
         }
-        let centered = |representative| {
-            let opposite = self.modulus.difference(representative);
-            if opposite.cmp(representative).is_lt() {
-                (opposite, true)
-            } else {
-                (representative, false)
-            }
-        };
         let mut content = lead;
         for &representative in &self.residues {
             if content == 1 {
                 break;
             }
             model.spend(2 * LIMBS)?;
-            let (magnitude, _) = centered(representative);
+            let (magnitude, _) = self.centered(representative);
             let (_, residue) = magnitude.divide(model, content)?;
             content = gcd(content, residue);
         }
+        self.coefficients(model, content)
+    }
+
+    fn centered(&self, representative: Integer) -> (Integer, bool) {
+        let opposite = self.modulus.difference(representative);
+        if opposite.cmp(representative).is_lt() {
+            (opposite, true)
+        } else {
+            (representative, false)
+        }
+    }
+
+    fn coefficients(&self, model: &mut Model, content: u128) -> Result<Option<Polynomial>> {
         let mut answer = Vec::with_capacity(self.residues.len());
         for &representative in &self.residues {
             model.spend(2 * LIMBS)?;
-            let (magnitude, negative) = centered(representative);
+            let (magnitude, negative) = self.centered(representative);
             let (quotient, _) = magnitude.divide(model, content)?;
             let Some(coefficient) = quotient.signed(negative) else {
                 return Ok(None);
@@ -289,10 +297,22 @@ fn trim(polynomial: &mut Vec<u32>) {
 }
 
 fn remainder(model: &mut Model, a: &mut Vec<u32>, b: &[u32], p: Prime) -> Result<()> {
+    reduce(model, a, b, p, |_, _| {})
+}
+
+fn reduce(
+    model: &mut Model,
+    a: &mut Vec<u32>,
+    b: &[u32],
+    p: Prime,
+    mut quotient_term: impl FnMut(usize, u32),
+) -> Result<()> {
     let inverse = invert(model, p, *b.last().unwrap())?;
     while a.len() >= b.len() {
         let shift = a.len() - b.len();
-        let scalar = p.negate(p.mul(*a.last().unwrap(), inverse));
+        let factor = p.mul(*a.last().unwrap(), inverse);
+        quotient_term(shift, factor);
+        let scalar = p.negate(factor);
         model.spend(b.len())?;
         for (entry, &coefficient) in a[shift..].iter_mut().zip(b) {
             *entry = p.add(*entry, p.mul(scalar, coefficient));
@@ -302,9 +322,7 @@ fn remainder(model: &mut Model, a: &mut Vec<u32>, b: &[u32], p: Prime) -> Result
     Ok(())
 }
 
-fn image_gcd(model: &mut Model, a: &[i128], b: &[i128], p: Prime) -> Result<Vec<u32>> {
-    let mut a = image(model, a, p)?;
-    let mut b = image(model, b, p)?;
+fn gcd_images(model: &mut Model, mut a: Vec<u32>, mut b: Vec<u32>, p: Prime) -> Result<Vec<u32>> {
     while !b.is_empty() {
         remainder(model, &mut a, &b, p)?;
         (a, b) = (b, a);
@@ -360,21 +378,46 @@ fn reconstruct(
     model: &mut Model,
     a: &[i128],
     b: &[i128],
-    mut next: impl FnMut(&mut Model) -> Result<Prime>,
+    next: impl FnMut(&mut Model) -> Result<Prime>,
 ) -> Result<Polynomial> {
     storage(a.len().saturating_add(b.len()))?;
     let (a_lead, b_lead) = (*a.last().unwrap(), *b.last().unwrap());
     let scale = gcd(a_lead.unsigned_abs(), b_lead.unsigned_abs());
-    let mut size = a.len().min(b.len());
+    certified_gcd(
+        model,
+        a.len().min(b.len()),
+        scale,
+        false,
+        next,
+        |model, p| {
+            if residue(a_lead, p) == 0 || residue(b_lead, p) == 0 {
+                return Ok(None);
+            }
+            let a = image(model, a, p)?;
+            let b = image(model, b, p)?;
+            gcd_images(model, a, b, p).map(Some)
+        },
+        |model, candidate| Ok(divides(model, a, candidate)? && divides(model, b, candidate)?),
+    )
+}
+
+fn certified_gcd(
+    model: &mut Model,
+    mut size: usize,
+    scale: u128,
+    degree_known: bool,
+    mut next: impl FnMut(&mut Model) -> Result<Prime>,
+    mut map: impl FnMut(&mut Model, Prime) -> Result<Option<Vec<u32>>>,
+    mut divides_all: impl FnMut(&mut Model, &[i128]) -> Result<bool>,
+) -> Result<Polynomial> {
     let mut lift = Reconstruction::new(0)?;
     loop {
         let p = next(model)?;
-        // Degree preservation makes the modular gcd degree an upper
-        // bound. Unlucky primes can only increase that degree.
-        if residue(a_lead, p) == 0 || residue(b_lead, p) == 0 {
+        // The caller supplies images preserving every leading degree.
+        // The modular gcd degree is then an upper bound over Q.
+        let Some(image) = map(model, p)? else {
             continue;
-        }
-        let image = image_gcd(model, a, b, p)?;
+        };
         if image.len() > size {
             continue;
         }
@@ -388,11 +431,14 @@ fn reconstruct(
         if lift.modulus.bits() > 255 {
             // Further primes of this same degree cannot help recover
             // an i128 primitive gcd. A smaller degree can reset the lift.
+            if degree_known {
+                return Err(arithmetic());
+            }
             continue;
         }
         lift.update(model, p, &image, (scale % u128::from(p.get())) as u32)?;
         if let Some(candidate) = lift.candidate(model, scale)? {
-            if divides(model, a, &candidate)? && divides(model, b, &candidate)? {
+            if divides_all(model, &candidate)? {
                 // Exact divisibility plus the modular upper bound
                 // certifies the candidate's maximal degree.
                 return Ok(candidate);

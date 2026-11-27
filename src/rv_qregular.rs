@@ -6,21 +6,27 @@ use crate::rv_qgr::Grade;
 
 type Blocks = Vec<(usize, Polynomial)>;
 
-fn times_linear(model: &mut Model, polynomial: &mut Polynomial, offset: i128) -> Result<()> {
+fn times_linear(model: &mut Model, polynomial: &mut Polynomial, offset: i128) -> Result<bool> {
     model.spend(polynomial.len())?;
     if let Some(&leading) = polynomial.last() {
         rv_qconnection::storage(polynomial.len() + 1)?;
         let length = polynomial.len();
         polynomial.push(leading);
         for i in (1..length).rev() {
-            polynomial[i] = polynomial[i]
+            let Some(coefficient) = polynomial[i]
                 .checked_mul(offset)
                 .and_then(|value| value.checked_add(polynomial[i - 1]))
-                .ok_or_else(arithmetic)?;
+            else {
+                return Ok(false);
+            };
+            polynomial[i] = coefficient;
         }
-        polynomial[0] = polynomial[0].checked_mul(offset).ok_or_else(arithmetic)?;
+        let Some(constant) = polynomial[0].checked_mul(offset) else {
+            return Ok(false);
+        };
+        polynomial[0] = constant;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn factorial(model: &mut Model, height: usize, input: &Support) -> Result<Value> {
@@ -36,7 +42,9 @@ pub(crate) fn factorial(model: &mut Model, height: usize, input: &Support) -> Re
         powers.theta.checked_add(degree).ok_or_else(arithmetic)?;
         for q in previous + 1..=powers.q {
             for _ in 0..height {
-                times_linear(model, &mut polynomial, q as i128)?;
+                if !times_linear(model, &mut polynomial, q as i128)? {
+                    return Err(arithmetic());
+                }
             }
         }
         previous = powers.q;
@@ -72,41 +80,65 @@ fn grouped(model: &mut Model, input: &Support) -> Result<Blocks> {
     Ok(blocks)
 }
 
-fn shifted(model: &mut Model, polynomial: &[i128], offset: i128) -> Result<Polynomial> {
+fn shifted(model: &mut Model, polynomial: &[i128], offset: i128) -> Result<Option<Polynomial>> {
     if offset == 0 {
         model.spend(polynomial.len())?;
-        return Ok(polynomial.to_vec());
+        return Ok(Some(polynomial.to_vec()));
     }
     let mut result = vec![*polynomial.last().unwrap()];
     for &coefficient in polynomial[..polynomial.len() - 1].iter().rev() {
-        times_linear(model, &mut result, offset)?;
-        result[0] = result[0].checked_add(coefficient).ok_or_else(arithmetic)?;
+        if !times_linear(model, &mut result, offset)? {
+            return Ok(None);
+        }
+        let Some(constant) = result[0].checked_add(coefficient) else {
+            return Ok(None);
+        };
+        result[0] = constant;
     }
-    Ok(result)
+    Ok(Some(result))
 }
 
-fn common_factor(model: &mut Model, blocks: &Blocks) -> Result<Polynomial> {
+fn common_factor(
+    model: &mut Model,
+    blocks: &[(usize, Polynomial)],
+    origin: usize,
+) -> Result<Polynomial> {
+    if blocks.is_empty() || blocks.iter().any(|(_, p)| p.len() == 1) {
+        return Ok(vec![1]);
+    }
     let mut factor = Vec::new();
     for (power, polynomial) in blocks {
-        let shifted = shifted(model, polynomial, -(*power as i128))?;
+        model.spend(polynomial.len())?;
+        let mut primitive = polynomial.clone();
+        rv_qconnection::primitive(&mut primitive);
+        let offset = origin as i128 - *power as i128;
+        let Some(shifted) = shifted(model, &primitive, offset)? else {
+            return rv_qconnection::translated_gcd(model, blocks, origin);
+        };
         factor = rv_qconnection::polynomial_gcd(model, factor, shifted)?;
         if factor == [1] {
             break;
         }
     }
-    if factor.is_empty() {
-        factor.push(1);
-    }
     Ok(factor)
 }
 
-fn divide(model: &mut Model, blocks: &mut Blocks, factor: &[i128]) -> Result<()> {
+fn divide(
+    model: &mut Model,
+    blocks: &mut [(usize, Polynomial)],
+    factor: &[i128],
+    origin: usize,
+) -> Result<()> {
     if factor == [1] {
         return Ok(());
     }
     for (power, polynomial) in blocks {
-        let divisor = shifted(model, factor, *power as i128)?;
-        *polynomial = rv_qconnection::exact_divide(model, std::mem::take(polynomial), &divisor)?;
+        let offset = *power as i128 - origin as i128;
+        *polynomial = if let Some(divisor) = shifted(model, factor, offset)? {
+            rv_qconnection::exact_divide(model, std::mem::take(polynomial), &divisor)?
+        } else {
+            rv_qconnection::translated_quotient(model, polynomial, factor, offset)?
+        };
     }
     Ok(())
 }
@@ -123,14 +155,40 @@ fn ore(model: &mut Model, coefficients: Blocks) -> Result<Value> {
 
 pub(crate) fn euler_factor(model: &mut Model, input: &Support) -> Result<Value> {
     let blocks = grouped(model, input)?;
-    let factor = common_factor(model, &blocks)?;
+    let factor = common_factor(model, &blocks, 0)?;
     ore(model, vec![(0, factor)])
 }
 
 pub(crate) fn euler_reduce(model: &mut Model, input: &Support) -> Result<Value> {
     let mut blocks = grouped(model, input)?;
-    let factor = common_factor(model, &blocks)?;
-    divide(model, &mut blocks, &factor)?;
+    if let [(_, polynomial)] = blocks.as_mut_slice() {
+        // Translation preserves primitive content. The entire
+        // normalized block is the divisor, leaving just its content.
+        model.spend(polynomial.len())?;
+        let content = rv_qconnection::content(polynomial);
+        let negative = *polynomial.last().unwrap() < 0;
+        let coefficient = if let Ok(content) = i128::try_from(content) {
+            if negative {
+                -content
+            } else {
+                content
+            }
+        } else {
+            // Content 2^127 occurs only when all nonzero coefficients
+            // equal i128::MIN, so the leading coefficient is negative.
+            debug_assert!(negative);
+            i128::MIN
+        };
+        polynomial.clear();
+        polynomial.push(coefficient);
+    } else {
+        let origin = blocks
+            .iter()
+            .min_by_key(|(_, p)| p.len())
+            .map_or(0, |(power, _)| *power);
+        let factor = common_factor(model, &blocks, origin)?;
+        divide(model, &mut blocks, &factor, origin)?;
+    }
     ore(model, blocks)
 }
 
@@ -243,12 +301,12 @@ pub(crate) fn rhs(model: &mut Model, grade: Grade) -> Result<String> {
         unreachable!()
     };
     let mut blocks = grouped(model, &transformed)?;
-    let factor = common_factor(model, &blocks)?;
+    let factor = common_factor(model, &blocks, 0)?;
     let degrees = roots(model, &factor)?;
     let Some(&last) = degrees.last() else {
         return Ok("{}".into());
     };
-    divide(model, &mut blocks, &factor)?;
+    divide(model, &mut blocks, &factor, 0)?;
     let period = rv_qconnection::period_coefficients(model, grade, last, PeriodScale::Factorial)?;
     let mut forcing = Vec::new();
     for degree in degrees {

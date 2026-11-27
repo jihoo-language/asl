@@ -10,6 +10,7 @@ const MAX_POLYNOMIAL_CELLS: usize = 300_000;
 const MAX_PERIOD: usize = 4096;
 
 mod integer_gcd;
+pub(crate) use integer_gcd::{translated_gcd, translated_quotient};
 
 pub(crate) type Polynomial = Vec<i128>;
 
@@ -374,11 +375,11 @@ fn divide_content(poly: &mut Polynomial, content: u128) {
     }
 }
 
-fn content(poly: &[i128]) -> u128 {
+pub(crate) fn content(poly: &[i128]) -> u128 {
     poly.iter().map(|x| x.unsigned_abs()).fold(0, gcd)
 }
 
-fn primitive(poly: &mut Polynomial) {
+pub(crate) fn primitive(poly: &mut Polynomial) {
     divide_content(poly, content(poly));
 }
 
