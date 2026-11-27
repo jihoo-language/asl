@@ -10,6 +10,8 @@ use crate::wide_integer::Natural;
 
 use super::k3::{exterior_power_sum, fixed_nodes, h1_power_sums, node_orbits};
 
+pub(crate) mod characteristic;
+
 const LIMBS: usize = 16;
 type Integer = Wide<LIMBS>;
 type Magnitude = Natural<LIMBS>;
@@ -19,11 +21,13 @@ pub(crate) enum Command {
     Points(Label, u128, u128),
     Trace(Label, u128, u128, u128),
     Betti(u128, u128),
+    Characteristic(characteristic::Query),
 }
 
 impl Command {
     pub(crate) fn execute(self, model: &mut Model) -> Result<String> {
         match self {
+            Self::Characteristic(query) => query.report(model),
             Self::Points(name, n, r) => {
                 let curve = model
                     .kummer_curve(&name.text)

@@ -12848,6 +12848,11 @@ impl Checker<'_> {
                 let value = coefficient.rem_euclid(i128::from(prime.get())) as u32;
                 Ok((ty, TypedForm::Constant(Value::PrimeScalar(value))))
             }
+            ExprForm::KummerHilbertCoefficient(query) => {
+                let (prime, value) = query.coefficient(self.model)?;
+                let ty = self.model.prime_scalar_type(prime)?;
+                Ok((ty, TypedForm::Constant(Value::PrimeScalar(value))))
+            }
             ExprForm::AsOddTateGen(name, degree, index) => {
                 let cover = self.model.rv_as_odd_cover(&name)?;
                 let ty =

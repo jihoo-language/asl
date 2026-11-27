@@ -1005,6 +1005,9 @@ pub(crate) enum ExprForm {
     AsOddTateOperation(AsOddTateOp, Box<ParsedExpr>),
     AsOddDeRhamOperation(AsOddDeRhamOp, Box<ParsedExpr>),
     PrimeScalar(usize, i128),
+    KummerHilbertCoefficient(
+        Box<crate::hyperelliptic_kummer_surface::hilbert::characteristic::Query>,
+    ),
     RvOmega(DiffFamily, Label, usize, usize),
     RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
     RvCartier(DiffFamily, Box<ParsedExpr>),
@@ -3020,6 +3023,12 @@ impl<'src> Parser<'src> {
     fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hilbert::Command;
         self.advance()?;
+        if name == "rvKummerHilbChar" {
+            let query = self.kummer_hilbert_characteristic()?;
+            return Ok(StatementForm::KummerHilbert(Box::new(
+                Command::Characteristic(query),
+            )));
+        }
         self.expect(Token::LBracket)?;
         let command = if name == "rvKummerHilbBetti" {
             let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
@@ -3145,6 +3154,40 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::KummerDiv(Box::new(expression)), depth)
+    }
+
+    fn kummer_hilbert_characteristic(
+        &mut self,
+    ) -> Result<crate::hyperelliptic_kummer_surface::hilbert::characteristic::Query> {
+        use crate::hyperelliptic_kummer_surface::hilbert::characteristic::Query;
+        self.expect(Token::LBracket)?;
+        let curve = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
+        self.expect(Token::Comma)?;
+        let span = self.span();
+        let extension = self.wide_unsigned("Kummer Hilbert-scheme extension degree")?;
+        if extension == 0 {
+            return Err(Error::new(
+                span,
+                "Kummer Hilbert-scheme extension degree must be positive",
+            ));
+        }
+        self.expect(Token::Comma)?;
+        let degree = self.wide_unsigned("cohomological degree")?;
+        self.expect(Token::Comma)?;
+        let prime = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let order = self.number()?.0;
+        self.expect(Token::RBracket)?;
+        Ok(Query {
+            curve,
+            length,
+            extension,
+            degree,
+            prime,
+            order,
+        })
     }
 
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
@@ -4103,7 +4146,8 @@ impl<'src> Parser<'src> {
                 self.kummer_divisor_statement(command)?
             }
             Token::Word(
-                command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"),
+                command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"
+                | "rvKummerHilbChar"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(
@@ -9552,6 +9596,10 @@ impl<'src> Parser<'src> {
                     let index = self.number()?.0;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::AsOddDeRhamGen(cover, index), 0);
+                }
+                if name.text == "rvKummerHilbCharCoeff" && self.token() == Token::LBracket {
+                    let query = self.kummer_hilbert_characteristic()?;
+                    return expr(span, ExprForm::KummerHilbertCoefficient(Box::new(query)), 0);
                 }
                 if name.text == "rvPrimeElt" && self.eat(Token::LBracket)? {
                     let prime = self.number()?.0;
