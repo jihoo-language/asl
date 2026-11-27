@@ -837,6 +837,21 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+struct SixJAssemble {
+    double: Rc<dd::Double>,
+    categories: [Rc<dd::defects::Category>; 4],
+    names: [Rc<str>; 4],
+    intermediates: [Rc<dd::defects::Category>; 2],
+    intermediate_names: [Rc<str>; 2],
+    inputs: [TypedExpr; 4],
+}
+
+enum SixJAction {
+    Assemble(Box<SixJAssemble>),
+    Entry([usize; 2], bool, Box<TypedExpr>),
+    Norm([usize; 2], Box<TypedExpr>),
+}
+
 struct RelativeAction {
     double: Rc<dd::Double>,
     source: [Rc<dd::defects::Category>; 2],
@@ -883,6 +898,7 @@ enum TypedForm {
     DoubleBraid(DoubleBraidAction),
     DoubleDefect(DoubleDefectAction),
     DoubleRelative(RelativeAction),
+    DoubleDefectSixJ(SixJAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2631,6 +2647,9 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleDefectSixJ(command) => {
+                return self.sixj_command(*command).map(Some)
+            }
             StatementForm::DoubleRelative(command) => {
                 return self.relative_command(*command).map(Some)
             }
@@ -9206,6 +9225,110 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn sixj_command(&mut self, command: dd::defects::relative::sixj::Command) -> Result<String> {
+        use dd::defects::relative::sixj::{self, Command};
+        match command {
+            Command::Data(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .sixj_operand(&input, "rvDoubleDefectSixJData")?;
+                let Value::DoubleDefectSixJ(matrix) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                Ok(matrix.report())
+            }
+            Command::Pentagon(labels, inputs) => {
+                let [a, b, c, d, q] = *inputs;
+                let inputs = [
+                    self.checker().expr(a)?,
+                    self.checker().expr(b)?,
+                    self.checker().expr(c)?,
+                    self.checker().expr(d)?,
+                    self.checker().expr(q)?,
+                ];
+                let categories = self
+                    .checker()
+                    .sixj_categories(&inputs, "rvDoubleDefectPentagon")?;
+                let [ab, bc, cd, abc, bcd] = labels;
+                let inner = [
+                    self.model.double_defects(&ab)?,
+                    self.model.double_defects(&bc)?,
+                    self.model.double_defects(&cd)?,
+                    self.model.double_defects(&abc)?,
+                    self.model.double_defects(&bcd)?,
+                ];
+                let double = self.model.drinfeld_double(&Label {
+                    text: categories[4].boundaries[0].double_name.to_string(),
+                    span: inputs[4].span,
+                })?;
+                let cases = std::array::from_fn::<_, 5, _>(|i| {
+                    (sixj::FOUR_INTERVALS[i], inner[i].as_ref())
+                });
+                let refs = categories.each_ref().map(Rc::as_ref);
+                let problem = sixj::Problem {
+                    double: &double,
+                    sources: &refs[..4],
+                    intermediates: &cases,
+                    target: refs[4],
+                };
+                problem.check()?;
+                let values = [
+                    self.eval_defect_index(&inputs[0])?,
+                    self.eval_defect_index(&inputs[1])?,
+                    self.eval_defect_index(&inputs[2])?,
+                    self.eval_defect_index(&inputs[3])?,
+                    self.eval_defect_index(&inputs[4])?,
+                ];
+                problem.pentagon(&mut self.model, values)
+            }
+        }
+    }
+
+    fn eval_sixj(&mut self, action: &SixJAction) -> Result<Value> {
+        use dd::defects::relative::sixj;
+        match action {
+            SixJAction::Assemble(action) => {
+                let types = action.categories.each_ref().map(Rc::as_ref);
+                let cases = [
+                    (sixj::TRIPLE_INTERVALS[0], action.intermediates[0].as_ref()),
+                    (sixj::TRIPLE_INTERVALS[1], action.intermediates[1].as_ref()),
+                ];
+                let problem = sixj::Problem {
+                    double: &action.double,
+                    sources: &types[..3],
+                    intermediates: &cases,
+                    target: types[3],
+                };
+                let [a, b, c, d] = &action.inputs;
+                let indices = [
+                    self.eval_defect_index(a)?,
+                    self.eval_defect_index(b)?,
+                    self.eval_defect_index(c)?,
+                    self.eval_defect_index(d)?,
+                ];
+                let [na, nb, nc, nd] = action.names.clone();
+                let [a, b, c, d] = indices;
+                problem.six_j(
+                    &mut self.model,
+                    action.intermediate_names.clone(),
+                    [(na, a), (nb, b), (nc, c), (nd, d)],
+                )
+            }
+            SixJAction::Entry(key, inverse, input) => {
+                let Value::DoubleDefectSixJ(matrix) = self.eval(input)? else {
+                    unreachable!()
+                };
+                matrix.entry(&mut self.model, *inverse, *key)
+            }
+            SixJAction::Norm(key, input) => {
+                let Value::DoubleDefectSixJ(matrix) = self.eval(input)? else {
+                    unreachable!()
+                };
+                matrix.norm(&mut self.model, *key)
+            }
+        }
+    }
+
     fn relative_command(&mut self, command: dd::defects::relative::Command) -> Result<String> {
         use dd::defects::relative::{self, Command};
         match command {
@@ -14501,6 +14624,7 @@ impl Engine {
             TypedForm::DoubleBraid(action) => self.eval_double_braid(action),
             TypedForm::DoubleDefect(action) => self.eval_double_defect(action),
             TypedForm::DoubleRelative(action) => self.eval_relative(action),
+            TypedForm::DoubleDefectSixJ(action) => self.eval_sixj(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -18666,6 +18790,7 @@ impl Checker<'_> {
             TypeForm::DoubleSector(name) => self.model.double_sector_type(&name),
             TypeForm::DoubleDefect(name) => self.model.double_defect_type(&name),
             TypeForm::DoubleRelative(name) => self.model.double_relative_type(&name),
+            TypeForm::DoubleDefectSixJ(name, n) => self.model.double_sixj_type(&name, n),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -19533,6 +19658,7 @@ impl Checker<'_> {
             ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
             ExprForm::DoubleDefect(expression) => self.double_defect_expression(*expression),
             ExprForm::DoubleRelative(expression) => self.relative_expression(*expression),
+            ExprForm::DoubleDefectSixJ(expression) => self.sixj_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -31614,6 +31740,101 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn sixj_operand(&self, input: &TypedExpr, op: &str) -> Result<usize> {
+        let Kind::DoubleDefectSixJ(_, n) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, op, "a boundary recoupling matrix"));
+        };
+        Ok(*n)
+    }
+
+    fn sixj_categories<const N: usize>(
+        &self,
+        args: &[TypedExpr; N],
+        op: &str,
+    ) -> Result<[Rc<dd::defects::Category>; N]> {
+        let values = args
+            .iter()
+            .map(|input| self.double_defect_operand(input, op))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(values.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+
+    fn sixj_expression(
+        &mut self,
+        expr: dd::defects::relative::sixj::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::relative::sixj::{self, Expression};
+        let (ty, action) = match expr {
+            Expression::Assemble([ab, bc], args) => {
+                let [a, b, c, d] = *args;
+                let inputs = [self.expr(a)?, self.expr(b)?, self.expr(c)?, self.expr(d)?];
+                let categories = self.sixj_categories(&inputs, "rvDoubleDefectSixJ")?;
+                let intermediates = [
+                    self.model.double_defects(&ab)?,
+                    self.model.double_defects(&bc)?,
+                ];
+                let names = inputs.each_ref().map(|input| {
+                    let Kind::DoubleDefect(name) = self.model.kind(input.ty) else {
+                        unreachable!()
+                    };
+                    name.clone()
+                });
+                let span = inputs[3].span;
+                let double = self.model.drinfeld_double(&Label {
+                    text: categories[3].boundaries[0].double_name.to_string(),
+                    span,
+                })?;
+                let types = categories.each_ref().map(Rc::as_ref);
+                let cases = [
+                    (sixj::TRIPLE_INTERVALS[0], intermediates[0].as_ref()),
+                    (sixj::TRIPLE_INTERVALS[1], intermediates[1].as_ref()),
+                ];
+                let problem = sixj::Problem {
+                    double: &double,
+                    sources: &types[..3],
+                    intermediates: &cases,
+                    target: types[3],
+                };
+                let n = problem.conductor(self.model)?;
+                let ty = self.model.double_sixj_type(
+                    &Label {
+                        text: names[3].to_string(),
+                        span,
+                    },
+                    n,
+                )?;
+                (
+                    ty,
+                    SixJAction::Assemble(Box::new(SixJAssemble {
+                        double,
+                        categories,
+                        names,
+                        intermediates,
+                        intermediate_names: [ab.text.into(), bc.text.into()],
+                        inputs,
+                    })),
+                )
+            }
+            Expression::Entry(key, inverse, input) => {
+                let input = self.expr(*input)?;
+                let n = self.sixj_operand(&input, "rvDoubleDefectSixJEntry")?;
+                (
+                    self.model.cyclotomic_rational_type(n)?,
+                    SixJAction::Entry(key, inverse, Box::new(input)),
+                )
+            }
+            Expression::Norm(key, input) => {
+                let input = self.expr(*input)?;
+                let n = self.sixj_operand(&input, "rvDoubleDefectSixJNorm")?;
+                (
+                    self.model.cyclotomic_rational_type(n)?,
+                    SixJAction::Norm(key, Box::new(input)),
+                )
+            }
+        };
+        Ok((ty, TypedForm::DoubleDefectSixJ(action)))
     }
 
     fn relative_operand(

@@ -216,6 +216,7 @@ pub(crate) enum Kind {
     DoubleSector(Rc<str>),
     DoubleDefect(Rc<str>),
     DoubleRelative(Rc<str>),
+    DoubleDefectSixJ(Rc<str>, usize),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -512,6 +513,7 @@ pub(crate) enum Value {
     DoubleSector(Rc<dd::Sector>),
     DoubleDefect(usize),
     DoubleRelative(Rc<dd::defects::relative::Relative>),
+    DoubleDefectSixJ(Rc<dd::defects::relative::sixj::SixJ>),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -1208,6 +1210,15 @@ impl Model {
         self.inhabited_type(Kind::DoubleRelative(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn double_sixj_type(&mut self, name: &Label, conductor: usize) -> Result<TypeId> {
+        self.double_defects(name)?;
+        self.cyclotomic_rational_type(conductor)?;
+        self.inhabited_type(
+            Kind::DoubleDefectSixJ(name.text.as_str().into(), conductor),
+            0,
+        )
+    }
+
     pub(crate) fn double_defect_type(&mut self, name: &Label) -> Result<TypeId> {
         self.double_defects(name)?;
         self.inhabited_type(Kind::DoubleDefect(name.text.as_str().into()), 0)
@@ -1729,7 +1740,8 @@ impl Model {
             Kind::KSNomizu(_, _, 0..=65)
             | Kind::DoubleSector(..)
             | Kind::DoubleBraid(..)
-            | Kind::DoubleRelative(..) => usize::MAX,
+            | Kind::DoubleRelative(..)
+            | Kind::DoubleDefectSixJ(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -2018,6 +2030,7 @@ impl Model {
                 | Kind::DoubleSector(..)
                 | Kind::DoubleDefect(..)
                 | Kind::DoubleRelative(..)
+                | Kind::DoubleDefectSixJ(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -7839,6 +7852,7 @@ impl Model {
             | Kind::DoubleSector(..)
             | Kind::DoubleDefect(..)
             | Kind::DoubleRelative(..)
+            | Kind::DoubleDefectSixJ(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -8026,6 +8040,7 @@ impl Model {
                 out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
             }
             Kind::DoubleRelative(name) => out.push(&format!("RVDoubleRelative({name})")),
+            Kind::DoubleDefectSixJ(name, n) => out.push(&format!("RVDoubleDefectSixJ({name},{n})")),
             Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
             Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
             Kind::PostnikovCochain(name, degree) => {
@@ -8692,6 +8707,7 @@ impl Model {
                 Ok(a == b)
             }
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a == b),
+            (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a == b),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -9057,6 +9073,7 @@ impl Model {
                 Ok(a.cmp(b))
             }
             (Value::DoubleRelative(a), Value::DoubleRelative(b)) => Ok(a.cmp(b)),
+            (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -10045,6 +10062,11 @@ impl Model {
                 Kind::DoubleBraid(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a double braid operator type",
+                    ));
+                }
+                Kind::DoubleDefectSixJ(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a boundary recoupling matrix type",
                     ));
                 }
                 Kind::DoubleRelative(..) => {
@@ -11044,6 +11066,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleDefectSixJ(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", value.report()))
             }
             Value::DoubleRelative(value) => {
                 self.write_type(out, ty, 0)?;

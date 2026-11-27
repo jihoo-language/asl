@@ -37,11 +37,11 @@ impl<'a> Field<'a> {
         rv_lens::sum(self.model, left, right)
     }
 
-    fn multiply(&mut self, left: &Rational, right: &Rational) -> Result<Rational> {
+    pub(super) fn multiply(&mut self, left: &Rational, right: &Rational) -> Result<Rational> {
         rv_lens::multiply(self.model, self.conductor, left, right)
     }
 
-    fn conjugate(&mut self, value: &Rational) -> Result<Rational> {
+    pub(super) fn conjugate(&mut self, value: &Rational) -> Result<Rational> {
         if value.numerator.len() <= 1 {
             return Ok(value.clone());
         }
@@ -59,7 +59,7 @@ impl<'a> Field<'a> {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Matrix {
     pub(super) rows: usize,
     pub(super) cols: usize,
@@ -85,6 +85,14 @@ impl Matrix {
             matrix.set(i, i, Rational::integer(1));
         }
         Ok(matrix)
+    }
+
+    pub(super) fn cells(&self) -> usize {
+        3 + self
+            .values
+            .iter()
+            .map(|v| 3 + 2 * v.numerator.len())
+            .sum::<usize>()
     }
 
     pub(super) fn get(&self, row: usize, col: usize) -> &Rational {
@@ -168,7 +176,7 @@ impl Matrix {
         Ok(out)
     }
 
-    fn inner(&self, field: &mut Field<'_>, other: &Self) -> Result<Rational> {
+    pub(super) fn inner(&self, field: &mut Field<'_>, other: &Self) -> Result<Rational> {
         debug_assert_eq!((self.rows, self.cols), (other.rows, other.cols));
         field.model.spend(self.values.len())?;
         let mut result = Rational::zero();

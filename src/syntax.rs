@@ -80,6 +80,7 @@ pub(crate) enum TypeForm {
     DoubleSector(Label),
     DoubleDefect(Label),
     DoubleRelative(Label),
+    DoubleDefectSixJ(Label, usize),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -780,6 +781,7 @@ pub(crate) enum ExprForm {
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Expression>),
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Expression>),
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Expression>),
+    DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1274,6 +1276,7 @@ pub(crate) enum StatementForm {
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Command>),
     DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Command>),
     DoubleRelative(Box<crate::rv_crossed::drinfeld_double::defects::relative::Command>),
+    DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4391,6 +4394,51 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBracket)?;
         Ok(output)
+    }
+
+    fn sixj_labels<const N: usize>(&mut self) -> Result<[Label; N]> {
+        self.expect(Token::LBracket)?;
+        let mut labels = Vec::with_capacity(N);
+        for i in 0..N {
+            if i != 0 {
+                self.expect(Token::Comma)?;
+            }
+            labels.push(self.label()?);
+        }
+        self.expect(Token::RBracket)?;
+        Ok(labels.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+
+    fn sixj_statement(&mut self, op: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command;
+        self.advance()?;
+        let command = if op == "rvDoubleDefectSixJData" {
+            Command::Data(Box::new(self.paren_expr(0)?))
+        } else {
+            Command::Pentagon(self.sixj_labels()?, Box::new(self.paren_arguments(0)?))
+        };
+        Ok(StatementForm::DoubleDefectSixJ(Box::new(command)))
+    }
+
+    fn sixj_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression;
+        let (form, depth) = if op == "rvDoubleDefectSixJ" {
+            let labels = self.sixj_labels()?;
+            let inputs = Box::new(self.paren_arguments(nest)?);
+            let depth = inputs.iter().map(|input| input.depth).max().unwrap();
+            (Expression::Assemble(labels, inputs), depth)
+        } else {
+            let key = self.relative_indices()?;
+            let input = Box::new(self.paren_expr(nest)?);
+            let depth = input.depth;
+            let entry = if op == "rvDoubleDefectSixJNorm" {
+                Expression::Norm(key, input)
+            } else {
+                Expression::Entry(key, op == "rvDoubleDefectSixJInvEntry", input)
+            };
+            (entry, depth)
+        };
+        expr(span, ExprForm::DoubleDefectSixJ(Box::new(form)), depth + 1)
     }
 
     fn relative_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -12850,6 +12898,9 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFuse"
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
+            Token::Word(op @ ("rvDoubleDefectSixJData" | "rvDoubleDefectPentagon")) => {
+                self.sixj_statement(op)?
+            }
             Token::Word(
                 op @ ("rvDoubleRelativeData"
                 | "rvDoubleRelativeAction"
@@ -17190,6 +17241,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleDefectSixJ" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let conductor = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleDefectSixJ(name, conductor), 0);
+        }
         if name.text == "RVDoubleRelative" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -20235,6 +20293,16 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.double_defect_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDoubleDefectSixJ"
+                        | "rvDoubleDefectSixJEntry"
+                        | "rvDoubleDefectSixJInvEntry"
+                        | "rvDoubleDefectSixJNorm"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.sixj_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
@@ -23714,24 +23782,25 @@ impl<'src> Parser<'src> {
         Ok(mu)
     }
 
-    fn paren_triple(&mut self, nest: usize) -> Result<[ParsedExpr; 3]> {
+    fn paren_arguments<const N: usize>(&mut self, nest: usize) -> Result<[ParsedExpr; N]> {
         self.expect(Token::LParen)?;
-        let a = self.expr(nest + 1)?;
-        self.expect(Token::Comma)?;
-        let b = self.expr(nest + 1)?;
-        self.expect(Token::Comma)?;
-        let c = self.expr(nest + 1)?;
+        let mut items = Vec::with_capacity(N);
+        for i in 0..N {
+            if i != 0 {
+                self.expect(Token::Comma)?;
+            }
+            items.push(self.expr(nest + 1)?);
+        }
         self.expect(Token::RParen)?;
-        Ok([a, b, c])
+        Ok(items.try_into().unwrap_or_else(|_| unreachable!()))
+    }
+
+    fn paren_triple(&mut self, nest: usize) -> Result<[ParsedExpr; 3]> {
+        self.paren_arguments(nest)
     }
 
     fn paren_pair(&mut self, nest: usize) -> Result<[ParsedExpr; 2]> {
-        self.expect(Token::LParen)?;
-        let first = self.expr(nest + 1)?;
-        self.expect(Token::Comma)?;
-        let second = self.expr(nest + 1)?;
-        self.expect(Token::RParen)?;
-        Ok([first, second])
+        self.paren_arguments(nest)
     }
 
     fn embedding_parameters(&mut self) -> Result<(usize, usize)> {

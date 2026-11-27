@@ -12,7 +12,9 @@ use super::{Category, Double, Image};
 mod associator;
 pub(crate) use associator::associate;
 mod graded;
+pub(crate) mod sixj;
 mod tensor;
+mod tree;
 use graded::{Ambient, Module};
 use tensor::{Balanced, Pair};
 

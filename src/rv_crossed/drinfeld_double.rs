@@ -15,6 +15,7 @@ pub(crate) mod braid;
 mod characters;
 pub(crate) mod defects;
 pub(crate) mod fusion_symbols;
+mod matrix;
 mod representations;
 
 const MAX_SIMPLES: usize = 256;

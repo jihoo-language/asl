@@ -6,11 +6,10 @@ use crate::model::{Model, Value};
 use crate::rv_lens;
 use crate::syntax::Label;
 
+use super::matrix::{self, coordinates, Field, Matrix};
 use super::{negate_phase, representations, Double};
 
 mod coherence;
-mod matrix;
-use matrix::{coordinates, Field, Matrix};
 
 const MAX_TENSOR: usize = 256;
 
