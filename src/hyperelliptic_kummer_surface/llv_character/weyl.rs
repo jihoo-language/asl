@@ -97,21 +97,7 @@ pub(super) fn specialized_numerator(model: &mut Model, shape: &[u128]) -> Result
     // powers of the shifted weights. The remaining row is the interval
     // character x⁻ᵏ+⋯+xᵏ. The cofactor is an odd Vandermonde product.
     for (excluded, &degree) in highest.iter().enumerate() {
-        let mut cofactor = Magnitude::from_small(1);
-        for (i, &left) in doubled.iter().enumerate() {
-            if i == excluded {
-                continue;
-            }
-            model.spend(WEYL_LIMBS * (RANK - i))?;
-            cofactor = cofactor.multiply_u128(left).ok_or_else(arithmetic)?;
-            for (j, &right) in doubled.iter().enumerate().skip(i + 1) {
-                if j != excluded {
-                    cofactor = cofactor
-                        .multiply_u128(left * left - right * right)
-                        .ok_or_else(arithmetic)?;
-                }
-            }
-        }
+        let cofactor = odd_vandermonde(model, &doubled, &[excluded])?;
         let term = Signed {
             magnitude: cofactor,
             negative: !excluded.is_multiple_of(2),
@@ -121,6 +107,29 @@ pub(super) fn specialized_numerator(model: &mut Model, shape: &[u128]) -> Result
         }
     }
     Ok(numerator)
+}
+
+pub(super) fn odd_vandermonde(
+    model: &mut Model,
+    doubled: &[u128; RANK],
+    excluded: &[usize],
+) -> Result<Magnitude> {
+    let mut product = Magnitude::from_small(1);
+    for (i, &left) in doubled.iter().enumerate() {
+        if excluded.contains(&i) {
+            continue;
+        }
+        model.spend(WEYL_LIMBS * (RANK - i))?;
+        product = product.multiply_u128(left).ok_or_else(arithmetic)?;
+        for (j, &right) in doubled.iter().enumerate().skip(i + 1) {
+            if !excluded.contains(&j) {
+                product = product
+                    .multiply_u128(left * left - right * right)
+                    .ok_or_else(arithmetic)?;
+            }
+        }
+    }
+    Ok(product)
 }
 
 pub(super) fn specialize(

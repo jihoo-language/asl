@@ -5909,20 +5909,42 @@ impl<'src> Parser<'src> {
     fn hilbert_llv_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::llv_character::Command;
         self.advance()?;
+        let shape = |parser: &mut Self| {
+            parser.set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))
+        };
         let command = if name == "rvHilbLLVDimension" {
-            Command::Dimension(
-                self.set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))?,
-            )
+            Command::Dimension(shape(self)?)
         } else {
             self.expect(Token::LBracket)?;
             let n = self.wide_unsigned("Hilbert length")?;
-            self.expect(Token::RBracket)?;
-            if name == "rvHilbLLVMultiplicity" {
-                let shape = self
-                    .set_named_rows(|parser| parser.wide_unsigned("highest weight coordinate"))?;
-                Command::Multiplicity(n, shape)
-            } else {
-                Command::Decompose(n)
+            match name {
+                "rvHilbLLVHodge" | "rvHilbLLVHodgeDecomposition" => {
+                    self.expect(Token::Comma)?;
+                    let p = self.signed_wide("a signed Hodge index", "first Hodge degree")?;
+                    self.expect(Token::Comma)?;
+                    let q = self.signed_wide("a signed Hodge index", "second Hodge degree")?;
+                    self.expect(Token::RBracket)?;
+                    if name == "rvHilbLLVHodge" {
+                        Command::Hodge(n, p, q, shape(self)?)
+                    } else {
+                        Command::HodgeDecompose(n, p, q)
+                    }
+                }
+                _ => {
+                    self.expect(Token::RBracket)?;
+                    match name {
+                        "rvHilbLLVMultiplicity" => Command::Multiplicity(n, shape(self)?),
+                        "rvHilbLLVHodgeTable" => {
+                            let weight = if self.token() == Token::LBrace {
+                                Some(shape(self)?)
+                            } else {
+                                None
+                            };
+                            Command::HodgeTable(n, weight)
+                        }
+                        _ => Command::Decompose(n),
+                    }
+                }
             }
         };
         Ok(StatementForm::HilbertLlv(Box::new(command)))
@@ -7173,7 +7195,10 @@ impl<'src> Parser<'src> {
             Token::Word(
                 command @ ("rvHilbLLVMultiplicity"
                 | "rvHilbLLVDimension"
-                | "rvHilbLLVDecomposition"),
+                | "rvHilbLLVDecomposition"
+                | "rvHilbLLVHodge"
+                | "rvHilbLLVHodgeDecomposition"
+                | "rvHilbLLVHodgeTable"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {

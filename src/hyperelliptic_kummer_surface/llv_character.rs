@@ -4,6 +4,7 @@ use crate::model::{Model, MAX_SHOWN_BYTES};
 use crate::rv_qp_quad::Wide;
 use crate::wide_integer::Natural;
 
+mod hodge;
 mod weyl;
 
 const RANK: usize = 12;
@@ -19,6 +20,9 @@ pub(crate) enum Command {
     Multiplicity(u128, Vec<u128>),
     Dimension(Vec<u128>),
     Decompose(u128),
+    Hodge(u128, i128, i128, Vec<u128>),
+    HodgeDecompose(u128, i128, i128),
+    HodgeTable(u128, Option<Vec<u128>>),
 }
 
 impl Command {
@@ -45,6 +49,20 @@ impl Command {
             Self::Decompose(n) => {
                 validate_length(n)?;
                 decomposition(model, n)
+            }
+            Self::Hodge(n, p, q, shape) => {
+                let shape = validate(shape)?;
+                validate_length(n)?;
+                hodge::coefficient(model, n, p, q, &shape)
+            }
+            Self::HodgeDecompose(n, p, q) => {
+                validate_length(n)?;
+                hodge::decompose(model, n, p, q)
+            }
+            Self::HodgeTable(n, shape) => {
+                let shape = shape.map(validate).transpose()?;
+                validate_length(n)?;
+                hodge::table(model, n, shape.as_deref())
             }
         }
     }
@@ -139,6 +157,26 @@ impl Oscillators {
             ));
         }
         Ok(answer)
+    }
+
+    fn visit_summands(
+        &self,
+        model: &mut Model,
+        mut visit: impl FnMut(&mut Model, &[u128], i128) -> Result<()>,
+    ) -> Result<()> {
+        let mut shape = Vec::new();
+        let mut emit = |model: &mut Model, shape: &[u128]| {
+            let multiplicity = self.multiplicity(model, shape)?;
+            if multiplicity == 0 {
+                Ok(())
+            } else {
+                visit(model, shape, multiplicity)
+            }
+        };
+        for weight in (0..=self.n).rev() {
+            partitions(model, weight, weight, &mut shape, &mut emit)?;
+        }
+        Ok(())
     }
 
     fn matrix(&self, model: &mut Model, parts: &[i128; RANK], excess: usize) -> Result<Vec<Entry>> {
@@ -285,11 +323,7 @@ fn decomposition(model: &mut Model, length: u128) -> Result<String> {
     let mut grades = vec![Magnitude::default(); 2 * n + 1];
     let mut report = format!("rvHilbLLVDecomposition[{length}] = components=[");
     let mut first = true;
-    let mut emit = |model: &mut Model, shape: &[u128]| -> Result<()> {
-        let multiplicity = oscillators.multiplicity(model, shape)?;
-        if multiplicity == 0 {
-            return Ok(());
-        }
+    oscillators.visit_summands(model, |model, shape, multiplicity| {
         let dimension = weyl::dimension(model, shape)?;
         let weights = weyl::specialize(model, shape, &denominator)?;
         let mut check = weights[0];
@@ -332,11 +366,7 @@ fn decomposition(model: &mut Model, length: u128) -> Result<String> {
             return Err(report_limit());
         }
         Ok(())
-    };
-    let mut shape = Vec::new();
-    for weight in (0..=n).rev() {
-        partitions(model, weight, weight, &mut shape, &mut emit)?;
-    }
+    })?;
     let total = decimal(model, total)?;
     write!(report, "] total={total} betti=[").unwrap();
     for (index, betti) in grades.into_iter().enumerate() {
