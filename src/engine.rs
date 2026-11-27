@@ -516,6 +516,8 @@ enum TypedForm {
     CycloRatioProduct(usize, Box<[TypedExpr; 2]>),
     CycloRatioGalois(usize, i128, Box<TypedExpr>),
     Lee(crate::lee::Operation, Box<TypedExpr>),
+    LeeDtDualD(Box<TypedExpr>),
+    LeeDtPair(Box<[TypedExpr; 2]>),
     Khovanov(khovanov::Operation, Box<TypedExpr>),
     KhPair(Box<[TypedExpr; 2]>),
     TlOperation(rv_tl::Grade, TlOp, Box<TypedExpr>),
@@ -912,9 +914,44 @@ impl Engine {
         })
     }
 
+    fn lee_dt_command(&mut self, command: crate::lee::dt::Command) -> Result<String> {
+        use crate::lee::dt::{self, Command};
+        match command {
+            Command::Value(name, t) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let value = dt::value(&mut self.model, &braid, t)?;
+                Ok(format!("leeDt[{}, {t}] = {value}", name.text))
+            }
+            Command::Profile(name) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let pieces: Vec<_> = dt::profile(&mut self.model, &braid)?
+                    .into_iter()
+                    .map(|(a, b, degree)| (a.pair(), b.pair(), degree.j, degree.k))
+                    .collect();
+                Ok(format!("leeDtProfile[{}] = {pieces:?}", name.text))
+            }
+            Command::Weight(t, input) => {
+                let input = self.checker().expr(*input)?;
+                let (name, dual) = match self.model.kind(input.ty) {
+                    Kind::Lee(name, _) => (name.clone(), false),
+                    Kind::LeeDual(name, _) => (name.clone(), true),
+                    _ => return Err(Error::plain("leeDtWeight requires a Lee cochain or dual")),
+                };
+                let Value::LeeChain(chain) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let braid = self.model.kh_braid(&name)?;
+                let weight = dt::weight(&mut self.model, &braid, &chain, t, dual)?
+                    .map_or_else(|| "zero".into(), |weight| weight.to_string());
+                Ok(format!("leeDtWeight[{t}] = {weight}"))
+            }
+        }
+    }
+
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
         let line = match statement {
             StatementForm::Lee(command) => self.lee_command(command)?,
+            StatementForm::LeeDt(command) => self.lee_dt_command(*command)?,
             StatementForm::Khovanov(command) => match *command {
                 khovanov::Command::Braid(name, strands, word) => {
                     self.model.define_kh_braid(&name, strands, &word)?;
@@ -5556,6 +5593,9 @@ impl Engine {
                             braid.lee_perturbation(&mut self.model, &chain)?,
                         ))
                     }
+                    (Operation::Scale(c), Kind::LeeDual(..), Value::LeeChain(chain)) => Ok(
+                        Value::LeeChain(crate::lee::scale(&mut self.model, &chain, *c)?),
+                    ),
                     (operation, Kind::Lee(name, grade), Value::LeeChain(chain)) => {
                         let braid = self.model.kh_braid(&name)?;
                         let result = match operation {
@@ -5575,6 +5615,34 @@ impl Engine {
                     }
                     _ => unreachable!(),
                 }
+            }
+            TypedForm::LeeDtDualD(input) => {
+                let Value::LeeChain(chain) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::LeeDual(name, _) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let braid = self.model.kh_braid(name)?;
+                Ok(Value::LeeChain(crate::lee::dt::dual_d(
+                    &mut self.model,
+                    &braid,
+                    &chain,
+                )?))
+            }
+            TypedForm::LeeDtPair(arguments) => {
+                let [a, b] = arguments.as_ref();
+                let [Value::LeeChain(a), Value::LeeChain(b)] = [self.eval(a)?, self.eval(b)?]
+                else {
+                    unreachable!()
+                };
+                let paired = crate::lee::dt::pair(&mut self.model, &a, &b)?;
+                let scalar = rv_lens::fraction(
+                    &mut self.model,
+                    &[paired.numerator],
+                    paired.denominator as u128,
+                )?;
+                rv_lens::rational_value(&mut self.model, scalar)
             }
             TypedForm::Khovanov(operation, input) => {
                 use khovanov::Operation;
@@ -7527,6 +7595,7 @@ impl Checker<'_> {
                 self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
             }
             TypeForm::Lee(braid, grade) => self.model.lee_type(braid.text.into(), grade),
+            TypeForm::LeeDual(braid, i) => self.model.lee_dual_type(braid.text.into(), i),
             TypeForm::Khovanov(braid, grade, form) => {
                 self.model.kh_type(braid.text.into(), grade, form)
             }
@@ -8423,7 +8492,7 @@ impl Checker<'_> {
                         rv_unram::persist(self.model,ring.scalar(0))?
                     }
                     Kind::RVCycloQ(..) => rv_lens::zero(),
-                    Kind::Lee(..) => Value::LeeChain(Rc::default()),
+                    Kind::Lee(..) | Kind::LeeDual(..) => Value::LeeChain(Rc::default()),
                     Kind::Khovanov(_, _, form) if form.is_class() => Value::KhClass(Rc::default()),
                     Kind::Khovanov(..) => Value::KhChain(Rc::default()),
                     Kind::RvTl(..) => rv_tl::zero(),
@@ -9299,6 +9368,7 @@ impl Checker<'_> {
             | ExprForm::SheafDefGauge(..)) => self.check_sheaf_deformation(form),
             ExprForm::SheafKuranishi(query) => self.sheaf_kuranishi_expression(*query),
             ExprForm::Lee(query) => self.lee_expression(query),
+            ExprForm::LeeDt(query) => self.lee_dt_expression(*query),
             ExprForm::Khovanov(query) => self.khovanov_expression(*query),
             ExprForm::SheafCompose(arguments) => {
                 let [after, before] = *arguments;
@@ -11075,7 +11145,7 @@ impl Checker<'_> {
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::Lee(..)) {
+                if matches!(self.model.kind(input.ty), Kind::Lee(..) | Kind::LeeDual(..)) {
                     let minus = crate::lee_linear::Rational::integer(-1);
                     return Ok((
                         input.ty,
@@ -14134,6 +14204,74 @@ impl Checker<'_> {
         }
     }
 
+    fn lee_dt_expression(&mut self, query: crate::lee::dt::Query) -> Result<(TypeId, TypedForm)> {
+        use crate::lee::{
+            dt::{self, Query, Witness},
+            Grade,
+        };
+        match query {
+            Query::Orientation(name) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let chain = dt::orientation(self.model, &braid)?;
+                let grade = Grade {
+                    i: 0,
+                    f: braid.lee_lower_bound(),
+                };
+                let ty = self.model.lee_type(name.text.into(), grade)?;
+                Ok((ty, TypedForm::Constant(Value::LeeChain(chain))))
+            }
+            Query::Witness(name, t, witness) => {
+                let braid = self.model.kh_braid(&name.text)?;
+                let chain = dt::witness(self.model, &braid, t, witness)?;
+                let ty = match witness {
+                    Witness::Dual => self.model.lee_dual_type(name.text.into(), 0)?,
+                    Witness::Representative | Witness::Primitive => self.model.lee_type(
+                        name.text.into(),
+                        Grade {
+                            i: if matches!(witness, Witness::Primitive) {
+                                -1
+                            } else {
+                                0
+                            },
+                            f: braid.lee_lower_bound(),
+                        },
+                    )?,
+                };
+                Ok((ty, TypedForm::Constant(Value::LeeChain(chain))))
+            }
+            Query::DualD(input) => {
+                let input = self.expr(*input)?;
+                let Kind::LeeDual(name, i) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "leeDtDualD", "a Lee dual"));
+                };
+                let previous = i
+                    .checked_sub(1)
+                    .ok_or_else(|| Error::plain("Lee dual homological degree is out of range"))?;
+                let ty = self.model.lee_dual_type(name.clone(), previous)?;
+                Ok((ty, TypedForm::LeeDtDualD(Box::new(input))))
+            }
+            Query::Pair(arguments) => {
+                let [dual, chain] = *arguments;
+                let dual = self.expr(dual)?;
+                let chain = self.expr(chain)?;
+                let (Kind::LeeDual(name, i), Kind::Lee(braid, grade)) =
+                    (self.model.kind(dual.ty), self.model.kind(chain.ty))
+                else {
+                    return Err(Error::plain(
+                        "leeDtPair requires a Lee dual and a Lee cochain",
+                    ));
+                };
+                if name != braid || *i != grade.i {
+                    return Err(Error::plain(
+                        "leeDtPair requires the same braid and homological degree",
+                    ));
+                }
+                let ty = self.model.cyclotomic_rational_type(1)?;
+                Ok((ty, TypedForm::LeeDtPair(Box::new([dual, chain]))))
+            }
+        }
+    }
+
     fn lee_expression(&mut self, query: crate::lee::Query) -> Result<(TypeId, TypedForm)> {
         use crate::lee::{Grade, Operation, Query};
         match query {
@@ -14145,6 +14283,11 @@ impl Checker<'_> {
             }
             Query::Operation(operation, input) => {
                 let input = self.expr(*input)?;
+                if matches!(operation, Operation::Scale(_))
+                    && matches!(self.model.kind(input.ty), Kind::LeeDual(..))
+                {
+                    return Ok((input.ty, TypedForm::Lee(operation, Box::new(input))));
+                }
                 let ty = if matches!(operation, Operation::Lift | Operation::Perturbation) {
                     let Kind::Khovanov(name, grade, KhForm::Chain) =
                         self.model.kind(input.ty).clone()
@@ -14626,6 +14769,7 @@ impl Checker<'_> {
                         | Kind::RVCycloQ(..)
                         | Kind::RVQpQuad(..)
                         | Kind::Lee(..)
+                        | Kind::LeeDual(..)
                         | Kind::Khovanov(..)
                         | Kind::CMOrder(..)
                         | Kind::RvTl(..)

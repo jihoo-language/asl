@@ -266,7 +266,7 @@ impl Braid {
         Ok(elements.into_iter().map(Value::KhChain).collect())
     }
 
-    fn psi_cell(&self, model: &mut Model) -> Result<(Grade, Cell)> {
+    pub(crate) fn psi_cell(&self, model: &mut Model) -> Result<(Grade, Cell)> {
         model.spend(self.crossings.len() + self.ends.len())?;
         let state = self
             .crossings

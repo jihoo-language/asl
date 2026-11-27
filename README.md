@@ -1437,6 +1437,15 @@ A resolution circle is essential exactly when it crosses the braid closure seam 
 
 `khKappa[K];` finds the first cutoff $k$ at which $\psi$ is a boundary and reports $n+k$, or infinity if $\psi$ survives. In the finite case `khKappaNull[K]` gives its actual filtered primitive. `khKappaDual[K]` annihilates all boundaries at cutoff $k-2$ and pairs to one with $\psi$. For infinity the dual certifies nonvanishing in the full complex. The four-strand examples have $\kappa=4$ and $\kappa=2$, and the program checks both primitives and lower-cutoff duals. The invariant is defined for braid conjugacy. The illustrated positive stabilization of the second four-braid raises $\kappa$ from two to four, with both certificates checked again. [Annular example](examples/annular-khovanov.asl) · [Hubbard and Saltz](https://arxiv.org/abs/1507.06263)
 
+#### Annular Rasmussen profiles
+
+`leeOrientation[K]` is the canonical rational Lee cycle of the braid orientation. It uses the oriented smoothing, with labels $1+X$ and $1-X$ alternating along the nested circles. For $t=p/q\in[0,2]$, give every enhanced state weight $j-tk$. The weight of a cochain is the minimum weight of its nonzero terms. `leeDt[K,p,q];` gives the highest weight of a representative of the orientation class after adding Lee boundaries.
+
+`leeDtRep[K,p,q]` is an optimal representative and `leeDtNull[K,p,q]` is a primitive for its difference from `leeOrientation[K]`. The dual `leeDtDual[K,p,q]` has type `LeeDual(K,0)`. It pairs to one with the orientation and vanishes on all boundaries and all strictly higher-weight states. `leeDtDualD` is the transpose Lee differential, and `leeDtPair(dual,chain)` evaluates on the same braid and homological degree as an exact rational in `RVCycloQ(1)`. `leeDtWeight[p,q](value);` reports the lowest weight of a cochain or the highest weight of a dual's support.
+
+`leeDtProfile[K];` prints pieces `((p,q),(r,s),j,k)` for the line $j-tk$ on $[p/q,r/s]$. The calculation uses every exact intersection of the finitely many relevant weight lines. Their order is constant between consecutive cuts, so fraction-free elimination identifies the active line throughout each interval. Equal adjacent pieces are merged. The figure-eight example checks both optimality witnesses at $t=1/2$, improving the raw weight $-3/2$ to $-1/2$. The four-braid $A$ has six pieces with interior breakpoints $1/2,2/3,1,4/3,3/2$. Its two witnesses at $t=2/3$ certify $d_{2/3}=5/3$, and the value at the interior point $t=3/5$ is $9/5$. For knots $d_0=s-1$, and for closed braids $d_1$ is the writhe. [Annular Rasmussen example](examples/annular-rasmussen.asl) · [Grigsby, Licata and Wehrli](https://arxiv.org/abs/1612.05953)
+
+
 ### Certified Laurent periods and WZ recurrences
 
 `rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is

@@ -825,6 +825,10 @@ impl<'a> Context<'a> {
         Ok(basis)
     }
 
+    pub(crate) fn annular_k(&mut self, model: &mut Model, cell: &Cell) -> Result<i64> {
+        self.resolution(model, cell.state)?.k(model, &cell.xs)
+    }
+
     pub(crate) fn lee_grade(&mut self, model: &mut Model, cell: &Cell) -> Result<Grade> {
         let circles = self.resolution(model, cell.state)?.anchors.len();
         Ok(self.braid.grade(cell, circles))

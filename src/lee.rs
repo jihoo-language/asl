@@ -8,6 +8,8 @@ use crate::lee_linear::{checked_multiply, Echelon, Rational, Vector};
 use crate::model::Model;
 use crate::rv_lens::gcd;
 
+pub(crate) mod dt;
+
 pub(crate) type Chain = Rc<[(Cell, Rational)]>;
 type Basis = Vec<(Cell, i64)>;
 

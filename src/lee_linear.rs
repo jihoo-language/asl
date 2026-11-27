@@ -171,6 +171,20 @@ impl Echelon {
         Ok(row.image.is_empty().then_some(row.witness))
     }
 
+    pub(crate) fn reduced(
+        &self,
+        model: &mut Model,
+        image: Vector,
+        witness: Vector,
+    ) -> Result<(Vector, Vector)> {
+        let row = self.reduce(model, Row { image, witness })?;
+        Ok((row.image, row.witness))
+    }
+
+    pub(crate) fn pivot(&self, index: usize) -> Option<&Vector> {
+        self.rows.get(&index).map(|row| &row.image)
+    }
+
     // The greatest coordinate is the pivot. Stopping at a new pivot is
     // sufficient for exact span tests as all earlier rows are triangular.
     fn reduce(&self, model: &mut Model, mut row: Row) -> Result<Row> {

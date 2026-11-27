@@ -131,6 +131,7 @@ pub(crate) enum TypeForm {
     StableTree(usize),
     StableMarks(usize, usize),
     Lee(Label, crate::lee::Grade),
+    LeeDual(Label, i64),
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
     CMOrder(Label, usize),
     RvTl(usize, usize, usize),
@@ -741,6 +742,7 @@ pub(crate) enum ExprForm {
     SheafHomIdentity(Label),
     SheafKuranishi(Box<crate::sheaf_kuranishi::Query>),
     Lee(crate::lee::Query),
+    LeeDt(Box<crate::lee::dt::Query>),
     Khovanov(Box<crate::khovanov::Query>),
     SheafDefStart(Label),
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
@@ -1090,6 +1092,7 @@ pub(crate) enum StatementForm {
     SheafDeligne(SheafInputForm, Label, Label, Label, usize),
     SheafImage(SheafImageOp, Label, Label, Label),
     Lee(crate::lee::Command),
+    LeeDt(Box<crate::lee::dt::Command>),
     Khovanov(Box<crate::khovanov::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
@@ -2316,6 +2319,80 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Khovanov(Box::new(command)))
     }
 
+    fn lee_dt_parameter(&mut self) -> Result<crate::lee::dt::Parameter> {
+        let span = self.span();
+        let p = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let q = self.number()?.0;
+        crate::lee::dt::Parameter::new(p, q).map_err(|error| error.at(span))
+    }
+
+    fn lee_dt_command(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::lee::dt::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let query = match command {
+            "leeDtWeight" => {
+                let t = self.lee_dt_parameter()?;
+                self.expect(Token::RBracket)?;
+                Command::Weight(t, Box::new(self.paren_expr(0)?))
+            }
+            _ => {
+                let braid = self.label()?;
+                let result = if command == "leeDt" {
+                    self.expect(Token::Comma)?;
+                    Command::Value(braid, self.lee_dt_parameter()?)
+                } else {
+                    Command::Profile(braid)
+                };
+                self.expect(Token::RBracket)?;
+                result
+            }
+        };
+        Ok(StatementForm::LeeDt(Box::new(query)))
+    }
+
+    fn lee_dt_expression(&mut self, command: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::lee::dt::{Query, Witness};
+        let (query, depth) = match command {
+            "leeDtDualD" => {
+                self.expect(Token::LParen)?;
+                let input = self.expr(nest)?;
+                self.expect(Token::RParen)?;
+                let depth = 1 + input.depth;
+                (Query::DualD(Box::new(input)), depth)
+            }
+            "leeDtPair" => {
+                self.expect(Token::LParen)?;
+                let left = self.expr(nest)?;
+                self.expect(Token::Comma)?;
+                let right = self.expr(nest)?;
+                self.expect(Token::RParen)?;
+                let depth = 1 + left.depth.max(right.depth);
+                (Query::Pair(Box::new([left, right])), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let braid = self.label()?;
+                let operation = if command == "leeOrientation" {
+                    Query::Orientation(braid)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let t = self.lee_dt_parameter()?;
+                    let mode = match command {
+                        "leeDtRep" => Witness::Representative,
+                        "leeDtNull" => Witness::Primitive,
+                        _ => Witness::Dual,
+                    };
+                    Query::Witness(braid, t, mode)
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::LeeDt(Box::new(query)), depth)
+    }
+
     fn lee_grade(&mut self) -> Result<crate::lee::Grade> {
         let i = self.signed_number("Lee homological degree")?;
         self.expect(Token::Comma)?;
@@ -2715,6 +2792,9 @@ impl<'src> Parser<'src> {
         let kind = match self.token() {
             Token::Word(command @ ("shkuranishi" | "shkuranishiEq" | "shkuranishiDims")) => {
                 self.sheaf_kuranishi_statement(command)?
+            }
+            Token::Word(command @ ("leeDt" | "leeDtProfile" | "leeDtWeight")) => {
+                self.lee_dt_command(command)?
             }
             Token::Word(
                 command @ ("leeRank" | "leeLevels" | "leeS" | "leeFiltration" | "leeIndependent"),
@@ -5870,6 +5950,13 @@ impl<'src> Parser<'src> {
             let ring = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVUnram(ring), 0);
+        }
+        if name.text == "LeeDual" && self.eat(Token::LParen)? {
+            let braid = self.label()?;
+            self.expect(Token::Comma)?;
+            let i = self.signed_number("Lee dual homological degree")?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::LeeDual(braid, i), 0);
         }
         if name.text == "LeeC" && self.eat(Token::LParen)? {
             let braid = self.label()?;
@@ -9271,6 +9358,15 @@ impl<'src> Parser<'src> {
                         ExprForm::TlColoredJones(level, strands, color, word),
                         0,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "leeOrientation" | "leeDtRep" | "leeDtNull" | "leeDtDual"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "leeDtDualD" | "leeDtPair")
+                        && self.token() == Token::LParen)
+                {
+                    return self.lee_dt_expression(&name.text, span, nest + 1);
                 }
                 if matches!(name.text.as_str(), "leeRep" | "leeScale" | "leeFilter")
                     && self.token() == Token::LBracket

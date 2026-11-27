@@ -244,6 +244,7 @@ pub(crate) enum Kind {
     RVStableTree(usize),
     RVStableMarks(u32, usize),
     Lee(Rc<str>, crate::lee::Grade),
+    LeeDual(Rc<str>, i64),
     Khovanov(Rc<str>, khovanov::Grade, KhForm),
     CMOrder(legendre_cm::Grade),
     RvTl(rv_tl::Grade),
@@ -841,6 +842,14 @@ impl Model {
                     1
                 }
             }
+            Kind::LeeDual(ref braid, i) => {
+                let braid = &self.kh_braids[braid];
+                if braid.lee_possible(i, braid.lee_lower_bound()) {
+                    usize::MAX
+                } else {
+                    1
+                }
+            }
             Kind::Khovanov(ref braid, grade, form) => {
                 if self.kh_braids[braid].possible(grade, form) {
                     usize::MAX
@@ -1083,6 +1092,7 @@ impl Model {
                 | Kind::CMOrder(..)
                 | Kind::RVWzw(..)
                 | Kind::Lee(..)
+                | Kind::LeeDual(..)
                 | Kind::Khovanov(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
@@ -2740,9 +2750,35 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Khovanov braid '{name}'")))
     }
 
+    fn lee_elements(
+        &mut self,
+        braid: &khovanov::Braid,
+        i: i64,
+        f: Option<i64>,
+    ) -> Result<Vec<Value>> {
+        let f = f.unwrap_or_else(|| braid.lee_lower_bound());
+        if braid.lee_possible(i, f)
+            && khovanov::Context::new(braid)
+                .lee_basis(self, i)?
+                .first()
+                .is_some_and(|(_, j)| *j >= f)
+        {
+            return Err(Error::plain(
+                "cannot enumerate a nonzero rational Lee cochain group",
+            ));
+        }
+        self.allocate(1)?;
+        Ok(vec![Value::LeeChain(Rc::default())])
+    }
+
     pub(crate) fn lee_type(&mut self, braid: Rc<str>, grade: crate::lee::Grade) -> Result<TypeId> {
         self.kh_braid(&braid)?;
         self.inhabited_type(Kind::Lee(braid, grade), 0)
+    }
+
+    pub(crate) fn lee_dual_type(&mut self, braid: Rc<str>, i: i64) -> Result<TypeId> {
+        self.kh_braid(&braid)?;
+        self.inhabited_type(Kind::LeeDual(braid, i), 0)
     }
 
     pub(crate) fn kh_type(
@@ -4100,6 +4136,7 @@ impl Model {
             | Kind::CMOrder(..)
             | Kind::RVWzw(..)
             | Kind::Lee(..)
+            | Kind::LeeDual(..)
             | Kind::Khovanov(..)
             | Kind::RvTl(..)
             | Kind::VKoszul(..)
@@ -4513,6 +4550,7 @@ impl Model {
                 grade.fusion.rank, grade.fusion.level
             )),
             Kind::Lee(name, grade) => out.push(&format!("LeeC({name}, {}, {})", grade.i, grade.f)),
+            Kind::LeeDual(name, i) => out.push(&format!("LeeDual({name}, {i})")),
             Kind::Khovanov(name, grade, form) => {
                 out.push(&format!("{}({name}, {}, {}", form.name(), grade.i, grade.j))?;
                 if let Some(k) = form.annular().or_else(|| form.cutoff()) {
@@ -5323,18 +5361,11 @@ impl Model {
                 }
                 Kind::Lee(ref name, grade) => {
                     let braid = self.kh_braid(name)?;
-                    if braid.lee_possible(grade.i, grade.f)
-                        && khovanov::Context::new(&braid)
-                            .lee_basis(self, grade.i)?
-                            .first()
-                            .is_some_and(|(_, j)| *j >= grade.f)
-                    {
-                        return Err(Error::plain(
-                            "cannot enumerate a nonzero rational Lee cochain group",
-                        ));
-                    }
-                    self.allocate(1)?;
-                    vec![Value::LeeChain(Rc::default())]
+                    self.lee_elements(&braid, grade.i, Some(grade.f))?
+                }
+                Kind::LeeDual(ref name, i) => {
+                    let braid = self.kh_braid(name)?;
+                    self.lee_elements(&braid, i, None)?
                 }
                 Kind::Khovanov(ref name, grade, form) => {
                     let braid = self.kh_braid(name)?;
