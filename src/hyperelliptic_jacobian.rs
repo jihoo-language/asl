@@ -27,6 +27,7 @@ pub(crate) enum Command {
 pub(crate) enum Expression {
     Literal(Label, Vec<Vec<i128>>, Vec<Vec<i128>>),
     Point(Label, Box<[ParsedExpr; 2]>, Option<Vec<Vec<i128>>>),
+    RichelotPoint(Label, Box<[ParsedExpr; 2]>),
     Transport(Label, Direction, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
     Pair(Pairing, Box<[ParsedExpr; 2]>),

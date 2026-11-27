@@ -4,6 +4,8 @@ use crate::hw_algebra::CoefficientRing;
 use crate::model::Model;
 use crate::syntax::Label;
 
+pub(crate) mod correspondence;
+
 type Literal = Vec<Vec<i128>>;
 type Splitting = [Polynomial; 3];
 

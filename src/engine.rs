@@ -433,6 +433,10 @@ enum JacobianAction {
         Box<[TypedExpr; 2]>,
         Option<crate::ec_poly::Polynomial>,
     ),
+    RichelotPoint(
+        Box<crate::richelot::correspondence::Correspondence>,
+        Box<[TypedExpr; 2]>,
+    ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -4597,6 +4601,15 @@ impl Engine {
                     Divisor::from_point(&mut self.model, curve, &x, y.to_vec())?
                 };
                 value.persist(&mut self.model, curve)
+            }
+            JacobianAction::RichelotPoint(correspondence, coordinates) => {
+                let [x, y] = coordinates.as_ref();
+                let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
+                    unreachable!()
+                };
+                correspondence
+                    .point(&mut self.model, &x, &y)?
+                    .persist(&mut self.model, &correspondence.target)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17520,6 +17533,28 @@ impl Checker<'_> {
                         direction,
                         curve,
                         Box::new(input),
+                    )),
+                ))
+            }
+            Expression::RichelotPoint(name, coordinates) => {
+                let correspondence =
+                    crate::richelot::correspondence::Correspondence::resolve(self.model, &name)?;
+                let field = Label {
+                    text: correspondence.source.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let coefficient = self.model.rv_unram_type(&field)?;
+                let [x, y] = *coordinates;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                self.require_type(coefficient, &x, "rvRichelotPoint x coordinate")?;
+                self.require_type(coefficient, &y, "rvRichelotPoint y coordinate")?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::RichelotPoint(
+                        Box::new(correspondence),
+                        Box::new([x, y]),
                     )),
                 ))
             }

@@ -142,7 +142,7 @@ impl Chart {
 }
 
 // Return denominator^degree * polynomial(numerator / denominator).
-fn homogeneous_substitution(
+pub(crate) fn homogeneous_substitution(
     model: &mut Model,
     field: Field<'_>,
     polynomial: &[Scalar],
