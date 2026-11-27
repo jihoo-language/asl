@@ -28,7 +28,7 @@ impl Grade {
         Ok(Self { rank, level })
     }
 
-    fn normalize(self, model: &mut Model, mut weight: Vec<i128>) -> Result<Weight> {
+    pub(crate) fn normalize(self, model: &mut Model, mut weight: Vec<i128>) -> Result<Weight> {
         if weight.len() != self.rank {
             return Err(Error::plain("fusion weight must match the ring rank"));
         }
@@ -316,7 +316,7 @@ fn basis_product(
     Ok(result)
 }
 
-pub(crate) fn multiply(model: &mut Model, grade: Grade, a: &Support, b: &Support) -> Result<Value> {
+fn multiply_support(model: &mut Model, grade: Grade, a: &Support, b: &Support) -> Result<Support> {
     let mut output = Sum::default();
     for (left, c) in a.iter() {
         for (right, d) in b.iter() {
@@ -330,5 +330,97 @@ pub(crate) fn multiply(model: &mut Model, grade: Grade, a: &Support, b: &Support
             }
         }
     }
-    persist(model, output.0.into_iter().collect(), grade.rank)
+    Ok(output.0.into_iter().collect())
+}
+
+pub(crate) fn multiply(model: &mut Model, grade: Grade, a: &Support, b: &Support) -> Result<Value> {
+    let product = multiply_support(model, grade, a, b)?;
+    model.allocate(size(grade.rank) * product.len())?;
+    Ok(Value::RVFusion(product))
+}
+
+fn unit(grade: Grade) -> Support {
+    [(vec![0; grade.rank].into(), 1)].into()
+}
+
+fn handle_support(model: &mut Model, grade: Grade) -> Result<Support> {
+    const MAX_LABELS: usize = 4096;
+    let mut labels = 1i128;
+    for i in 1..grade.rank {
+        labels = labels * (grade.level as i128 + i as i128) / i as i128;
+        if labels > MAX_LABELS as i128 {
+            return Err(Error::plain(
+                "fusion handle exceeds the limit of 4096 integrable weights",
+            ));
+        }
+    }
+    model.spend(labels as usize * grade.rank)?;
+    let mut result = Sum::default();
+    let mut coordinates = vec![0i128; grade.rank];
+    let level = grade.level as i128;
+    loop {
+        let width = coordinates[grade.rank - 1];
+        let conjugate: Weight = coordinates
+            .iter()
+            .rev()
+            .map(|&entry| width - entry)
+            .collect();
+        let weight: Weight = coordinates.as_slice().into();
+        let product = basis_product(
+            model,
+            grade,
+            &weight,
+            &conjugate,
+            size(grade.rank) * result.0.len(),
+        )?;
+        for (weight, multiplicity) in product.0 {
+            result.add(model, &weight, multiplicity, 0)?;
+        }
+        let Some(index) = (1..grade.rank).rev().find(|&i| coordinates[i] < level) else {
+            break;
+        };
+        let next = coordinates[index] + 1;
+        coordinates[index..].fill(next);
+    }
+    Ok(result.0.into_iter().collect())
+}
+
+pub(crate) fn handle(model: &mut Model, grade: Grade) -> Result<Value> {
+    let handle = handle_support(model, grade)?;
+    model.allocate(size(grade.rank) * handle.len())?;
+    Ok(Value::RVFusion(handle))
+}
+
+pub(crate) fn conformal_dimension(
+    model: &mut Model,
+    grade: Grade,
+    mut genus: usize,
+    punctures: Vec<Vec<i128>>,
+) -> Result<i128> {
+    let punctures = punctures
+        .into_iter()
+        .map(|weight| grade.normalize(model, weight))
+        .collect::<Result<Vec<_>>>()?;
+    let mut product = unit(grade);
+    for weight in punctures {
+        let puncture: Support = [(weight, 1)].into();
+        product = multiply_support(model, grade, &product, &puncture)?;
+    }
+    if genus > 0 {
+        let mut handle = handle_support(model, grade)?;
+        loop {
+            if genus & 1 == 1 {
+                product = multiply_support(model, grade, &product, &handle)?;
+            }
+            genus >>= 1;
+            if genus == 0 {
+                break;
+            }
+            handle = multiply_support(model, grade, &handle, &handle)?;
+        }
+    }
+    Ok(product
+        .first()
+        .filter(|(weight, _)| weight[grade.rank - 1] == 0)
+        .map_or(0, |(_, coefficient)| *coefficient))
 }

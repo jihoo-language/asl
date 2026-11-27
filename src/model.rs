@@ -45,6 +45,7 @@ use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
+use crate::rv_cyclotomic;
 use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
@@ -165,6 +166,7 @@ pub(crate) enum Kind {
     RVSatake(usize),
     RVHive(HiveBoundary),
     RVFusion(rv_fusion::Grade),
+    RVCyclo(usize),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -292,6 +294,7 @@ pub(crate) enum Value {
     RVSatake(rv_satake::Support),
     RVHive(rv_hive::Interior),
     RVFusion(rv_fusion::Support),
+    RVCyclo(rv_cyclotomic::Polynomial),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
     RVHHChain(rv_hh::Support),
@@ -386,6 +389,7 @@ pub(crate) struct Model {
     sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
+    cyclotomics: HashMap<usize, rv_cyclotomic::Polynomial>,
     v_bars: HashMap<v_bars::Family, Rc<v_bars::Decomposition>>,
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
@@ -423,6 +427,7 @@ impl Model {
             sheaf_complexes: HashMap::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
+            cyclotomics: HashMap::new(),
             v_bars: HashMap::new(),
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
@@ -629,7 +634,8 @@ impl Model {
             | Kind::RVIwHecke(..)
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..)
-            | Kind::RVFusion(..) => usize::MAX,
+            | Kind::RVFusion(..)
+            | Kind::RVCyclo(..) => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
                     usize::MAX
@@ -782,6 +788,7 @@ impl Model {
                 | Kind::RVSatake(..)
                 | Kind::RVHive(..)
                 | Kind::RVFusion(..)
+                | Kind::RVCyclo(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1580,6 +1587,21 @@ impl Model {
             .max(self.types[grade.target.0].depth)
             + 1;
         self.inhabited_type(Kind::RVHom(grade), depth)
+    }
+
+    pub(crate) fn cyclotomic_type(&mut self, order: usize) -> Result<TypeId> {
+        rv_cyclotomic::check_order(order)?;
+        self.inhabited_type(Kind::RVCyclo(order), 0)
+    }
+
+    pub(crate) fn cyclotomic(&mut self, order: usize) -> Result<rv_cyclotomic::Polynomial> {
+        if let Some(modulus) = self.cyclotomics.get(&order) {
+            return Ok(modulus.clone());
+        }
+        let modulus = rv_cyclotomic::modulus(self, order)?;
+        self.allocate(2 * modulus.len())?;
+        self.cyclotomics.insert(order, modulus.clone());
+        Ok(modulus)
     }
 
     pub(crate) fn fusion_type(&mut self, grade: rv_fusion::Grade) -> Result<TypeId> {
@@ -2395,6 +2417,7 @@ impl Model {
             | Kind::RVSatake(..)
             | Kind::RVHive(..)
             | Kind::RVFusion(..)
+            | Kind::RVCyclo(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -2743,6 +2766,7 @@ impl Model {
             Kind::RVFusion(grade) => {
                 out.push(&format!("RVFusion({}, {})", grade.rank, grade.level))
             }
+            Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVHive(HiveBoundary([lambda, mu, nu])) => {
                 out.push(&format!("RVHive({lambda:?}, {mu:?}, {nu:?})"))
             }
@@ -2908,6 +2932,9 @@ impl Model {
             }
             (Value::RVFusion(left), Value::RVFusion(right)) => {
                 Ok(rv_fusion::compare(self, left, right)?.is_eq())
+            }
+            (Value::RVCyclo(left), Value::RVCyclo(right)) => {
+                Ok(rv_cyclotomic::compare(self, left, right)?.is_eq())
             }
             (Value::RVSatake(left), Value::RVSatake(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_satake::compare(self, left, right)? == Ordering::Equal),
@@ -3108,6 +3135,9 @@ impl Model {
             (Value::RVFusion(left), Value::RVFusion(right)) => {
                 rv_fusion::compare(self, left, right)
             }
+            (Value::RVCyclo(left), Value::RVCyclo(right)) => {
+                rv_cyclotomic::compare(self, left, right)
+            }
             (Value::RVSatake(left), Value::RVSatake(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -3288,6 +3318,9 @@ impl Model {
                 }
                 Kind::RVSphHecke(..) => {
                     return Err(Error::plain("cannot enumerate a spherical Hecke algebra"))
+                }
+                Kind::RVCyclo(..) => {
+                    return Err(Error::plain("cannot enumerate an integral cyclotomic ring"));
                 }
                 Kind::RVFusion(..) => {
                     return Err(Error::plain("cannot enumerate a Verlinde fusion ring"));
@@ -4246,6 +4279,18 @@ impl Model {
                     .iter()
                     .map(|term| (term.coweight.as_ref(), term.coefficient.as_ref())),
             ),
+            Value::RVCyclo(coefficients) => {
+                self.spend(coefficients.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, coefficient) in coefficients.iter().enumerate() {
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push("}")
+            }
             Value::RVFusion(terms) => {
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;

@@ -871,6 +871,14 @@ For $\lambda=\mu=(0,1,2)$ and $\nu=(1,2,3)$, the two hives give the multiplicity
 
 Elements support `zero`, `add`, `neg`, equality, signed integer multiplication by `rvFusionScale[c](a)`, and the contragredient involution `rvFusionDual(a)`. Use `rvFusionCoeff[[lambda0,...]](a);` to read an integer coefficient. The example squares the $\mathrm{SU}(3)$ adjoint class at levels two, three, and four. The level-two result is $1+8$. Level three gives $1+2\cdot 8+10+\overline{10}$, and level four adds $27$. [Verlinde fusion example](examples/rv-verlinde.asl)
 
+### Cyclotomic Verlinde characters and conformal blocks
+
+`RVCyclo(m)` is the integral cyclotomic ring $\mathbb Z[z]/\Phi_m(z)$. `rvCyclo[m,e]` is $z^e$ for a signed integer $e$. The ring supports `zero`, `add`, `neg`, equality, `rvCycloScale[c]`, `rvCycloMul`, and `rvCycloConj`, which sends $z$ to $z^{-1}$. Display and `rvCycloCoeff[j](a);` use the monomial coefficients of the unique remainder modulo the monic cyclotomic polynomial.
+
+`rvVerlinde[[sigma0,...]](a)` is the exact Verlinde character of a fusion element $a$ at the integrable label $\sigma$. Read the normalized label in descending order and set $d_i=\sigma_i+n-1-i$ with $i$ zero-based. The interpreter evaluates each Schur character at $X_i=z^{nd_i-\sum_j d_j}$ in order $m=n(k+n)$. These torus coordinates have product one. `rvQDim(a)` specializes at the zero label. At rank three and level two the adjoint value $x$ satisfies $x^2=x+1$. The example checks two conjugate fundamental characters at a nonzero torus label.
+
+`rvFusionHandle[n,k]` constructs the handle element $H=\sum_\lambda [\lambda][\lambda^*]$ over all integrable labels. `rvConformalDim[n,k,g,[[lambda0,...],...]];` returns the coefficient of the unit in $H^g$ times the product of the puncture labels. For rank three at level two, the vacuum dimensions from genus zero through five are $1,6,45,405,4050,42525$. The interpreter bounds cyclotomic orders, integrable-label enumeration, and integer arithmetic. [Cyclotomic and sewing example](examples/rv-verlinde-tqft.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

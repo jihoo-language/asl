@@ -61,6 +61,7 @@ use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
+use crate::rv_cyclotomic;
 use crate::rv_descent;
 use crate::rv_field;
 use crate::rv_fusion;
@@ -90,6 +91,7 @@ use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
 use crate::rv_tree;
+use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
@@ -327,6 +329,10 @@ enum TypedForm {
     FusionProduct(rv_fusion::Grade, Box<[TypedExpr; 2]>),
     FusionScale(rv_fusion::Grade, i128, Box<TypedExpr>),
     FusionDual(rv_fusion::Grade, Box<TypedExpr>),
+    CycloProduct(usize, Box<[TypedExpr; 2]>),
+    CycloScale(i128, Box<TypedExpr>),
+    CycloConjugate(usize, Box<TypedExpr>),
+    Verlinde(usize, Vec<i128>, Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
     RVNewton(rv_newton::Operation, Embedding, Box<TypedExpr>),
@@ -611,6 +617,25 @@ impl Engine {
                     root,
                     radius,
                 )?
+            }
+            StatementForm::CycloCoefficient(power, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
+                    return Err(Error::new(
+                        input.span,
+                        "rvCycloCoeff requires a cyclotomic integer",
+                    ));
+                }
+                let Value::RVCyclo(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                format!("rvCycloCoeff = {}", terms.get(power).copied().unwrap_or(0))
+            }
+            StatementForm::ConformalDimension(rank, level, genus, punctures) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let dimension =
+                    rv_fusion::conformal_dimension(&mut self.model, grade, genus, punctures)?;
+                format!("rvConformalDim = {dimension}")
             }
             StatementForm::FusionCoefficient(weight, input) => {
                 let input = self.checker().expr(input)?;
@@ -2061,6 +2086,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVCyclo(a), Value::RVCyclo(b)) => {
+                        rv_cyclotomic::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVFusion(a), Value::RVFusion(b)) => {
                         let Kind::RVFusion(grade) = *self.model.kind(expr.ty) else {
                             unreachable!()
@@ -2793,6 +2821,31 @@ impl Engine {
                     unreachable!()
                 };
                 rv_sphhecke::multiply(&mut self.model, rank, &left, &right)
+            }
+            TypedForm::CycloProduct(order, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVCyclo(a), Value::RVCyclo(b)] = values else {
+                    unreachable!()
+                };
+                rv_cyclotomic::multiply(&mut self.model, *order, &a, &b)
+            }
+            TypedForm::CycloScale(factor, input) => {
+                let Value::RVCyclo(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_cyclotomic::scale(&mut self.model, &terms, *factor)
+            }
+            TypedForm::CycloConjugate(order, input) => {
+                let Value::RVCyclo(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_cyclotomic::conjugate(&mut self.model, *order, &terms)
+            }
+            TypedForm::Verlinde(order, point, input) => {
+                let Value::RVFusion(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_verlinde::character(&mut self.model, *order, point, &terms)
             }
             TypedForm::FusionProduct(grade, arguments) => {
                 let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
@@ -4083,6 +4136,7 @@ impl Checker<'_> {
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
             TypeForm::RVSatake(rank) => self.model.satake_type(rank),
+            TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
@@ -4356,6 +4410,7 @@ impl Checker<'_> {
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVSatake(..) => rv_satake::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
+                    Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -5239,6 +5294,9 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
+                    return Ok((input.ty, TypedForm::CycloScale(-1, Box::new(input))));
+                }
                 if let Kind::RVFusion(grade) = *self.model.kind(input.ty) {
                     return Ok((input.ty, TypedForm::FusionScale(grade, -1, Box::new(input))));
                 }
@@ -5249,10 +5307,61 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(
                         &input,
                         "neg",
-                        "an affine Hecke element, a spherical Hecke element, a Satake polynomial, or a fusion element",
+                        "an affine Hecke element, a spherical Hecke element, a Satake polynomial, a fusion element, or a cyclotomic integer",
                     ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::CycloRoot(order, power) => {
+                let ty = self.model.cyclotomic_type(order)?;
+                let value = rv_cyclotomic::root(self.model, order, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CycloProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let order = self.cyclotomic_order(&left, "rvCycloMul")?;
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvCycloMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::CycloProduct(order, Box::new([left, right])),
+                ))
+            }
+            ExprForm::CycloScale(factor, input) => {
+                let input = self.expr(*input)?;
+                self.cyclotomic_order(&input, "rvCycloScale")?;
+                Ok((input.ty, TypedForm::CycloScale(factor, Box::new(input))))
+            }
+            ExprForm::CycloConjugate(input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_order(&input, "rvCycloConj")?;
+                Ok((input.ty, TypedForm::CycloConjugate(order, Box::new(input))))
+            }
+            ExprForm::FusionHandle(rank, level) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::handle(self.model, grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Verlinde(label, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    let name = if label.is_some() {
+                        "rvVerlinde"
+                    } else {
+                        "rvQDim"
+                    };
+                    return Err(self.invalid_operand(&input, name, "a fusion element"));
+                };
+                let order = rv_verlinde::order(grade)?;
+                let ty = self.model.cyclotomic_type(order)?;
+                let point = rv_verlinde::torus(
+                    self.model,
+                    grade,
+                    label.unwrap_or_else(|| vec![0; grade.rank]),
+                )?;
+                Ok((ty, TypedForm::Verlinde(order, point, Box::new(input))))
             }
             ExprForm::FusionBasis(level, weight) => {
                 let grade = rv_fusion::Grade::checked(weight.len(), level)?;
@@ -8106,6 +8215,13 @@ impl Checker<'_> {
         }
     }
 
+    fn cyclotomic_order(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
+        match *self.model.kind(input.ty) {
+            Kind::RVCyclo(order) => Ok(order),
+            _ => Err(self.invalid_operand(input, operation, "a cyclotomic integer")),
+        }
+    }
+
     fn invalid_operand(&self, value: &TypedExpr, op: &str, expected: &str) -> Error {
         Error::new(
             value.span,
@@ -8186,6 +8302,7 @@ impl Checker<'_> {
                         | Kind::RVSphHecke(..)
                         | Kind::RVSatake(..)
                         | Kind::RVFusion(..)
+                        | Kind::RVCyclo(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)

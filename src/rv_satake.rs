@@ -359,7 +359,11 @@ fn outside_image(coweight: &[i128], power: i128, normalization: i128, condition:
     ))
 }
 
-pub(crate) fn schur(model: &mut Model, coweight: &[i128], intersection: bool) -> Result<Value> {
+pub(crate) fn schur_terms(
+    model: &mut Model,
+    coweight: &[i128],
+    normalized: bool,
+) -> Result<Vec<Term>> {
     rv_sphhecke::validate(model, coweight)?;
     let (partition, center, normalization) = normalize(model, coweight)?;
     let mut cache = HallLittlewood {
@@ -367,17 +371,22 @@ pub(crate) fn schur(model: &mut Model, coweight: &[i128], intersection: bool) ->
         ..HallLittlewood::default()
     };
     let representation = cache.expand(model, &partition, 0)?;
-    let offset = if intersection { normalization } else { 0 };
-    let terms = representation
+    drop(cache);
+    let power = if normalized { normalization } else { 0 };
+    representation
         .iter()
         .map(|term| {
             Ok(Term {
                 exponents: translate(&term.exponents, center)?,
-                power: offset,
+                power,
                 coefficient: term.coefficient,
             })
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect()
+}
+
+pub(crate) fn schur(model: &mut Model, coweight: &[i128], intersection: bool) -> Result<Value> {
+    let terms = schur_terms(model, coweight, intersection)?;
     if intersection {
         inverse(model, &terms)
     } else {

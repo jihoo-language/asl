@@ -82,6 +82,7 @@ pub(crate) enum TypeForm {
     RVSatake(usize),
     RVHive(HiveSpec),
     RVFusion(usize, usize),
+    RVCyclo(usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -554,6 +555,12 @@ pub(crate) enum ExprForm {
     Hive(HiveSpec, Option<Vec<i128>>),
     FusionBasis(usize, Vec<i128>),
     FusionOne(usize, usize),
+    FusionHandle(usize, usize),
+    Verlinde(Option<Vec<i128>>, Box<ParsedExpr>),
+    CycloRoot(usize, i128),
+    CycloProduct(Box<[ParsedExpr; 2]>),
+    CycloScale(i128, Box<ParsedExpr>),
+    CycloConjugate(Box<ParsedExpr>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -734,6 +741,8 @@ pub(crate) enum StatementForm {
     HiveReport(HiveSpec, bool),
     HiveVertex(usize, usize, ParsedExpr),
     FusionCoefficient(Vec<i128>, ParsedExpr),
+    CycloCoefficient(usize, ParsedExpr),
+    ConformalDimension(usize, usize, usize, Vec<Vec<i128>>),
     RVIwSchubertKL(Vec<i128>, ParsedExpr),
     RVIwPosition(Box<[ParsedExpr; 2]>),
     RVIwAt(usize, usize, Box<[ParsedExpr; 2]>),
@@ -1551,6 +1560,34 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RVTree(report, modulus, root, radius, self.paren_expr(0)?)
+            }
+            Token::Word("rvCycloCoeff") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (power, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::CycloCoefficient(power, self.paren_expr(0)?)
+            }
+            Token::Word("rvConformalDim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (rank, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (level, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (genus, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                self.expect(Token::LBracket)?;
+                let mut punctures = Vec::new();
+                while self.token() != Token::RBracket {
+                    punctures.push(self.signed_tuple("a signed fusion weight", "fusion weight")?);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBracket)?;
+                self.expect(Token::RBracket)?;
+                StatementForm::ConformalDimension(rank, level, genus, punctures)
             }
             Token::Word("rvFusionCoeff") => {
                 self.advance()?;
@@ -3026,6 +3063,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
+        }
+        if name.text == "RVCyclo" && self.eat(Token::LParen)? {
+            let (order, _) = self.number()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVCyclo(order), 0);
         }
         if name.text == "RVFusion" && self.eat(Token::LParen)? {
             let (rank, _) = self.number()?;
@@ -4975,12 +5017,61 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::FusionBasis(level, weight), 0);
                 }
-                if name.text == "rvFusionOne" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvFusionOne" | "rvFusionHandle")
+                    && self.eat(Token::LBracket)?
+                {
                     let (rank, _) = self.number()?;
                     self.expect(Token::Comma)?;
                     let (level, _) = self.number()?;
                     self.expect(Token::RBracket)?;
-                    return expr(span, ExprForm::FusionOne(rank, level), 0);
+                    let form = if name.text == "rvFusionHandle" {
+                        ExprForm::FusionHandle(rank, level)
+                    } else {
+                        ExprForm::FusionOne(rank, level)
+                    };
+                    return expr(span, form, 0);
+                }
+                if name.text == "rvCyclo" && self.eat(Token::LBracket)? {
+                    let (order, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let power =
+                        self.signed_wide("a signed cyclotomic exponent", "cyclotomic exponent")?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::CycloRoot(order, power), 0);
+                }
+                if name.text == "rvCycloMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::CycloProduct(Box::new(arguments)), depth);
+                }
+                if name.text == "rvCycloScale" && self.eat(Token::LBracket)? {
+                    let factor = self
+                        .signed_wide("a signed cyclotomic coefficient", "cyclotomic coefficient")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::CycloScale(factor, Box::new(input)), depth);
+                }
+                if name.text == "rvCycloConj" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::CycloConjugate(Box::new(input)), depth);
+                }
+                if name.text == "rvQDim" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::Verlinde(None, Box::new(input)), depth);
+                }
+                if name.text == "rvVerlinde" && self.eat(Token::LBracket)? {
+                    let point = self.signed_tuple("a signed torus weight", "torus weight")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::Verlinde(Some(point), Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvFusionMul" && self.token() == Token::LParen {
                     let arguments = self.paren_pair(nest)?;
