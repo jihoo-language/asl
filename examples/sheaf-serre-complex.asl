@@ -1,0 +1,26 @@
+// Diamond complexes with identical stalk cohomology and different Serre images.
+space Diamond {a,b,c,d,a<b,a<c,b<d,c<d};
+sheaf Arms[Diamond,3] {a:0,b:1,c:1,d:2} {a<b:[],a<c:[],b<d:[1,0],c<d:[0,1]};
+sheaf Pa[Diamond,3] {a:1,b:1,c:1,d:1} {a<b:[1],a<c:[1],b<d:[1],c<d:[1]};
+sheaf Pd[Diamond,3] {a:0,b:0,c:0,d:1} {a<b:[],a<c:[],b<d:[],c<d:[]};
+sheaf Sa[Diamond,3] {a:1,b:0,c:0,d:0} {a<b:[],a<c:[],b<d:[],c<d:[]};
+shmap inclusion[Arms,Pa] {a:[],b:[1],c:[1],d:[1,1]};
+shmap zeroMap[Pd,Sa] {a:[],b:[],c:[],d:[]};
+shcomplex Nonsplit {Arms,inclusion,Pa};
+shcomplex Split {Pd,zeroMap,Sa};
+shserrecomplex TN[Nonsplit];
+shserrecomplex TS[Split];
+shserreshift[TN];
+shcohomology N1[TN,1];
+shcohomology N2[TN,2];
+shcohomology S1[TS,1];
+shcohomology S2[TS,2];
+let atD = tab One -> Diamond {pt=>Diamond.d};
+shpull N1d[atD,N1];
+shpull N2d[atD,N2];
+shpull S1d[atD,S1];
+shpull S2d[atD,S2];
+shdim[N1d,0];
+shdim[N2d,0];
+shdim[S1d,0];
+shdim[S2d,0];

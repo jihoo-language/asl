@@ -238,6 +238,12 @@ awk -v left=3 -v right=5 -v prime=5 -v explicit=1 -f examples/sheaf-higher-yoned
 
 On the linearly ordered site $A_n$, the Serre image of the projective interval $[a,n]$ is the injective interval $[1,a]$. If $b<n$, the image of $[a,b]$ is $[a+1,b+1][1]$. The example follows the simple at the first point of $A_3$ through four Serre steps and recovers it with accumulated shift two. [Sheaf Serre example](examples/sheaf-serre.asl)
 
+`shserrecomplex T[K];` applies the same construction to a bounded complex of sheaves. A chain of length $\ell$ with coefficients in $K^q(x_0)$ contributes in declared degree $q+h-\ell$. The intrinsic degree is $q-\ell$, and `shserreshift[T];` prints $h$. The bar differential has the same faces as for an ordinary sheaf. The coefficient differential acts at the initial point $x_0$ with sign $(-1)^\ell$. The result retains the maps of the input complex, including the data that distinguishes nontrivial extensions from their stalk cohomology.
+
+On a four-point diamond, the complex $P_b\oplus P_c\to P_a$ and its split cohomology complex both have stalk cohomology $P_d$ in degree zero and the simple at $a$ in degree one. The Serre image of the first has one intrinsic degree, with one-dimensional stalks at $a,b,c$ and zero at $d$. The split image has one-dimensional stalks at $d$ in intrinsic degrees $-1$ and $0$. These can be read using `shcohomology` and `shpull` to the named point. [Serre complex on the diamond](examples/sheaf-serre-complex.asl)
+
+On the outward-oriented $D_4$ star, three successive applications of `shserrecomplex` recover the four simples, the projective at the center, and the highest-root representation, each in intrinsic degree $-2$ as in $S^3(F)\cong F[2]$. The checks compute the three complexes before taking stalk cohomology. [Tests over three prime fields](tests/sheaf_serre_complex.rs)
+
 ### Derived sheaf Hom and Yoneda products
 
 For two sheaves `F` and `G` on the same named poset over the same prime field, `ShHomC(F,G,n)` has one matrix factor $\operatorname{Hom}(F(x_0),G(x_n))$ for every strict chain $x_0<\cdots<x_n$. This is Hom out of the normalized bar projective resolution of $F$. The differential uses the source restriction on the first face, the target restriction on the last face, and the unchanged matrix on the other faces, with alternating signs. If `F` is constant of rank one, this is the Roos complex of `G`.

@@ -732,11 +732,18 @@ impl Engine {
                 self.model.define_sheaf(name.text, data);
                 return Ok(None);
             }
-            StatementForm::SheafSerre(name, source) => {
+            StatementForm::SheafSerre(form, name, source) => {
                 self.model.check_new_sheaf_complex(&name)?;
-                let source = self.model.sheaf(&source)?;
-                let (shift, components, complex) =
-                    sheaf_serre::build(&mut self.model, &name, &source)?;
+                let (shift, components, complex) = match form {
+                    SheafInputForm::Sheaf => {
+                        let source = self.model.sheaf(&source)?;
+                        sheaf_serre::build(&mut self.model, &name, &source)?
+                    }
+                    SheafInputForm::Complex => {
+                        let source = self.model.sheaf_complex(&source)?;
+                        sheaf_serre::build_complex(&mut self.model, &name, &source)?
+                    }
+                };
                 for component in components {
                     self.model
                         .define_sheaf_shared(component.name.to_string(), component.sheaf);

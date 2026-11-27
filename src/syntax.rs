@@ -928,7 +928,7 @@ pub(crate) enum StatementForm {
     SheafExtra(SheafInputForm, Label, Label, Label),
     SheafLocalDimension(Label, Label, SupportMode, usize),
     SheafDimension(Label, usize),
-    SheafSerre(Label, Label),
+    SheafSerre(SheafInputForm, Label, Label),
     SheafSerreShift(Label),
     SheafStalkCohomology(Label, Label, usize),
     SheafLeray(SheafInputForm, Label, Label, Label),
@@ -2018,13 +2018,18 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafLeray(form, name, map, source)
             }
-            Token::Word("shserre") => {
+            Token::Word("shserre" | "shserrecomplex") => {
+                let form = if self.token() == Token::Word("shserre") {
+                    SheafInputForm::Sheaf
+                } else {
+                    SheafInputForm::Complex
+                };
                 self.advance()?;
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
                 let sheaf = self.label()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::SheafSerre(name, sheaf)
+                StatementForm::SheafSerre(form, name, sheaf)
             }
             Token::Word("shserreshift") => {
                 self.advance()?;

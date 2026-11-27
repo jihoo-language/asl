@@ -14,57 +14,288 @@ pub(crate) fn build(
     name: &Label,
     source: &Sheaf,
 ) -> Result<(usize, Vec<NamedSheaf>, Complex)> {
-    let height = model.height(source.base(), true)?.saturating_sub(1);
-    let names = (0..=height)
+    totalize(model, name, &[source], &[])
+}
+
+pub(crate) fn build_complex(
+    model: &mut Model,
+    name: &Label,
+    source: &Complex,
+) -> Result<(usize, Vec<NamedSheaf>, Complex)> {
+    let sheaves: Vec<_> = source
+        .components()
+        .iter()
+        .map(|part| part.sheaf.as_ref())
+        .collect();
+    totalize(model, name, &sheaves, source.maps())
+}
+
+fn totalize(
+    model: &mut Model,
+    name: &Label,
+    sheaves: &[&Sheaf],
+    differential: &[Rc<Map>],
+) -> Result<(usize, Vec<NamedSheaf>, Complex)> {
+    let first = sheaves[0];
+    let height = model.height(first.base(), true)?.saturating_sub(1);
+    let size = height
+        .checked_add(sheaves.len())
+        .ok_or_else(|| Error::plain("Serre total degree is out of range"))?;
+    model.spend(size)?;
+    let names = (0..size)
         .rev()
         .map(|degree| component_name(model, name, degree))
         .collect::<Result<Vec<_>>>()?;
-    let mut order = if source.dims().iter().any(|&dim| dim != 0) {
-        Some(OrderComplex::new(model, source.base())?)
-    } else {
-        None
-    };
-    let mut chains = order.as_ref().map_or_else(Vec::new, OrderComplex::vertices);
-    chains.retain(|chain| source.dims()[chain[0]] != 0);
+    let mut chains = Chains::new(model, sheaves)?;
     let mut components = Vec::<NamedSheaf>::new();
     let mut maps = Vec::new();
-    let mut previous: Option<BarLayer> = None;
-    for (length, component_name) in names.into_iter().enumerate() {
-        let layer = BarLayer::build(model, source, &mut chains)?;
-        if let Some(previous) = &previous {
-            sheaf::check_cells(layer.cells + previous.cells)?;
-        }
-        let dims = layer.stalks.iter().map(|stalk| stalk.size).collect();
-        let sheaf =
-            Sheaf::from_cover_maps(model, source.base(), source.prime, dims, |model, a, b| {
-                Ok(Rc::new(layer.restriction(model, source, a, b)?))
-            })?;
+    let mut previous: Option<TotalLayer> = None;
+    for (n, component_name) in (0..size).rev().zip(names) {
+        let layer = TotalLayer::build(
+            model,
+            &mut chains,
+            sheaves,
+            height,
+            n,
+            previous.as_ref().map_or(0, |p| p.cells),
+        )?;
+        let sheaf = Sheaf::from_cover_maps(
+            model,
+            first.base(),
+            first.prime,
+            layer.widths.clone(),
+            |model, a, b| Ok(Rc::new(layer.restriction(model, sheaves, a, b)?)),
+        )?;
         let component = NamedSheaf {
             name: component_name,
             sheaf: Rc::new(sheaf),
         };
-        if let Some((earlier_chain, target)) = previous.as_ref().zip(components.last()) {
-            let matrix = layer.differential(model, source, earlier_chain)?;
-            let d = Map::from_matrices(model, component.clone(), target.clone(), matrix)?;
+        if let Some((target, target_sheaf)) = previous.as_ref().zip(components.last()) {
+            let matrices = layer.differential(model, sheaves, differential, target)?;
+            let map = Map::from_matrices(model, component.clone(), target_sheaf.clone(), matrices)?;
             let label = Label {
                 span: name.span,
-                text: format!("{} bar boundary at {length}", name.text),
+                text: format!("{} Serre differential at {n}", name.text),
             };
-            maps.push((label, Rc::new(d)));
+            maps.push((label, Rc::new(map)));
         }
         components.push(component);
         previous = Some(layer);
-        if length < height {
-            if let Some(order) = &mut order {
-                chains = order.extend(model, &chains)?;
-            }
-        }
     }
-    // Chain length n is sheaf degree h-n.
     components.reverse();
     maps.reverse();
     let complex = Complex::build(model, components.clone(), maps)?;
     Ok((height, components, complex))
+}
+
+struct Chains {
+    order: Option<OrderComplex>,
+    streams: Vec<Vec<Simplex>>,
+    cells: usize,
+}
+
+impl Chains {
+    fn new(model: &mut Model, source: &[&Sheaf]) -> Result<Self> {
+        let order = if source
+            .iter()
+            .any(|sheaf| sheaf.dims().iter().any(|&dim| dim != 0))
+        {
+            Some(OrderComplex::new(model, source[0].base())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            order,
+            streams: vec![Vec::new(); source.len()],
+            cells: 3 * source.len(),
+        })
+    }
+
+    fn take(
+        &mut self,
+        model: &mut Model,
+        q: usize,
+        length: usize,
+        source: &Sheaf,
+    ) -> Result<Vec<Simplex>> {
+        let Some(order) = &mut self.order else {
+            return Ok(Vec::new());
+        };
+        if length == 0 {
+            model.spend(source.dims().len())?;
+            let mut chains = order.vertices();
+            chains.retain(|chain| source.dims()[chain[0]] != 0);
+            return Ok(chains);
+        }
+        let previous = std::mem::take(&mut self.streams[q]);
+        self.cells -= chain_cells(&previous);
+        if previous.is_empty() {
+            return Ok(previous);
+        }
+        order.extend(model, &previous)
+    }
+
+    fn retain(&mut self, q: usize, chains: Vec<Simplex>) {
+        self.cells += chain_cells(&chains);
+        self.streams[q] = chains;
+    }
+}
+
+fn chain_cells(chains: &[Simplex]) -> usize {
+    chains.len() * chains.first().map_or(0, |chain| 3 + chain.len())
+}
+
+struct TotalLayer {
+    first: usize,
+    sectors: Vec<Sector>,
+    widths: Vec<usize>,
+    cells: usize,
+}
+
+struct Sector {
+    length: usize,
+    start: Vec<usize>,
+    layer: BarLayer,
+}
+
+impl TotalLayer {
+    fn build(
+        model: &mut Model,
+        chains: &mut Chains,
+        sheaves: &[&Sheaf],
+        height: usize,
+        degree: usize,
+        retained: usize,
+    ) -> Result<Self> {
+        let first = degree.saturating_sub(height);
+        let end = degree.min(sheaves.len() - 1);
+        let n = sheaves[0].dims().len();
+        let mut layer = Self {
+            first,
+            sectors: Vec::new(),
+            widths: vec![0; n],
+            cells: n,
+        };
+        for (q, &sheaf) in (first..=end).zip(&sheaves[first..=end]) {
+            let length = height - (degree - q);
+            let mut basis = chains.take(model, q, length, sheaf)?;
+            let bar = BarLayer::build(model, sheaf, &mut basis)?;
+            layer.cells += 8 + 4 * n + bar.cells;
+            sheaf::check_cells(layer.cells + chains.cells + chain_cells(&basis) + retained)?;
+            if length != height {
+                chains.retain(q, basis);
+            }
+            let start = layer.widths.clone();
+            model.spend(n)?;
+            for (width, stalk) in layer.widths.iter_mut().zip(&bar.stalks) {
+                *width += stalk.size;
+                sheaf::check_cells(*width)?;
+            }
+            layer.sectors.push(Sector {
+                length,
+                start,
+                layer: bar,
+            });
+        }
+        Ok(layer)
+    }
+
+    fn sector(&self, q: usize) -> &Sector {
+        &self.sectors[q - self.first]
+    }
+
+    fn restriction(
+        &self,
+        model: &mut Model,
+        sheaves: &[&Sheaf],
+        a: usize,
+        b: usize,
+    ) -> Result<Matrix> {
+        sheaf::check_cells(1 + 5 * self.widths[b])?;
+        model.spend(self.widths[b] + self.sectors.len())?;
+        let mut columns = Vec::with_capacity(self.widths[b]);
+        for (i, sector) in self.sectors.iter().enumerate() {
+            let bigger = &sector.layer.stalks[a];
+            let smaller = &sector.layer.stalks[b];
+            let source = sheaves[self.first + i];
+            for block in &smaller.blocks {
+                let column = sector.start[a] + bigger.index(model, &block.chain, 0)?;
+                let row = sector.start[b] + block.offset;
+                let width = source.dims()[block.chain[0]];
+                for k in 0..width {
+                    columns.push((column + k, vec![(row + k, 1)].into()));
+                }
+            }
+        }
+        Matrix::from_columns(columns)
+    }
+
+    fn differential(
+        &self,
+        model: &mut Model,
+        sheaves: &[&Sheaf],
+        differential: &[Rc<Map>],
+        target: &Self,
+    ) -> Result<Vec<Rc<Matrix>>> {
+        let mut cells = 0;
+        self.widths
+            .iter()
+            .enumerate()
+            .map(|(point, &width)| {
+                let matrix = Matrix::from_action(model, width, |model, index| {
+                    model.spend(1 + self.sectors.len().max(1).ilog2() as usize)?;
+                    let i = self
+                        .sectors
+                        .partition_point(|sector| sector.start[point] <= index)
+                        - 1;
+                    let q = self.first + i;
+                    let sector = &self.sectors[i];
+                    let (chain, coordinate) =
+                        sector.layer.stalks[point].generator(index - sector.start[point]);
+                    let mut column = Vec::new();
+                    if sector.length != 0 {
+                        let bar = target.sector(q);
+                        column = boundary(
+                            model,
+                            sheaves[q],
+                            point,
+                            chain,
+                            coordinate,
+                            &bar.layer.stalks[point],
+                        )?;
+                        for (row, _) in &mut column {
+                            *row += bar.start[point];
+                        }
+                    }
+                    if let Some(map) = differential.get(q) {
+                        let inner = map.matrix(chain[0]).column(coordinate);
+                        model.spend(1 + inner.len())?;
+                        if !inner.is_empty() {
+                            let next = target.sector(q + 1);
+                            let offset = next.start[point]
+                                + next.layer.stalks[point].index(model, chain, 0)?;
+                            sheaf::check_cells(2 * (column.len() + inner.len()))?;
+                            let prime = sheaves[q].prime;
+                            let sign = if sector.length.is_multiple_of(2) {
+                                1
+                            } else {
+                                prime.negate(1)
+                            };
+                            column.extend(
+                                inner
+                                    .iter()
+                                    .map(|&(row, c)| (offset + row, prime.mul(sign, c))),
+                            );
+                        }
+                    }
+                    Ok(column)
+                })?;
+                cells += matrix.cells();
+                sheaf::check_cells(cells)?;
+                Ok(Rc::new(matrix))
+            })
+            .collect()
+    }
 }
 
 struct BarLayer {
@@ -116,45 +347,6 @@ impl BarLayer {
             }
         }
         Ok(Self { stalks, cells })
-    }
-
-    fn restriction(&self, model: &mut Model, source: &Sheaf, a: usize, b: usize) -> Result<Matrix> {
-        let bigger = &self.stalks[a];
-        let smaller = &self.stalks[b];
-        sheaf::check_cells(1 + 5 * smaller.size)?;
-        model.spend(smaller.size)?;
-        let mut columns = Vec::with_capacity(smaller.size);
-        for block in &smaller.blocks {
-            let coordinate = bigger.index(model, &block.chain, 0)?;
-            let width = source.dims()[block.chain[0]];
-            for i in 0..width {
-                columns.push((coordinate + i, vec![(block.offset + i, 1)].into()));
-            }
-        }
-        Matrix::from_columns(columns)
-    }
-
-    fn differential(
-        &self,
-        model: &mut Model,
-        source: &Sheaf,
-        lower: &Self,
-    ) -> Result<Vec<Rc<Matrix>>> {
-        let mut cells = 0;
-        self.stalks
-            .iter()
-            .zip(&lower.stalks)
-            .enumerate()
-            .map(|(point, (stalk, target))| {
-                let matrix = Matrix::from_action(model, stalk.size, |model, index| {
-                    let (chain, coordinate) = stalk.generator(index);
-                    boundary(model, source, point, chain, coordinate, target)
-                })?;
-                cells += matrix.cells();
-                sheaf::check_cells(cells)?;
-                Ok(Rc::new(matrix))
-            })
-            .collect()
     }
 }
 
