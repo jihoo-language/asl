@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 pub(crate) mod canonical;
 pub(crate) mod cycle;
 pub(crate) mod horizontal;
+pub(crate) mod level;
 pub(crate) mod realization;
 
 type Integer = Wide<13>;

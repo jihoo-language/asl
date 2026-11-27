@@ -182,6 +182,7 @@ pub(crate) enum TypeForm {
     KhovanovMod(Label, usize, Option<usize>, crate::khovanov::Grade, i64),
     CMOrder(Label, usize),
     ECEndOrder(Label),
+    ECLevel(Label, bool),
     CMClass(Label),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
@@ -1038,6 +1039,7 @@ pub(crate) enum ExprForm {
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Address>),
     ECCMCycle(Box<crate::elliptic_end_order::cycle::Expression>),
     ECCMAction(Box<crate::elliptic_end_order::realization::Expression>),
+    ECLevel(Box<crate::elliptic_end_order::level::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1279,6 +1281,7 @@ pub(crate) enum StatementForm {
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Statement>),
     ECCMCycle(Box<crate::elliptic_end_order::cycle::Statement>),
     ECCMAction(Box<crate::elliptic_end_order::realization::Statement>),
+    ECLevel(Box<crate::elliptic_end_order::level::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3971,6 +3974,98 @@ impl<'src> Parser<'src> {
             ell,
             orientation == 1,
         ))
+    }
+
+    fn ec_level_label(&mut self) -> Result<Label> {
+        self.expect(Token::LBracket)?;
+        let label = self.label()?;
+        self.expect(Token::RBracket)?;
+        Ok(label)
+    }
+
+    fn ec_level_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::level::Statement;
+        self.advance()?;
+        let command = match name {
+            "rveclevel" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let action = self.label()?;
+                self.expect(Token::Comma)?;
+                let level = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Statement::Define(name, action, level, Box::new(self.paren_pair(0)?))
+            }
+            "rvECLevelData" => {
+                let name = self.ec_level_label()?;
+                Statement::Data(name)
+            }
+            _ => Statement::Invariants(Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::ECLevel(Box::new(command)))
+    }
+
+    fn ec_level_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::elliptic_end_order::level::{Binary, Expression, Unary};
+        let (expression, depth) = match name {
+            "rvECLevelVec" | "rvECLevelMat" => {
+                self.expect(Token::LBracket)?;
+                let name_label = self.label()?;
+                let mut coordinate = || {
+                    self.expect(Token::Comma)?;
+                    self.signed_wide("a signed coordinate", "elliptic level coordinate")
+                };
+                let first = [coordinate()?, coordinate()?];
+                let expression = if name == "rvECLevelVec" {
+                    Expression::Vector(name_label, first)
+                } else {
+                    Expression::Matrix(name_label, [first, [coordinate()?, coordinate()?]])
+                };
+                self.expect(Token::RBracket)?;
+                (expression, 0)
+            }
+            "rvECLevelFrob" | "rvECLevelBasisPairing" => {
+                let label = self.ec_level_label()?;
+                (
+                    if name == "rvECLevelFrob" {
+                        Expression::Frobenius(label)
+                    } else {
+                        Expression::BasisPairing(label)
+                    },
+                    0,
+                )
+            }
+            "rvECLevelApply" | "rvECLevelMul" | "rvECLevelWeil" => {
+                let operation = match name {
+                    "rvECLevelApply" => Binary::Apply,
+                    "rvECLevelMul" => Binary::Multiply,
+                    _ => {
+                        let label = self.ec_level_label()?;
+                        Binary::Weil(label)
+                    }
+                };
+                let input = self.paren_pair(nest)?;
+                let depth = 1 + input[0].depth.max(input[1].depth);
+                (Expression::Binary(operation, Box::new(input)), depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvECLevelPoint" => Unary::Point,
+                    _ => {
+                        let label = self.ec_level_label()?;
+                        match name {
+                            "rvECLevelMatrix" => Unary::OnOrder(label),
+                            "rvECLevelCoord" => Unary::Coordinates(label),
+                            _ => Unary::Project(label),
+                        }
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::ECLevel(Box::new(expression)), depth)
     }
 
     fn ec_cm_action_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -7944,6 +8039,9 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rveccmaction" | "rveccmactionbase" | "rvECCMActionData")) => {
                 self.ec_cm_action_statement(name)?
             }
+            Token::Word(name @ ("rveclevel" | "rvECLevelData" | "rvECLevelInvariants")) => {
+                self.ec_level_statement(name)?
+            }
             Token::Word(
                 name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
             ) => self.cm_artin_statement(name)?,
@@ -11412,6 +11510,17 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if matches!(name.text.as_str(), "RVECLevelVec" | "RVECLevelMat")
+            && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::ECLevel(label, name.text == "RVECLevelMat"),
+                0,
+            );
+        }
         if name.text == "RVECEnd" && self.eat(Token::LParen)? {
             let certificate = self.label()?;
             self.expect(Token::RParen)?;
@@ -13705,6 +13814,24 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.ec_end_canonical_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvECLevelVec"
+                        | "rvECLevelMat"
+                        | "rvECLevelFrob"
+                        | "rvECLevelBasisPairing"
+                        | "rvECLevelWeil"
+                        | "rvECLevelMatrix"
+                        | "rvECLevelCoord"
+                        | "rvECLevelProject"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvECLevelApply" | "rvECLevelMul" | "rvECLevelPoint"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ec_level_expression(&name.text, span, nest);
                 }
                 if name.text == "rvECCMKernel" && self.eat(Token::LBracket)? {
                     let certificate = self.label()?;

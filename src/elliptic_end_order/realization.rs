@@ -148,6 +148,22 @@ impl Realization {
         &self.witness.certificate_name
     }
 
+    pub(super) fn frobenius(&self) -> Element {
+        self.witness.certificate.frobenius
+    }
+
+    pub(super) fn frobenius_point(&self, model: &mut Model, point: &Point) -> Result<Point> {
+        let Point::Affine(x, y) = point else {
+            return Ok(Point::Infinity);
+        };
+        let p_power = self.witness.base_curve.ring.degree();
+        let ring = &self.curve.ring;
+        Ok(Point::Affine(
+            ring.frobenius(model, x, p_power)?,
+            ring.frobenius(model, y, p_power)?,
+        ))
+    }
+
     pub(crate) fn generator(&self) -> Element {
         Element::new(0, self.witness.index)
     }
@@ -191,15 +207,7 @@ impl Realization {
         }
         let mut generator = Point::Infinity;
         if witness.pi_coefficient != 0 {
-            let p_power = witness.base_curve.ring.degree();
-            let ring = &self.curve.ring;
-            let Point::Affine(x, y) = point else {
-                unreachable!()
-            };
-            let pi_point = Point::Affine(
-                ring.frobenius(model, x, p_power)?,
-                ring.frobenius(model, y, p_power)?,
-            );
+            let pi_point = self.frobenius_point(model, point)?;
             generator = self.shifted(
                 model,
                 point,

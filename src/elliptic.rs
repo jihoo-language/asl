@@ -212,17 +212,29 @@ impl Curve {
     }
 
     pub(crate) fn add(&self, model: &mut Model, a: &Point, b: &Point) -> Result<Point> {
+        self.add_with_slope(model, a, b).map(|(point, _)| point)
+    }
+
+    pub(crate) fn add_with_slope(
+        &self,
+        model: &mut Model,
+        a: &Point,
+        b: &Point,
+    ) -> Result<(Point, Option<Scalar>)> {
         let (Point::Affine(x, y), Point::Affine(z, w)) = (a, b) else {
-            return Ok(if *a == Point::Infinity {
-                b.clone()
-            } else {
-                a.clone()
-            });
+            return Ok((
+                if *a == Point::Infinity {
+                    b.clone()
+                } else {
+                    a.clone()
+                },
+                None,
+            ));
         };
         let field = self.field();
         let slope = if x == z {
             if poly::zero(&field.add(model, y, w)?) {
-                return Ok(Point::Infinity);
+                return Ok((Point::Infinity, None));
             }
             let x2 = field.multiply(model, x, x)?;
             let t = field.multiply(model, &x2, &field.signed(3))?;
@@ -240,7 +252,7 @@ impl Curve {
         let difference = field.subtract(model, x, &target_x)?;
         let product = field.multiply(model, &slope, &difference)?;
         let target_y = field.subtract(model, &product, y)?;
-        Ok(Point::Affine(target_x, target_y))
+        Ok((Point::Affine(target_x, target_y), Some(slope)))
     }
 
     pub(crate) fn multiple(&self, model: &mut Model, point: &Point, n: i128) -> Result<Point> {

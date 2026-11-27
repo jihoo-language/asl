@@ -22,6 +22,7 @@ use crate::ec_poly::Scalar as ECScalar;
 use crate::elliptic::{
     self, Curve as EllipticCurve, Isogeny, Kernel as ECKernel, Point as ECPoint,
 };
+use crate::elliptic_end_order::level as ec_level;
 use crate::error::{Error, Result};
 use crate::hw_algebra::Matrix as HWMatrix;
 use crate::hw_closed;
@@ -297,6 +298,7 @@ pub(crate) enum Kind {
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
+    ECLevel(Rc<str>, bool),
     ECKernel(Rc<str>, u64),
     ECIso(Rc<str>),
     HWMatrix(Residues, usize),
@@ -493,6 +495,8 @@ pub(crate) enum Value {
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
+    ECLevelVec(ec_level::Vector),
+    ECLevelMat(ec_level::Matrix),
     ECKernel(Rc<ECKernel>),
     ECIso(Rc<str>),
     HWMatrix(Rc<HWMatrix<u64>>),
@@ -665,6 +669,7 @@ pub(crate) struct Model {
     elliptic_end_orders: HashMap<String, Rc<crate::elliptic_end_order::Certificate>>,
     ec_cm_cycles: HashMap<String, Rc<crate::elliptic_end_order::cycle::Cycle>>,
     ec_cm_actions: HashMap<String, Rc<crate::elliptic_end_order::realization::Realization>>,
+    ec_torsion_levels: HashMap<String, Rc<ec_level::Level>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
@@ -794,6 +799,7 @@ impl Model {
             elliptic_end_orders: HashMap::new(),
             ec_cm_cycles: HashMap::new(),
             ec_cm_actions: HashMap::new(),
+            ec_torsion_levels: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
             hyperelliptic: HashMap::new(),
@@ -1147,6 +1153,9 @@ impl Model {
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
+            Kind::ECLevel(ref name, matrix) => (self.ec_torsion_levels[name.as_ref()].modulus
+                as usize)
+                .saturating_pow(if matrix { 4 } else { 2 }),
             Kind::ECKernel(_, ell) => {
                 if inhabited {
                     ell as usize + 1
@@ -1394,6 +1403,7 @@ impl Model {
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
+                | Kind::ECLevel(..)
                 | Kind::ECKernel(..)
                 | Kind::ECIso(..)
                 | Kind::HWMatrix(..)
@@ -3495,6 +3505,35 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown cyclic isogeny '{name}'")))
+    }
+
+    pub(crate) fn define_ec_torsion_level(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<ec_level::Level>,
+    ) -> Result<()> {
+        if self.ec_torsion_levels.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "elliptic torsion level is already defined",
+            ));
+        }
+        let level = build(self)?;
+        self.ec_torsion_levels.insert(name.text, Rc::new(level));
+        Ok(())
+    }
+
+    pub(crate) fn ec_torsion_level(&self, name: &str) -> Result<Rc<ec_level::Level>> {
+        self.ec_torsion_levels
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown elliptic torsion level '{name}'")))
+    }
+
+    pub(crate) fn ec_level_type(&mut self, name: &Label, matrix: bool) -> Result<TypeId> {
+        self.ec_torsion_level(&name.text)
+            .map_err(|error| error.at(name.span))?;
+        self.inhabited_type(Kind::ECLevel(name.text.as_str().into(), matrix), 0)
     }
 
     pub(crate) fn define_ec_cm_action(
@@ -6054,6 +6093,7 @@ impl Model {
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
+            | Kind::ECLevel(..)
             | Kind::ECEndOrder(..)
             | Kind::ECKernel(..)
             | Kind::ECIso(..)
@@ -6595,6 +6635,14 @@ impl Model {
             }
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
+            Kind::ECLevel(name, matrix) => {
+                let label = if *matrix {
+                    "RVECLevelMat"
+                } else {
+                    "RVECLevelVec"
+                };
+                out.push(&format!("{label}({name})"))
+            }
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
             Kind::ECKernel(name, ell) => out.push(&format!("RVECKernel({name}, {ell})")),
             Kind::HWMatrix(ring, size) => out.push(&format!(
@@ -6853,6 +6901,8 @@ impl Model {
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left == right),
             (Value::ECEndOrder(left), Value::ECEndOrder(right)) => Ok(left == right),
+            (Value::ECLevelVec(a), Value::ECLevelVec(b)) => Ok(a == b),
+            (Value::ECLevelMat(a), Value::ECLevelMat(b)) => Ok(a == b),
             (Value::CMClass(left), Value::CMClass(right)) => Ok(left == right),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
@@ -7223,6 +7273,8 @@ impl Model {
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left.cmp(right)),
             (Value::ECEndOrder(left), Value::ECEndOrder(right)) => Ok(left.cmp(right)),
+            (Value::ECLevelVec(a), Value::ECLevelVec(b)) => Ok(a.cmp(b)),
+            (Value::ECLevelMat(a), Value::ECLevelMat(b)) => Ok(a.cmp(b)),
             (Value::CMClass(left), Value::CMClass(right)) => Ok(left.cmp(right)),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
@@ -7709,6 +7761,28 @@ impl Model {
                     ))
                 }
                 Kind::ECPoint(ref name) => self.ec_curve(name)?.elements(self, MAX_ELEMENTS)?,
+                Kind::ECLevel(ref name, matrix) => {
+                    let n = self.ec_torsion_levels[name.as_ref()].modulus;
+                    let count = (n as usize).saturating_pow(if matrix { 4 } else { 2 });
+                    self.check_element_limit(count)?;
+                    self.spend(count)?;
+                    self.allocate(count * if matrix { 4 } else { 2 })?;
+                    (0..count)
+                        .map(|mut code| {
+                            let mut next = || {
+                                let value = code as u64 % n;
+                                code /= n as usize;
+                                value
+                            };
+                            let a = [next(), next()];
+                            if matrix {
+                                Value::ECLevelMat(ec_level::Matrix([a, [next(), next()]]))
+                            } else {
+                                Value::ECLevelVec(a)
+                            }
+                        })
+                        .collect()
+                }
                 Kind::ECKernel(ref name, ell) => {
                     let curve = self.ec_curve(name)?;
                     let mut kernels = elliptic::enumerate_kernels(self, &curve, ell as usize)?;
@@ -9393,6 +9467,14 @@ impl Model {
                     self.write_ec_polynomial(out, &kernel.polynomial)?;
                 }
                 out.push("}")
+            }
+            Value::ECLevelVec(vector) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{vector:?}}}"))
+            }
+            Value::ECLevelMat(matrix) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{columns={:?}}}", matrix.0))
             }
             Value::ECPoint(point) => {
                 self.write_type(out, ty, 0)?;

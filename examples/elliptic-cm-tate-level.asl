@@ -1,0 +1,33 @@
+rvcmclasspoly H8[-8];
+rvunram F[17,1]{0,1};
+rvec E[F](rvUnramElem[F]{1},rvUnramElem[F]{7});
+rvecendorder M[E,H8];
+rveccmcycle K[M,3,1];
+rveccmaction A[M,K];
+rvunram L[17,1]{14,0,1};
+rvec EL[L](rvUnramElem[L]{1},rvUnramElem[L]{7});
+rveccmactionbase AL[A,EL];
+
+let p4=rvECPoint[EL](rvUnramElem[L]{7,2},rvUnramElem[L]{3,8});
+let q4=rvECPoint[EL](rvUnramElem[L]{8,6},rvUnramElem[L]{6,6});
+rveclevel T4[AL,4](p4,q4);
+rvECLevelData[T4];
+let w=rvECEndElem[M,0,1];
+let w4=rvECLevelMatrix[T4](w);
+assert w4==rvECLevelMat[T4,1,1,1,3];
+assert rvECLevelFrob[T4]==rvECLevelMat[T4,1,2,2,1];
+
+let p12=rvECPoint[EL](rvUnramElem[L]{0,0},rvUnramElem[L]{0,5});
+let q12=rvECPoint[EL](rvUnramElem[L]{0,1},rvUnramElem[L]{2,1});
+rveclevel T12[AL,12](p12,q12);
+rvECLevelData[T12];
+let w12=rvECLevelMatrix[T12](w);
+rvECLevelInvariants(w12);
+assert w12==rvECLevelMat[T12,4,6,9,8];
+assert rvECLevelFrob[T12]==rvECLevelMat[T12,11,0,6,7];
+let wp=rvECLevelPoint(rvECLevelApply(w12,rvECLevelVec[T12,1,0]));
+let wq=rvECLevelPoint(rvECLevelApply(w12,rvECLevelVec[T12,0,1]));
+assert wp==rvECCMAct[AL](w,p12);
+assert wq==rvECCMAct[AL](w,q12);
+assert rvECLevelWeil[T12](wp,wq)==rvUnramElem[L]{9,15};
+assert rvECLevelProject[T4](rvECLevelVec[T12,1,0])==rvECLevelCoord[T4](rvECScale[3](p12));

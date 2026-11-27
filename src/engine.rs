@@ -27,6 +27,7 @@ use crate::elliptic_end_order;
 use crate::elliptic_end_order::canonical as ec_canonical;
 use crate::elliptic_end_order::cycle as ec_cm_cycle;
 use crate::elliptic_end_order::horizontal as ec_horizontal;
+use crate::elliptic_end_order::level as ec_level;
 use crate::elliptic_end_order::realization as ec_cm_action;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
@@ -656,6 +657,17 @@ enum EllipticModularAction {
     SpecializeCoefficient(usize, Box<TypedExpr>),
 }
 
+enum ECLevelAction {
+    Matrix(Box<TypedExpr>),
+    Coordinates(Box<TypedExpr>),
+    Project(Rc<ec_level::Level>, Box<TypedExpr>),
+    Point(Box<TypedExpr>),
+    Apply(Box<[TypedExpr; 2]>),
+    Multiply(Box<[TypedExpr; 2]>),
+    Weil(Box<[TypedExpr; 2]>),
+    Negate(Box<TypedExpr>),
+}
+
 enum ECEndCanonicalAction {
     JInvariant,
     ModularResidual,
@@ -802,6 +814,7 @@ enum TypedForm {
     ECCMCycleApply(Rc<ec_cm_cycle::Cycle>, Box<TypedExpr>),
     ECCMActionApply(Rc<ec_cm_action::Realization>, Box<[TypedExpr; 2]>),
     ECCMActionMap(Rc<ec_cm_action::Realization>, Box<TypedExpr>),
+    ECLevel(Rc<ec_level::Level>, ECLevelAction),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -2126,6 +2139,7 @@ impl Engine {
             StatementForm::ECHorizontal(command) => return self.ec_horizontal_statement(*command),
             StatementForm::ECCMCycle(command) => return self.ec_cm_cycle_statement(*command),
             StatementForm::ECCMAction(command) => return self.ec_cm_action_statement(*command),
+            StatementForm::ECLevel(command) => return self.ec_level_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5262,6 +5276,52 @@ impl Engine {
         }
     }
 
+    fn ec_level_statement(&mut self, statement: ec_level::Statement) -> Result<Option<String>> {
+        use ec_level::Statement;
+        match statement {
+            Statement::Define(name, action, modulus, input) => {
+                let action = self.model.ec_cm_action(&action)?;
+                let ty = self
+                    .model
+                    .ec_curve_type(Rc::clone(&action.curve_name), true)?;
+                let mut point = |input| {
+                    let expr = self.checker().expr(input)?;
+                    self.checker()
+                        .require_type(ty, &expr, "elliptic level generator")?;
+                    let Value::ECPoint(value) = self.eval(&expr)? else {
+                        unreachable!()
+                    };
+                    Ok::<_, Error>(value)
+                };
+                let [first, second] = *input;
+                let generators = [point(first)?, point(second)?];
+                self.model.define_ec_torsion_level(name, |model| {
+                    ec_level::Level::new(model, action, modulus, generators)
+                })?;
+                Ok(None)
+            }
+            Statement::Data(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                Ok(Some(level.report(&name.text)))
+            }
+            Statement::Invariants(input) => {
+                let matrix = self.checker().expr(*input)?;
+                let name = self
+                    .checker()
+                    .ec_level_operand(&matrix, true, "rvECLevelInvariants")?;
+                let n = self.model.ec_torsion_level(&name)?.modulus;
+                let Value::ECLevelMat(matrix) = self.eval(&matrix)? else {
+                    unreachable!()
+                };
+                Ok(Some(format!(
+                    "rvECLevelInvariants = modulus={n}, trace={}, determinant={}",
+                    matrix.trace(n),
+                    matrix.det(n)
+                )))
+            }
+        }
+    }
+
     fn ec_cm_action_statement(
         &mut self,
         statement: ec_cm_action::Statement,
@@ -7226,6 +7286,76 @@ impl Engine {
         Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
     }
 
+    fn eval_ec_level(&mut self, level: &ec_level::Level, action: &ECLevelAction) -> Result<Value> {
+        let n = level.modulus;
+        match action {
+            ECLevelAction::Matrix(input) => {
+                let Value::ECEndOrder(element) = self.eval(input)? else {
+                    unreachable!()
+                };
+                level
+                    .matrix(&mut self.model, element)
+                    .map(Value::ECLevelMat)
+            }
+            ECLevelAction::Coordinates(input) => {
+                let Value::ECPoint(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                level.coord(&mut self.model, &point).map(Value::ECLevelVec)
+            }
+            ECLevelAction::Project(source, input) => {
+                let Value::ECLevelVec(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                level
+                    .project(&mut self.model, source, vector)
+                    .map(Value::ECLevelVec)
+            }
+            ECLevelAction::Point(input) => {
+                let Value::ECLevelVec(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = level.point(&mut self.model, vector)?;
+                elliptic::persist_point(&mut self.model, value)
+            }
+            ECLevelAction::Apply(input) => {
+                let (Value::ECLevelMat(matrix), Value::ECLevelVec(vector)) =
+                    (self.eval(&input[0])?, self.eval(&input[1])?)
+                else {
+                    unreachable!()
+                };
+                Ok(Value::ECLevelVec(matrix.apply(vector, n)))
+            }
+            ECLevelAction::Multiply(input) => {
+                let (Value::ECLevelMat(left), Value::ECLevelMat(right)) =
+                    (self.eval(&input[0])?, self.eval(&input[1])?)
+                else {
+                    unreachable!()
+                };
+                Ok(Value::ECLevelMat(left.product(right, n)))
+            }
+            ECLevelAction::Weil(input) => {
+                let (Value::ECPoint(p), Value::ECPoint(q)) =
+                    (self.eval(&input[0])?, self.eval(&input[1])?)
+                else {
+                    unreachable!()
+                };
+                let scalar = level.weil(&mut self.model, &p, &q)?;
+                rv_unram::persist(&mut self.model, scalar)
+            }
+            ECLevelAction::Negate(input) => {
+                let negate = |value| (n - value) % n;
+                match self.eval(input)? {
+                    Value::ECLevelVec(v) => Ok(Value::ECLevelVec(v.map(negate))),
+                    Value::ECLevelMat(m) => Ok(Value::ECLevelMat(ec_level::Matrix(
+                        m.0.map(|v| v.map(negate)),
+                    ))),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
     fn eval_ec_end_canonical(
         &mut self,
         lift: &ec_canonical::Lift,
@@ -8323,6 +8453,22 @@ impl Engine {
                             unreachable!()
                         };
                         Ok(Value::PrimeScalar(prime.add(a, b)))
+                    }
+                    (BinaryOp::Add, Value::ECLevelVec(a), Value::ECLevelVec(b)) => {
+                        let Kind::ECLevel(name, false) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let n = self.model.ec_torsion_level(name)?.modulus;
+                        Ok(Value::ECLevelVec(ec_level::add_vectors(a, b, n)))
+                    }
+                    (BinaryOp::Add, Value::ECLevelMat(a), Value::ECLevelMat(b)) => {
+                        let Kind::ECLevel(name, true) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let n = self.model.ec_torsion_level(name)?.modulus;
+                        let columns =
+                            std::array::from_fn(|i| ec_level::add_vectors(a.0[i], b.0[i], n));
+                        Ok(Value::ECLevelMat(ec_level::Matrix(columns)))
                     }
                     (BinaryOp::Add, Value::KummerDisc(a), Value::KummerDisc(b)) => {
                         Ok(Value::KummerDisc(a ^ b))
@@ -10198,6 +10344,7 @@ impl Engine {
             }
             TypedForm::ECEnd(action) => self.eval_ec_end(action),
             TypedForm::ECEndCanonical(lift, action) => self.eval_ec_end_canonical(lift, action),
+            TypedForm::ECLevel(level, action) => self.eval_ec_level(level, action),
             TypedForm::ECCMActionMap(action, input) => {
                 let Value::ECEndOrder(element) = self.eval(input)? else {
                     unreachable!()
@@ -12907,6 +13054,7 @@ impl Checker<'_> {
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::CMOrder(name, exponent) => self.model.cm_order_type(&name, exponent),
             TypeForm::ECEndOrder(name) => self.model.ec_end_order_type(&name),
+            TypeForm::ECLevel(name, matrix) => self.model.ec_level_type(&name, matrix),
             TypeForm::CMClass(name) => self.model.cm_class_type(&name),
             TypeForm::HWMatrix(p, g, s) => {
                 let ring = Residues::checked(self.model, p, s)?;
@@ -13997,6 +14145,8 @@ impl Checker<'_> {
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
+                    Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
+                    Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
@@ -16182,6 +16332,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
+            ExprForm::ECLevel(expression) => self.ec_level_expression(*expression),
             ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
@@ -17159,6 +17310,13 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::SiegelWeight) {
                     return Ok((input.ty, TypedForm::SiegelNegate(Box::new(input))));
+                }
+                if let Kind::ECLevel(name, _) = self.model.kind(input.ty) {
+                    let level = self.model.ec_torsion_level(name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
                     return Ok((input.ty, input.kind));
@@ -20927,6 +21085,7 @@ impl Checker<'_> {
                         | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
+                        | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
@@ -23075,6 +23234,168 @@ impl Checker<'_> {
             return Err(self.invalid_operand(input, operation, "an RVECEnd element"));
         };
         self.model.ec_end_order(name)
+    }
+
+    fn ec_level_expression(
+        &mut self,
+        expression: ec_level::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ec_level::Expression;
+        match expression {
+            Expression::Vector(name, vector) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let ty = self.model.ec_level_type(&name, false)?;
+                let reduce =
+                    |coordinate: i128| coordinate.rem_euclid(i128::from(level.modulus)) as u64;
+                Ok((
+                    ty,
+                    TypedForm::Constant(Value::ECLevelVec(vector.map(reduce))),
+                ))
+            }
+            Expression::Matrix(name, matrix) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let ty = self.model.ec_level_type(&name, true)?;
+                let reduce =
+                    |coordinate: i128| coordinate.rem_euclid(i128::from(level.modulus)) as u64;
+                let matrix = ec_level::Matrix(matrix.map(|column| column.map(reduce)));
+                Ok((ty, TypedForm::Constant(Value::ECLevelMat(matrix))))
+            }
+            Expression::Frobenius(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let ty = self.model.ec_level_type(&name, true)?;
+                Ok((ty, TypedForm::Constant(Value::ECLevelMat(level.frobenius))))
+            }
+            Expression::BasisPairing(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let ty = self.ec_level_scalar_type(&name, &level)?;
+                let value = rv_unram::persist(self.model, level.pairing.clone())?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Unary(operation, input) => self.ec_level_unary(operation, *input),
+            Expression::Binary(operation, input) => self.ec_level_binary(operation, *input),
+        }
+    }
+
+    fn ec_level_unary(
+        &mut self,
+        operation: ec_level::Unary,
+        input: ParsedExpr,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ec_level::Unary;
+        let input = self.expr(input)?;
+        let (ty, level, action) = match operation {
+            Unary::OnOrder(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let expected = self
+                    .model
+                    .ec_end_order_type(level.action.certificate_name())?;
+                self.require_type(expected, &input, "elliptic level endomorphism")?;
+                let ty = self.model.ec_level_type(&name, true)?;
+                (ty, level, ECLevelAction::Matrix(Box::new(input)))
+            }
+            Unary::Coordinates(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let expected = self
+                    .model
+                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                self.require_type(expected, &input, "elliptic level point")?;
+                let ty = self.model.ec_level_type(&name, false)?;
+                (ty, level, ECLevelAction::Coordinates(Box::new(input)))
+            }
+            Unary::Point => {
+                let name = self.ec_level_operand(&input, false, "rvECLevelPoint")?;
+                let level = self.model.ec_torsion_level(&name)?;
+                let ty = self
+                    .model
+                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                (ty, level, ECLevelAction::Point(Box::new(input)))
+            }
+            Unary::Project(name) => {
+                let source_name = self.ec_level_operand(&input, false, "rvECLevelProject")?;
+                let source = self.model.ec_torsion_level(&source_name)?;
+                let level = self.model.ec_torsion_level(&name.text)?;
+                if source.action.curve_name != level.action.curve_name
+                    || !source.modulus.is_multiple_of(level.modulus)
+                {
+                    return Err(Error::new(name.span, "elliptic level projection requires the same named curve and a dividing level"));
+                }
+                let ty = self.model.ec_level_type(&name, false)?;
+                (ty, level, ECLevelAction::Project(source, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::ECLevel(level, action)))
+    }
+
+    fn ec_level_binary(
+        &mut self,
+        operation: ec_level::Binary,
+        [left, right]: [ParsedExpr; 2],
+    ) -> Result<(TypeId, TypedForm)> {
+        use ec_level::Binary;
+        let left = self.expr(left)?;
+        let right = self.expr(right)?;
+        let (ty, level, action) = match operation {
+            Binary::Weil(name) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                let expected = self
+                    .model
+                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                self.require_type(expected, &left, "elliptic Weil pairing argument")?;
+                self.require_type(expected, &right, "elliptic Weil pairing argument")?;
+                let ty = self.ec_level_scalar_type(&name, &level)?;
+                (ty, level, ECLevelAction::Weil(Box::new([left, right])))
+            }
+            Binary::Apply => {
+                let name = self.ec_level_operand(&left, true, "rvECLevelApply")?;
+                let level = self.model.ec_torsion_level(&name)?;
+                let ty = self.model.ec_level_type(
+                    &Label {
+                        text: name.to_string(),
+                        span: left.span,
+                    },
+                    false,
+                )?;
+                self.require_type(ty, &right, "elliptic level matrix argument")?;
+                (ty, level, ECLevelAction::Apply(Box::new([left, right])))
+            }
+            Binary::Multiply => {
+                let name = self.ec_level_operand(&left, true, "rvECLevelMul")?;
+                let level = self.model.ec_torsion_level(&name)?;
+                self.require_type(left.ty, &right, "elliptic level matrix factor")?;
+                (
+                    left.ty,
+                    level,
+                    ECLevelAction::Multiply(Box::new([left, right])),
+                )
+            }
+        };
+        Ok((ty, TypedForm::ECLevel(level, action)))
+    }
+
+    fn ec_level_scalar_type(&mut self, name: &Label, level: &ec_level::Level) -> Result<TypeId> {
+        self.model.rv_unram_type(&Label {
+            text: level.curve.ring_name.to_string(),
+            span: name.span,
+        })
+    }
+
+    fn ec_level_operand(
+        &self,
+        input: &TypedExpr,
+        matrix: bool,
+        operation: &str,
+    ) -> Result<Rc<str>> {
+        if let Kind::ECLevel(name, shape) = self.model.kind(input.ty) {
+            if *shape == matrix {
+                return Ok(Rc::clone(name));
+            }
+        }
+        let expected = if matrix {
+            "an RVECLevelMat matrix"
+        } else {
+            "an RVECLevelVec vector"
+        };
+        Err(self.invalid_operand(input, operation, expected))
     }
 
     fn ec_end_canonical_expression(
