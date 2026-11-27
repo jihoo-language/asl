@@ -6392,6 +6392,7 @@ impl<'src> Parser<'src> {
             let first = match name {
                 "rvHilbHodgeInvariantMultiplicity" => "Hodge polarization rank",
                 "rvHilbSOOscillator" => "orthogonal dimension",
+                "rvHilbGLOscillator" => "general linear dimension",
                 _ => "Hilbert length",
             };
             let n = self.wide_unsigned(first)?;
@@ -6401,6 +6402,32 @@ impl<'src> Parser<'src> {
                     let k = self.wide_unsigned("oscillator degree")?;
                     self.expect(Token::RBracket)?;
                     Command::SoOscillator(n, k)
+                }
+                "rvHilbGLOscillator" => {
+                    self.expect(Token::Comma)?;
+                    let k = self.wide_unsigned("oscillator degree")?;
+                    self.expect(Token::Comma)?;
+                    let s =
+                        self.signed_wide("a signed determinant exponent", "determinant exponent")?;
+                    self.expect(Token::RBracket)?;
+                    Command::GlOscillator(n, k, s)
+                }
+                "rvHilbComplexMultiplicationHodge"
+                | "rvHilbComplexMultiplicationPrimitiveHodge" => {
+                    self.expect(Token::Comma)?;
+                    let d = self.signed_wide("a signed degree", "cohomological degree")?;
+                    self.expect(Token::Comma)?;
+                    let rho = self.wide_unsigned("Hodge polarization rank")?;
+                    self.expect(Token::Comma)?;
+                    let e = self.wide_unsigned("CM field half-degree")?;
+                    self.expect(Token::RBracket)?;
+                    Command::ComplexMultiplicationHodge(
+                        n,
+                        d,
+                        rho,
+                        e,
+                        name == "rvHilbComplexMultiplicationPrimitiveHodge",
+                    )
                 }
                 "rvHilbRealMultiplicationHodge" | "rvHilbRealMultiplicationPrimitiveHodge" => {
                     self.expect(Token::Comma)?;
@@ -7763,7 +7790,10 @@ impl<'src> Parser<'src> {
                 | "rvHilbPrimitiveHodgeInvariant"
                 | "rvHilbRealMultiplicationHodge"
                 | "rvHilbRealMultiplicationPrimitiveHodge"
-                | "rvHilbSOOscillator"),
+                | "rvHilbSOOscillator"
+                | "rvHilbComplexMultiplicationHodge"
+                | "rvHilbComplexMultiplicationPrimitiveHodge"
+                | "rvHilbGLOscillator"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {

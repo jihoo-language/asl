@@ -6,8 +6,8 @@ use crate::wide_integer::Natural;
 
 mod hodge;
 mod invariants;
+mod multiplication;
 mod orthogonal;
-mod real_multiplication;
 mod reduced;
 mod weyl;
 
@@ -34,7 +34,9 @@ pub(crate) enum Command {
     HodgeInvariantMultiplicity(u128, Vec<u128>),
     HodgeInvariant(u128, i128, u128, bool),
     RealMultiplicationHodge(u128, i128, u128, u128, bool),
+    ComplexMultiplicationHodge(u128, i128, u128, u128, bool),
     SoOscillator(u128, u128),
+    GlOscillator(u128, u128, i128),
 }
 
 impl Command {
@@ -88,10 +90,26 @@ impl Command {
             Self::HodgeInvariant(n, d, rho, primitive) => {
                 invariants::dimension(model, n, d, rho, primitive)
             }
-            Self::RealMultiplicationHodge(n, d, rho, e, primitive) => {
-                real_multiplication::dimension(model, n, d, rho, e, primitive)
-            }
-            Self::SoOscillator(m, k) => real_multiplication::oscillator(model, m, k),
+            Self::RealMultiplicationHodge(n, d, rho, e, primitive) => multiplication::dimension(
+                model,
+                n,
+                d,
+                rho,
+                e,
+                multiplication::Group::Orthogonal,
+                primitive,
+            ),
+            Self::ComplexMultiplicationHodge(n, d, rho, e, primitive) => multiplication::dimension(
+                model,
+                n,
+                d,
+                rho,
+                e,
+                multiplication::Group::Unitary,
+                primitive,
+            ),
+            Self::SoOscillator(m, k) => multiplication::so_oscillator(model, m, k),
+            Self::GlOscillator(m, k, s) => multiplication::gl_oscillator(model, m, k, s),
         }
     }
 }
