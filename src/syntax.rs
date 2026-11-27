@@ -638,6 +638,11 @@ pub(crate) struct MapGenerator {
 }
 
 pub(crate) enum ExprForm {
+    SetTopology(
+        crate::set_topology::Operation,
+        Label,
+        Option<Box<ParsedExpr>>,
+    ),
     SetLogic(SetLogic, Vec<Label>, Vec<ParsedExpr>),
     SetJUnit(Label, bool),
     SetJExtend(Label, Box<ParsedExpr>),
@@ -972,6 +977,7 @@ pub(crate) enum StatementForm {
     SetSections(Label),
     SetPullback(Label, Label, ParsedExpr),
     SetKan(Label, Label, ParsedExpr, bool),
+    SetTopology(crate::set_topology::Command),
     SetOmega(Label, Label),
     SetSubobject(Label, ParsedExpr),
     SetSieve(Label, Label, usize, bool),
@@ -2081,10 +2087,84 @@ impl<'src> Parser<'src> {
         Ok(query)
     }
 
+    fn set_topology_command(&mut self, command: &str) -> Result<crate::set_topology::Command> {
+        use crate::set_topology::Command;
+        self.advance()?;
+        let name = match command {
+            "settopology" | "settopologyMap" | "settopologymeet" | "settopologyjoin"
+            | "setreflect" => Some(self.label()?),
+            _ => None,
+        };
+        if command == "settopologyMap" {
+            return Ok(Command::FromMap(
+                name.expect("topology name"),
+                Box::new(self.paren_expr(0)?),
+            ));
+        }
+        self.expect(Token::LBracket)?;
+        let first = self.label()?;
+        let parsed = match command {
+            "settopology" => {
+                self.expect(Token::RBracket)?;
+                let points = self.set_named_rows(Self::label)?;
+                return Ok(Command::Subset(name.expect("topology name"), first, points));
+            }
+            "settopologysupport" => Command::Support(first),
+            _ => {
+                self.expect(Token::Comma)?;
+                let second = self.label()?;
+                match command {
+                    "settopologymeet" | "settopologyjoin" => Command::Lattice(
+                        name.expect("topology name"),
+                        first,
+                        second,
+                        command == "settopologymeet",
+                    ),
+                    "settopologyjoinsteps" => Command::JoinSteps(first, second),
+                    "setreflect" => Command::Reflect(name.expect("reflection name"), first, second),
+                    "setreflectcheck" => Command::Check(first, second),
+                    _ => unreachable!(),
+                }
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(parsed)
+    }
+
+    fn set_topology_expression(
+        &mut self,
+        operation: crate::set_topology::Operation,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::RBracket)?;
+        let (input, depth) = if matches!(operation, crate::set_topology::Operation::Extend) {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Some(Box::new(input)), depth)
+        } else {
+            (None, 0)
+        };
+        expr(span, ExprForm::SetTopology(operation, name, input), depth)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
             Token::Eof => return Ok(None),
+            Token::Word(
+                command @ ("settopology"
+                | "settopologyMap"
+                | "settopologymeet"
+                | "settopologyjoin"
+                | "settopologysupport"
+                | "settopologyjoinsteps"
+                | "setreflect"
+                | "setreflectcheck"),
+            ) => StatementForm::SetTopology(self.set_topology_command(command)?),
             Token::Word("setomega") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -5272,6 +5352,12 @@ impl<'src> Parser<'src> {
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
             }
+            Token::Word(name) if crate::set_topology::Operation::detect(name).is_some() => self
+                .set_topology_expression(
+                    crate::set_topology::Operation::detect(name).unwrap(),
+                    span,
+                    nest,
+                ),
             Token::Word("setJUnit" | "setJInverse" | "setJExtend") => {
                 let operation = self.label()?;
                 self.expect(Token::LBracket)?;

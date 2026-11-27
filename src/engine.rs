@@ -126,6 +126,7 @@ use crate::rv_wzw;
 use crate::set_family;
 use crate::set_j;
 use crate::set_logic::{self, Operation as SetLogic};
+use crate::set_topology;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_deform;
@@ -400,6 +401,13 @@ enum LogicAction {
 
 enum TypedForm {
     SetLogic(LogicAction, Vec<TypedExpr>),
+    SetReflectExtend {
+        reflection: Rc<set_topology::Reflection>,
+        source: Rc<set_family::Diagram>,
+        target: Rc<set_family::Diagram>,
+        certificate: Rc<set_topology::Certificate>,
+        map: Box<TypedExpr>,
+    },
     SetJExtend {
         reflection: Rc<set_j::Sheafification>,
         source: Rc<set_family::Diagram>,
@@ -670,6 +678,94 @@ impl Engine {
         self.model.reset_work();
         self.run_statement(statement.kind)
             .map_err(|error| error.at(statement.span))
+    }
+
+    fn set_topology_command(&mut self, command: set_topology::Command) -> Result<Option<String>> {
+        use set_topology::{Command, Topology};
+        match command {
+            Command::Subset(name, omega, points) => {
+                let classifier = self.model.set_omega(&omega.text)?;
+                let topology =
+                    Topology::subset(&mut self.model, omega.text.into(), classifier, &points)?;
+                self.model.define_set_topology(&name, topology)?;
+            }
+            Command::FromMap(name, expression) => {
+                let expression = self.checker().expr(*expression)?;
+                let (source, target) = self.checker().set_nat_ends(expression.ty)?;
+                if source != target {
+                    return Err(Error::plain(
+                        "settopologyMap requires an endomorphism of a set truth classifier",
+                    ));
+                }
+                let omega = self.model.set_omega(&source)?;
+                let diagram = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered classifier");
+                let Value::SetNat(rows) = self.eval(&expression)? else {
+                    unreachable!()
+                };
+                let topology = Topology::from_map(&mut self.model, source, omega, &diagram, rows)?;
+                self.model.define_set_topology(&name, topology)?;
+            }
+            Command::Lattice(name, left, right, meet) => {
+                let left = self.model.set_topology(&left.text)?;
+                let right = self.model.set_topology(&right.text)?;
+                let topology = left.combine(&mut self.model, &right, meet)?;
+                self.model.define_set_topology(&name, topology)?;
+            }
+            Command::Support(name) => {
+                let topology = self.model.set_topology(&name.text)?;
+                let points = topology.members(&mut self.model)?.join(", ");
+                return Ok(Some(format!(
+                    "settopologysupport[{}] = {{{points}}}",
+                    name.text
+                )));
+            }
+            Command::JoinSteps(left, right) => {
+                let a = self.model.set_topology(&left.text)?;
+                let b = self.model.set_topology(&right.text)?;
+                let omega = self
+                    .model
+                    .set_family_named(&a.omega_name)
+                    .expect("registered classifier");
+                let steps = a.join_steps(&mut self.model, &omega, &b)?;
+                return Ok(Some(format!(
+                    "settopologyjoinsteps[{}, {}] = {steps}",
+                    left.text, right.text
+                )));
+            }
+            Command::Reflect(name, topology, family) => {
+                self.model.check_new_set_family(&name)?;
+                let data = self.model.set_topology(&topology.text)?;
+                let source = self.model.set_family(&family)?;
+                let (diagram, reflection) = set_topology::Reflection::build(
+                    &mut self.model,
+                    topology.text.into(),
+                    &data,
+                    family.text.into(),
+                    &source,
+                )?;
+                self.model
+                    .define_set_reflection(&name, diagram, reflection)?;
+            }
+            Command::Check(topology, family) => {
+                self.model.set_family(&family)?;
+                let sheaf = self
+                    .model
+                    .set_reflection_certificate(
+                        topology.text.as_str().into(),
+                        family.text.as_str().into(),
+                    )?
+                    .is_some();
+                let answer = if sheaf { "yes" } else { "no" };
+                return Ok(Some(format!(
+                    "setreflectcheck[{}, {}] = {answer}",
+                    topology.text, family.text
+                )));
+            }
+        }
+        Ok(None)
     }
 
     fn run_statement(&mut self, statement: StatementForm) -> Result<Option<String>> {
@@ -1010,6 +1106,7 @@ impl Engine {
                 let rank = data.rank(&mut self.model, degree)?;
                 format!("shdim[{}, {degree}] = {rank}", name.text)
             }
+            StatementForm::SetTopology(command) => return self.set_topology_command(command),
             StatementForm::SetOmega(name, site) => {
                 self.model.check_new_set_family(&name)?;
                 let site = self.model.named(&site.text).ok_or_else(|| {
@@ -3163,6 +3260,18 @@ impl Engine {
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
             TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::SetReflectExtend {
+                reflection,
+                source,
+                target,
+                certificate,
+                map,
+            } => {
+                let Value::SetNat(map) = self.eval(map)? else {
+                    unreachable!()
+                };
+                reflection.extend(&mut self.model, source, target, certificate, &map)
+            }
             TypedForm::SetJExtend {
                 reflection,
                 source,
@@ -6944,6 +7053,71 @@ impl Checker<'_> {
         })
     }
 
+    fn set_topology_expression(
+        &mut self,
+        operation: set_topology::Operation,
+        name: Label,
+        input: Option<Box<ParsedExpr>>,
+    ) -> Result<(TypeId, TypedForm)> {
+        use set_topology::Operation;
+        if matches!(operation, Operation::Map) {
+            let topology = self.model.set_topology(&name.text)?;
+            let ty = self.model.register_set_nat_type(
+                topology.omega_name.clone(),
+                topology.omega_name.clone(),
+                true,
+            )?;
+            return Ok((ty, TypedForm::Constant(topology.map())));
+        }
+        let reflection = self.model.set_reflection(&name.text)?;
+        let source = reflection.source.clone();
+        let reflected: Rc<str> = name.text.into();
+        match operation {
+            Operation::Map => unreachable!(),
+            Operation::Unit => {
+                let ty = self.model.register_set_nat_type(source, reflected, true)?;
+                Ok((ty, TypedForm::Constant(reflection.unit())))
+            }
+            Operation::Inverse => {
+                let family = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("reflection source");
+                let inverse = reflection.inverse(self.model, &family)?;
+                let ty = self.model.register_set_nat_type(reflected, source, true)?;
+                Ok((ty, TypedForm::Constant(inverse)))
+            }
+            Operation::Extend => {
+                let map = self.expr(*input.expect("map to extend"))?;
+                let (from, target) = self.set_nat_ends(map.ty)?;
+                if from != source {
+                    return Err(Error::plain(
+                        "setReflectExtend requires a map from the original family",
+                    ));
+                }
+                let certificate = self
+                    .model
+                    .set_reflection_certificate(reflection.topology.clone(), target.clone())?
+                    .ok_or_else(|| {
+                        Error::plain("setReflectExtend target must be a sheaf for the topology")
+                    })?;
+                let a = self.model.set_family_named(&source).expect("map source");
+                let b = self.model.set_family_named(&target).expect("map target");
+                let ty = self.model.set_nat_type(reflected, target)?;
+                Ok((
+                    ty,
+                    TypedForm::SetReflectExtend {
+                        reflection,
+                        source: a,
+                        target: b,
+                        certificate,
+                        map: Box::new(map),
+                    },
+                ))
+            }
+        }
+    }
+
     fn expr_inner(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         self.model.spend(1)?;
         // Keep the checker frames for distinct expression families separate.
@@ -6956,6 +7130,9 @@ impl Checker<'_> {
 
     fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
+            ExprForm::SetTopology(operation, name, input) => {
+                self.set_topology_expression(operation, name, input)
+            }
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
                 let name: Rc<str> = name.text.into();

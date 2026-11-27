@@ -89,6 +89,7 @@ use crate::rv_wzw;
 use crate::set_family;
 use crate::set_j;
 use crate::set_logic;
+use crate::set_topology;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_deform;
@@ -461,6 +462,9 @@ pub(crate) struct Model {
     set_monodromies: HashMap<Rc<str>, Rc<crate::set_monodromy::Monodromy>>,
     set_linearizations: HashMap<Rc<str>, Rc<str>>,
     set_logic: HashMap<Rc<str>, set_logic::Origin>,
+    set_topologies: HashMap<Rc<str>, Rc<set_topology::Topology>>,
+    set_reflections: HashMap<Rc<str>, Rc<set_topology::Reflection>>,
+    set_reflection_certificates: set_topology::Certificates,
     set_sheafifications: HashMap<Rc<str>, Rc<set_j::Sheafification>>,
     set_sheaf_certificates: HashMap<Rc<str>, Option<Rc<set_j::Certificate>>>,
     set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
@@ -527,6 +531,9 @@ impl Model {
             set_monodromies: HashMap::new(),
             set_linearizations: HashMap::new(),
             set_logic: HashMap::new(),
+            set_topologies: HashMap::new(),
+            set_reflections: HashMap::new(),
+            set_reflection_certificates: HashMap::new(),
             set_sheafifications: HashMap::new(),
             set_sheaf_certificates: HashMap::new(),
             set_elements: HashMap::new(),
@@ -1609,6 +1616,68 @@ impl Model {
         self.set_origins
             .insert(Rc::from(name.text.as_str()), origin);
         Ok(())
+    }
+
+    pub(crate) fn define_set_topology(
+        &mut self,
+        name: &Label,
+        topology: set_topology::Topology,
+    ) -> Result<()> {
+        if self.set_topologies.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("set topology '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(1)?;
+        self.set_topologies
+            .insert(name.text.as_str().into(), Rc::new(topology));
+        Ok(())
+    }
+
+    pub(crate) fn set_topology(&self, name: &str) -> Result<Rc<set_topology::Topology>> {
+        self.set_topologies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown set topology '{name}'")))
+    }
+
+    pub(crate) fn define_set_reflection(
+        &mut self,
+        name: &Label,
+        diagram: set_family::Diagram,
+        reflection: set_topology::Reflection,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.define_set_family(name, diagram)?;
+        self.set_reflections
+            .insert(name.text.as_str().into(), Rc::new(reflection));
+        Ok(())
+    }
+
+    pub(crate) fn set_reflection(&self, name: &str) -> Result<Rc<set_topology::Reflection>> {
+        self.set_reflections
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("'{name}' is not a declared topology reflection")))
+    }
+
+    pub(crate) fn set_reflection_certificate(
+        &mut self,
+        topology: Rc<str>,
+        family: Rc<str>,
+    ) -> Result<Option<Rc<set_topology::Certificate>>> {
+        let key = (topology, family);
+        if let Some(certificate) = self.set_reflection_certificates.get(&key) {
+            return Ok(certificate.clone());
+        }
+        let data = self.set_topology(&key.0)?;
+        let diagram = self.set_family_named(&key.1).expect("registered family");
+        let certificate = set_topology::Certificate::build(self, &data, &diagram)?.map(Rc::new);
+        self.allocate(1)?;
+        self.set_reflection_certificates
+            .insert(key, certificate.clone());
+        Ok(certificate)
     }
 
     pub(crate) fn define_set_sheafification(

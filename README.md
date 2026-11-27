@@ -232,6 +232,18 @@ recovers `u`. If `F` already satisfies the sheaf condition,
 fork with six sections after reflection, explicit extension, and
 idempotence.
 
+### Lawvere–Tierney topologies and sheafification
+
+Given a classifier `setomega O[X];`, declare `settopology J[O] {s1,...};` for a subset $S$ of the site. At $x$ its local cosieve operator is
+$j_{S,x}(U)=\{y\ge x:\ S\cap\uparrow y\subseteq U\}$.
+The typed endomorphism `setTopMap[J]` has type `SetNat(O,O)`. The statement `settopologyMap J(f);` accepts a natural endomorphism of the classifier. It checks truth, extensivity and idempotence at every fiber, recovers $S$ by testing $\uparrow x\setminus\{x\}$, and verifies the reconstructed formula on every cosieve. In that formula a selected successor lies in an intersection exactly when it lies in both cosieves, which certifies the meet law. Use `settopologysupport[J];` to print the recovered subset in site order.
+
+Use `settopologymeet M[J,K];` and `settopologyjoin L[J,K];` for the meet and join of two nuclei. Their subsets are respectively the union and intersection of the two subsets. The statement `settopologyjoinsteps[J,K];` checks the actual alternating closure table and gives the number of passes of $j_J\circ j_K$ needed to reach the join on all local cosieves. On a chain with alternating retained points, the order of the two operators matters. The tests include alternating supports on chains of thirty and eighty-nine points, which need sixteen and forty-five passes.
+
+The declaration `setreflect R[J,F];` builds the $J$-sheafification of $F$. Its fiber at $x$ is the compatible sections of $F$ over the full subposet $S\cap\uparrow x$. This is right Kan extension of the restriction of $F$ to $S$ along the inclusion, and its transport forgets the coordinates outside the new future. The unit `setReflectUnit[R]` takes each value to its transports to the retained points. The query `setreflectcheck[J,F];` tests whether every component of that unit is bijective. In that case `setReflectInverse[R]` gives the inverse.
+
+For a natural map $f:F\to G$ into a $J$-sheaf, `setReflectExtend[R](f)` applies $f$ to each retained coordinate and reconstructs a value of $G$ by its bijective unit. This implements the unique extension with composite $f$ along the unit of $F$. The diamond example has two compatible choices at the excluded bottom point. It verifies restriction and extension on all four natural maps in the adjunction, and the unit and inverse on the reflected family. The full subset gives the identity reflection and the empty subset gives the terminal one. For the subset of maximal points, the result is naturally isomorphic to double-negation sheafification. [Topology and reflection example](examples/set-topologies.asl)
+
 ## Sheaf cohomology on a finite poset
 
 `sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.

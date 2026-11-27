@@ -149,6 +149,7 @@ mod set_j;
 mod set_kan;
 mod set_logic;
 mod set_monodromy;
+mod set_topology;
 mod sheaf;
 mod sheaf_cellular;
 mod sheaf_deform;

@@ -195,6 +195,79 @@ impl Omega {
             .ok_or_else(|| Error::plain("cosieve index is outside its fiber"))
     }
 
+    pub(crate) fn nucleus_rows(&self, model: &mut Model, selected: &[bool]) -> Result<Vec<usize>> {
+        let mut support = vec![0; self.words];
+        model.spend(selected.len())?;
+        for (i, &included) in selected.iter().enumerate() {
+            if included {
+                insert(&mut support, i);
+            }
+        }
+        let mut output = Vec::new();
+        let mut closure = vec![0; self.words];
+        let mut missing = vec![0; self.words];
+        for (x, values) in self.sieves.iter().enumerate() {
+            for value in values {
+                model.spend(self.words + (self.words + 1) * self.futures[x].len())?;
+                for ((word, &selected), &included) in missing.iter_mut().zip(&support).zip(value) {
+                    *word = selected & !included;
+                }
+                closure.fill(0);
+                for &y in &self.futures[x] {
+                    if self.masks[y]
+                        .iter()
+                        .zip(&missing)
+                        .all(|(future, absent)| future & absent == 0)
+                    {
+                        insert(&mut closure, y);
+                    }
+                }
+                output.push(self.index(model, x, &closure)?);
+            }
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn nucleus_support(
+        &self,
+        model: &mut Model,
+        diagram: &Diagram,
+        rows: &[usize],
+    ) -> Result<Vec<bool>> {
+        let mut selected = Vec::with_capacity(self.sieves.len());
+        for (x, values) in self.sieves.iter().enumerate() {
+            let family = diagram.components(x, rows);
+            let top = values.len() - 1;
+            if family[top] != top {
+                return Err(Error::plain(
+                    "Lawvere–Tierney candidate does not preserve true",
+                ));
+            }
+            for (value, &image) in values.iter().zip(family) {
+                model.spend(self.words + 1)?;
+                if value.iter().zip(&values[image]).any(|(a, b)| a & !b != 0) {
+                    return Err(Error::plain("Lawvere–Tierney candidate is not extensive"));
+                }
+                if family[image] != image {
+                    return Err(Error::plain("Lawvere–Tierney candidate is not idempotent"));
+                }
+            }
+            let mut punctured = self.masks[x].clone();
+            punctured[x / 64] &= !(1 << (x % 64));
+            let punctured = self.index(model, x, &punctured)?;
+            selected.push(family[punctured] != top);
+        }
+        // Formula equality checks meet preservation on all inputs: all
+        // selected successors belong to U ∩ V exactly when they belong to both.
+        let recovered = self.nucleus_rows(model, &selected)?;
+        if recovered != rows {
+            return Err(Error::plain(
+                "Lawvere–Tierney candidate does not match its reconstructed nucleus",
+            ));
+        }
+        Ok(selected)
+    }
+
     pub(crate) fn members(
         &self,
         model: &mut Model,
