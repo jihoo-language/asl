@@ -8,13 +8,13 @@ use crate::rv_crossed::Crossed;
 
 type Word = Vec<i32>;
 
-pub(super) struct Quotient {
+pub(in crate::rv_crossed) struct Quotient {
     products: Vec<Vec<usize>>,
     inverses: Vec<usize>,
 }
 
 impl Quotient {
-    pub(super) fn new(model: &mut Model, crossed: &Crossed) -> Result<Self> {
+    pub(in crate::rv_crossed) fn new(model: &mut Model, crossed: &Crossed) -> Result<Self> {
         let n = crossed.order();
         model.spend(n * n)?;
         let products: Vec<Vec<_>> = (0..n)
@@ -31,11 +31,11 @@ impl Quotient {
         Ok(Self { products, inverses })
     }
 
-    pub(super) fn order(&self) -> usize {
+    pub(in crate::rv_crossed) fn order(&self) -> usize {
         self.inverses.len()
     }
 
-    pub(super) fn mul(&self, a: usize, b: usize) -> usize {
+    pub(in crate::rv_crossed) fn mul(&self, a: usize, b: usize) -> usize {
         self.products[a][b]
     }
 
@@ -122,28 +122,34 @@ impl Presentation {
             }
             for word in relators {
                 model.spend(word.len() + 1)?;
-                let mut substituted = Vec::with_capacity(word.len());
-                for x in word {
-                    if x.unsigned_abs() == letter.unsigned_abs() {
-                        model.spend(replacement.len())?;
-                        let part = if x > 0 { &replacement } else { &inverse };
-                        for &item in part {
-                            append(&mut substituted, item);
+                let size = word.len();
+                let retained = if word
+                    .iter()
+                    .all(|x| x.unsigned_abs() != letter.unsigned_abs())
+                {
+                    next.insert(word).then_some(size)
+                } else {
+                    let mut substituted = Vec::with_capacity(size);
+                    for x in word {
+                        if x.unsigned_abs() == letter.unsigned_abs() {
+                            model.spend(replacement.len())?;
+                            let part = if x > 0 { &replacement } else { &inverse };
+                            for &item in part {
+                                append(&mut substituted, item);
+                            }
+                        } else {
+                            append(&mut substituted, x);
                         }
-                    } else {
-                        append(&mut substituted, x);
+                        if substituted.len() > MAX_PIVOT_CELLS {
+                            return Err(presentation_limit());
+                        }
                     }
-                    if substituted.len() > MAX_PIVOT_CELLS {
-                        return Err(presentation_limit());
-                    }
-                }
-                // Count the retained words, including the saved substitutions.
-                let size = substituted.len();
-                if insert_relator(model, &mut next, substituted)? {
-                    letters += size;
-                    if letters > MAX_PIVOT_CELLS {
-                        return Err(presentation_limit());
-                    }
+                    let size = substituted.len();
+                    insert_relator(model, &mut next, substituted)?.then_some(size)
+                };
+                letters += retained.unwrap_or(0);
+                if letters > MAX_PIVOT_CELLS {
+                    return Err(presentation_limit());
                 }
             }
             eliminated_letters += replacement.len();
@@ -217,7 +223,14 @@ impl Presentation {
 fn eliminable(model: &mut Model, relators: &BTreeSet<Word>) -> Result<Option<(Word, usize)>> {
     let mut best = None;
     for word in relators {
-        model.spend(word.len().saturating_mul(word.len()) + 1)?;
+        model.spend(1)?;
+        if best
+            .as_ref()
+            .is_some_and(|&(size, _, _, _)| size < word.len())
+        {
+            continue;
+        }
+        model.spend(word.len().saturating_mul(word.len()))?;
         for (i, x) in word.iter().enumerate() {
             let variable = x.unsigned_abs();
             let option = (word.len(), variable, word, i);

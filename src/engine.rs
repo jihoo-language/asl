@@ -134,7 +134,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_conformal;
-use crate::rv_crossed::{self, flat, path_integral, postnikov};
+use crate::rv_crossed::{self, dijkgraaf_witten as dw, flat, path_integral, postnikov};
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -2375,6 +2375,7 @@ impl Engine {
             StatementForm::Crossed(command) => return self.crossed_command(*command),
             StatementForm::Postnikov(command) => return self.postnikov_command(*command),
             StatementForm::Flat(command) => return self.flat_command(*command),
+            StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
             StatementForm::HomotopyIntegral(command) => {
                 return self.homotopy_integral_command(*command)
             }
@@ -7670,6 +7671,62 @@ impl Engine {
                 let cochain = self.eval_postnikov_cochain(&input)?;
                 let value = post.coefficient(&mut self.model, &cochain, &indices)?;
                 format!("rvPostnikovCoeff{indices:?} = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn dw_command(&mut self, command: dw::Command) -> Result<Option<String>> {
+        use dw::Command;
+        let report = match command {
+            Command::Coefficients(name, group, p) => {
+                let carrier = self.model.finite_group(&group)?;
+                let post = dw::coefficients(&mut self.model, carrier, group.text.into(), p)?;
+                self.model.define_postnikov(name, post)?;
+                return Ok(None);
+            }
+            Command::Declare {
+                name,
+                base,
+                post,
+                cocycle,
+                cycle,
+            } => {
+                let space = self
+                    .model
+                    .named(&base.text)
+                    .filter(|&base| self.model.poset(base).is_some())
+                    .ok_or_else(|| {
+                        Error::new(
+                            base.span,
+                            "Dijkgraaf–Witten integral requires a named finite space",
+                        )
+                    })?;
+                let input = self.checker().expr(*cocycle)?;
+                let ty = self.model.postnikov_cochain_type(&post, 3)?;
+                self.checker().require_type(ty, &input, "rvdw")?;
+                let post = self.model.postnikov(&post)?;
+                let k = self.eval_postnikov_cochain(&input)?;
+                let data = dw::Integral::new(&mut self.model, space, &post, &k, cycle)?;
+                self.model.define_dw(name, data)?;
+                return Ok(None);
+            }
+            Command::Component(name, index) => {
+                self.model.dw(&name)?.component(&name.text, index)?
+            }
+            Command::Class(name, indices) => {
+                self.model
+                    .dw(&name)?
+                    .class(&mut self.model, &name.text, indices)?
+            }
+            Command::Phase(name, input, cycle) => {
+                let flat = self.model.flat(&name)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_flat_post(&flat, &input, 3, "rvDWPhase")?;
+                let k = self.eval_postnikov_cochain(&input)?;
+                let value = dw::phase(&mut self.model, &flat, &k, cycle)?;
+                format!("rvDWPhase[{}] = {value}", name.text)
             }
         };
         Ok(Some(report))
@@ -15870,6 +15927,11 @@ impl Checker<'_> {
                 self.set_topology_expression(operation, name, input)
             }
             ExprForm::Crossed(expression) => self.crossed_expression(*expression),
+            ExprForm::DWValue(name) => {
+                let data = self.model.dw(&name)?;
+                let ty = self.model.cyclotomic_rational_type(data.prime)?;
+                Ok((ty, TypedForm::Constant(Value::RVCycloQ(data.value.clone()))))
+            }
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {

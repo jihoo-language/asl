@@ -13,7 +13,8 @@ use super::flat::{pullback_layer, twisted_differential, Arrows};
 use super::postnikov::{Cochain, Postnikov};
 
 mod presentation;
-use presentation::{Presentation, Quotient};
+use presentation::Presentation;
+pub(super) use presentation::Quotient;
 
 const MAX_ASSIGNMENTS: usize = 250_000;
 
@@ -41,13 +42,41 @@ struct Component {
 }
 
 struct Class {
-    edges: Vec<([usize; 2], usize)>,
-    centralizer: usize,
-    orbit_size: usize,
+    orbit: Orbit,
     betti: [usize; 3],
     obstruction: bool,
     fixed: Rational,
     weight: Rational,
+}
+
+pub(super) struct Orbit {
+    pub(super) edges: Vec<([usize; 2], usize)>,
+    pub(super) centralizer: usize,
+    pub(super) size: usize,
+}
+
+impl Orbit {
+    pub(super) fn edge_report(
+        &self,
+        model: &mut Model,
+        site: &Poset,
+        points: &[usize],
+    ) -> Result<String> {
+        model.spend(self.edges.len())?;
+        Ok(self
+            .edges
+            .iter()
+            .map(|&(edge, g)| format!("{}:{g}", edge_name(site, points, edge)))
+            .collect::<Vec<_>>()
+            .join(","))
+    }
+}
+
+pub(super) struct FlatPresentation {
+    pub(super) points: Vec<usize>,
+    pub(super) tree: Vec<[usize; 2]>,
+    pub(super) layers: [Vec<Simplex>; 4],
+    presentation: Presentation,
 }
 
 impl Integral {
@@ -90,7 +119,7 @@ impl Integral {
         let tree = data
             .tree
             .iter()
-            .map(|&edge| self.edge_name(&data.points, edge))
+            .map(|&edge| edge_name(&self.site, &data.points, edge))
             .collect::<Vec<_>>()
             .join(",");
         Ok(format!(
@@ -110,16 +139,12 @@ impl Integral {
             .classes
             .get(j)
             .ok_or_else(|| Error::plain("homotopy conjugacy-class index is out of range"))?;
-        model.spend(class.edges.len())?;
         let edges = class
-            .edges
-            .iter()
-            .map(|&(edge, g)| format!("{}:{g}", self.edge_name(&component.points, edge)))
-            .collect::<Vec<_>>()
-            .join(",");
+            .orbit
+            .edge_report(model, &self.site, &component.points)?;
         let result = format!(
             "rvHomotopyClass[{name},{i},{j}] = labels=[{edges}], centralizer={}, orbit_size={}, betti={:?}, obstructed={}, fixed_cardinality={}, weight={}",
-            class.centralizer, class.orbit_size, class.betti, class.obstruction, show(class.fixed), show(class.weight),
+            class.orbit.centralizer, class.orbit.size, class.betti, class.obstruction, show(class.fixed), show(class.weight),
         );
         if result.len() > MAX_SHOWN_BYTES {
             return Err(Error::plain(
@@ -134,13 +159,10 @@ impl Integral {
             .get(i)
             .ok_or_else(|| Error::plain("homotopy component index is out of range"))
     }
+}
 
-    fn edge_name(&self, points: &[usize], [a, b]: [usize; 2]) -> String {
-        format!(
-            "{}<{}",
-            self.site.names[points[a]], self.site.names[points[b]]
-        )
-    }
+pub(super) fn edge_name(site: &Poset, points: &[usize], [a, b]: [usize; 2]) -> String {
+    format!("{}<{}", site.names[points[a]], site.names[points[b]])
 }
 
 impl Component {
@@ -153,23 +175,87 @@ impl Component {
         post: &Postnikov,
         k: &Cochain,
     ) -> Result<Self> {
-        let mut order = OrderComplex::induced(model, site, &points)?;
-        let v = order.vertices();
-        let e = order.extend(model, &v)?;
-        let f = order.extend(model, &e)?;
-        let t = order.extend(model, &f)?;
-        let presentation = Presentation::new(model, points.len(), &tree, &e, &f)?;
-        let generators = presentation.generators.len();
-        let relators = presentation.relators.len();
+        let geometry = FlatPresentation::new(model, site, points, tree)?;
+        let layers = geometry.layers.each_ref().map(Vec::as_slice);
+        let generators = geometry.generators();
+        let relators = geometry.relators();
+        let mut classes = Vec::new();
+        let mut total = Rational::ZERO;
+        let solutions = geometry.visit(model, group, |model, arrows, orbit| {
+            let (betti, obstruction) = local_weight(model, post, k, arrows, layers)?;
+            let fixed = if obstruction {
+                Rational::ZERO
+            } else {
+                let [h0, h1, h2] = betti;
+                prime_power(post.prime.get(), h0 as i64 - h1 as i64 + h2 as i64)?
+            };
+            let weight = exact(fixed.multiply(Rational::new(1, orbit.centralizer as i128)?))?;
+            total = exact(total.add(weight))?;
+            model.allocate(12 + orbit.edges.len() * 3)?;
+            classes.push(Class {
+                orbit,
+                betti,
+                obstruction,
+                fixed,
+                weight,
+            });
+            Ok(())
+        })?;
+        let FlatPresentation { points, tree, .. } = geometry;
+        model.allocate(points.len() + 2 * tree.len())?;
+        Ok(Self {
+            points,
+            tree,
+            generators,
+            relators,
+            solutions,
+            classes,
+            total,
+        })
+    }
+}
+
+impl FlatPresentation {
+    pub(super) fn new(
+        model: &mut Model,
+        site: &Poset,
+        points: Vec<usize>,
+        tree: Vec<[usize; 2]>,
+    ) -> Result<Self> {
+        let layers = order_layers(model, site, &points)?;
+        let presentation = Presentation::new(model, points.len(), &tree, &layers[1], &layers[2])?;
+        Ok(Self {
+            points,
+            tree,
+            layers,
+            presentation,
+        })
+    }
+
+    pub(super) fn generators(&self) -> usize {
+        self.presentation.generators.len()
+    }
+
+    pub(super) fn relators(&self) -> usize {
+        self.presentation.relators.len()
+    }
+
+    pub(super) fn visit(
+        &self,
+        model: &mut Model,
+        group: &Quotient,
+        mut visitor: impl FnMut(&mut Model, &Arrows, Orbit) -> Result<()>,
+    ) -> Result<usize> {
+        let presentation = &self.presentation;
+        let [_, edges, triangles, _] = &self.layers;
+        let generators = self.generators();
         let n = group.order();
         let assignments = n.checked_pow(generators as u32).filter(|&x| x <= MAX_ASSIGNMENTS)
             .ok_or_else(|| Error::plain("homotopy enumeration exceeds the normalized assignment limit after elimination"))?;
         let mut values = vec![0; presentation.original_generators + 1];
-        let mut arrows = vec![vec![None; points.len()]; points.len()];
-        let mut classes = Vec::new();
+        let mut arrows = vec![vec![None; self.points.len()]; self.points.len()];
         let mut solutions = 0;
         let mut orbit_sizes = 0;
-        let mut total = Rational::ZERO;
         for mut sequence in 0..assignments {
             model.spend(1 + generators)?;
             for &g in presentation.generators.iter().rev() {
@@ -183,22 +269,22 @@ impl Component {
             let Some(centralizer) = presentation.centralizer(model, group, &values)? else {
                 continue;
             };
-            let orbit_size = n / centralizer;
-            orbit_sizes += orbit_size;
+            let size = n / centralizer;
+            orbit_sizes += size;
             presentation.recover(model, group, &mut values)?;
-            let mut edges = Vec::new();
-            model.spend(e.len() + f.len())?;
-            for (edge, &variable) in e.iter().zip(&presentation.edge_generators) {
+            let mut nonidentity = Vec::new();
+            model.spend(edges.len() + triangles.len())?;
+            for (edge, &variable) in edges.iter().zip(&presentation.edge_generators) {
                 let &[a, b] = edge.as_slice() else {
                     unreachable!()
                 };
                 let g = values[variable];
                 arrows[a][b] = Some(g);
                 if g != 0 {
-                    edges.push(([a, b], g));
+                    nonidentity.push(([a, b], g));
                 }
             }
-            for triangle in &f {
+            for triangle in triangles {
                 let &[a, b, c] = triangle.as_slice() else {
                     unreachable!()
                 };
@@ -209,42 +295,36 @@ impl Component {
                     ));
                 }
             }
-            let (betti, obstruction) = local_weight(model, post, k, &arrows, [&v, &e, &f, &t])?;
-            let fixed = if obstruction {
-                Rational::ZERO
-            } else {
-                let [h0, h1, h2] = betti;
-                prime_power(post.prime.get(), h0 as i64 - h1 as i64 + h2 as i64)?
-            };
-            let weight = exact(fixed.multiply(Rational::new(1, centralizer as i128)?))?;
-            total = exact(total.add(weight))?;
-            model.allocate(12 + edges.len() * 3)?;
-            classes.push(Class {
-                edges,
-                centralizer,
-                orbit_size,
-                betti,
-                obstruction,
-                fixed,
-                weight,
-            });
+            visitor(
+                model,
+                &arrows,
+                Orbit {
+                    edges: nonidentity,
+                    centralizer,
+                    size,
+                },
+            )?;
         }
         if solutions != orbit_sizes {
             return Err(Error::plain(
                 "homotopy conjugacy classes failed the orbit-stabilizer check",
             ));
         }
-        model.allocate(points.len() + 2 * tree.len())?;
-        Ok(Self {
-            points,
-            tree,
-            generators,
-            relators,
-            solutions,
-            classes,
-            total,
-        })
+        Ok(solutions)
     }
+}
+
+pub(super) fn order_layers(
+    model: &mut Model,
+    site: &Poset,
+    points: &[usize],
+) -> Result<[Vec<Simplex>; 4]> {
+    let mut order = OrderComplex::induced(model, site, points)?;
+    let vertices = order.vertices();
+    let edges = order.extend(model, &vertices)?;
+    let triangles = order.extend(model, &edges)?;
+    let tetrahedra = order.extend(model, &triangles)?;
+    Ok([vertices, edges, triangles, tetrahedra])
 }
 
 fn local_weight(
@@ -280,7 +360,7 @@ fn local_weight(
 
 type SpanningTree = (Vec<usize>, Vec<[usize; 2]>);
 
-fn spanning_forest(model: &mut Model, site: &Poset) -> Result<Vec<SpanningTree>> {
+pub(super) fn spanning_forest(model: &mut Model, site: &Poset) -> Result<Vec<SpanningTree>> {
     let (_, covers) = Diagram::site_orders(model, site)?;
     let mut neighbors = vec![Vec::new(); covers.len()];
     for (u, row) in covers.iter().enumerate() {

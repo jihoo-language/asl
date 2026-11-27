@@ -90,7 +90,7 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
-use crate::rv_crossed::{self, flat, path_integral, postnikov};
+use crate::rv_crossed::{self, dijkgraaf_witten as dw, flat, path_integral, postnikov};
 use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
@@ -656,6 +656,7 @@ pub(crate) struct Model {
     crossed_modules: HashMap<Rc<str>, Rc<rv_crossed::Crossed>>,
     flat_backgrounds: HashMap<Rc<str>, Rc<flat::Flat>>,
     homotopy_integrals: HashMap<Rc<str>, Rc<path_integral::Integral>>,
+    dw_integrals: HashMap<Rc<str>, Rc<dw::Integral>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -803,6 +804,7 @@ impl Model {
             postnikov_systems: HashMap::new(),
             flat_backgrounds: HashMap::new(),
             homotopy_integrals: HashMap::new(),
+            dw_integrals: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1042,6 +1044,29 @@ impl Model {
     pub(crate) fn postnikov_cell_type(&mut self, name: &Label) -> Result<TypeId> {
         self.postnikov(name)?;
         self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_dw(&mut self, name: Label, data: dw::Integral) -> Result<()> {
+        if self.dw_integrals.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                "Dijkgraaf–Witten integral is already defined",
+            ));
+        }
+        self.dw_integrals.insert(name.text.into(), Rc::new(data));
+        Ok(())
+    }
+
+    pub(crate) fn dw(&self, name: &Label) -> Result<Rc<dw::Integral>> {
+        self.dw_integrals
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Dijkgraaf–Witten integral '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn define_homotopy_integral(

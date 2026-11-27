@@ -133,6 +133,14 @@ The obstruction report gives the number of lift classes and the homotopy cardina
 
 For $\mathbb{RP}^3$ with $G=C_2$, the split associator gives total $2$ and the nonzero associator gives total $1$. Only the trivial representation of $\pi_1$ lifts in the nonsplit case. [Runnable path integral example](examples/finite-homotopy-path-integral.asl)
 
+### Oriented Dijkgraaf–Witten sums
+
+`rvdwcoeff P[G,p];` uses the ordinary group `G` and the trivial action on $\mathbb F_p$ in the normalized bar cochain language. Supply a 3-cocycle by `rvPostnikovCochain[P,3]{...}` or use a cocycle from a crossed-module declaration whose kernel has trivial action. `rvdw Q[X,P](k){...};` takes the signed integral coefficients of a 3-cycle in lexicographic order of strict chains of four vertices, using the space's point order. It checks the group cocycle identity and the integral boundary equation. For an oriented closed 3-manifold use a representative of its fundamental class. [Dijkgraaf and Witten, *Topological Gauge Theories and Group Cohomology*](https://doi.org/10.1007/BF02096988)
+
+`rvDWValue[Q]` is an exact `RVCycloQ(p)` value in the basis $1,\zeta_p,\ldots,\zeta_p^{p-2}$, where $\zeta_p=\exp(2\pi i/p)$. The solver sums $\zeta_p^{\langle A^*k,Z\rangle}/|\operatorname{Cent}(\operatorname{im} A)|$ over the conjugacy classes of flat backgrounds in each connected component, then multiplies the results. The empty space gives one. `rvDWComponent[Q,i];` reports the presentation, numbers of normalized solutions and conjugacy classes, and component value. `rvDWClass[Q,i,j];` gives the representative's nonidentity edge labels, centralizer, orbit size and phase exponent. `rvDWPhase[F](k){...};` evaluates a supplied flat background. Cycles use checked signed 128-bit coefficients and the enumeration, normalized bar and cyclotomic arithmetic limits apply. [Freed and Quinn, *Chern–Simons Theory with Finite Gauge Group*](https://arxiv.org/abs/hep-th/9111004)
+
+Adding $\delta b$ to $k$ changes the pulled-back cochain by a coboundary, which pairs to zero with a cycle. A vertex gauge gives a natural isomorphism between the flat functors, hence homotopic maps to $BG$ and the same pairing. Negating the cycle conjugates the result. The generated $L(3,1)$ fixture is the quotient of the join of two 9-gons by simultaneous rotation through three positions. The carry cocycle on $C_3$ gives exponents $0,1,1$ and value $(1+2\zeta_3)/3$. The generator's `--gauge` option adds two explicit gauge-related flat backgrounds and evaluates both cocycle representatives. [Runnable lens example](examples/dijkgraaf-witten-lens.asl) · [Deterministic fixture generator](examples/dijkgraaf-witten-lens.py)
+
 ## Finite set families on a poset
 
 A `setfamily F[X] {x:2, y:3} {x<y:[0,2]};` gives a covariant finite set

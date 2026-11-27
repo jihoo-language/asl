@@ -730,6 +730,7 @@ pub(crate) struct MapGenerator {
 pub(crate) enum ExprForm {
     Crossed(Box<crate::rv_crossed::Expression>),
     Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
+    DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
         crate::set_topology::Operation,
@@ -1182,6 +1183,7 @@ pub(crate) enum StatementForm {
     Postnikov(Box<crate::rv_crossed::postnikov::Command>),
     Flat(Box<crate::rv_crossed::flat::Command>),
     HomotopyIntegral(Box<crate::rv_crossed::path_integral::Command>),
+    DijkgraafWitten(Box<crate::rv_crossed::dijkgraaf_witten::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3536,6 +3538,67 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn dw_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::dijkgraaf_witten::Command;
+        self.advance()?;
+        if operation == "rvdwcoeff" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let group = self.label()?;
+            self.expect(Token::Comma)?;
+            let prime = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            return Ok(StatementForm::DijkgraafWitten(Box::new(
+                Command::Coefficients(name, group, prime),
+            )));
+        }
+        let command = if operation == "rvdw" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let base = self.label()?;
+            self.expect(Token::Comma)?;
+            let post = self.label()?;
+            self.expect(Token::RBracket)?;
+            let cocycle = Box::new(self.paren_expr(0)?);
+            Command::Declare {
+                name,
+                base,
+                post,
+                cocycle,
+                cycle: self.dw_cycle()?,
+            }
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            if operation == "rvDWPhase" {
+                self.expect(Token::RBracket)?;
+                let input = Box::new(self.paren_expr(0)?);
+                Command::Phase(name, input, self.dw_cycle()?)
+            } else {
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                let command = if operation == "rvDWComponent" {
+                    Command::Component(name, i)
+                } else {
+                    self.expect(Token::Comma)?;
+                    Command::Class(name, [i, self.number()?.0])
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::DijkgraafWitten(Box::new(command)))
+    }
+
+    fn dw_cycle(&mut self) -> Result<Vec<i128>> {
+        self.expect(Token::LBrace)?;
+        self.signed_list(
+            Token::RBrace,
+            "a signed integer",
+            "integral 3-cycle coefficient",
+        )
     }
 
     fn homotopy_integral_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -9798,6 +9861,9 @@ impl<'src> Parser<'src> {
                 | "rvHomotopyComponent"
                 | "rvHomotopyClass"),
             ) => self.homotopy_integral_statement(op)?,
+            Token::Word(
+                op @ ("rvdw" | "rvdwcoeff" | "rvDWComponent" | "rvDWClass" | "rvDWPhase"),
+            ) => self.dw_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -16172,6 +16238,11 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.crossed_expression(&name.text, span, nest);
+                }
+                if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
+                    let name = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::DWValue(name), 0);
                 }
                 if (matches!(
                     name.text.as_str(),

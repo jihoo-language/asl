@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod dijkgraaf_witten;
 pub(crate) mod flat;
 pub(crate) mod path_integral;
 pub(crate) mod postnikov;
