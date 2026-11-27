@@ -64,6 +64,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_hyper;
+use crate::sheaf_leray::Leray;
 use crate::sheaf_page;
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
@@ -387,6 +388,7 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
     sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
+    leray_complexes: HashMap<String, Rc<Leray>>,
     type_ids: HashMap<Kind, TypeId>,
     milnor_bases: HashMap<usize, Rc<MilnorBasis>>,
     cyclotomics: HashMap<usize, rv_cyclotomic::Polynomial>,
@@ -425,6 +427,7 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_maps: HashMap::new(),
             sheaf_complexes: HashMap::new(),
+            leray_complexes: HashMap::new(),
             type_ids: HashMap::new(),
             milnor_bases: HashMap::new(),
             cyclotomics: HashMap::new(),
@@ -899,7 +902,11 @@ impl Model {
     }
 
     pub(crate) fn define_sheaf(&mut self, name: String, sheaf: Sheaf) {
-        self.sheaves.insert(name, Rc::new(sheaf));
+        self.define_sheaf_shared(name, Rc::new(sheaf));
+    }
+
+    pub(crate) fn define_sheaf_shared(&mut self, name: String, sheaf: Rc<Sheaf>) {
+        self.sheaves.insert(name, sheaf);
     }
 
     pub(crate) fn sheaf(&self, name: &Label) -> Result<Rc<Sheaf>> {
@@ -963,6 +970,22 @@ impl Model {
 
     pub(crate) fn define_sheaf_complex(&mut self, name: String, complex: sheaf_hyper::Complex) {
         self.sheaf_complexes.insert(name, Rc::new(complex));
+    }
+
+    pub(crate) fn define_leray_complex(&mut self, name: String, leray: Leray) {
+        self.leray_complexes.insert(name, Rc::new(leray));
+    }
+
+    pub(crate) fn leray_complex(&self, name: &Label) -> Result<Rc<Leray>> {
+        self.leray_complexes
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("'{}' is not a declared Leray complex", name.text),
+                )
+            })
     }
 
     pub(crate) fn sheaf_complex(&self, name: &Label) -> Result<Rc<sheaf_hyper::Complex>> {

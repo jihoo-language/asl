@@ -121,9 +121,7 @@ impl Site {
             } else if *target_rank == 0 || *rank == 0 {
                 Matrix::default()
             } else {
-                let mut columns = Vec::new();
-                let mut cells = 1;
-                for index in 0..*rank {
+                Matrix::from_action(model, *rank, |model, index| {
                     let mut lift = from.representative_support(
                         model,
                         &opens.unique[x],
@@ -132,20 +130,17 @@ impl Site {
                     )?;
                     model.spend(lift.len())?;
                     lift.retain(|(generator, _)| opens.unique[z].contains(generator));
-                    let coordinates =
-                        to.class_coordinates(model, &opens.unique[z], degree, &lift)?;
-                    if !coordinates.is_empty() {
-                        cells += 3 + 2 * coordinates.len();
-                        sheaf::check_cells(cells)?;
-                        columns.push((index, coordinates.into()));
-                    }
-                }
-                Matrix::from_columns(columns)?
+                    to.class_coordinates(model, &opens.unique[z], degree, &lift)
+                })?
             };
             let matrix = Rc::new(matrix);
             restrictions.insert((x, z), matrix.clone());
             Ok(matrix)
         })
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        4 + self.images.len()
     }
 
     pub(crate) fn opens<'a>(&self, model: &mut Model, sheaf: &'a Sheaf) -> Result<Opens<'a>> {

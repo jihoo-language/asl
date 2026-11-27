@@ -145,6 +145,14 @@ The transgression generator builds a length-$r$ complex on a $2r+2$-point model 
 awk -v r=6 -v prime=3 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
 ```
 
+### The Leray complex of a finite map
+
+`shleray K[f,F];` constructs the derived direct image of a sheaf $F$ on the named source of $f:X\to Y$. Its stalk in degree $q$ at $y$ is the actual Roos cochain space $C^q(X_y;F)$ with the Roos differential. The restriction maps keep the chains in the smaller inverse-image open. The declared complex uses the component names `K__0`, `K__1`, and so on. Its spectral sequence has $E_2^{p,q}=H^p(Y;R^q f_*F)$.
+
+For an ordinary cochain $a$, `shLerayIncl[K](a)` places its family of restrictions in horizontal degree zero. This is a cochain map. For each chain $(x_0,\ldots,x_q)$ in $X$, the horizontal coefficient complex is the constant-coefficient Roos complex of the downset $\{y\mid y\le f(x_0)\}$. The downset has a largest point, so only horizontal degree zero contributes. Consequently the inclusion induces the comparison $H^n(X;F)\cong\mathbb H^n(Y;K)$.
+
+The example projects an eighteen-point product onto a six-point model of the sphere. Both $R^0f_*F$ and $R^1f_*F$ are rank-one constant sheaves, and $d_2$ takes the generator of $E_2^{0,1}$ nontrivially to $E_2^{2,0}$. Replacing the upper-right entry of the matrix at `x2a<x4a` by zero splits the example and makes this differential zero. [Leray spectral sequence example](examples/sheaf-leray.asl)
+
 ## Cup squares of cohomology classes
 
 The real projective plane and the wedge of a circle and a 2-sphere both have mod-two Betti numbers `[1, 1, 1]`. Each has exactly one nonzero class in degree one. An ASL function can take that class as input and square it.

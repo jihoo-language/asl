@@ -29,7 +29,7 @@ use crate::transfer::Operation as TransferOp;
 use crate::v_bars::Certificate as BarCertificate;
 
 const MAX_NESTING: usize = 64;
-const MAX_IDENTIFIER_BYTES: usize = 128;
+pub(crate) const MAX_IDENTIFIER_BYTES: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct Label {
@@ -530,6 +530,7 @@ pub(crate) enum ExprForm {
     MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
     SheafGenerator(Label, usize, usize),
+    SheafLerayIncl(Label, Box<ParsedExpr>),
     SheafApply(Label, Box<ParsedExpr>),
     SheafEmbed(Label, usize, Box<ParsedExpr>),
     SheafPart(usize, Box<ParsedExpr>),
@@ -728,6 +729,7 @@ pub(crate) enum StatementForm {
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
+    SheafLeray(Label, Label, Label),
     SheafImage(SheafImageOp, Label, Label, Label),
     QModule(Label, Vec<usize>, crate::q_module::Presentation),
     Let(Label, ParsedExpr),
@@ -1443,6 +1445,16 @@ impl<'src> Parser<'src> {
                 let prime = self.number()?.0;
                 self.expect(Token::RBracket)?;
                 StatementForm::Sheaf(name, base, prime, self.sheaf_body()?)
+            }
+            Token::Word("shleray") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let map = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafLeray(name, map, source)
             }
             Token::Word("shpull" | "shpush") => {
                 let pull = self.token() == Token::Word("shpull");
@@ -4518,6 +4530,17 @@ impl<'src> Parser<'src> {
                         span,
                         ExprForm::SheafTerm(sheaf, chain, index, coefficient),
                         0,
+                    );
+                }
+                if name.text == "shLerayIncl" && self.eat(Token::LBracket)? {
+                    let complex = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::SheafLerayIncl(complex, Box::new(input)),
+                        depth,
                     );
                 }
                 if name.text == "shApply" && self.eat(Token::LBracket)? {

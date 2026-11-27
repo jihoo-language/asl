@@ -29,7 +29,7 @@ impl NamedSheaf {
 pub(crate) struct Map {
     pub(crate) source: NamedSheaf,
     pub(crate) target: NamedSheaf,
-    matrices: Vec<Matrix>,
+    matrices: Vec<Rc<Matrix>>,
 }
 
 impl Map {
@@ -46,7 +46,7 @@ impl Map {
         }
         let x = &source.sheaf;
         let y = &target.sheaf;
-        let mut matrices: Vec<Option<Matrix>> = (0..x.dims().len()).map(|_| None).collect();
+        let mut matrices: Vec<Option<Rc<Matrix>>> = (0..x.dims().len()).map(|_| None).collect();
         let mut cells = matrices.len();
         for (point, values) in entries {
             let index = model.point(x.base(), &point)?;
@@ -73,7 +73,7 @@ impl Map {
             let matrix = Matrix::literal(model, x.prime, width, values)?;
             cells += matrix.cells();
             sheaf::check_cells(cells)?;
-            matrices[index] = Some(matrix);
+            matrices[index] = Some(Rc::new(matrix));
         }
         let matrices: Vec<_> = matrices
             .into_iter()
@@ -87,6 +87,22 @@ impl Map {
                 })
             })
             .collect::<Result<_>>()?;
+        Self::from_matrices(model, source, target, matrices)
+    }
+
+    pub(crate) fn from_matrices(
+        model: &mut Model,
+        source: NamedSheaf,
+        target: NamedSheaf,
+        matrices: Vec<Rc<Matrix>>,
+    ) -> Result<Self> {
+        let x = &source.sheaf;
+        let y = &target.sheaf;
+        debug_assert!(x.base() == y.base());
+        debug_assert_eq!(x.prime, y.prime);
+        debug_assert_eq!(x.dims().len(), matrices.len());
+        let cells = matrices.len() + matrices.iter().map(|matrix| matrix.cells()).sum::<usize>();
+        sheaf::check_cells(cells)?;
         for (a, targets) in x.covers().iter().enumerate() {
             for &b in targets {
                 model.spend(1)?;

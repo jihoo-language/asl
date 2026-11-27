@@ -131,6 +131,25 @@ impl Matrix {
         Ok(matrix)
     }
 
+    pub(crate) fn from_action(
+        model: &mut Model,
+        width: usize,
+        mut image: impl FnMut(&mut Model, usize) -> Result<Vec<Coordinate>>,
+    ) -> Result<Self> {
+        model.spend(width)?;
+        let mut columns = Vec::new();
+        let mut cells = 1;
+        for index in 0..width {
+            let coordinates = image(model, index)?;
+            if !coordinates.is_empty() {
+                cells += 3 + 2 * coordinates.len();
+                check_cells(cells)?;
+                columns.push((index, coordinates.into()));
+            }
+        }
+        Self::from_columns(columns)
+    }
+
     pub(crate) fn identity(model: &mut Model, rank: usize) -> Result<Self> {
         check_cells(1usize.saturating_add(5usize.saturating_mul(rank)))?;
         model.spend(rank)?;

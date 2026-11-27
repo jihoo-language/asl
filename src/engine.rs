@@ -97,6 +97,7 @@ use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
+use crate::sheaf_leray::Leray;
 use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
@@ -416,6 +417,7 @@ enum TypedForm {
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
+    SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
     SheafApply(Rc<sheaf_hyper::Map>, usize, Box<TypedExpr>),
     SheafEmbed(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
     SheafPart(Rc<sheaf_hyper::Complex>, usize, Box<TypedExpr>),
@@ -515,6 +517,20 @@ impl Engine {
                 })?;
                 let data = Sheaf::build(&mut self.model, ty, prime, presentation)?;
                 self.model.define_sheaf(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafLeray(name, map, source) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let site = self.sheaf_site(&map, "shleray")?;
+                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let (leray, components, complex) =
+                    Leray::build(&mut self.model, &name, source, site)?;
+                for entry in components {
+                    self.model
+                        .define_sheaf_shared(entry.name.to_string(), entry.sheaf);
+                }
+                self.model.define_sheaf_complex(name.text.clone(), complex);
+                self.model.define_leray_complex(name.text, leray);
                 return Ok(None);
             }
             StatementForm::SheafImage(operation, name, function, sheaf) => {
@@ -3715,6 +3731,12 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::SheafLerayIncl(leray, degree, input) => {
+                let Value::SheafC(raw) = self.eval(input)? else {
+                    unreachable!()
+                };
+                leray.include(&mut self.model, *degree, &raw)
+            }
             TypedForm::SheafApply(map, degree, input) => match self.eval(input)? {
                 Value::SheafC(raw) => map.apply_cochain(&mut self.model, &raw),
                 Value::OddClass(class) => map.apply_class(&mut self.model, *degree, &class),
@@ -4760,6 +4782,31 @@ impl Checker<'_> {
                     .model
                     .sheaf_complex_type(SheafForm::Class, &name, degree)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafLerayIncl(name, input) => {
+                let leray = self.model.leray_complex(&name)?;
+                let input = self.expr(*input)?;
+                let Kind::Sheaf(SheafForm::Cochain, source, degree) = self.model.kind(input.ty)
+                else {
+                    return Err(self.invalid_operand(&input, "shLerayIncl", "a ShC cochain"));
+                };
+                if *source != leray.source.name {
+                    return Err(Error::new(
+                        input.span,
+                        format!(
+                            "shLerayIncl[{}] requires source sheaf '{}', found '{}'",
+                            name.text, leray.source.name, source
+                        ),
+                    ));
+                }
+                let degree = *degree;
+                let ty = self
+                    .model
+                    .sheaf_complex_type(SheafForm::Cochain, &name, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::SheafLerayIncl(leray, degree, Box::new(input)),
+                ))
             }
             ExprForm::SheafApply(name, input) => {
                 let map = self.model.sheaf_map(&name)?;
