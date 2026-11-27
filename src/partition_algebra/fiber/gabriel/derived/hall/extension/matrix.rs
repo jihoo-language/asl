@@ -4,7 +4,7 @@ use crate::model::Model;
 use super::super::linear::Span;
 use super::super::{Field, Hall, Shape};
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub(super) struct Matrix {
     pub(super) rows: usize,
     pub(super) cols: usize,
@@ -62,6 +62,13 @@ impl Matrix {
             }
         }
         Ok(product)
+    }
+
+    pub(super) fn add_scaled(&mut self, field: &Field, rhs: &Self, scalar: u32) {
+        debug_assert_eq!((self.rows, self.cols), (rhs.rows, rhs.cols));
+        for (x, &y) in self.entries.iter_mut().zip(&rhs.entries) {
+            *x = field.add(*x, field.mul(y, scalar));
+        }
     }
 
     pub(super) fn is_zero(&self) -> bool {

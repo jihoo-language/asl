@@ -9,6 +9,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::linear::{Row, Span};
 use super::{require_hall_length, Data, Grade, Hall, Key, Mode, Record, Shape};
 
+pub(crate) mod formal;
 mod mass;
 mod matrix;
 use matrix::{Matrix, Representation};

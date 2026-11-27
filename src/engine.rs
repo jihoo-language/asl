@@ -1069,6 +1069,11 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionFormalStart(Rc<str>, Vec<TypedExpr>),
+    PartitionFormalTransform(
+        crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Operation,
+        Box<TypedExpr>,
+    ),
     PartitionExtensionMiddle(Box<TypedExpr>),
     PartitionExtensionNegate(Box<TypedExpr>),
     PartitionHallBasis(Box<TypedExpr>),
@@ -2521,6 +2526,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionFormalReport(report) => {
+                return self.partition_formal_report(report);
             }
             StatementForm::PartitionExtensionReport(report) => {
                 return self.partition_extension_report(report);
@@ -12033,6 +12041,49 @@ impl Engine {
         }
     }
 
+    fn partition_formal_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report,
+    ) -> Result<Option<String>> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report;
+        match report {
+            Report::Declare(name, space, options) => {
+                self.model.define_partition_formal(name, &space, options)?;
+                Ok(None)
+            }
+            Report::Frame(name) => Ok(Some(
+                self.model.partition_formal(&name.text)?.frame_report(),
+            )),
+            report @ (Report::Obstruction(_) | Report::Lookahead(_)) => {
+                let lookahead = matches!(report, Report::Lookahead(_));
+                let (Report::Obstruction(input) | Report::Lookahead(input)) = report else {
+                    unreachable!()
+                };
+                let input = self.checker().expr(*input)?;
+                let name = self.checker().partition_formal_operand(&input)?;
+                let jet = self.eval_partition_formal(&input)?;
+                let frame = self.model.partition_formal(&name)?;
+                if lookahead {
+                    frame.lookahead(&mut self.model, &jet)
+                } else {
+                    frame.obstruction_report(&mut self.model, &jet)
+                }
+                .map(Some)
+            }
+        }
+    }
+
+    fn eval_partition_formal(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Jet>>
+    {
+        let Value::RVPartitionFormal(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_extension_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report,
@@ -17067,6 +17118,36 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionFormalStart(name, inputs) => {
+                let values = inputs
+                    .iter()
+                    .map(|x| self.eval_partition_extension(x))
+                    .collect::<Result<Vec<_>>>()?;
+                let frame = self.model.partition_formal(name)?;
+                frame
+                    .start(&mut self.model, &values)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionFormalTransform(op, input) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Operation;
+                let jet = self.eval_partition_formal(input)?;
+                let frame = self.model.partition_formal(&jet.frame)?;
+                match op {
+                    Operation::Lift => frame.lift(&mut self.model, &jet)?.persist(&mut self.model),
+                    Operation::Correct(terms) => frame
+                        .correct(&mut self.model, &jet, terms.clone())?
+                        .persist(&mut self.model),
+                    Operation::Gauge(terms) => frame
+                        .gauge(&mut self.model, &jet, terms.clone())?
+                        .persist(&mut self.model),
+                    Operation::Slice => {
+                        frame.slice(&mut self.model, &jet)?.persist(&mut self.model)
+                    }
+                    Operation::First(axis) => frame
+                        .first(&mut self.model, &jet, *axis)?
+                        .persist(&mut self.model),
+                }
+            }
             TypedForm::PartitionExtensionMiddle(input) => {
                 let value = self.eval_partition_extension(input)?;
                 self.model
@@ -19774,6 +19855,7 @@ impl Checker<'_> {
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
+            TypeForm::RVPartitionFormal(name) => self.model.partition_formal_type(&name.text),
             TypeForm::RVPartitionExtension(name) => self.model.partition_extension_type(&name.text),
             TypeForm::RVPartitionHall(spec, mode) => {
                 let key = spec.resolve(self.model)?;
@@ -23137,6 +23219,7 @@ impl Checker<'_> {
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
             ExprForm::PartitionHall(expression) => self.partition_hall_expression(*expression),
+            ExprForm::PartitionFormal(expression) => self.partition_formal_expression(*expression),
             ExprForm::PartitionExtension(expression) => {
                 self.partition_extension_expression(*expression)
             }
@@ -31141,6 +31224,65 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_formal_expression(
+        &mut self,
+        expression:crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::{
+            Expression, Operation,
+        };
+        match expression {
+            Expression::Constant(name, full) => {
+                let frame = self.model.partition_formal(&name.text)?;
+                let ty = self.model.partition_formal_type(&name.text)?;
+                let jet = frame.constant(full).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(jet)))
+            }
+            Expression::Start(name, inputs) => {
+                let frame = self.model.partition_formal(&name.text)?;
+                if inputs.len() != frame.arity() {
+                    return Err(Error::plain(
+                        "partition formal start requires one direction per variable",
+                    ));
+                }
+                let inputs=inputs.into_iter().map(|input| {
+                    let typed=self.expr(input)?;
+                    if self.partition_extension_operand(&typed)?!=*frame.extension_name() {
+                        return Err(Error::new(typed.span,"partition formal direction has the wrong nominal self-extension space"));
+                    }
+                    Ok(typed)
+                }).collect::<Result<Vec<_>>>()?;
+                let ty = self.model.partition_formal_type(&name.text)?;
+                Ok((
+                    ty,
+                    TypedForm::PartitionFormalStart(name.text.as_str().into(), inputs),
+                ))
+            }
+            Expression::Transform(op, input) => {
+                let input = self.expr(*input)?;
+                let name = self.partition_formal_operand(&input)?;
+                let ty = if matches!(op, Operation::First(_)) {
+                    let frame = self.model.partition_formal(&name)?;
+                    self.model
+                        .partition_extension_type(frame.extension_name())?
+                } else {
+                    input.ty
+                };
+                Ok((ty, TypedForm::PartitionFormalTransform(op, Box::new(input))))
+            }
+        }
+    }
+
+    fn partition_formal_operand(&self, input: &TypedExpr) -> Result<Rc<str>> {
+        match self.model.kind(input.ty) {
+            Kind::RVPartitionFormal(name) => Ok(name.clone()),
+            _ => Err(Error::new(
+                input.span,
+                "partition formal operation requires an RVPartitionFormal jet",
+            )),
         }
     }
 

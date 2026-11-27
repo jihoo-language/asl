@@ -298,6 +298,7 @@ pub(crate) enum Kind {
         crate::partition_algebra::fiber::gabriel::derived::auslander::Grade,
         bool,
     ),
+    RVPartitionFormal(Rc<str>),
     RVPartitionExtension(Rc<str>),
     RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade),
     RVPartitionTau(
@@ -566,6 +567,9 @@ pub(crate) enum Value {
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
     RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
+    RVPartitionFormal(
+        Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Jet>,
+    ),
     RVPartitionExtension(
         Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Class>,
     ),
@@ -870,6 +874,10 @@ pub(crate) struct Model {
     karoubi_objects: HashMap<String, Rc<crate::partition_algebra::local::LocalAlgebra>>,
     deligne_square: Option<Rc<crate::partition_algebra::square::Square>>,
     deligne_towers: HashMap<usize, Rc<crate::partition_algebra::vacillating::Tower>>,
+    partition_formal_frames: HashMap<
+        String,
+        Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Frame>,
+    >,
     partition_extension_spaces: HashMap<
         String,
         Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Groupoid>,
@@ -1049,6 +1057,7 @@ impl Model {
             karoubi_objects: HashMap::new(),
             deligne_square: None,
             deligne_towers: HashMap::new(),
+            partition_formal_frames: HashMap::new(),
             partition_extension_spaces: HashMap::new(),
             partition_diagrams: HashMap::new(),
             partition_fibers: HashMap::new(),
@@ -1858,6 +1867,7 @@ impl Model {
             | Kind::RVPartitionExt(..)
             | Kind::RVPartitionHom(..)
             | Kind::RVPartitionHall(..)
+            | Kind::RVPartitionFormal(..)
             | Kind::RVKaroubiMap(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -2061,6 +2071,7 @@ impl Model {
                 | Kind::RVPartitionTau(..)
                 | Kind::RVPartitionHall(..)
                 | Kind::RVPartitionExtension(..)
+                | Kind::RVPartitionFormal(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -4116,6 +4127,43 @@ impl Model {
 
     pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn define_partition_formal(
+        &mut self,
+        name: Label,
+        space: &Label,
+        options: [u128; 2],
+    ) -> Result<()> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Frame;
+        if self.partition_formal_frames.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("partition formal frame '{}' is already defined", name.text),
+            ));
+        }
+        let space = self.partition_extension(&space.text)?;
+        let frame = Frame::new(self, name.text.as_str().into(), space, options)?;
+        self.allocate(4 + name.text.len())?;
+        self.partition_formal_frames
+            .insert(name.text, Rc::new(frame));
+        Ok(())
+    }
+
+    pub(crate) fn partition_formal(
+        &self,
+        name: &str,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Frame>>
+    {
+        self.partition_formal_frames
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown partition formal frame '{name}'")))
+    }
+
+    pub(crate) fn partition_formal_type(&mut self, name: &str) -> Result<TypeId> {
+        self.partition_formal(name)?;
+        self.inhabited_type(Kind::RVPartitionFormal(name.into()), 0)
     }
 
     pub(crate) fn define_partition_extension(
@@ -8070,6 +8118,7 @@ impl Model {
             | Kind::RVPartitionTau(..)
             | Kind::RVPartitionHall(..)
             | Kind::RVPartitionExtension(..)
+            | Kind::RVPartitionFormal(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -8897,6 +8946,7 @@ impl Model {
             Kind::RVPartitionTau(grade, _) => out.push(&grade.render()),
             Kind::RVPartitionHall(grade) => out.push(&grade.render()),
             Kind::RVPartitionExtension(name) => out.push(&format!("RVPartitionExtension({name})")),
+            Kind::RVPartitionFormal(name) => out.push(&format!("RVPartitionFormal({name})")),
             Kind::RVPartitionHom(grade, _) => out.push(&grade.render()),
             Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
@@ -9741,6 +9791,7 @@ impl Model {
             (Value::RVPartitionTau(a), Value::RVPartitionTau(b)) => Ok(a.cmp(b)),
             (Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => a.compare(self, b),
             (Value::RVPartitionExtension(a), Value::RVPartitionExtension(b)) => a.compare(self, b),
+            (Value::RVPartitionFormal(a), Value::RVPartitionFormal(b)) => a.compare(self, b),
             (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
@@ -10559,6 +10610,9 @@ impl Model {
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
+                }
+                Kind::RVPartitionFormal(..) => {
+                    return Err(Error::plain("cannot enumerate all partition formal jets"))
                 }
                 Kind::RVPartitionExtension(ref name) => {
                     self.partition_extension(name)?.values(self)?
@@ -12649,6 +12703,7 @@ impl Model {
             Value::RVPartitionTau(value) => out.push(&value.render()),
             Value::RVPartitionHall(value) => out.push(&value.render()),
             Value::RVPartitionExtension(value) => out.push(&value.render()),
+            Value::RVPartitionFormal(value) => out.push(&value.render()),
             Value::RVPartitionHom(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {

@@ -144,6 +144,7 @@ pub(crate) enum TypeForm {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionFormal(Label),
     RVPartitionExtension(Label),
     RVPartitionHall(
         crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec,
@@ -943,6 +944,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionFormal(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Expression>),
     PartitionExtension(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression>),
     PartitionHall(Box<crate::partition_algebra::fiber::gabriel::derived::hall::Expression>),
     PartitionTau(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Expression>),
@@ -1555,6 +1557,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionFormalReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report),
     PartitionExtensionReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report),
     PartitionHallReport(crate::partition_algebra::fiber::gabriel::derived::hall::Report),
     PartitionTauReport(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report),
@@ -10466,6 +10469,86 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_formal_terms(
+        &mut self,
+    ) -> Result<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Terms>
+    {
+        self.expect(Token::LBrace)?;
+        let mut terms = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LParen)?;
+            let powers = self.partition_labels(true)?;
+            self.expect(Token::Comma)?;
+            let values = self.partition_labels(true)?;
+            self.expect(Token::RParen)?;
+            terms.push((powers, values));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(terms)
+    }
+
+    fn partition_formal_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::{
+            Expression, Operation,
+        };
+        let (expression, depth) = match name {
+            "rvPartitionFormalConstant" | "rvPartitionFormalTrivial" => (
+                Expression::Constant(
+                    self.partition_extension_name()?,
+                    name == "rvPartitionFormalTrivial",
+                ),
+                0,
+            ),
+            "rvPartitionFormalStart" => {
+                let frame = self.partition_extension_name()?;
+                self.expect(Token::LParen)?;
+                let mut inputs = Vec::new();
+                let mut depth = 0;
+                while self.token() != Token::RParen {
+                    let input = self.expr(nest + 1)?;
+                    depth = depth.max(input.depth + 1);
+                    inputs.push(input);
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RParen)?;
+                (Expression::Start(frame, inputs), depth)
+            }
+            _ => {
+                let axis = if name == "rvPartitionFormalFirst" {
+                    self.expect(Token::LBracket)?;
+                    let axis = self.wide_unsigned("partition formal variable index")?;
+                    self.expect(Token::RBracket)?;
+                    Some(axis)
+                } else {
+                    None
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let op = match name {
+                    "rvPartitionFormalLift" => Operation::Lift,
+                    "rvPartitionFormalSlice" => Operation::Slice,
+                    "rvPartitionFormalCorrect" => {
+                        Operation::Correct(self.partition_formal_terms()?)
+                    }
+                    "rvPartitionFormalGauge" => Operation::Gauge(self.partition_formal_terms()?),
+                    _ => Operation::First(axis.unwrap()),
+                };
+                (Expression::Transform(op, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::PartitionFormal(Box::new(expression)), depth)
+    }
+
     fn partition_extension_name(&mut self) -> Result<Label> {
         self.expect(Token::LBracket)?;
         let name = self.label()?;
@@ -15266,6 +15349,31 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvpartitionformal"
+                | "rvPartitionFormalFrame"
+                | "rvPartitionFormalObstruction"
+                | "rvPartitionFormalLookahead"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report;
+                self.advance()?;
+                let report = match name {
+                    "rvpartitionformal" => {
+                        let frame = self.label()?;
+                        self.expect(Token::LBracket)?;
+                        let space = self.label()?;
+                        let options = self.partition_indices()?;
+                        self.expect(Token::RBracket)?;
+                        Report::Declare(frame, space, options)
+                    }
+                    "rvPartitionFormalFrame" => Report::Frame(self.partition_extension_name()?),
+                    "rvPartitionFormalObstruction" => {
+                        Report::Obstruction(Box::new(self.paren_expr(0)?))
+                    }
+                    _ => Report::Lookahead(Box::new(self.paren_expr(0)?)),
+                };
+                StatementForm::PartitionFormalReport(report)
+            }
+            Token::Word(
                 name @ ("rvpartitionextensions"
                 | "rvPartitionExtensionGroupoid"
                 | "rvPartitionExtensionDistribution"
@@ -18566,6 +18674,11 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionFormal" && self.eat(Token::LParen)? {
+            let frame = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionFormal(frame), 0);
         }
         if name.text == "RVPartitionExtension" && self.eat(Token::LParen)? {
             let space = self.label()?;
@@ -23787,6 +23900,19 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionFormalConstant"
+                        | "rvPartitionFormalTrivial"
+                        | "rvPartitionFormalStart"
+                        | "rvPartitionFormalLift"
+                        | "rvPartitionFormalCorrect"
+                        | "rvPartitionFormalGauge"
+                        | "rvPartitionFormalSlice"
+                        | "rvPartitionFormalFirst"
+                ) {
+                    return self.partition_formal_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
