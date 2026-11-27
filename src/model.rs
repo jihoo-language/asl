@@ -60,6 +60,7 @@ use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
 use crate::rv_negative;
 use crate::rv_poly::{self, Minors, Polynomial};
+use crate::rv_qgr;
 use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
@@ -168,6 +169,7 @@ pub(crate) enum Kind {
     RVSphHecke(usize),
     RVSatake(usize),
     RVHive(HiveBoundary),
+    RVQGr(rv_qgr::Grade),
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     JetHom(jet_hom::Grade),
@@ -296,6 +298,7 @@ pub(crate) enum Value {
     RVSphHecke(rv_sphhecke::Support),
     RVSatake(rv_satake::Support),
     RVHive(rv_hive::Interior),
+    RVQGr(rv_qgr::Support),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     JetHom(jet_hom::Support),
@@ -645,6 +648,7 @@ impl Model {
             | Kind::RVSatake(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..) => usize::MAX,
+            Kind::RVQGr(..) => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
                     usize::MAX
@@ -796,6 +800,7 @@ impl Model {
                 | Kind::RVSphHecke(..)
                 | Kind::RVSatake(..)
                 | Kind::RVHive(..)
+                | Kind::RVQGr(..)
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
                 | Kind::VKoszul(..)
@@ -1687,6 +1692,10 @@ impl Model {
         self.inhabited_type(Kind::RVFusion(grade), 0)
     }
 
+    pub(crate) fn quantum_grassmannian_type(&mut self, grade: rv_qgr::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVQGr(grade), 0)
+    }
+
     pub(crate) fn hive_type(&mut self, boundary: HiveBoundary) -> Result<TypeId> {
         let kind = Kind::RVHive(boundary);
         if let Some(&ty) = self.type_ids.get(&kind) {
@@ -2495,6 +2504,7 @@ impl Model {
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..)
             | Kind::RVHive(..)
+            | Kind::RVQGr(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::VKoszul(..)
@@ -2846,6 +2856,7 @@ impl Model {
                 out.push(&format!("RVFusion({}, {})", grade.rank, grade.level))
             }
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
+            Kind::RVQGr(grade) => out.push(&format!("RVQGr({}, {})", grade.rank, grade.ambient)),
             Kind::RVHive(HiveBoundary([lambda, mu, nu])) => {
                 out.push(&format!("RVHive({lambda:?}, {mu:?}, {nu:?})"))
             }
@@ -3014,6 +3025,9 @@ impl Model {
             }
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 Ok(rv_cyclotomic::compare(self, left, right)?.is_eq())
+            }
+            (Value::RVQGr(left), Value::RVQGr(right)) => {
+                Ok(rv_qgr::compare(self, left, right)?.is_eq())
             }
             (Value::RVSatake(left), Value::RVSatake(right)) => Ok(Rc::ptr_eq(left, right)
                 || rv_satake::compare(self, left, right)? == Ordering::Equal),
@@ -3217,6 +3231,7 @@ impl Model {
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
             }
+            (Value::RVQGr(left), Value::RVQGr(right)) => rv_qgr::compare(self, left, right),
             (Value::RVSatake(left), Value::RVSatake(right)) => {
                 if Rc::ptr_eq(left, right) {
                     return Ok(Ordering::Equal);
@@ -3403,6 +3418,9 @@ impl Model {
                 }
                 Kind::RVFusion(..) => {
                     return Err(Error::plain("cannot enumerate a Verlinde fusion ring"));
+                }
+                Kind::RVQGr(..) => {
+                    return Err(Error::plain("cannot enumerate a quantum Grassmannian ring"))
                 }
                 Kind::RVHive(ref boundary) => {
                     let boundary = boundary.clone();
@@ -4379,6 +4397,21 @@ impl Model {
                         out.push(", ")?;
                     }
                     out.push(&format!("{weight:?}: {coefficient}"))?;
+                }
+                out.push("}")
+            }
+            Value::RVQGr(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, (term, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1 + term.shape.len())?;
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!(
+                        "({}, {:?}): {coefficient}",
+                        term.quantum, term.shape
+                    ))?;
                 }
                 out.push("}")
             }

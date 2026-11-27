@@ -82,6 +82,7 @@ pub(crate) enum TypeForm {
     RVSphHecke(usize),
     RVSatake(usize),
     RVHive(HiveSpec),
+    RVQGr(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
     JetHom(JetHomSpec),
@@ -132,6 +133,25 @@ pub(crate) enum RvIdealOp {
 
 pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type HiveSpec = [Vec<i128>; 3];
+
+#[derive(Clone, Copy)]
+pub(crate) enum QuantumOp {
+    Scale(i128),
+    Shift(usize),
+    Transpose,
+    Classical,
+}
+
+impl QuantumOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Scale(_) => "rvQGrScale",
+            Self::Shift(_) => "rvQGrShift",
+            Self::Transpose => "rvQGrTranspose",
+            Self::Classical => "rvQGrClassical",
+        }
+    }
+}
 
 pub(crate) type RvHHSpec = (Label, i64, Vec<usize>);
 
@@ -563,6 +583,9 @@ pub(crate) enum ExprForm {
     SatakeCharacter(bool, Vec<i128>),
     SatakeScalar(usize, i128),
     Hive(HiveSpec, Option<Vec<i128>>),
+    QuantumBasis(usize, usize, Vec<usize>),
+    QuantumProduct(Box<[ParsedExpr; 2]>),
+    QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
     FusionOne(usize, usize),
     FusionHandle(usize, usize),
@@ -755,6 +778,8 @@ pub(crate) enum StatementForm {
     SatakeQuery(Option<i128>, Vec<i128>, ParsedExpr),
     HiveReport(HiveSpec, bool),
     HiveVertex(usize, usize, ParsedExpr),
+    QuantumCoefficient(usize, Vec<usize>, ParsedExpr),
+    GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     FusionCoefficient(Vec<i128>, ParsedExpr),
     CycloCoefficient(usize, ParsedExpr),
     ConformalDimension(usize, usize, usize, Vec<Vec<i128>>),
@@ -1649,6 +1674,30 @@ impl<'src> Parser<'src> {
                 let weight = self.signed_tuple("a signed fusion weight", "fusion weight")?;
                 self.expect(Token::RBracket)?;
                 StatementForm::FusionCoefficient(weight, self.paren_expr(0)?)
+            }
+            Token::Word("rvQGrCoeff") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (degree, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let shape = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::QuantumCoefficient(degree, shape, self.paren_expr(0)?)
+            }
+            Token::Word("rvQGrGW") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (rank, ambient) = self.quantum_grade()?;
+                self.expect(Token::Comma)?;
+                let (degree, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let a = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let b = self.exponents()?;
+                self.expect(Token::Comma)?;
+                let c = self.exponents()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::GromovWitten(rank, ambient, degree, [a, b, c])
             }
             Token::Word("rvHiveCount" | "rvHorn") => {
                 let horn = self.token() == Token::Word("rvHorn");
@@ -3205,6 +3254,11 @@ impl<'src> Parser<'src> {
             let (level, _) = self.number()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVFusion(rank, level), 0);
+        }
+        if name.text == "RVQGr" && self.eat(Token::LParen)? {
+            let (rank, ambient) = self.quantum_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVQGr(rank, ambient), 0);
         }
         if name.text == "RVHive" && self.eat(Token::LParen)? {
             let weights = self.hive_spec()?;
@@ -5261,6 +5315,61 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::FusionDual(Box::new(input)), depth);
                 }
+                if matches!(name.text.as_str(), "rvQGrBasis" | "rvQGrOne")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (rank, ambient) = self.quantum_grade()?;
+                    let shape = if name.text == "rvQGrBasis" {
+                        self.expect(Token::Comma)?;
+                        self.exponents()?
+                    } else {
+                        Vec::new()
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if name.text == "rvQGrMul" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::QuantumProduct(Box::new(arguments)), depth);
+                }
+                if matches!(name.text.as_str(), "rvQGrScale" | "rvQGrShift")
+                    && self.eat(Token::LBracket)?
+                {
+                    let operation =
+                        if name.text == "rvQGrScale" {
+                            QuantumOp::Scale(self.signed_wide(
+                                "a signed Schubert coefficient",
+                                "Schubert coefficient",
+                            )?)
+                        } else {
+                            QuantumOp::Shift(self.number()?.0)
+                        };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QuantumUnary(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvQGrTranspose" | "rvQGrClassical")
+                    && self.token() == Token::LParen
+                {
+                    let operation = if name.text == "rvQGrTranspose" {
+                        QuantumOp::Transpose
+                    } else {
+                        QuantumOp::Classical
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QuantumUnary(operation, Box::new(input)),
+                        depth,
+                    );
+                }
                 if name.text == "rvSphBasis" && self.eat(Token::LBracket)? {
                     let coweight = self.affine_window()?;
                     self.expect(Token::RBracket)?;
@@ -5652,6 +5761,13 @@ impl<'src> Parser<'src> {
 
     fn affine_window(&mut self) -> Result<Vec<i128>> {
         self.signed_tuple("a signed affine window entry", "affine window entry")
+    }
+
+    fn quantum_grade(&mut self) -> Result<(usize, usize)> {
+        let (rank, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (ambient, _) = self.number()?;
+        Ok((rank, ambient))
     }
 
     fn hive_spec(&mut self) -> Result<HiveSpec> {

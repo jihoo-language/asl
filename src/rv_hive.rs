@@ -405,3 +405,68 @@ pub(crate) fn horn(model: &mut Model, boundary: &Boundary) -> Result<Horn> {
     }
     Ok(Horn::Admissible)
 }
+
+// These bounds follow from LR containment of both input partitions and
+// dominance by their entrywise sum. The visitor receives descending weights;
+// the caller can apply a reduction before asking for the full hive count.
+pub(crate) fn tensor_candidates(
+    model: &mut Model,
+    left: &[i128],
+    right: &[i128],
+    mut visitor: impl FnMut(&mut Model, &[i128]) -> Result<()>,
+) -> Result<()> {
+    let rank = left.len();
+    let minimum: Vec<_> = left.iter().zip(right).map(|(&a, &b)| a.max(b)).collect();
+    let mut maximum_prefix = vec![0i128];
+    for (&a, &b) in left.iter().zip(right) {
+        maximum_prefix.push(add(add(*maximum_prefix.last().unwrap(), a)?, b)?);
+    }
+    let mut minimum_suffix = vec![0i128; rank + 1];
+    for i in (0..rank).rev() {
+        minimum_suffix[i] = add(minimum_suffix[i + 1], minimum[i])?;
+    }
+    let bounds = TensorBounds {
+        minimum,
+        maximum_prefix,
+        minimum_suffix,
+    };
+    let total = bounds.maximum_prefix[rank];
+    bounds.visit(model, &mut Vec::with_capacity(rank), total, &mut visitor)
+}
+
+struct TensorBounds {
+    minimum: Vec<i128>,
+    maximum_prefix: Vec<i128>,
+    minimum_suffix: Vec<i128>,
+}
+
+impl TensorBounds {
+    fn visit(
+        &self,
+        model: &mut Model,
+        partition: &mut Vec<i128>,
+        remaining: i128,
+        visitor: &mut impl FnMut(&mut Model, &[i128]) -> Result<()>,
+    ) -> Result<()> {
+        model.spend(1)?;
+        let index = partition.len();
+        let slots = (self.minimum.len() - index) as i128;
+        if slots == 0 {
+            return visitor(model, partition);
+        }
+        let total = *self.maximum_prefix.last().unwrap();
+        let lower = self.minimum[index].max(add(remaining, slots - 1)? / slots);
+        let upper = partition
+            .last()
+            .copied()
+            .unwrap_or(total)
+            .min(remaining - self.minimum_suffix[index + 1])
+            .min(self.maximum_prefix[index + 1] - (total - remaining));
+        for entry in lower..=upper {
+            partition.push(entry);
+            self.visit(model, partition, remaining - entry, visitor)?;
+            partition.pop();
+        }
+        Ok(())
+    }
+}

@@ -82,6 +82,7 @@ use crate::rv_laurent;
 use crate::rv_negative;
 use crate::rv_newton;
 use crate::rv_poly;
+use crate::rv_qgr;
 use crate::rv_rees;
 use crate::rv_satake;
 use crate::rv_scheme;
@@ -104,6 +105,7 @@ use crate::sheaf_page::{
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
+use crate::syntax::QuantumOp;
 use crate::syntax::RvHHSpec;
 use crate::syntax::RvNCSpec;
 use crate::syntax::{
@@ -326,6 +328,8 @@ enum TypedForm {
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
     SatakeTransform(Box<TypedExpr>),
+    QuantumProduct(rv_qgr::Grade, Box<[TypedExpr; 2]>),
+    QuantumUnary(QuantumOp, Box<TypedExpr>),
     SatakeInverse(Box<TypedExpr>),
     FusionProduct(rv_fusion::Grade, Box<[TypedExpr; 2]>),
     FusionScale(rv_fusion::Grade, i128, Box<TypedExpr>),
@@ -689,6 +693,26 @@ impl Engine {
                 };
                 let coefficient = rv_fusion::coefficient(&mut self.model, grade, &terms, weight)?;
                 format!("rvFusionCoeff = {coefficient}")
+            }
+            StatementForm::QuantumCoefficient(degree, shape, input) => {
+                let input = self.checker().expr(input)?;
+                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
+                    return Err(Error::new(
+                        input.span,
+                        "rvQGrCoeff requires a quantum Grassmannian element",
+                    ));
+                };
+                let Value::RVQGr(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient =
+                    rv_qgr::coefficient(&mut self.model, grade, &terms, degree, shape)?;
+                format!("rvQGrCoeff = {coefficient}")
+            }
+            StatementForm::GromovWitten(rank, ambient, degree, shapes) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let coefficient = rv_qgr::gw(&mut self.model, grade, degree, shapes)?;
+                format!("rvQGrGW = {coefficient}")
             }
             StatementForm::HiveReport(weights, horn) => {
                 let boundary = rv_hive::Boundary::checked(&mut self.model, weights)?;
@@ -2148,6 +2172,9 @@ impl Engine {
                         };
                         rv_fusion::add(&mut self.model, grade, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVQGr(a), Value::RVQGr(b)) => {
+                        rv_qgr::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVSatake(a), Value::RVSatake(b)) => {
                         rv_satake::add(&mut self.model, &a, &b)
                     }
@@ -2933,6 +2960,24 @@ impl Engine {
                     unreachable!()
                 };
                 rv_satake::inverse(&mut self.model, &terms)
+            }
+            TypedForm::QuantumProduct(grade, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVQGr(a), Value::RVQGr(b)] = values else {
+                    unreachable!()
+                };
+                rv_qgr::multiply(&mut self.model, *grade, &a, &b)
+            }
+            TypedForm::QuantumUnary(operation, input) => {
+                let Value::RVQGr(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match *operation {
+                    QuantumOp::Scale(factor) => rv_qgr::scale(&mut self.model, &terms, factor),
+                    QuantumOp::Shift(power) => rv_qgr::shift(&mut self.model, &terms, power),
+                    QuantumOp::Transpose => rv_qgr::transpose(&mut self.model, &terms),
+                    QuantumOp::Classical => rv_qgr::classical(&mut self.model, &terms),
+                }
             }
             TypedForm::SatakeTransform(input) => {
                 let Value::RVSphHecke(terms) = self.eval(input)? else {
@@ -4208,6 +4253,9 @@ impl Checker<'_> {
             TypeForm::RVFusion(rank, level) => self
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
+            TypeForm::RVQGr(rank, ambient) => self
+                .model
+                .quantum_grassmannian_type(rv_qgr::Grade::checked(rank, ambient)?),
             TypeForm::RVHive(weights) => {
                 let boundary = rv_hive::Boundary::checked(self.model, weights)?;
                 self.model.hive_type(boundary)
@@ -4477,6 +4525,7 @@ impl Checker<'_> {
                     Kind::RVIwHecke(..) => rv_iwhecke::zero(),
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVSatake(..) => rv_satake::zero(),
+                    Kind::RVQGr(..) => rv_qgr::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
@@ -5420,6 +5469,12 @@ impl Checker<'_> {
             }
             ExprForm::HeckeNegate(input) => {
                 let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::RVQGr(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
                     return Ok((input.ty, TypedForm::CycloScale(-1, Box::new(input))));
                 }
@@ -5530,6 +5585,45 @@ impl Checker<'_> {
                     return Err(self.invalid_operand(&input, "rvFusionDual", "a fusion element"));
                 };
                 Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
+            }
+            ExprForm::QuantumBasis(rank, ambient, shape) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let ty = self.model.quantum_grassmannian_type(grade)?;
+                let value = rv_qgr::basis(self.model, grade, shape)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QuantumProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let Kind::RVQGr(grade) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvQGrMul",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvQGrMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::QuantumProduct(grade, Box::new([left, right])),
+                ))
+            }
+            ExprForm::QuantumUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                let ty = if matches!(operation, QuantumOp::Transpose) {
+                    self.model.quantum_grassmannian_type(grade.complement())?
+                } else {
+                    input.ty
+                };
+                Ok((ty, TypedForm::QuantumUnary(operation, Box::new(input))))
             }
             ExprForm::Hive(weights, interior) => {
                 let boundary = rv_hive::Boundary::checked(self.model, weights)?;
@@ -8427,6 +8521,7 @@ impl Checker<'_> {
                         | Kind::RVIwHecke(..)
                         | Kind::RVSphHecke(..)
                         | Kind::RVSatake(..)
+                        | Kind::RVQGr(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::VKoszul(..)
