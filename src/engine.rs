@@ -32,6 +32,7 @@ use crate::may_lift;
 use crate::milnor;
 use crate::mixed_hom;
 use crate::mixed_minimal;
+use crate::mixed_tensor;
 use crate::model::{DiffFamily, Kind, Model, Poset, SuspensionPoint, TypeId, Value};
 use crate::motivic;
 use crate::nakamura;
@@ -455,6 +456,12 @@ enum TypedForm {
     SheafPageOperation(SheafPageOp, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     SheafPageLift(SheafPageLift, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
+    MixedTensorProduct(Rc<mixed_tensor::Tensor>, Box<TypedExpr>, Box<TypedExpr>),
+    MixedTensorSwap(
+        Rc<mixed_tensor::Tensor>,
+        Rc<mixed_tensor::Tensor>,
+        Box<TypedExpr>,
+    ),
     MixedComposition([Rc<mixed_hom::Hom>; 3], Box<TypedExpr>, Box<TypedExpr>),
     MixedMinMap(
         Rc<mixed_minimal::Minimal>,
@@ -530,6 +537,14 @@ impl Engine {
         let line = match statement {
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
+                return Ok(None);
+            }
+            StatementForm::MixedTensor(name, left, right) => {
+                self.model.check_new_mixed(&name)?;
+                let left = self.model.mixed_id(&left)?;
+                let right = self.model.mixed_id(&right)?;
+                let (tensor, complex) = mixed_tensor::Tensor::build(&mut self.model, left, right)?;
+                self.model.define_mixed_tensor(name.text, complex, tensor);
                 return Ok(None);
             }
             StatementForm::MixedHom(name, source, target) => {
@@ -4292,6 +4307,23 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::MixedTensorProduct(tensor, left, right) => {
+                let Value::OddClass(left) = self.eval(left)? else {
+                    unreachable!()
+                };
+                let Value::OddClass(right) = self.eval(right)? else {
+                    unreachable!()
+                };
+                let support = tensor.product(&mut self.model, &left, &right)?;
+                odd_ext::persist(&mut self.model, support)
+            }
+            TypedForm::MixedTensorSwap(source, target, input) => {
+                let Value::OddClass(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let support = source.transpose(&mut self.model, target, &terms)?;
+                odd_ext::persist(&mut self.model, support)
+            }
             TypedForm::MixedComposition(homs, outer, inner) => {
                 let Value::OddClass(outer) = self.eval(outer)? else {
                     unreachable!()
@@ -5479,6 +5511,68 @@ impl Checker<'_> {
                     .model
                     .mixed_chain_type(mixed::Grade { complex: id, b: 0 }, false)?;
                 let value = odd_ext::persist(self.model, entries)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::MixedTensorProduct(name, left, right) => {
+                let left = self.expr(*left)?;
+                let right = self.expr(*right)?;
+                let (a, total) = self.mixed_chain(&left, "mixTensor")?;
+                let (b, right_total) = self.mixed_chain(&right, "mixTensor")?;
+                if total != right_total {
+                    return Err(Error::plain("mixTensor requires chains of the same form"));
+                }
+                let target = self.model.mixed_id(&name)?;
+                let tensor = self.model.mixed_tensor(target)?;
+                if tensor.left != a.complex || tensor.right != b.complex {
+                    return Err(Error::plain(
+                        "mixTensor requires the declared factor complexes in order",
+                    ));
+                }
+                let grade = mixed::Grade {
+                    complex: target,
+                    b: a.b,
+                }
+                .shift(b.b.into())?;
+                let ty = self.model.mixed_chain_type(grade, total)?;
+                Ok((
+                    ty,
+                    TypedForm::MixedTensorProduct(tensor, Box::new(left), Box::new(right)),
+                ))
+            }
+            ExprForm::MixedTensorSwap(name, input) => {
+                let input = self.expr(*input)?;
+                let (grade, total) = self.mixed_chain(&input, "mixSwap")?;
+                let source = self.model.mixed_tensor(grade.complex)?;
+                let target_id = self.model.mixed_id(&name)?;
+                let target = self.model.mixed_tensor(target_id)?;
+                if source.left != target.right || source.right != target.left {
+                    return Err(Error::plain(
+                        "mixSwap requires the declared tensor with factors reversed",
+                    ));
+                }
+                let ty = self.model.mixed_chain_type(
+                    mixed::Grade {
+                        complex: target_id,
+                        ..grade
+                    },
+                    total,
+                )?;
+                Ok((
+                    ty,
+                    TypedForm::MixedTensorSwap(source, target, Box::new(input)),
+                ))
+            }
+            ExprForm::MixedTensorCertificate(name, i, j, kind) => {
+                let complex = self.model.mixed_id(&name)?;
+                let tensor = self.model.mixed_tensor(complex)?;
+                let left = self.model.mixed_bars(tensor.left)?;
+                let right = self.model.mixed_bars(tensor.right)?;
+                let (b, support) =
+                    tensor.certificate(self.model, kind, left.bar(i)?, right.bar(j)?)?;
+                let ty = self
+                    .model
+                    .mixed_chain_type(mixed::Grade { complex, b }, true)?;
+                let value = odd_ext::persist(self.model, support)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::MixedComposition(name, outer, inner) => {

@@ -582,6 +582,9 @@ pub(crate) enum ExprForm {
     MixedLiteral(Label, i64, crate::mixed::Terms),
     MixedUnit(Label, Label, Label),
     MixedIdentity(Label),
+    MixedTensorProduct(Label, Box<ParsedExpr>, Box<ParsedExpr>),
+    MixedTensorSwap(Label, Box<ParsedExpr>),
+    MixedTensorCertificate(Label, usize, usize, crate::mixed_tensor::Certificate),
     MixedComposition(Label, Box<ParsedExpr>, Box<ParsedExpr>),
     MixedEmbed(usize, Box<ParsedExpr>),
     RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
@@ -816,6 +819,7 @@ pub(crate) enum StatementForm {
     MixedBars(Label),
     MixedBarRank(Label, i64, Option<i64>),
     MixedPeriodicRank(Label, i64),
+    MixedTensor(Label, Label, Label),
     MixedHom(Label, Label, Label),
     MixedMinimal(Label, Label),
     MixedMinDimension(Label, i64),
@@ -1599,6 +1603,16 @@ impl<'src> Parser<'src> {
                 let weight = self.exponents()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::RvHHMixed(name, ideal, weight)
+            }
+            Token::Word("mixtensor") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let left = self.label()?;
+                self.expect(Token::Comma)?;
+                let right = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedTensor(name, left, right)
             }
             Token::Word("mixhom") => {
                 self.advance()?;
@@ -4255,19 +4269,57 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::MixedIdentity(complex), 0);
                 }
-                if name.text == "mixComp" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "mixComp" | "mixTensor")
+                    && self.eat(Token::LBracket)?
+                {
                     let complex = self.label()?;
                     self.expect(Token::RBracket)?;
                     self.expect(Token::LParen)?;
-                    let outer = self.expr(nest + 1)?;
+                    let left = self.expr(nest + 1)?;
                     self.expect(Token::Comma)?;
-                    let inner = self.expr(nest + 1)?;
+                    let right = self.expr(nest + 1)?;
                     self.expect(Token::RParen)?;
-                    let depth = 1 + outer.depth.max(inner.depth);
+                    let depth = 1 + left.depth.max(right.depth);
+                    let form = if name.text == "mixComp" {
+                        ExprForm::MixedComposition(complex, Box::new(left), Box::new(right))
+                    } else {
+                        ExprForm::MixedTensorProduct(complex, Box::new(left), Box::new(right))
+                    };
+                    return expr(span, form, depth);
+                }
+                if name.text == "mixSwap" && self.eat(Token::LBracket)? {
+                    let target = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
                     return expr(
                         span,
-                        ExprForm::MixedComposition(complex, Box::new(outer), Box::new(inner)),
+                        ExprForm::MixedTensorSwap(target, Box::new(input)),
                         depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "mixTensorCycle" | "mixTensorNull" | "mixTensorTor" | "mixTensorTorNull"
+                ) && self.eat(Token::LBracket)?
+                {
+                    use crate::mixed_tensor::Certificate;
+                    let kind = match name.text.as_str() {
+                        "mixTensorCycle" => Certificate::Product,
+                        "mixTensorNull" => Certificate::ProductNull,
+                        "mixTensorTor" => Certificate::Secondary,
+                        _ => Certificate::SecondaryNull,
+                    };
+                    let complex = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let i = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let j = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::MixedTensorCertificate(complex, i, j, kind),
+                        0,
                     );
                 }
                 if name.text == "mixchain" && self.eat(Token::LBracket)? {

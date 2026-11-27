@@ -27,6 +27,7 @@ use crate::milnor::MilnorBasis;
 use crate::mixed_bars;
 use crate::mixed_hom;
 use crate::mixed_minimal;
+use crate::mixed_tensor;
 use crate::motivic;
 use crate::odd_cobar::{self, Prime};
 use crate::odd_ext::{self, OddExt};
@@ -412,6 +413,7 @@ pub(crate) struct Model {
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
+    mixed_tensors: HashMap<mixed::Id, Rc<mixed_tensor::Tensor>>,
     mixed_homs: HashMap<mixed::Id, Rc<mixed_hom::Hom>>,
     mixed_minimals: Vec<(String, Rc<mixed_minimal::Minimal>)>,
     mixed_minimal_ids: HashMap<String, mixed_minimal::Id>,
@@ -461,6 +463,7 @@ impl Model {
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
+            mixed_tensors: HashMap::new(),
             mixed_homs: HashMap::new(),
             mixed_minimals: Vec::new(),
             mixed_minimal_ids: HashMap::new(),
@@ -966,6 +969,23 @@ impl Model {
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::plain("operation requires a mixed complex defined by mixhom"))
+    }
+
+    pub(crate) fn define_mixed_tensor(
+        &mut self,
+        name: String,
+        complex: mixed::Complex,
+        tensor: mixed_tensor::Tensor,
+    ) {
+        let id = self.define_mixed(name, complex);
+        self.mixed_tensors.insert(id, Rc::new(tensor));
+    }
+
+    pub(crate) fn mixed_tensor(&self, id: mixed::Id) -> Result<Rc<mixed_tensor::Tensor>> {
+        self.mixed_tensors
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Error::plain("operation requires a mixed complex defined by mixtensor"))
     }
 
     pub(crate) fn mixed_id(&self, name: &Label) -> Result<mixed::Id> {

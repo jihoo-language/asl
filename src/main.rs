@@ -43,6 +43,7 @@ mod mixed_bars;
 mod mixed_hom;
 mod mixed_minimal;
 mod mixed_page;
+mod mixed_tensor;
 mod model;
 mod motivic;
 mod nakamura;

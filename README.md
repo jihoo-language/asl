@@ -1383,6 +1383,20 @@ awk -v r=720 -v p=3 -v minimal=1 -f examples/mixed-page-staircase.awk | nix run 
 
 The program checks the corrected 720-term inclusion and prints `MixedMin(Minimal, 1439){g1}` for the sole positive higher operator on the leading class. The split control gives zero. With `-v direct=1 -v r=2048`, the program verifies the same identities for the $2048$th operator.
 
+#### Tensor products and Künneth certificates for mixed complexes
+
+`mixtensor T[C,D];` takes two finite mixed complexes over the same prime field. In the finite tensor complex, both operators use the signed rule
+$F(c\otimes e)=F_C(c)\otimes e+(-1)^{|c|}c\otimes F_D(e)$ for $F=b,B$.
+Apply `mixTensor[T](x,y)` to the two underlying chains or the two total chains. Powers of $u$ add in a total tensor product. `mixSwap[S]` sends a tensor to the declared complex with reversed factors using the sign $(-1)^{|c||d|}$.
+
+The chosen bar cycles give explicit Künneth classes over $\mathbb F_p[u]$. If their birth degrees are $a,b$, `mixTensorCycle[T,i,j]` gives their product $A\otimes B$ in degree $a+b$. Two free factors give a free class. A free factor with a length-$m$ torsion factor gives a class of order $u^m$. For two torsion factors of lengths $l,m$, let $r=\min(l,m)$. The product has order $u^r$. The secondary class also has order $u^r$ and is born in degree $a+b-2\max(l,m)+1$.
+
+`mixTensorNull[T,i,j]` gives a chain whose differential is the first killing power of the product. For two torsion factors, write $D X=u^l A$ and $D Y=u^m B$ for their chosen nulls. The operation `mixTensorTor[T,i,j]` constructs the secondary cycle
+$W=u^{l-r}A\otimes Y-(-1)^a u^{m-r}X\otimes B$.
+The witness `mixTensorTorNull[T,i,j]` is $X\otimes Y$, with differential $u^r W$. The secondary generator uses the chosen cycles and nulls. Changing those choices can change the representative within the Künneth extension.
+
+The length-two and length-three staircase tensor has two length-two bars born in degrees five and ten. The example checks the signed secondary cycle, both nulls, and the surviving first multiples on page three. The test suite also tensors two actual imported exterior Hochschild weight complexes. [Tensor and Künneth example](examples/mixed-tensor.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.
