@@ -24,7 +24,7 @@ fn arithmetic() -> Error {
     Error::plain("rational cyclotomic arithmetic is out of range")
 }
 
-fn gcd(mut a: u128, mut b: u128) -> u128 {
+pub(crate) fn gcd(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -59,26 +59,62 @@ fn multiply_signed(x: i128, factor: u128) -> Result<i128> {
     }
 }
 
-fn persist(model: &mut Model, mut numerator: Vec<i128>, denominator: u128) -> Result<Value> {
+impl Rational {
+    pub(crate) fn zero() -> Self {
+        Self {
+            numerator: [].into(),
+            denominator: 1,
+        }
+    }
+
+    pub(crate) fn integer(value: i128) -> Self {
+        if value == 0 {
+            Self::zero()
+        } else {
+            Self {
+                numerator: [value].into(),
+                denominator: 1,
+            }
+        }
+    }
+
+    pub(crate) fn is_zero(&self) -> bool {
+        self.numerator.is_empty()
+    }
+}
+
+pub(crate) fn rational_value(model: &mut Model, ratio: Rational) -> Result<Value> {
+    if !ratio.is_zero() {
+        model.allocate(3 + 2 * ratio.numerator.len())?;
+    }
+    Ok(Value::RVCycloQ(ratio))
+}
+
+fn normalized(mut numerator: Vec<i128>, denominator: u128) -> Rational {
     rv_cyclotomic::trim(&mut numerator);
     if numerator.is_empty() {
-        return Ok(zero());
+        Rational::zero()
+    } else {
+        Rational {
+            numerator: numerator.into(),
+            denominator,
+        }
     }
-    model.allocate(3 + 2 * numerator.len())?;
-    Ok(Value::RVCycloQ(Rational {
-        numerator: numerator.into(),
-        denominator,
-    }))
+}
+
+fn persist(model: &mut Model, numerator: Vec<i128>, denominator: u128) -> Result<Value> {
+    rational_value(model, normalized(numerator, denominator))
 }
 
 pub(crate) fn zero() -> Value {
-    Value::RVCycloQ(Rational {
-        numerator: [].into(),
-        denominator: 1,
-    })
+    Value::RVCycloQ(Rational::zero())
 }
 
-pub(crate) fn ratio(model: &mut Model, numerator: &Polynomial, denominator: u128) -> Result<Value> {
+pub(crate) fn fraction(
+    model: &mut Model,
+    numerator: &[i128],
+    denominator: u128,
+) -> Result<Rational> {
     if denominator == 0 {
         return Err(Error::plain(
             "cyclotomic rational denominator must be positive",
@@ -90,7 +126,12 @@ pub(crate) fn ratio(model: &mut Model, numerator: &Polynomial, denominator: u128
         .iter()
         .map(|&x| divide_signed(x, factor))
         .collect();
-    persist(model, numerator, denominator / factor)
+    Ok(normalized(numerator, denominator / factor))
+}
+
+pub(crate) fn ratio(model: &mut Model, numerator: &Polynomial, denominator: u128) -> Result<Value> {
+    let ratio = fraction(model, numerator, denominator)?;
+    rational_value(model, ratio)
 }
 
 pub(crate) fn compare(model: &mut Model, a: &Rational, b: &Rational) -> Result<Ordering> {
@@ -100,17 +141,17 @@ pub(crate) fn compare(model: &mut Model, a: &Rational, b: &Rational) -> Result<O
     Ok(a.cmp(b))
 }
 
-pub(crate) fn negate(model: &mut Model, ratio: &Rational) -> Result<Value> {
+pub(crate) fn negative(model: &mut Model, ratio: &Rational) -> Result<Rational> {
     model.spend(ratio.numerator.len())?;
     let numerator = ratio
         .numerator
         .iter()
         .map(|x| x.checked_neg().ok_or_else(arithmetic))
         .collect::<Result<Vec<_>>>()?;
-    persist(model, numerator, ratio.denominator)
+    Ok(normalized(numerator, ratio.denominator))
 }
 
-pub(crate) fn add(model: &mut Model, a: &Rational, b: &Rational) -> Result<Value> {
+pub(crate) fn sum(model: &mut Model, a: &Rational, b: &Rational) -> Result<Rational> {
     let length = a.numerator.len().max(b.numerator.len());
     model.spend(length)?;
     let common = gcd(a.denominator, b.denominator);
@@ -131,7 +172,73 @@ pub(crate) fn add(model: &mut Model, a: &Rational, b: &Rational) -> Result<Value
     for entry in &mut numerator {
         *entry = divide_signed(*entry, factor);
     }
-    persist(model, numerator, denominator)
+    Ok(normalized(numerator, denominator))
+}
+
+pub(crate) fn negate(model: &mut Model, a: &Rational) -> Result<Value> {
+    let value = negative(model, a)?;
+    rational_value(model, value)
+}
+
+pub(crate) fn add(model: &mut Model, a: &Rational, b: &Rational) -> Result<Value> {
+    let value = sum(model, a, b)?;
+    rational_value(model, value)
+}
+
+pub(crate) fn multiply(
+    model: &mut Model,
+    order: usize,
+    a: &Rational,
+    b: &Rational,
+) -> Result<Rational> {
+    if a.is_zero() || b.is_zero() {
+        return Ok(Rational::zero());
+    }
+    model.spend(a.numerator.len() + b.numerator.len())?;
+    let left_cross = gcd(content(&a.numerator), b.denominator);
+    let right_cross = gcd(content(&b.numerator), a.denominator);
+    let left: Vec<_> = a
+        .numerator
+        .iter()
+        .map(|&x| divide_signed(x, left_cross))
+        .collect();
+    let right: Vec<_> = b
+        .numerator
+        .iter()
+        .map(|&x| divide_signed(x, right_cross))
+        .collect();
+    let mut numerator = rv_cyclotomic::product_coefficients(model, order, &left, &right)?;
+    let da = a.denominator / right_cross;
+    let db = b.denominator / left_cross;
+    let c = content(&numerator);
+    let ga = gcd(c, da);
+    let gb = gcd(c / ga, db);
+    let denominator = (da / ga).checked_mul(db / gb).ok_or_else(arithmetic)?;
+    for x in &mut numerator {
+        *x = divide_signed(divide_signed(*x, ga), gb);
+    }
+    Ok(normalized(numerator, denominator))
+}
+
+pub(crate) fn shifted(
+    model: &mut Model,
+    order: usize,
+    a: &Rational,
+    power: i128,
+) -> Result<Rational> {
+    let numerator = rv_cyclotomic::shifted(model, order, &a.numerator, power)?;
+    Ok(normalized(numerator, a.denominator))
+}
+
+pub(crate) fn galois(model: &mut Model, order: usize, a: &Rational, power: i128) -> Result<Value> {
+    let power = power.rem_euclid(order as i128) as usize;
+    if gcd(power as u128, order as u128) != 1 {
+        return Err(Error::plain(
+            "cyclotomic Galois power must be coprime to the root order",
+        ));
+    }
+    let numerator = rv_cyclotomic::substitute_root(model, order, &a.numerator, power)?;
+    persist(model, numerator, a.denominator)
 }
 
 #[derive(Default)]

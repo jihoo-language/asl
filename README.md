@@ -1070,6 +1070,16 @@ The interpreter builds the matrix for multiplication by $H$ on the weights reach
 
 `rvConformalMod[n,k,g,m,labels];` calculates $D_g$ modulo any positive modulus fitting an unsigned 128-bit integer. It reduces puncture products and exponentiates the handle matrix in the residue ring. `rvConformalExact[n,k,g,labels];` uses nonnegative decimal arithmetic for the handle iterates to give dimensions beyond signed 128 bits within the work and output limits. The example includes residues at genus $10^{18}$ and the exact $\mathrm{SU}(3)_2$ vacuum dimension at genus $100$. [Conformal series example](examples/rv-conformal-series.asl)
 
+### Temperley–Lieb braid paths and the Jones polynomial
+
+`RVTL(k,n,h)` is the path sector for $n$ fundamental strands of $\mathrm{SU}(2)_k$ ending at height $h$. The level $k$ is positive. A basis vector `rvTLPath[k,[a0,...,an]]` has $a_0=0$, $a_n=h$, unit steps, and $0\le a_i\le k$. The coefficients are cyclotomic rationals with root $A$ of order $4(k+2)$. Use `zero`, `add`, `neg`, `rvTLScale(c,v)`, and `rvTLCoord[[a0,...,an]](v)` to work with path vectors. An impossible endpoint gives a zero sector.
+
+Write $q=A^2$, $d_h=(-1)^h[h+1]_q$, and $\delta=d_1$. The operator `rvTLE[i](v)` gives zero on a path unless $a_{i-1}=a_{i+1}=a$. When they agree, it sums over all allowed new middle heights $b$ with coefficient $d_b/d_a$. The interpreter uses exact cyclotomic arithmetic for these ratios. The operation `rvTLBraid[[i1,...,im]](v)` uses the generators $B_i=A I + A^{-1}e_i$ and $B_i^{-1}=A^{-1}I+A e_i$. Indices satisfy $1\le |i|<n$, and the word is in matrix multiplication order, acting from right to left. `rvTLTrace[k,n,h,[i1,...,im]]` gives the trace on the indicated sector.
+
+`rvTLJones[k,n,[i1,...,im]]` computes the Jones polynomial of the braid closure evaluated at $t=A^{-4}$. It weights each sector trace by $d_h$, divides their sum by $\delta$, and multiplies by $(-A^3)^{-w}$ for writhe $w$. This gives $1$ for the unknot and $\delta^{-1}$ for the zero-strand empty closure, following this normalization. The trefoil gives $t+t^3-t^4$ and the figure-eight gives $t^2-t+1-t^{-1}+t^{-2}$.
+
+Use `rvCycloQMul(a,b)` for products and `rvCycloQGalois[a](c)` to substitute $A\mapsto A^a$ for $a$ coprime to the root order. At level three on three strands ending at height one, $B_1B_2^{-1}$ has determinant $1$ and trace $(3-\sqrt5)/2$. The substitution $A\mapsto A^3$ sends the trace to $(3+\sqrt5)/2>2$, so its conjugate has an eigenvalue off the unit circle. A finite-order matrix stays finite-order under a field automorphism, proving this braid matrix has infinite order. [Braid paths and Jones example](examples/rv-tl-jones.asl)
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

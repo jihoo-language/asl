@@ -109,6 +109,7 @@ use crate::rv_sphhecke;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
+use crate::rv_tl;
 use crate::rv_tree;
 use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
@@ -132,7 +133,6 @@ use crate::syntax::MixedSpec;
 use crate::syntax::QuantumOp;
 use crate::syntax::RvHHSpec;
 use crate::syntax::RvNCSpec;
-use crate::syntax::WzwOp;
 use crate::syntax::{
     BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
     JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
@@ -140,6 +140,7 @@ use crate::syntax::{
     TypeForm, VBockSpec, Witness,
 };
 use crate::syntax::{RvBarPageSpec, RvBarSpec, RvDegree, RvGradeSpec};
+use crate::syntax::{TlOp, WzwOp};
 use crate::transfer;
 use crate::v_bars;
 use crate::v_koszul;
@@ -392,6 +393,11 @@ enum TypedForm {
     WzwCoordinate(rv_wzw::Grade, Vec<i128>, Box<TypedExpr>),
     CycloRatio(u128, Box<TypedExpr>),
     CycloRatioNegate(Box<TypedExpr>),
+    CycloRatioProduct(usize, Box<[TypedExpr; 2]>),
+    CycloRatioGalois(usize, i128, Box<TypedExpr>),
+    TlOperation(rv_tl::Grade, TlOp, Box<TypedExpr>),
+    TlCoordinate(rv_tl::Grade, Vec<usize>, Box<TypedExpr>),
+    TlScale(rv_tl::Grade, Box<[TypedExpr; 2]>),
     Verlinde(usize, Vec<i128>, Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
@@ -2770,6 +2776,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVWzw(a), Value::RVWzw(b)) => {
                         rv_wzw::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
+                        rv_tl::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
                         rv_lens::add(&mut self.model, &a, &b)
                     }
@@ -3671,6 +3680,43 @@ impl Engine {
                     unreachable!()
                 };
                 rv_wzw::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::TlOperation(grade, operation, input) => {
+                let Value::RvTl(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match operation {
+                    TlOp::Generator(index) => rv_tl::tl(&mut self.model, *grade, &state, *index),
+                    TlOp::Braid(word) => rv_tl::braid(&mut self.model, *grade, &state, word),
+                    TlOp::Negate => rv_tl::negate(&mut self.model, &state),
+                }
+            }
+            TypedForm::TlCoordinate(grade, path, input) => {
+                let Value::RvTl(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_tl::coordinate(&mut self.model, *grade, &state, path)
+            }
+            TypedForm::TlScale(grade, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVCycloQ(scalar), Value::RvTl(state)] = values else {
+                    unreachable!()
+                };
+                rv_tl::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::CycloRatioProduct(order, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVCycloQ(a), Value::RVCycloQ(b)] = values else {
+                    unreachable!()
+                };
+                let value = rv_lens::multiply(&mut self.model, *order, &a, &b)?;
+                rv_lens::rational_value(&mut self.model, value)
+            }
+            TypedForm::CycloRatioGalois(order, power, input) => {
+                let Value::RVCycloQ(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_lens::galois(&mut self.model, *order, &value, *power)
             }
             TypedForm::CycloRatio(denominator, input) => {
                 let Value::RVCyclo(numerator) = self.eval(input)? else {
@@ -5217,6 +5263,14 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::LensTv(..)
             | ExprForm::WzwTv(..)
             | ExprForm::CycloRatio(..)
+            | ExprForm::CycloRatioProduct(..)
+            | ExprForm::CycloRatioGalois(..)
+            | ExprForm::TlPath(..)
+            | ExprForm::TlOperation(..)
+            | ExprForm::TlCoordinate(..)
+            | ExprForm::TlScale(..)
+            | ExprForm::TlTrace(..)
+            | ExprForm::TlJones(..)
             | ExprForm::WzwCoordinate(..)
             | ExprForm::CycloEmbed(..)
             | ExprForm::CycloRoot(..)
@@ -5403,6 +5457,9 @@ impl Checker<'_> {
             TypeForm::RVWzw(rank, level) => {
                 self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
             }
+            TypeForm::RvTl(level, strands, height) => self
+                .model
+                .tl_type(rv_tl::Grade::checked(level, strands, height)?),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
@@ -5784,6 +5841,7 @@ impl Checker<'_> {
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
                     Kind::RVCycloQ(..) => rv_lens::zero(),
+                    Kind::RvTl(..) => rv_tl::zero(),
                     Kind::RVWzw(..) => rv_wzw::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
@@ -8243,6 +8301,12 @@ impl Checker<'_> {
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
                     ));
                 }
+                if let Kind::RvTl(grade) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::TlOperation(grade, TlOp::Negate, Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVCycloQ(..)) {
                     return Ok((input.ty, TypedForm::CycloRatioNegate(Box::new(input))));
                 }
@@ -8319,6 +8383,72 @@ impl Checker<'_> {
                 let ty = self.model.cyclotomic_rational_type(grade.order)?;
                 let value = rv_lens::word(self.model, grade, &word)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlPath(level, path) => {
+                let Some(&height) = path.last() else {
+                    return Err(Error::plain("Temperley–Lieb path must start at zero"));
+                };
+                let grade = rv_tl::Grade::checked(level, path.len() - 1, height)?;
+                let ty = self.model.tl_type(grade)?;
+                let value = rv_tl::basis(self.model, grade, path)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlTrace(level, strands, height, word) => {
+                let grade = rv_tl::Grade::checked(level, strands, height)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_tl::trace(self.model, grade, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlJones(level, strands, word) => {
+                let grade = rv_tl::Grade::checked(level, strands, 0)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_tl::jones(self.model, grade, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::TlOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.tl_grade(&input, "Temperley–Lieb action")?;
+                Ok((
+                    input.ty,
+                    TypedForm::TlOperation(grade, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::TlCoordinate(path, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.tl_grade(&input, "rvTLCoord")?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                Ok((ty, TypedForm::TlCoordinate(grade, path, Box::new(input))))
+            }
+            ExprForm::TlScale(arguments) => {
+                let [scalar, input] = *arguments;
+                let input = self.expr(input)?;
+                let grade = self.tl_grade(&input, "rvTLScale")?;
+                let scalar = self.expr(scalar)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                self.require_type(ty, &scalar, "rvTLScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::TlScale(grade, Box::new([scalar, input])),
+                ))
+            }
+            ExprForm::CycloRatioProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let order = self.cyclotomic_ratio_order(&left, "rvCycloQMul")?;
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvCycloQMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::CycloRatioProduct(order, Box::new([left, right])),
+                ))
+            }
+            ExprForm::CycloRatioGalois(power, input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_ratio_order(&input, "rvCycloQGalois")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CycloRatioGalois(order, power, Box::new(input)),
+                ))
             }
             ExprForm::CycloRatio(denominator, input) => {
                 let input = self.expr(*input)?;
@@ -10798,6 +10928,20 @@ impl Checker<'_> {
         }
     }
 
+    fn tl_grade(&self, input: &TypedExpr, operation: &str) -> Result<rv_tl::Grade> {
+        match *self.model.kind(input.ty) {
+            Kind::RvTl(grade) => Ok(grade),
+            _ => Err(self.invalid_operand(input, operation, "a Temperley–Lieb path vector")),
+        }
+    }
+
+    fn cyclotomic_ratio_order(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
+        match *self.model.kind(input.ty) {
+            Kind::RVCycloQ(order) => Ok(order),
+            _ => Err(self.invalid_operand(input, operation, "a cyclotomic rational")),
+        }
+    }
+
     fn cyclotomic_order(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
         match *self.model.kind(input.ty) {
             Kind::RVCyclo(order) => Ok(order),
@@ -10908,6 +11052,7 @@ impl Checker<'_> {
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
                         | Kind::RVCycloQ(..)
+                        | Kind::RvTl(..)
                         | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)

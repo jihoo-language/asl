@@ -76,6 +76,7 @@ use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
 use crate::rv_satake;
 use crate::rv_sphhecke;
+use crate::rv_tl;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
@@ -205,6 +206,7 @@ pub(crate) enum Kind {
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     RVCycloQ(usize),
+    RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
@@ -343,6 +345,7 @@ pub(crate) enum Value {
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     RVCycloQ(rv_lens::Rational),
+    RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
@@ -726,6 +729,7 @@ impl Model {
             {
                 1
             }
+            Kind::RvTl(grade) if !grade.possible() => 1,
             Kind::QKoszul(..)
             | Kind::QExt(..)
             | Kind::JetHom(..)
@@ -738,7 +742,8 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
-            | Kind::RVWzw(..) => usize::MAX,
+            | Kind::RVWzw(..)
+            | Kind::RvTl(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
@@ -920,6 +925,7 @@ impl Model {
                 | Kind::RVCyclo(..)
                 | Kind::RVCycloQ(..)
                 | Kind::RVWzw(..)
+                | Kind::RvTl(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -2142,6 +2148,10 @@ impl Model {
         self.inhabited_type(Kind::RVWzw(grade), 0)
     }
 
+    pub(crate) fn tl_type(&mut self, grade: rv_tl::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RvTl(grade), 0)
+    }
+
     pub(crate) fn cyclotomic_rational_type(&mut self, order: usize) -> Result<TypeId> {
         rv_cyclotomic::check_order(order)?;
         self.inhabited_type(Kind::RVCycloQ(order), 0)
@@ -3145,6 +3155,7 @@ impl Model {
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
             | Kind::RVWzw(..)
+            | Kind::RvTl(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -3540,6 +3551,10 @@ impl Model {
                 "RVWzw({}, {})",
                 grade.fusion.rank, grade.fusion.level
             )),
+            Kind::RvTl(grade) => out.push(&format!(
+                "RVTL({}, {}, {})",
+                grade.level, grade.strands, grade.height
+            )),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVOre => out.push("RVOre"),
@@ -3734,6 +3749,9 @@ impl Model {
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => {
                 Ok(rv_wzw::compare(self, left, right)?.is_eq())
+            }
+            (Value::RvTl(left), Value::RvTl(right)) => {
+                Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => {
                 Ok(rv_lens::compare(self, left, right)?.is_eq())
@@ -3970,6 +3988,7 @@ impl Model {
                 rv_fusion::compare(self, left, right)
             }
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
+            (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
@@ -4174,6 +4193,14 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a cyclotomic torus state module",
                     ))
+                }
+                Kind::RvTl(grade) => {
+                    if grade.possible() {
+                        return Err(Error::plain(
+                            "cannot enumerate a cyclotomic Temperley–Lieb path sector",
+                        ));
+                    }
+                    vec![rv_tl::zero()]
                 }
                 Kind::RVCycloQ(..) => {
                     return Err(Error::plain("cannot enumerate a rational cyclotomic field"))
@@ -5344,6 +5371,21 @@ impl Model {
                         out.push(", ")?;
                     }
                     out.push(&format!("{weight:?}: {coefficient:?}"))?;
+                }
+                out.push("}")
+            }
+            Value::RvTl(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, (path, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1 + path.len() + coefficient.numerator.len())?;
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!(
+                        "{path:?}: {:?} / {}",
+                        coefficient.numerator, coefficient.denominator
+                    ))?;
                 }
                 out.push("}")
             }

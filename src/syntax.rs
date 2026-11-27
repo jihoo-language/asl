@@ -108,6 +108,7 @@ pub(crate) enum TypeForm {
     RVFusion(usize, usize),
     RVCyclo(usize),
     RVCycloQ(usize),
+    RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
@@ -162,6 +163,13 @@ pub(crate) enum RvIdealOp {
 
 pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type HiveSpec = [Vec<i128>; 3];
+
+#[derive(Clone)]
+pub(crate) enum TlOp {
+    Generator(usize),
+    Braid(Vec<i128>),
+    Negate,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum WzwOp {
@@ -701,6 +709,14 @@ pub(crate) enum ExprForm {
     LensTv(usize, usize, usize, i128),
     WzwTv(usize, usize, Vec<crate::rv_lens::Step>),
     CycloRatio(u128, Box<ParsedExpr>),
+    CycloRatioProduct(Box<[ParsedExpr; 2]>),
+    CycloRatioGalois(i128, Box<ParsedExpr>),
+    TlPath(usize, Vec<usize>),
+    TlOperation(TlOp, Box<ParsedExpr>),
+    TlCoordinate(Vec<usize>, Box<ParsedExpr>),
+    TlScale(Box<[ParsedExpr; 2]>),
+    TlTrace(usize, usize, usize, Vec<i128>),
+    TlJones(usize, usize, Vec<i128>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -4136,6 +4152,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVWzw(rank, level), 0);
         }
+        if name.text == "RVTL" && self.eat(Token::LParen)? {
+            let (level, strands, height) = self.tl_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RvTl(level, strands, height), 0);
+        }
         if name.text == "RVCycloQ" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
             self.expect(Token::RParen)?;
@@ -6848,6 +6869,89 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::WzwTv(rank, level, steps), 0);
                 }
+                if name.text == "rvTLPath" && self.eat(Token::LBracket)? {
+                    let (level, _) = self.number()?;
+                    self.expect(Token::Comma)?;
+                    let path = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::TlPath(level, path), 0);
+                }
+                if matches!(name.text.as_str(), "rvTLTrace" | "rvTLJones")
+                    && self.eat(Token::LBracket)?
+                {
+                    let form = if name.text == "rvTLTrace" {
+                        let (level, strands, height) = self.tl_grade()?;
+                        self.expect(Token::Comma)?;
+                        let word =
+                            self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                        ExprForm::TlTrace(level, strands, height, word)
+                    } else {
+                        let (level, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        let (strands, _) = self.number()?;
+                        self.expect(Token::Comma)?;
+                        let word =
+                            self.signed_tuple("a signed Artin generator", "Artin generator")?;
+                        ExprForm::TlJones(level, strands, word)
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, form, 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvTLE" | "rvTLBraid" | "rvTLCoord" | "rvCycloQGalois"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let operation = match name.text.as_str() {
+                        "rvTLE" => TlOp::Generator(self.number()?.0),
+                        "rvTLBraid" => TlOp::Braid(
+                            self.signed_tuple("a signed Artin generator", "Artin generator")?,
+                        ),
+                        "rvTLCoord" => {
+                            let path = self.exponents()?;
+                            self.expect(Token::RBracket)?;
+                            let input = self.paren_expr(nest)?;
+                            let depth = input.depth + 1;
+                            return expr(
+                                span,
+                                ExprForm::TlCoordinate(path, Box::new(input)),
+                                depth,
+                            );
+                        }
+                        _ => {
+                            let power =
+                                self.signed_wide("a signed Galois power", "Galois power")?;
+                            self.expect(Token::RBracket)?;
+                            let input = self.paren_expr(nest)?;
+                            let depth = input.depth + 1;
+                            return expr(
+                                span,
+                                ExprForm::CycloRatioGalois(power, Box::new(input)),
+                                depth,
+                            );
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::TlOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvTLScale" | "rvCycloQMul")
+                    && self.token() == Token::LParen
+                {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    let form = if name.text == "rvTLScale" {
+                        ExprForm::TlScale(Box::new(arguments))
+                    } else {
+                        ExprForm::CycloRatioProduct(Box::new(arguments))
+                    };
+                    return expr(span, form, depth);
+                }
                 if name.text == "rvCycloRat" && self.eat(Token::LBracket)? {
                     let Token::Number(decimal) = self.token() else {
                         return Err(self.expected("a positive cyclotomic rational denominator"));
@@ -7493,6 +7597,15 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (ambient, _) = self.number()?;
         Ok((rank, ambient))
+    }
+
+    fn tl_grade(&mut self) -> Result<(usize, usize, usize)> {
+        let (level, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (strands, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (height, _) = self.number()?;
+        Ok((level, strands, height))
     }
 
     fn fusion_grade(&mut self) -> Result<(usize, usize)> {
