@@ -194,6 +194,8 @@ pub(crate) enum WzwOp {
     S(bool),
     T(i128),
     Charge,
+    Galois(i128),
+    CoeffGalois(i128),
     Negate,
 }
 
@@ -204,6 +206,8 @@ impl WzwOp {
             Self::S(true) => "rvWzwSAdjoint",
             Self::T(_) => "rvWzwT",
             Self::Charge => "rvWzwCharge",
+            Self::Galois(_) => "rvWzwGalois",
+            Self::CoeffGalois(_) => "rvWzwCoeffGalois",
             Self::Negate => "neg",
         }
     }
@@ -752,6 +756,7 @@ pub(crate) enum ExprForm {
     CycloProduct(Box<[ParsedExpr; 2]>),
     CycloScale(i128, Box<ParsedExpr>),
     CycloConjugate(Box<ParsedExpr>),
+    CycloGalois(i128, Box<ParsedExpr>),
     CycloEmbed(usize, Box<ParsedExpr>),
     WzwBasis(usize, usize, Vec<i128>),
     WzwSEntry(usize, usize, Vec<i128>, Vec<i128>),
@@ -7815,6 +7820,15 @@ impl<'src> Parser<'src> {
                     "rvWzwS" if self.token() == Token::LParen => Some(WzwOp::S(false)),
                     "rvWzwSAdjoint" if self.token() == Token::LParen => Some(WzwOp::S(true)),
                     "rvWzwCharge" if self.token() == Token::LParen => Some(WzwOp::Charge),
+                    "rvWzwGalois" | "rvWzwCoeffGalois" if self.eat(Token::LBracket)? => {
+                        let power = self.signed_wide("a signed Galois power", "Galois power")?;
+                        self.expect(Token::RBracket)?;
+                        if name.text == "rvWzwGalois" {
+                            Some(WzwOp::Galois(power))
+                        } else {
+                            Some(WzwOp::CoeffGalois(power))
+                        }
+                    }
                     "rvWzwT" if self.eat(Token::LBracket)? => {
                         let power = self.signed_wide("a signed twist power", "twist power")?;
                         self.expect(Token::RBracket)?;
@@ -7825,6 +7839,13 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::WzwUnary(operation, Box::new(input)), depth);
+                }
+                if name.text == "rvCycloGalois" && self.eat(Token::LBracket)? {
+                    let power = self.signed_wide("a signed Galois power", "Galois power")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::CycloGalois(power, Box::new(input)), depth);
                 }
                 if name.text == "rvCycloEmbed" && self.eat(Token::LBracket)? {
                     let (order, _) = self.number()?;

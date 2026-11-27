@@ -247,7 +247,11 @@ impl ClassicalOutputs {
     }
 }
 
-fn fold(model: &mut Model, grade: Grade, highest: &[i128]) -> Result<Option<(Weight, i128)>> {
+pub(crate) fn fold(
+    model: &mut Model,
+    grade: Grade,
+    highest: &[i128],
+) -> Result<Option<(Weight, i128)>> {
     let n = grade.rank as i128;
     let period = n + grade.level as i128;
     let mut quotients = 0;

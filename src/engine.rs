@@ -456,6 +456,7 @@ enum TypedForm {
     CycloScale(i128, Box<TypedExpr>),
     CycloConjugate(usize, Box<TypedExpr>),
     CycloEmbed(usize, usize, Box<TypedExpr>),
+    CycloGalois(usize, i128, Box<TypedExpr>),
     WzwUnary(rv_wzw::Grade, WzwOp, Box<TypedExpr>),
     WzwScale(rv_wzw::Grade, Box<[TypedExpr; 2]>),
     WzwCoordinate(rv_wzw::Grade, Vec<i128>, Box<TypedExpr>),
@@ -4414,6 +4415,12 @@ impl Engine {
                 };
                 rv_cyclotomic::scale(&mut self.model, &terms, *factor)
             }
+            TypedForm::CycloGalois(order, power, input) => {
+                let Value::RVCyclo(coefficients) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_cyclotomic::galois(&mut self.model, *order, *power, &coefficients)
+            }
             TypedForm::CycloEmbed(source, target, input) => {
                 let Value::RVCyclo(terms) = self.eval(input)? else {
                     unreachable!()
@@ -4428,6 +4435,10 @@ impl Engine {
                     WzwOp::S(adjoint) => rv_wzw::s_action(&mut self.model, *grade, &terms, adjoint),
                     WzwOp::T(power) => rv_wzw::t_action(&mut self.model, *grade, &terms, power),
                     WzwOp::Charge => rv_wzw::charge(&mut self.model, &terms),
+                    WzwOp::Galois(power) => rv_wzw::galois(&mut self.model, *grade, &terms, power),
+                    WzwOp::CoeffGalois(power) => {
+                        rv_wzw::coeff_galois(&mut self.model, *grade, &terms, power)
+                    }
                     WzwOp::Negate => rv_wzw::negate(&mut self.model, &terms),
                 }
             }
@@ -6089,6 +6100,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::TlColoredJones(..)
             | ExprForm::WzwCoordinate(..)
             | ExprForm::CycloEmbed(..)
+            | ExprForm::CycloGalois(..)
             | ExprForm::CycloRoot(..)
             | ExprForm::CycloProduct(..)
             | ExprForm::CycloScale(..)
@@ -9704,6 +9716,14 @@ impl Checker<'_> {
                 let grade = self.wzw_grade(&input, "rvWzwCoord")?;
                 let ty = self.model.cyclotomic_type(grade.order)?;
                 Ok((ty, TypedForm::WzwCoordinate(grade, weight, Box::new(input))))
+            }
+            ExprForm::CycloGalois(power, input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_order(&input, "rvCycloGalois")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CycloGalois(order, power, Box::new(input)),
+                ))
             }
             ExprForm::CycloEmbed(target, input) => {
                 let input = self.expr(*input)?;

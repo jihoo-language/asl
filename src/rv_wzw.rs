@@ -114,17 +114,18 @@ pub(crate) fn add(model: &mut Model, a: &Support, b: &Support) -> Result<Value> 
     )
 }
 
+fn negative(model: &mut Model, coefficient: &[i128]) -> Result<Polynomial> {
+    model.spend(coefficient.len())?;
+    coefficient
+        .iter()
+        .map(|x| x.checked_neg().ok_or_else(arithmetic))
+        .collect()
+}
+
 pub(crate) fn negate(model: &mut Model, input: &Support) -> Result<Value> {
     let terms = input
         .iter()
-        .map(|(weight, coefficient)| {
-            model.spend(coefficient.len())?;
-            let c = coefficient
-                .iter()
-                .map(|x| x.checked_neg().ok_or_else(arithmetic))
-                .collect::<Result<Polynomial>>()?;
-            Ok((weight.clone(), c))
-        })
+        .map(|(weight, coefficient)| Ok((weight.clone(), negative(model, coefficient)?)))
         .collect::<Result<Vec<_>>>()?;
     persist(model, terms)
 }
@@ -184,6 +185,58 @@ fn shifted_weight(weight: &[i128]) -> Vec<i128> {
         .enumerate()
         .map(|(i, &entry)| entry + (weight.len() - 1 - i) as i128)
         .collect()
+}
+
+pub(crate) fn galois(
+    model: &mut Model,
+    grade: Grade,
+    input: &Support,
+    exponent: i128,
+) -> Result<Value> {
+    let power = rv_cyclotomic::galois_power(grade.order, exponent)? as i128;
+    let rank = grade.fusion.rank;
+    let mut output = Vec::with_capacity(input.len());
+    let sorting = 1 + input.len().max(1).ilog2() as usize;
+    for (weight, coefficient) in input.iter() {
+        model.spend(rank * sorting)?;
+        let mut highest = shifted_weight(weight);
+        // Kac–Walton folding takes an unshifted weight as its input. The
+        // root-order bound makes the rescaling by the reduced power safe.
+        for (i, entry) in highest.iter_mut().enumerate() {
+            *entry = power * *entry - (rank - 1 - i) as i128;
+        }
+        let Some((target, sign)) = rv_fusion::fold(model, grade.fusion, &highest)? else {
+            return Err(Error::plain("WZW Galois folding reached an alcove wall"));
+        };
+        let coefficient = if sign < 0 {
+            negative(model, coefficient)?
+        } else {
+            coefficient.clone()
+        };
+        output.push((target, coefficient));
+    }
+    // A unit modulo the root order permutes the integrable labels, so
+    // distinct input weights once again have distinct output weights.
+    output.sort_unstable();
+    persist(model, output)
+}
+
+pub(crate) fn coeff_galois(
+    model: &mut Model,
+    grade: Grade,
+    input: &Support,
+    exponent: i128,
+) -> Result<Value> {
+    let power = rv_cyclotomic::galois_power(grade.order, exponent)?;
+    let mut output = Vec::with_capacity(input.len());
+    let mut kept = 0;
+    for (weight, coefficient) in input.iter() {
+        let coefficient = rv_cyclotomic::substitute_root(model, grade.order, coefficient, power)?;
+        kept += cells(weight, &coefficient);
+        storage(kept)?;
+        output.push((weight.clone(), coefficient.into()));
+    }
+    persist(model, output)
 }
 
 fn shifted_norm(weight: &[i128]) -> i128 {

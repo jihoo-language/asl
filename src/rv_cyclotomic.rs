@@ -249,6 +249,32 @@ pub(crate) fn conjugate(model: &mut Model, order: usize, coefficients: &[i128]) 
     persist(model, coefficients)
 }
 
+pub(crate) fn galois_power(order: usize, exponent: i128) -> Result<usize> {
+    check_order(order)?;
+    let power = exponent.rem_euclid(order as i128) as usize;
+    let (mut a, mut b) = (order, power);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    if a != 1 {
+        return Err(Error::plain(
+            "cyclotomic Galois power must be coprime to the root order",
+        ));
+    }
+    Ok(power)
+}
+
+pub(crate) fn galois(
+    model: &mut Model,
+    order: usize,
+    exponent: i128,
+    coefficients: &[i128],
+) -> Result<Value> {
+    let power = galois_power(order, exponent)?;
+    let coefficients = substitute_root(model, order, coefficients, power)?;
+    persist(model, coefficients)
+}
+
 pub(crate) fn substitute_root(
     model: &mut Model,
     order: usize,

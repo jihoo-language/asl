@@ -1231,6 +1231,16 @@ Write the normalized weight in descending order, set $x_{\lambda,i}=\lambda_i+n-
 
 `rvWzwS(v)`, `rvWzwSAdjoint(v)`, and `rvWzwT[h](v)` apply these matrices and the conjugate transpose of $S$. `rvWzwCharge(v)` sends each weight to its contragredient. The raw normalization gives $S^2=aC$, $SS^*=|a|I$, and $(ST)^3=bC$, where $a=(-1)^{n(n-1)/2}nL^{n-1}$ and $b$ is the vacuum coefficient of $(ST)^3$. The example computes $b=375(z_{60}^4+z_{60}^{14})$ at rank three, level two, checks $b^2=a^3\exp(2\pi i\,k(n^2-1)/(4L))$, and recovers an $S$ entry from the vacuum amplitude and the conjugate Verlinde character. [WZW modular example](examples/rv-wzw-modular.asl)
 
+#### Signed Galois action on the alcove
+
+`rvWzwGalois[a](v)` applies the signed permutation $G_a$ of the integrable labels, with coefficients left fixed. The interpreter reduces the signed exponent $a$ modulo $D$ and requires a unit. For each weight it forms $a(\lambda+\rho)-\rho$ in decreasing order and uses the Kac–Walton alcove fold. The output is the folded label $\pi_a(\lambda)$ multiplied by the folding sign $\epsilon_a(\lambda)$.
+
+Use `rvCycloGalois[a](c)` to substitute $z_D\mapsto z_D^a$ in a cyclotomic integer. `rvWzwCoeffGalois[a](v)` applies this automorphism to the coefficients of a state. Composing coefficientwise transport with $G_a$ gives the semilinear action. For the raw matrices the identities are $\sigma_a(S_{\lambda\mu})=\epsilon_a(\lambda)S_{\pi_a(\lambda),\mu}$ and $T_{\pi_a(\lambda)}=T_{\pi_a(0)}T_\lambda^{a^2}$. The signed operators satisfy $G_aG_b=G_{ab}$ and $G_{-1}=(-1)^{n(n-1)/2}C$.
+
+The fold adds a vector in $L\mathbb{Z}^n$ of coordinate sum zero, permutes coordinates, and removes a common translate. These operations change the alternant only by the permutation sign. The quadratic form $Q$ is unchanged by a common translate. A shift by $Lz$ with $\sum_i z_i=0$ changes $Q$ by a multiple of $2nL$, since $\sum_i z_i^2$ is even. This gives the square of the Galois exponent and the vacuum phase in the twist identity.
+
+At $\mathrm{SU}(3)_2$, the exponent $7$ sends the vacuum to the adjoint $[0,1,2]$ and sends the adjoint to the negative vacuum. Its square acts by $-1$ on the six labels. The example checks an $S$ row, the projective twist phase, and the distinct coefficient transport on a state with nonrational amplitudes. [WZW Galois example](examples/rv-wzw-galois.asl)
+
 ### Doubled WZW lens-space invariants
 
 `rvLensTV[n,k,p,q]` computes the lens-space Turaev–Viro invariant of the unitary $\mathrm{SU}(n)_k$ theory doubled. For $p>0$, it accepts a signed $q$ coprime to $p$ and uses its residue modulo $p$. The inputs $p=0,q=\pm1$ describe $S^2\times S^1$. The normalization assigns $1$ to $S^2\times S^1$ and $1/\operatorname{Dim}\mathcal C$ to $S^3$, where $\operatorname{Dim}\mathcal C$ is the sum of the squares of the quantum dimensions.
