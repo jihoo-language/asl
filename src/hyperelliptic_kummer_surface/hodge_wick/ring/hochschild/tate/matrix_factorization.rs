@@ -6,6 +6,7 @@ use super::{
 };
 
 mod cone;
+pub(crate) mod defect;
 pub(crate) mod knorrer;
 
 pub(crate) enum Command {

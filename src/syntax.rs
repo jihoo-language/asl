@@ -1155,6 +1155,7 @@ pub(crate) enum ExprForm {
     VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Expression>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
+    LGDefect(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::defect::Expression>),
     Knorrer(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::Expression>),
     MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Expression>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Expression>),
@@ -1452,6 +1453,7 @@ pub(crate) enum StatementForm {
     MonomialCICotangent(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
+    LGDefect(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::defect::Command>),
     Knorrer(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::Command>),
     MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Command>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Command>),
@@ -10248,6 +10250,82 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn lg_defect_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::defect::Command;
+        self.advance()?;
+        let command = match name {
+            "rvlgdefect" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let mark = self.label()?;
+                self.expect(Token::RBracket)?;
+                let indices = self.set_named_rows(|p| Ok(p.number()?.0))?;
+                Command::Declare(label, mark, indices)
+            }
+            "rvlgdefectpush" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let defect = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Push(label, defect, source)
+            }
+            "rvlgdefectresult" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let action = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::PushResult(label, action)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name_1 = self.label()?;
+                let command = match name {
+                    "rvLGDefectFusion" => {
+                        self.expect(Token::Comma)?;
+                        Command::Fusion(name_1, self.label()?)
+                    }
+                    "rvLGDefectPush" => Command::PushReport(name_1),
+                    _ => Command::Object(name_1),
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::LGDefect(Box::new(command)))
+    }
+
+    fn lg_defect_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::defect::Expression;
+        self.expect(Token::LBracket)?;
+        let label = self.label()?;
+        self.expect(Token::Comma)?;
+        let next = |parser: &mut Self| -> Result<usize> {
+            parser.expect(Token::Comma)?;
+            Ok(parser.number()?.0)
+        };
+        if name == "rvLGDefectMap" {
+            let target = self.label()?;
+            let [row, column, power] = [next(self)?, next(self)?, next(self)?];
+            self.expect(Token::RBracket)?;
+            let map = self.paren_expr(nest)?;
+            let depth = map.depth + 1;
+            let operation = Expression::Map(label, target, row, column, power, Box::new(map));
+            return expr(span, ExprForm::LGDefect(Box::new(operation)), depth);
+        }
+        let first = self.number()?.0;
+        let operation = match name {
+            "rvLGDefectCoeff" => Expression::Coefficient(label, first, next(self)?),
+            "rvLGDefectMatrix" => {
+                Expression::Matrix(label, first, next(self)?, next(self)?, next(self)?)
+            }
+            _ => Expression::Bulk(label, first, name == "rvLGDefectReverse"),
+        };
+        self.expect(Token::RBracket)?;
+        expr(span, ExprForm::LGDefect(Box::new(operation)), 0)
+    }
+
     fn knorrer_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::knorrer::{Command, Query};
         self.advance()?;
@@ -14706,6 +14784,10 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word(
+                command @ ("rvlgdefect" | "rvLGDefect" | "rvlgdefectpush" | "rvLGDefectPush"
+                | "rvlgdefectresult" | "rvLGDefectFusion"),
+            ) => self.lg_defect_statement(command)?,
             Token::Word(
                 command @ ("rvknorrer" | "rvKnorrerObject" | "rvKnorrerTrace" | "rvKnorrerCone"
                 | "rvKnorrerWeights"),
@@ -21744,6 +21826,17 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvLGDefectCoeff"
+                        | "rvLGDefectBulk"
+                        | "rvLGDefectReverse"
+                        | "rvLGDefectMatrix"
+                        | "rvLGDefectMap"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.lg_defect_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

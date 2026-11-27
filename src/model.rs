@@ -3,6 +3,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
 use hochschild::tate as verbitsky_tate;
+use mf::defect;
 use mf::knorrer;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -964,6 +965,8 @@ pub(crate) struct Model {
     cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    lg_defects: HashMap<String, Rc<defect::Defect>>,
+    lg_pushes: HashMap<String, Rc<defect::Push>>,
     knorrer_objects: HashMap<String, Rc<knorrer::Doubled>>,
     matrix_factorizations: HashMap<String, Rc<mf::Object>>,
     verbitsky_tate: HashMap<String, Rc<verbitsky_tate::Definition>>,
@@ -1141,6 +1144,8 @@ impl Model {
             cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
+            lg_defects: HashMap::new(),
+            lg_pushes: HashMap::new(),
             knorrer_objects: HashMap::new(),
             matrix_factorizations: HashMap::new(),
             verbitsky_tate: HashMap::new(),
@@ -6324,6 +6329,63 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
+    }
+
+    pub(crate) fn register_lg_defect(
+        &mut self,
+        name: Label,
+        mark: Label,
+        indices: Vec<usize>,
+    ) -> Result<()> {
+        if self.lg_defects.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("LG defect '{}' is already defined", name.text),
+            ));
+        }
+        let defect = defect::Defect::marked(self, mark.text.into(), indices)?;
+        self.allocate(defect.size())?;
+        self.lg_defects.insert(name.text, Rc::new(defect));
+        Ok(())
+    }
+
+    pub(crate) fn lg_defect(&self, name: &str) -> Result<Rc<defect::Defect>> {
+        self.lg_defects
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown LG defect '{name}'")))
+    }
+
+    pub(crate) fn register_lg_push(
+        &mut self,
+        name: Label,
+        defect: Label,
+        source: Label,
+    ) -> Result<()> {
+        if self.lg_pushes.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("LG defect push '{}' is already defined", name.text),
+            ));
+        }
+        let factorization = self.lg_defect(&defect.text)?;
+        let brane = self.matrix_factorization(&source.text)?;
+        let push = defect::Push::new(
+            self,
+            defect.text.into(),
+            source.text.into(),
+            &factorization,
+            &brane,
+        )?;
+        self.lg_pushes.insert(name.text, Rc::new(push));
+        Ok(())
+    }
+
+    pub(crate) fn lg_push(&self, name: &str) -> Result<Rc<defect::Push>> {
+        self.lg_pushes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown LG defect push '{name}'")))
     }
 
     pub(crate) fn register_knorrer(&mut self, name: Label, base: Label) -> Result<()> {

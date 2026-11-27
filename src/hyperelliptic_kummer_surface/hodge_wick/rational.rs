@@ -180,6 +180,21 @@ impl Rational {
             .then_with(|| self.denominator.cmp(rhs.denominator))
     }
 
+    pub(super) fn small_parts(self) -> Option<(i128, u128)> {
+        let numerator = self.numerator.magnitude.small()?;
+        let numerator = if self.negative() && numerator == 1 << 127 {
+            i128::MIN
+        } else {
+            let numerator = i128::try_from(numerator).ok()?;
+            if self.negative() {
+                -numerator
+            } else {
+                numerator
+            }
+        };
+        Some((numerator, self.denominator.small()?))
+    }
+
     pub(super) fn text(self, model: &mut Model) -> Result<String> {
         let mut text = String::new();
         if self.negative() {

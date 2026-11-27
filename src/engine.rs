@@ -3,6 +3,7 @@ use crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul;
 use crate::hyperelliptic_kummer_surface::hodge_wick::ring::resolution as verbitsky_resolution;
 use hochschild::cyclic as verbitsky_cyclic;
 use hochschild::tate as verbitsky_tate;
+use mf::defect;
 use mf::knorrer;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -253,6 +254,13 @@ pub(crate) struct Engine {
     bindings: HashMap<String, Binding>,
     values: Vec<Value>,
     locals: Vec<Value>,
+}
+
+struct LGDefectMap {
+    source: Rc<defect::Push>,
+    target: Rc<defect::Push>,
+    indices: [usize; 3],
+    map: TypedExpr,
 }
 
 #[derive(Clone, Copy)]
@@ -1175,6 +1183,7 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    LGDefectMap(Box<LGDefectMap>),
     KnorrerUnary(knorrer::Unary, Box<TypedExpr>),
     KnorrerInclude(Box<TypedExpr>),
     KnorrerShift(Box<TypedExpr>),
@@ -2941,6 +2950,7 @@ impl Engine {
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
             }
+            StatementForm::LGDefect(command) => return self.lg_defect_command(*command),
             StatementForm::Knorrer(command) => return self.knorrer_command(*command),
             StatementForm::MatrixFactorization(command) => {
                 return self.matrix_factorization_command(*command)
@@ -6956,6 +6966,49 @@ impl Engine {
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
             }
         }
+    }
+
+    fn lg_defect_command(&mut self, command: defect::Command) -> Result<Option<String>> {
+        use defect::Command;
+        match command {
+            Command::Declare(name, mark, indices) => {
+                self.model.register_lg_defect(name, mark, indices)?
+            }
+            Command::Push(name, defect, source) => {
+                self.model.register_lg_push(name, defect, source)?
+            }
+            Command::PushResult(name, push) => {
+                let push = self.model.lg_push(&push.text)?;
+                self.model
+                    .register_matrix_factorization(name, push.result())?;
+            }
+            Command::Object(name) => {
+                let object = self.model.lg_defect(&name.text)?;
+                return Ok(Some(format!(
+                    "rvLGDefect[{}] = {}",
+                    name.text,
+                    object.report()?
+                )));
+            }
+            Command::PushReport(name) => {
+                let push = self.model.lg_push(&name.text)?;
+                return Ok(Some(format!(
+                    "rvLGDefectPush[{}] = {}",
+                    name.text,
+                    push.report()?
+                )));
+            }
+            Command::Fusion(a, b) => {
+                let left = self.model.lg_defect(&a.text)?;
+                let right = self.model.lg_defect(&b.text)?;
+                let report = defect::verify_fusion(&mut self.model, &left, &right)?;
+                return Ok(Some(format!(
+                    "rvLGDefectFusion[{}, {}] = {report}",
+                    a.text, b.text
+                )));
+            }
+        }
+        Ok(None)
     }
 
     fn knorrer_command(&mut self, command: knorrer::Command) -> Result<Option<String>> {
@@ -16372,6 +16425,18 @@ impl Engine {
                     .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
             }
+            TypedForm::LGDefectMap(input) => {
+                let LGDefectMap {
+                    source,
+                    target,
+                    indices,
+                    map,
+                } = input.as_ref();
+                let Value::MatrixFactorization(map) = self.eval(map)? else {
+                    unreachable!()
+                };
+                source.map(&mut self.model, target, *indices, &map)
+            }
             TypedForm::KnorrerUnary(operation, input) => {
                 use knorrer::Unary;
                 let Kind::Knorrer(grade, _) = self.model.kind(input.ty) else {
@@ -24403,6 +24468,7 @@ impl Checker<'_> {
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::LGDefect(expression) => self.lg_defect_expression(*expression),
             ExprForm::Knorrer(expression) => self.knorrer_expression(*expression),
             ExprForm::MatrixFactorization(expression) => {
                 self.matrix_factorization_expression(*expression)
@@ -31422,6 +31488,65 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVKnorrer class or RVKnorrerCochain"))
         }
+    }
+
+    fn lg_defect_expression(
+        &mut self,
+        operation: defect::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use defect::Expression;
+        let (ty, value) = match operation {
+            Expression::Coefficient(name, factor, power) => {
+                let defect = self.model.lg_defect(&name.text)?;
+                (
+                    self.model.cyclotomic_type(defect.d)?,
+                    defect.coefficient(self.model, factor, power)?,
+                )
+            }
+            Expression::Bulk(name, degree, reverse) => {
+                let defect = self.model.lg_defect(&name.text)?;
+                (
+                    self.model.cyclotomic_type(defect.d)?,
+                    defect.bulk(self.model, degree, reverse)?,
+                )
+            }
+            Expression::Matrix(name, summand, kind, row, column) => {
+                let push = self.model.lg_push(&name.text)?;
+                (
+                    self.model.cyclotomic_rational_type(push.d)?,
+                    push.entry(self.model, summand, kind, row, column)?,
+                )
+            }
+            Expression::Map(source, target, row, column, power, map) => {
+                let source = self.model.lg_push(&source.text)?;
+                let target = self.model.lg_push(&target.text)?;
+                if source.defect != target.defect {
+                    return Err(Error::plain(
+                        "LG defect map requires the same named defect on both pushes",
+                    ));
+                }
+                let map = self.expr(*map)?;
+                let (grade, class) = self.matrix_factorization_operand(&map, "rvLGDefectMap")?;
+                if !class
+                    || grade.odd
+                    || grade.source != source.source
+                    || grade.target != target.source
+                {
+                    return Err(Error::plain("LG defect map requires an even Hom class between the indicated boundary branes"));
+                }
+                let ty = self.model.cyclotomic_rational_type(source.d)?;
+                return Ok((
+                    ty,
+                    TypedForm::LGDefectMap(Box::new(LGDefectMap {
+                        source,
+                        target,
+                        indices: [row, column, power],
+                        map,
+                    })),
+                ));
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn knorrer_expression(
