@@ -3,7 +3,7 @@ use crate::hw_closed::Curve;
 use crate::hyperelliptic_jacobian::Divisor;
 use crate::hyperelliptic_kummer_surface::hilbert::{
     abelian_symmetric_coefficients, checked_product, coefficients, intermediate_overflow, power,
-    unsigned, Integer, Magnitude, SurfaceKind,
+    symmetric_partition_product, unsigned, Integer, Magnitude, SurfaceKind,
 };
 use crate::hyperelliptic_kummer_surface::stratum::Partition;
 use crate::jacobian_level::Basis;
@@ -312,28 +312,7 @@ pub(crate) fn stratum_trace(
             .unwrap_or(1)
             .min(degree);
         let rows = abelian_symmetric_coefficients(model, length, degree, curve, r)?;
-        let top = degree as usize;
-        let mut product = vec![Integer::from_i128(0); top + 1];
-        product[0] = Integer::from_i128(1);
-        for &(_, count) in shape.parts() {
-            let row = &rows[count.min(length) as usize];
-            let mut next = vec![Integer::from_i128(0); top + 1];
-            model.spend(top + 1)?;
-            for (j, &left) in product
-                .iter()
-                .enumerate()
-                .filter(|(_, value)| !value.is_zero())
-            {
-                model.spend(top + 1 - j)?;
-                for (target, &right) in next[j..].iter_mut().zip(row) {
-                    if !right.is_zero() {
-                        let term = checked_product(model, left, right)?;
-                        *target = target.add(term).map_err(|_| intermediate_overflow())?;
-                    }
-                }
-            }
-            product = next;
-        }
+        let product = symmetric_partition_product(model, shape.parts(), &rows)?;
         quotient(model, product, &rows[1])?
     };
     trace_value(model, curve, r, degree, shift + twist, value)

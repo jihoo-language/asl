@@ -113,7 +113,7 @@ pub(super) fn hilbert(
     ))
 }
 
-fn middle_traces<const N: usize>(
+pub(super) fn middle_traces<const N: usize>(
     model: &mut Model,
     word: &Word,
     curve: &Curve,
@@ -193,7 +193,11 @@ fn data(
     Ok((word, curve, frobenius))
 }
 
-fn word_and_base(model: &Model, name: &Label, base: &Label) -> Result<(Rc<Word>, Rc<Curve>)> {
+pub(super) fn word_and_base(
+    model: &Model,
+    name: &Label,
+    base: &Label,
+) -> Result<(Rc<Word>, Rc<Curve>)> {
     let word = model.k3_automorphism(name)?;
     let curve = model
         .kummer_curve(&base.text)
@@ -201,7 +205,7 @@ fn word_and_base(model: &Model, name: &Label, base: &Label) -> Result<(Rc<Word>,
     Ok((word, curve))
 }
 
-fn node_permutation(
+pub(super) fn node_permutation(
     model: &mut Model,
     word: &Word,
     curve: &Curve,

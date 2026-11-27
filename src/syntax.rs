@@ -3314,7 +3314,35 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
+            let positive_iteration = |parser: &mut Self| {
+                let span = parser.span();
+                let power = parser.wide_unsigned("K3 Frobenius iteration count")?;
+                if power == 0 {
+                    return Err(Error::new(
+                        span,
+                        "K3 Frobenius iteration count must be positive",
+                    ));
+                }
+                Ok(power)
+            };
             let command = match operation {
+                "rvK3StratumFrobTrace" | "rvK3StratumEulerFactor" => {
+                    self.expect(Token::Comma)?;
+                    let base = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let shape = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let r = positive_iteration(self)?;
+                    self.expect(Token::Comma)?;
+                    let i = self.wide_unsigned("cohomological degree")?;
+                    let coefficient = if operation == "rvK3StratumEulerFactor" {
+                        self.expect(Token::Comma)?;
+                        Some(self.wide_unsigned("Euler-factor coefficient index")?)
+                    } else {
+                        None
+                    };
+                    Command::StratumTrace(name, base, shape, r, i, coefficient)
+                }
                 "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed" | "rvK3FrobHilbTrace" => {
                     self.expect(Token::Comma)?;
                     let base = self.label()?;
@@ -3329,14 +3357,7 @@ impl<'src> Parser<'src> {
                             self.expect(Token::Comma)?;
                             Some(n)
                         };
-                        let span = self.span();
-                        let power = self.wide_unsigned("K3 Frobenius iteration count")?;
-                        if power == 0 {
-                            return Err(Error::new(
-                                span,
-                                "K3 Frobenius iteration count must be positive",
-                            ));
-                        }
+                        let power = positive_iteration(self)?;
                         if let Some(n) = length {
                             let grade = if operation == "rvK3FrobHilbTrace" {
                                 self.expect(Token::Comma)?;
@@ -6234,9 +6255,17 @@ impl<'src> Parser<'src> {
                 ))))
             }
             Token::Word(
-                name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"
-                | "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed"
-                | "rvK3FrobHilbTrace" | "rvK3AutoNikulin"),
+                name @ ("rvk3autom"
+                | "rvK3Entropy"
+                | "rvK3AutoPeriod"
+                | "rvK3AutoCycles"
+                | "rvK3FrobFixed"
+                | "rvK3FrobZeta"
+                | "rvK3FrobHilbFixed"
+                | "rvK3StratumFrobTrace"
+                | "rvK3StratumEulerFactor"
+                | "rvK3FrobHilbTrace"
+                | "rvK3AutoNikulin"),
             ) => self.k3_automorphism_statement(name)?,
             Token::Word(
                 command @ ("rvJacHilbPoints"

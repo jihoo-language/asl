@@ -132,7 +132,7 @@ pub(super) fn graded_trace(
 }
 
 // Return the truncated length, half-degree, and Poincaré-duality Tate twist.
-fn graded_index(n: u128, i: u128) -> Option<(u128, u128, u128)> {
+pub(super) fn graded_index(n: u128, i: u128) -> Option<(u128, u128, u128)> {
     let half = i / 2;
     if !i.is_multiple_of(2) || half.div_ceil(2) > n {
         return None;
@@ -197,6 +197,64 @@ pub(crate) fn abelian_symmetric_coefficients(
         false,
         1,
     )
+}
+
+pub(super) fn k3_symmetric_coefficients(
+    model: &mut Model,
+    length: u128,
+    degree: u128,
+    traces: Option<(&[Magnitude], &[Integer], usize)>,
+) -> Result<Vec<Vec<Integer>>> {
+    coefficients_from_surface(
+        model,
+        length,
+        Some(degree),
+        SurfaceKind::K3,
+        false,
+        1,
+        |model, limit| {
+            let Some((fields, middle, step)) = traces else {
+                return Ok(Surface::Betti(SurfaceKind::K3));
+            };
+            model.spend(2 * (limit + 1))?;
+            Ok(Surface::Frobenius {
+                powers: (0..=limit).map(|i| fields[i * step]).collect(),
+                middle: (0..=limit).map(|i| middle[i * step]).collect(),
+                first: Vec::new(),
+            })
+        },
+    )
+}
+
+pub(crate) fn symmetric_partition_product(
+    model: &mut Model,
+    parts: &[(u128, u128)],
+    rows: &[Vec<Integer>],
+) -> Result<Vec<Integer>> {
+    let limit = (rows.len() - 1) as u128;
+    let width = rows[0].len();
+    let mut product = vec![Integer::from_i128(0); width];
+    product[0] = Integer::from_i128(1);
+    for &(_, count) in parts {
+        let row = &rows[count.min(limit) as usize];
+        model.spend(width)?;
+        let mut next = vec![Integer::from_i128(0); width];
+        for (j, &left) in product
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| !value.is_zero())
+        {
+            model.spend(width - j)?;
+            for (target, &right) in next[j..].iter_mut().zip(row) {
+                if !right.is_zero() {
+                    let term = checked_product(model, left, right)?;
+                    *target = target.add(term).map_err(|_| intermediate_overflow())?;
+                }
+            }
+        }
+        product = next;
+    }
+    Ok(product)
 }
 
 fn coefficients_with_options(
@@ -451,7 +509,12 @@ impl Surface {
     }
 }
 
-fn field_powers(model: &mut Model, q: u64, r: u128, limit: usize) -> Result<Vec<Magnitude>> {
+pub(super) fn field_powers(
+    model: &mut Model,
+    q: u64,
+    r: u128,
+    limit: usize,
+) -> Result<Vec<Magnitude>> {
     let q_power = power(model, q, r)?;
     let mut powers = Vec::with_capacity(limit + 1);
     powers.push(Magnitude::from_small(1));
