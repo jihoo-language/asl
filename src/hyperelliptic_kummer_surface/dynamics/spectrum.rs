@@ -81,14 +81,10 @@ impl CoefficientRing for Integers {
 }
 
 fn arithmetic_range() -> Error {
-    Error::plain("K3 characteristic polynomial exceeds the exact arithmetic range")
+    Error::plain("K3 lattice spectrum exceeds the exact arithmetic range")
 }
 
-pub(super) fn entropy(
-    model: &mut Model,
-    name: &str,
-    matrix: [[i128; RANK]; RANK],
-) -> Result<String> {
+fn characteristic(model: &mut Model, matrix: [[i128; RANK]; RANK]) -> Result<Vec<Integer>> {
     hw_algebra::storage(RANK * RANK, Integers.cells())?;
     model.spend(RANK * RANK * Integers.cells())?;
     let entries = matrix
@@ -97,7 +93,59 @@ pub(super) fn entropy(
         .map(Integer::from_i128)
         .collect();
     let matrix = Matrix::from_entries(RANK, entries)?;
-    let polynomial = hw_algebra::characteristic(model, &Integers, &matrix)?;
+    hw_algebra::characteristic(model, &Integers, &matrix)
+}
+
+pub(super) fn characteristic_coefficients(
+    model: &mut Model,
+    matrix: [[i128; RANK]; RANK],
+) -> Result<Vec<i128>> {
+    coefficients(&characteristic(model, matrix)?)
+}
+
+pub(super) fn power_trace(
+    model: &mut Model,
+    matrix: [[i128; RANK]; RANK],
+    exponent: u32,
+) -> Result<Wide<LIMBS>> {
+    // The coefficients are exact before computing power sums. Newton's
+    // identities here use only integer multiplication and addition.
+    let trace = if exponent == 1 {
+        matrix
+            .iter()
+            .enumerate()
+            .try_fold(Integers.zero(), |trace, (i, row)| {
+                Integers.add(model, &trace, &Integer::from_i128(row[i]))
+            })?
+    } else {
+        let polynomial = characteristic(model, matrix)?;
+        let exponent = exponent as usize;
+        let mut traces = Vec::with_capacity(exponent + 1);
+        traces.push(Integers.zero());
+        for power in 1..=exponent {
+            let mut trace = Integers.zero();
+            for (i, coefficient) in polynomial.iter().enumerate().skip(1).take(power) {
+                let factor = if i == power {
+                    Integer::from_i128(power as i128)
+                } else {
+                    traces[power - i]
+                };
+                let term = Integers.multiply(model, coefficient, &factor)?;
+                trace = Integers.subtract(model, &trace, &term)?;
+            }
+            traces.push(trace);
+        }
+        traces[exponent]
+    };
+    Ok(trace.0)
+}
+
+pub(super) fn entropy(
+    model: &mut Model,
+    name: &str,
+    matrix: [[i128; RANK]; RANK],
+) -> Result<String> {
+    let polynomial = characteristic(model, matrix)?;
     let characteristic = coefficients(&polynomial)?;
     let (cyclotomic, residual) = strip_cyclotomic(model, polynomial)?;
     let description = if residual == [Integers.one()] {

@@ -88,7 +88,7 @@ fn coefficient_overflow() -> Error {
     Error::plain("Kummer K3 abelian Frobenius coefficient exceeds signed 128-bit range")
 }
 
-fn cross_quartic(q: u64, weil: &[i128]) -> Result<[i128; 5]> {
+pub(super) fn cross_quartic(q: u64, weil: &[i128]) -> Result<[i128; 5]> {
     // The other two eigenvalues of the exterior square are both q.
     let compute = || {
         let q = i128::from(q);

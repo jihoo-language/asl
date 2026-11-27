@@ -3023,9 +3023,27 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
-            self.expect(Token::RBracket)?;
-            match operation {
+            let command = match operation {
+                "rvK3FrobFixed" | "rvK3FrobZeta" => {
+                    self.expect(Token::Comma)?;
+                    let base = self.label()?;
+                    if operation == "rvK3FrobFixed" {
+                        self.expect(Token::Comma)?;
+                        let span = self.span();
+                        let power = self.wide_unsigned("K3 Frobenius iteration count")?;
+                        if power == 0 {
+                            return Err(Error::new(
+                                span,
+                                "K3 Frobenius iteration count must be positive",
+                            ));
+                        }
+                        Command::FrobFixed(name, base, power)
+                    } else {
+                        Command::FrobZeta(name, base)
+                    }
+                }
                 "rvK3AutoPeriod" => {
+                    self.expect(Token::RBracket)?;
                     let input = self.paren_expr(0)?;
                     return Ok(StatementForm::K3AutoPeriod(Box::new(Expression(
                         name,
@@ -3034,7 +3052,9 @@ impl<'src> Parser<'src> {
                 }
                 "rvK3AutoCycles" => Command::Cycles(name),
                 _ => Command::Entropy(name),
-            }
+            };
+            self.expect(Token::RBracket)?;
+            command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
     }
@@ -4966,7 +4986,8 @@ impl<'src> Parser<'src> {
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
             }
             Token::Word(
-                name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"),
+                name @ ("rvk3autom" | "rvK3Entropy" | "rvK3AutoPeriod" | "rvK3AutoCycles"
+                | "rvK3FrobFixed" | "rvK3FrobZeta"),
             ) => self.k3_automorphism_statement(name)?,
             Token::Word(
                 command @ ("rvJacHilbPoints"

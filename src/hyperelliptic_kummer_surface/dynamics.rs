@@ -11,6 +11,7 @@ use super::nikulin::{self, AFFINE};
 use super::polarized::{self, Divisor, COEFFICIENTS};
 
 mod points;
+mod semilinear;
 mod spectrum;
 
 const RANK: usize = COEFFICIENTS;
@@ -29,6 +30,8 @@ pub(crate) enum Command {
     Define(Label, Label, Vec<Generator>),
     Entropy(Label),
     Cycles(Label),
+    FrobFixed(Label, Label, u128),
+    FrobZeta(Label, Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Box<ParsedExpr>);
@@ -64,12 +67,17 @@ impl Command {
             }
             Self::Entropy(name) => {
                 let word = model.k3_automorphism(&name)?;
-                Ok(Some(word.entropy(model, &name.text)?))
+                let matrix = word.marked_matrix(model, None)?;
+                Ok(Some(spectrum::entropy(model, &name.text, matrix)?))
             }
             Self::Cycles(name) => {
                 let word = model.k3_automorphism(&name)?;
                 Ok(Some(word.cycles(model, &name.text)?))
             }
+            Self::FrobFixed(name, base, power) => {
+                semilinear::fixed(model, &name, &base, power).map(Some)
+            }
+            Self::FrobZeta(name, base) => semilinear::zeta(model, &name, &base).map(Some),
         }
     }
 }
@@ -87,17 +95,28 @@ impl Word {
         Ok(coordinates)
     }
 
-    fn entropy(&self, model: &mut Model, name: &str) -> Result<String> {
+    fn marked_matrix(
+        &self,
+        model: &mut Model,
+        frobenius: Option<&nikulin::NodePermutation>,
+    ) -> Result<[[i128; RANK]; RANK]> {
         let lattice = IntegralBasis::new(model, self.origin)?;
         let mut matrix = [[0; RANK]; RANK];
-        for (column, vector) in lattice.vectors().enumerate() {
+        for (column, mut vector) in lattice.vectors().enumerate() {
+            if let Some(frobenius) = frobenius {
+                model.spend(RANK)?;
+                let original = vector;
+                for (node, &coefficient) in original[1..].iter().enumerate() {
+                    vector[1 + usize::from(frobenius.image(node))] = coefficient;
+                }
+            }
             let image = self.action(model, vector)?;
             let coordinates = lattice.coordinates(model, &image)?;
             for (row, coefficient) in matrix.iter_mut().zip(coordinates) {
                 row[column] = coefficient;
             }
         }
-        spectrum::entropy(model, name, matrix)
+        Ok(matrix)
     }
 }
 
