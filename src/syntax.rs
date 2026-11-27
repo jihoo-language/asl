@@ -74,6 +74,7 @@ pub(crate) enum TypeForm {
     MixedPage(MixedSpec),
     Sheaf(SheafForm, Label, usize),
     SheafDeformation(Label, usize),
+    Convolution(crate::sheaf_disk::convolution::Form, Label),
     Parabolic(crate::sheaf_disk::parabolic::Form, Label),
     DiskHom(Label, Label),
     SheafHom(SheafForm, Label, Label, usize),
@@ -757,6 +758,7 @@ pub(crate) enum ExprForm {
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
     SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
+    Convolution(crate::sheaf_disk::convolution::Expression),
     Parabolic(crate::sheaf_disk::parabolic::Expression),
     Disk(crate::sheaf_disk::Expression),
     SheafConeApex(Label, usize),
@@ -1089,6 +1091,7 @@ pub(crate) enum StatementForm {
     MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    Convolution(crate::sheaf_disk::convolution::Command),
     Parabolic(crate::sheaf_disk::parabolic::Command),
     Disk(crate::sheaf_disk::Command),
     SheafConeGlue(SheafInputForm, [Label; 4], usize, Vec<ParsedExpr>),
@@ -3757,6 +3760,10 @@ impl<'src> Parser<'src> {
                 | "shdiskseqmapbraid" | "shdiskseqmapat" | "shparrank" | "shparrows"
                 | "shparvector"),
             ) => StatementForm::Parabolic(self.parabolic_command(command)?),
+            Token::Word(
+                command @ ("shconv" | "shconvmap" | "shconvrank" | "shdiskinfinity"
+                | "shdiskrigidity" | "shdiskgroup" | "shconvcoords"),
+            ) => StatementForm::Convolution(self.convolution_command(command)?),
             Token::Word(op @ ("shconeglue" | "shconegluecomplex")) => {
                 let form = if op == "shconeglue" {
                     SheafInputForm::Sheaf
@@ -6271,6 +6278,13 @@ impl<'src> Parser<'src> {
             let (source, target, degree) = self.sheaf_hom_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::SheafHom(form, source, target, degree), 0);
+        }
+        if let Some(form) = crate::sheaf_disk::convolution::Form::detect(&name.text) {
+            if self.eat(Token::LParen)? {
+                let sequence = self.label()?;
+                self.expect(Token::RParen)?;
+                return ty(span, TypeForm::Convolution(form, sequence), 0);
+            }
         }
         if let Some(form) = crate::sheaf_disk::parabolic::Form::detect(&name.text) {
             if self.eat(Token::LParen)? {
@@ -9154,6 +9168,18 @@ impl<'src> Parser<'src> {
                 {
                     return self.parabolic_expression(&name, span, nest);
                 }
+                if matches!(
+                    name.text.as_str(),
+                    "shConvRaw"
+                        | "shConvGen"
+                        | "shConvProject"
+                        | "shConvSection"
+                        | "shConvRawT"
+                        | "shConvT"
+                        | "shConvMap"
+                ) {
+                    return self.convolution_expression(&name, span, nest);
+                }
                 if name.text == "shGlueApex" && self.eat(Token::LBracket)? {
                     let cone = self.label()?;
                     self.expect(Token::Comma)?;
@@ -11165,6 +11191,104 @@ impl<'src> Parser<'src> {
         Ok((name, index))
     }
 
+    fn convolution_command(
+        &mut self,
+        command: &str,
+    ) -> Result<crate::sheaf_disk::convolution::Command> {
+        use crate::sheaf_disk::convolution::{Command, Query};
+        self.advance()?;
+        Ok(match command {
+            "shconv" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let lambda = self.signed_number("middle convolution scalar")?;
+                self.expect(Token::RBracket)?;
+                Command::Convolve(name, source, lambda)
+            }
+            "shconvmap" => Command::Map(self.label()?, self.disk_labels()?),
+            "shconvrank" => {
+                let [name] = self.disk_labels()?;
+                Command::Rank(name)
+            }
+            "shconvcoords" => Command::Report(Box::new(self.paren_expr(0)?)),
+            _ => {
+                let [name] = self.disk_labels()?;
+                let query = match command {
+                    "shdiskinfinity" => Query::Infinity,
+                    "shdiskrigidity" => Query::Rigidity,
+                    "shdiskgroup" => Query::GroupOrder,
+                    _ => unreachable!(),
+                };
+                Command::Sequence(name, query)
+            }
+        })
+    }
+
+    fn convolution_expression(
+        &mut self,
+        name: &Label,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::sheaf_disk::convolution::{Expression, Form};
+        let (form, depth) = match name.text.as_str() {
+            "shConvRaw" => {
+                let [name] = self.disk_labels()?;
+                (Expression::Raw(name, self.disk_vector_rows()?), 0)
+            }
+            "shConvGen" => {
+                let (name, index) = self.disk_label_index()?;
+                (Expression::Generator(name, index), 0)
+            }
+            "shConvProject" | "shConvSection" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let expression = if name.text == "shConvProject" {
+                    Expression::Project(Box::new(input))
+                } else {
+                    Expression::Section(Box::new(input))
+                };
+                (expression, depth)
+            }
+            "shConvRawT" | "shConvT" => {
+                self.expect(Token::LBracket)?;
+                let index = self.signed_number("signed middle convolution generator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let form = if name.text == "shConvRawT" {
+                    Form::Raw
+                } else {
+                    Form::Quotient
+                };
+                (Expression::Action(form, index, Box::new(input)), depth)
+            }
+            "shConvMap" => {
+                let [map] = self.disk_labels()?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Map(map, Box::new(input)), depth)
+            }
+            _ => unreachable!(),
+        };
+        expr(span, ExprForm::Convolution(form), depth)
+    }
+
+    fn disk_vector_rows(&mut self) -> Result<Vec<Vec<i64>>> {
+        self.expect(Token::LBrace)?;
+        let mut rows = Vec::new();
+        while self.token() != Token::RBrace {
+            rows.push(self.sheaf_matrix()?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rows)
+    }
+
     fn parabolic_command(
         &mut self,
         command: &str,
@@ -11225,16 +11349,7 @@ impl<'src> Parser<'src> {
             }
             "shParRaw" => {
                 let [sequence] = self.disk_labels()?;
-                self.expect(Token::LBrace)?;
-                let mut rows = Vec::new();
-                while self.token() != Token::RBrace {
-                    rows.push(self.sheaf_matrix()?);
-                    if !self.eat(Token::Comma)? {
-                        break;
-                    }
-                }
-                self.expect(Token::RBrace)?;
-                (Expression::Raw(sequence, rows), 0)
+                (Expression::Raw(sequence, self.disk_vector_rows()?), 0)
             }
             "shParGen" => {
                 let (sequence, index) = self.disk_label_index()?;

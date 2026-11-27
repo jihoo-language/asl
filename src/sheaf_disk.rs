@@ -9,6 +9,7 @@ use crate::sheaf_leray;
 use crate::syntax::Label;
 
 pub(crate) mod braid;
+pub(crate) mod convolution;
 mod hom;
 mod linear;
 pub(crate) mod parabolic;

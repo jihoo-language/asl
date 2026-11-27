@@ -107,6 +107,7 @@ use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_deform;
 use crate::sheaf_disk::{
     braid::{Sequence as DiskSequence, SequenceMap as DiskSequenceMap},
+    convolution::{Convolution, ConvolutionMap, Form as ConvolutionForm},
     parabolic::{Form as ParabolicForm, Parabolic},
 };
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
@@ -184,6 +185,7 @@ pub(crate) enum Kind {
     Sheaf(SheafForm, Rc<str>, usize),
     SheafComplex(SheafForm, Rc<str>, usize),
     SheafDeformation(Rc<str>, usize),
+    Convolution(ConvolutionForm, Rc<str>, Prime),
     Parabolic(ParabolicForm, Rc<str>, Prime),
     DiskHom(Rc<str>, Rc<str>, Prime),
     SheafHom(SheafForm, SheafEnds, usize),
@@ -539,6 +541,8 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    convolutions: HashMap<Rc<str>, Rc<Convolution>>,
+    convolution_maps: HashMap<Rc<str>, Rc<ConvolutionMap>>,
     disk_sequences: HashMap<Rc<str>, Rc<DiskSequence>>,
     disk_sequence_maps: HashMap<Rc<str>, Rc<DiskSequenceMap>>,
     parabolic_groups: HashMap<Rc<str>, Rc<Parabolic>>,
@@ -627,6 +631,8 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            convolutions: HashMap::new(),
+            convolution_maps: HashMap::new(),
             disk_sequences: HashMap::new(),
             disk_sequence_maps: HashMap::new(),
             parabolic_groups: HashMap::new(),
@@ -754,6 +760,10 @@ impl Model {
                 if !grade.has_leading(self.sheaf_complexes[name.as_ref()].filtered()) =>
             {
                 1
+            }
+            Kind::Convolution(form, ref name, prime) => {
+                let dimension = self.convolutions[name].dimension(form);
+                (prime.get() as usize).saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
             }
             Kind::Parabolic(form, ref name, prime) => {
                 let dimension = self.parabolic_groups[name].dimension(form);
@@ -1081,6 +1091,7 @@ impl Model {
                 | Kind::Sheaf(..)
                 | Kind::SheafComplex(..)
                 | Kind::SheafDeformation(..)
+                | Kind::Convolution(..)
                 | Kind::Parabolic(..)
                 | Kind::DiskHom(..)
                 | Kind::SheafHom(..)
@@ -1661,6 +1672,44 @@ impl Model {
 
     pub(crate) fn define_disk_sequence_map(&mut self, name: String, map: DiskSequenceMap) {
         self.disk_sequence_maps.insert(name.into(), Rc::new(map));
+    }
+
+    pub(crate) fn define_convolution(&mut self, name: String, data: Convolution) {
+        let name: Rc<str> = name.into();
+        self.disk_sequences
+            .insert(name.clone(), data.sequence.clone());
+        self.convolutions.insert(name, Rc::new(data));
+    }
+
+    pub(crate) fn convolution(&self, name: &str) -> Result<Rc<Convolution>> {
+        self.convolutions
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown middle convolution '{name}'")))
+    }
+
+    pub(crate) fn define_convolution_map(&mut self, name: String, data: ConvolutionMap) {
+        let name: Rc<str> = name.into();
+        self.disk_sequence_maps
+            .insert(name.clone(), data.descended.clone());
+        self.convolution_maps.insert(name, Rc::new(data));
+    }
+
+    pub(crate) fn convolution_map(&self, name: &str) -> Result<Rc<ConvolutionMap>> {
+        self.convolution_maps
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown middle convolution map '{name}'")))
+    }
+
+    pub(crate) fn convolution_type(
+        &mut self,
+        name: Rc<str>,
+        form: ConvolutionForm,
+    ) -> Result<(TypeId, Rc<Convolution>)> {
+        let data = self.convolution(&name)?;
+        let ty = self.inhabited_type(Kind::Convolution(form, name, data.sequence.prime), 0)?;
+        Ok((ty, data))
     }
 
     pub(crate) fn parabolic_type(
@@ -4437,6 +4486,7 @@ impl Model {
             | Kind::Sheaf(..)
             | Kind::SheafComplex(..)
             | Kind::SheafDeformation(..)
+            | Kind::Convolution(..)
             | Kind::Parabolic(..)
             | Kind::DiskHom(..)
             | Kind::SheafHom(..)
@@ -4680,6 +4730,7 @@ impl Model {
                 out.push(&format!("{}({name}, {degree})", form.name()))
             }
             Kind::SheafDeformation(name, order) => out.push(&format!("ShDef({name}, {order})")),
+            Kind::Convolution(form, name, _) => out.push(&format!("{}({name})", form.name())),
             Kind::Parabolic(form, name, _) => out.push(&format!("{}({name})", form.name())),
             Kind::DiskHom(from, to, _) => out.push(&format!("ShDiskHom({from}, {to})")),
             Kind::SheafHom(form, ends, degree) => {
@@ -6251,6 +6302,10 @@ impl Model {
                 Kind::SheafDeformation(ref name, order) => {
                     let hom = self.sheaf_hom(&SheafEnds::endomorphisms(name.clone()));
                     sheaf_deform::elements(self, &hom, order, MAX_ELEMENTS)?
+                }
+                Kind::Convolution(form, ref name, prime) => {
+                    let dimension = self.convolutions[name].dimension(form);
+                    odd_ext::elements(self, prime, dimension, MAX_ELEMENTS)?
                 }
                 Kind::Parabolic(form, ref name, prime) => {
                     let dimension = self.parabolic_groups[name].dimension(form);

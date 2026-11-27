@@ -671,6 +671,13 @@ enum TypedForm {
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     DiskCompose(Box<crate::sheaf_disk::Composition>, Box<[TypedExpr; 2]>),
+    ConvolutionOperation(
+        Rc<crate::sheaf_disk::convolution::Convolution>,
+        crate::sheaf_disk::convolution::Form,
+        crate::sheaf_disk::convolution::Operation,
+        Box<TypedExpr>,
+    ),
+    ConvolutionMap(crate::sheaf_disk::convolution::Transfer, Box<TypedExpr>),
     ParabolicUnary(
         Rc<crate::sheaf_disk::parabolic::Parabolic>,
         crate::sheaf_disk::parabolic::Unary,
@@ -742,6 +749,77 @@ impl Engine {
             values: Vec::new(),
             locals: Vec::new(),
         }
+    }
+
+    fn convolution_command(
+        &mut self,
+        command: crate::sheaf_disk::convolution::Command,
+    ) -> Result<Option<String>> {
+        use crate::sheaf_disk::convolution::{
+            self, Command, Convolution, ConvolutionMap, Form, Query,
+        };
+        match command {
+            Command::Convolve(name, source, lambda) => {
+                self.model.check_new_disk_sequence(&name, false)?;
+                let sequence = self.model.disk_sequence(&source.text)?;
+                let data =
+                    Convolution::build(&mut self.model, source.text.into(), sequence, lambda)?;
+                self.model.define_convolution(name.text, data);
+            }
+            Command::Map(name, [from, to, original]) => {
+                self.model.check_new_disk_sequence(&name, true)?;
+                let source = self.model.convolution(&from.text)?;
+                let target = self.model.convolution(&to.text)?;
+                let map = self.model.disk_sequence_map(&original.text)?;
+                let data = ConvolutionMap::build(
+                    &mut self.model,
+                    (from.text.into(), to.text.into()),
+                    source,
+                    target,
+                    map,
+                )?;
+                self.model.define_convolution_map(name.text, data);
+            }
+            Command::Rank(name) => {
+                let data = self.model.convolution(&name.text)?;
+                return Ok(Some(format!(
+                    "shconvrank[{}] = {}",
+                    name.text,
+                    data.dimension(Form::Quotient)
+                )));
+            }
+            Command::Sequence(name, query) => {
+                let data = self.model.disk_sequence(&name.text)?;
+                let (op, value) = match query {
+                    Query::Infinity => (
+                        "shdiskinfinity",
+                        convolution::infinity(&mut self.model, &data)?,
+                    ),
+                    Query::Rigidity => (
+                        "shdiskrigidity",
+                        convolution::rigidity(&mut self.model, &data)?.to_string(),
+                    ),
+                    Query::GroupOrder => (
+                        "shdiskgroup",
+                        convolution::group_order(&mut self.model, &data)?.to_string(),
+                    ),
+                };
+                return Ok(Some(format!("{op}[{}] = {value}", name.text)));
+            }
+            Command::Report(input) => {
+                let input = self.checker().expr(*input)?;
+                let (form, name) = convolution_type(&self.model, input.ty)?;
+                let data = self.model.convolution(&name)?;
+                let Value::OddClass(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(Some(format!(
+                    "shconvcoords = {}",
+                    data.report(&mut self.model, form, &value)?
+                )));
+            }
+        }
+        Ok(None)
     }
 
     fn parabolic_command(
@@ -1813,6 +1891,7 @@ impl Engine {
                 self.model.define_sheaf(name.text, image);
                 return Ok(None);
             }
+            StatementForm::Convolution(command) => return self.convolution_command(command),
             StatementForm::Parabolic(command) => return self.parabolic_command(command),
             StatementForm::Disk(command) => return self.disk_command(command),
             StatementForm::SheafConeGlue(form, [name, j, apex, source], degree, columns) => {
@@ -4853,7 +4932,8 @@ impl Engine {
                             | Kind::ASOddDeRham(_, p)
                             | Kind::ASOddTate(_, p, _)
                             | Kind::DiskHom(_, _, p)
-                            | Kind::Parabolic(_, _, p) => p,
+                            | Kind::Parabolic(_, _, p)
+                            | Kind::Convolution(_, _, p) => p,
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
@@ -7692,6 +7772,18 @@ impl Engine {
                 };
                 data.apply(&mut self.model, *grade, *operation, &coordinates)
             }
+            TypedForm::ConvolutionOperation(data, form, operation, input) => {
+                let Value::OddClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                data.apply(&mut self.model, *operation, *form, &value)
+            }
+            TypedForm::ConvolutionMap(action, input) => {
+                let Value::OddClass(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                action.apply(&mut self.model, &value)
+            }
             TypedForm::ParabolicUnary(group, operation, input) => {
                 let Value::OddClass(value) = self.eval(input)? else {
                     unreachable!()
@@ -8182,6 +8274,19 @@ fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
     Ok(())
 }
 
+fn convolution_type(
+    model: &Model,
+    ty: TypeId,
+) -> Result<(crate::sheaf_disk::convolution::Form, Rc<str>)> {
+    if let Kind::Convolution(form, name, _) = model.kind(ty) {
+        return Ok((*form, name.clone()));
+    }
+    Err(Error::plain(format!(
+        "expected a middle convolution vector, found {}",
+        model.type_name(ty)
+    )))
+}
+
 fn parabolic_type(
     model: &Model,
     ty: TypeId,
@@ -8390,6 +8495,9 @@ impl Checker<'_> {
                 )
             }
             TypeForm::SheafPage(name, grade) => self.model.sheaf_page_type(&name, grade),
+            TypeForm::Convolution(form, name) => {
+                Ok(self.model.convolution_type(name.text.into(), form)?.0)
+            }
             TypeForm::Parabolic(form, sequence) => {
                 Ok(self.model.parabolic_type(sequence.text.into(), form)?.0)
             }
@@ -9003,6 +9111,63 @@ impl Checker<'_> {
         Ok((ty, TypedForm::SetDependent(action, input)))
     }
 
+    fn convolution_expression(
+        &mut self,
+        expression: crate::sheaf_disk::convolution::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::sheaf_disk::convolution::{Expression, Form, Operation, Transfer};
+        let (expected, result, generator, input);
+        match expression {
+            Expression::Raw(name, rows) => {
+                let (ty, data) = self.model.convolution_type(name.text.into(), Form::Raw)?;
+                return Ok((ty, TypedForm::Constant(data.literal(self.model, rows)?)));
+            }
+            Expression::Generator(name, index) => {
+                let (ty, data) = self
+                    .model
+                    .convolution_type(name.text.into(), Form::Quotient)?;
+                let value =
+                    self.prime_generator(ty, data.dimension(Form::Quotient), index, name.span)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Map(name, input) => {
+                let input = self.expr(*input)?;
+                let (form, source) = convolution_type(self.model, input.ty)?;
+                let (ty, action) = Transfer::plan(self.model, &name, form, source)?;
+                return Ok((ty, TypedForm::ConvolutionMap(action, Box::new(input))));
+            }
+            Expression::Project(value) => {
+                (expected, result, generator, input) = (Form::Raw, Form::Quotient, None, value);
+            }
+            Expression::Section(value) => {
+                (expected, result, generator, input) = (Form::Quotient, Form::Raw, None, value);
+            }
+            Expression::Action(form, index, value) => {
+                (expected, result, generator, input) = (form, form, Some(index), value);
+            }
+        }
+        let input = self.expr(*input)?;
+        let (form, name) = convolution_type(self.model, input.ty)?;
+        if form != expected {
+            return Err(Error::new(
+                input.span,
+                format!("middle convolution operation requires {}", expected.name()),
+            ));
+        }
+        let (ty, data) = self.model.convolution_type(name, result)?;
+        let action = if let Some(index) = generator {
+            Operation::Action(data.generator(index)?)
+        } else if expected == Form::Raw {
+            Operation::Project
+        } else {
+            Operation::Section
+        };
+        Ok((
+            ty,
+            TypedForm::ConvolutionOperation(data, form, action, Box::new(input)),
+        ))
+    }
+
     fn parabolic_expression(
         &mut self,
         expression: crate::sheaf_disk::parabolic::Expression,
@@ -9507,7 +9672,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
-                    Kind::Parabolic(..) | Kind::DiskHom(..) => odd_ext::zero(),
+                    Kind::Convolution(..) | Kind::Parabolic(..) | Kind::DiskHom(..) => odd_ext::zero(),
                     Kind::ASOddDiff(..) | Kind::ASTwoDiff(..) => odd_ext::zero(),
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
@@ -10327,6 +10492,7 @@ impl Checker<'_> {
                     TypedForm::SheafLocalOperation(data, grade, operation, Box::new(input)),
                 ))
             }
+            ExprForm::Convolution(expression) => self.convolution_expression(expression),
             ExprForm::Parabolic(expression) => self.parabolic_expression(expression),
             ExprForm::Disk(expression) => self.disk_expression(expression),
             ExprForm::SheafConeApex(name, index) => {
@@ -10804,7 +10970,7 @@ impl Checker<'_> {
                     | Kind::ASOddDiff(_, p)
                     | Kind::ASTwoDiff(_, p)
                     | Kind::ASOddDeRham(_, p)
-                    | Kind::ASOddTate(_, p, _) | Kind::DiskHom(_,_,p) | Kind::Parabolic(_,_,p) => p,
+                    | Kind::ASOddTate(_, p, _) | Kind::DiskHom(_,_,p) | Kind::Parabolic(_,_,p) | Kind::Convolution(_,_,p) => p,
                     Kind::MixedChain(grade, _) | Kind::MixedHomology(grade) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
@@ -15967,6 +16133,7 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
+                        | Kind::Convolution(..)
                         | Kind::Parabolic(..)
                         | Kind::DiskHom(..)
                         | Kind::ASOddDiff(..)

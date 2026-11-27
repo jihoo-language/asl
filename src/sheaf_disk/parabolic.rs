@@ -239,7 +239,7 @@ impl Parabolic {
     }
 }
 
-fn signed_vector(
+pub(super) fn signed_vector(
     model: &mut Model,
     prime: Prime,
     expected: usize,
@@ -262,7 +262,7 @@ fn signed_vector(
         .collect())
 }
 
-fn dense(width: usize, support: &[Coordinate]) -> Vec<u32> {
+pub(super) fn dense(width: usize, support: &[Coordinate]) -> Vec<u32> {
     let mut out = vec![0; width];
     for &(index, value) in support {
         out[index] = value;

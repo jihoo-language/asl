@@ -274,22 +274,45 @@ impl SequenceMap {
             .map(|&j| self.vanishing[j].clone())
             .collect();
         for ((source, target), matrix) in left.terms.iter().zip(&right.terms).zip(&vanishing) {
-            let p = source.prime;
-            let u1 = Matrix::compose(model, p, &target.u, &self.a)?;
-            let u2 = Matrix::compose(model, p, matrix, &source.u)?;
-            let v1 = Matrix::compose(model, p, &target.v, matrix)?;
-            let v2 = Matrix::compose(model, p, &self.a, &source.v)?;
-            if !same_matrix(model, &u1, &u2)? || !same_matrix(model, &v1, &v2)? {
-                return Err(Error::plain(
-                    "transported disk sequence map does not intertwine both arrows",
-                ));
-            }
+            check_arrows(model, source, target, &self.a, matrix)?;
         }
         model.allocate(2 + vanishing.len())?;
         Ok(Self {
             source: names.0,
             target: names.1,
             a: self.a.clone(),
+            vanishing,
+        })
+    }
+
+    pub(crate) fn from_nearby_middle(
+        model: &mut Model,
+        names: (Rc<str>, Rc<str>),
+        left: &Sequence,
+        right: &Sequence,
+        nearby: Matrix,
+    ) -> Result<Self> {
+        if left.prime != right.prime || left.terms.len() != right.terms.len() {
+            return Err(Error::plain(
+                "middle disk sequence maps need matching strands and prime field",
+            ));
+        }
+        let p = left.prime;
+        let mut cells = 3 + nearby.cells();
+        let mut vanishing = Vec::with_capacity(left.terms.len());
+        for (source, target) in left.terms.iter().zip(&right.terms) {
+            let included = Matrix::compose(model, p, &nearby, &source.v)?;
+            let map = linear::factor_through(model, p, &target.v, source.vanishing, &included)?;
+            check_arrows(model, source, target, &nearby, &map)?;
+            cells += map.cells();
+            sheaf::check_cells(cells)?;
+            vanishing.push(Rc::new(map));
+        }
+        model.allocate(cells)?;
+        Ok(Self {
+            source: names.0,
+            target: names.1,
+            a: Rc::new(nearby),
             vanishing,
         })
     }
@@ -312,6 +335,26 @@ impl SequenceMap {
         )?;
         Ok(format!("{a} / {b}"))
     }
+}
+
+fn check_arrows(
+    model: &mut Model,
+    source: &Disk,
+    target: &Disk,
+    nearby: &Matrix,
+    vanishing: &Matrix,
+) -> Result<()> {
+    let p = source.prime;
+    let u1 = Matrix::compose(model, p, &target.u, nearby)?;
+    let u2 = Matrix::compose(model, p, vanishing, &source.u)?;
+    let v1 = Matrix::compose(model, p, &target.v, vanishing)?;
+    let v2 = Matrix::compose(model, p, nearby, &source.v)?;
+    if !same_matrix(model, &u1, &u2)? || !same_matrix(model, &v1, &v2)? {
+        return Err(Error::plain(
+            "transported disk sequence map does not intertwine both arrows",
+        ));
+    }
+    Ok(())
 }
 
 fn same_disk(model: &mut Model, a: &Disk, b: &Disk) -> Result<bool> {
