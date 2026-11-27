@@ -10,6 +10,7 @@ use crate::hyperelliptic_kummer_surface::rational_sparse::{
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+mod mapping_torus;
 mod smith;
 
 pub(crate) enum Expression {
@@ -26,6 +27,7 @@ pub(crate) enum Operation {
     Power(usize),
     Divided(usize),
     Exp(i128),
+    Difference(i128, usize),
 }
 
 impl Operation {
@@ -34,6 +36,7 @@ impl Operation {
             Self::Power(_) => "rvKSExteriorPower",
             Self::Divided(_) => "rvKSExteriorDivided",
             Self::Exp(_) => "rvKSExteriorExp",
+            Self::Difference(..) => "rvKSExteriorDifference",
         }
     }
 }
@@ -41,6 +44,8 @@ impl Operation {
 pub(crate) enum Command {
     Data(Label, usize),
     Smith(Label, usize, usize),
+    GroupSmith(Label, usize, i128, usize),
+    MappingTorus(Label, i128, usize),
     Coefficient(u64, Box<ParsedExpr>),
 }
 
@@ -142,10 +147,16 @@ impl Algebra {
         let degree = mask.count_ones() as usize;
         let bound = degree.min(EVEN_RANK - degree);
         match operation {
-            Operation::Power(j) | Operation::Divided(j) if j > bound => Ok(Form::zero()),
-            Operation::Power(0) | Operation::Divided(0) | Operation::Exp(0) => {
-                input.signed_map(model, |_| false)
+            Operation::Power(j) | Operation::Divided(j) | Operation::Difference(_, j)
+                if j > bound =>
+            {
+                Ok(Form::zero())
             }
+            Operation::Power(0)
+            | Operation::Divided(0)
+            | Operation::Exp(0)
+            | Operation::Difference(_, 0) => input.signed_map(model, |_| false),
+            Operation::Difference(0, _) => Ok(Form::zero()),
             Operation::Exp(_) if bound == 0 => input.signed_map(model, |_| false),
             Operation::Power(j) => {
                 let action = self.action(model, limit)?;
@@ -166,6 +177,14 @@ impl Algebra {
                 self.action(model, limit)?
                     .exterior_exp(model, m, input, degree > EVEN_RANK / 2)
             }
+            Operation::Difference(m, order) => self.action(model, limit)?.exterior_difference(
+                model,
+                m,
+                order,
+                input,
+                degree > EVEN_RANK / 2,
+                bound,
+            ),
         }
     }
 
@@ -258,6 +277,17 @@ impl Action {
     }
 
     fn exterior_exp(&self, model: &mut Model, m: i128, input: &Form, dual: bool) -> Result<Form> {
+        let terms = self.exponential_terms(model, m, input, dual)?;
+        Form::integral(model, &terms)
+    }
+
+    fn exponential_terms(
+        &self,
+        model: &mut Model,
+        m: i128,
+        input: &Form,
+        dual: bool,
+    ) -> Result<Terms> {
         let mut linear = self.exterior_columns(model, m, dual)?;
         let one = Integer::from_i128(1);
         for (i, column) in linear.iter_mut().enumerate() {
@@ -286,38 +316,94 @@ impl Action {
         input: &Form,
         dual: bool,
     ) -> Result<Form> {
+        let mut weights = vec![Integer::from_i128(0); order + 1];
+        weights[order] = Integer::from_i128(1);
         let linear = self.exterior_columns(model, 1, dual)?;
-        exterior_transform(model, input, dual, |model, mask, coefficient| {
-            let mut possible = bits(mask).filter(|&i| !linear[i].is_empty()).count();
-            if possible < order {
-                return Ok(Terms::new());
-            }
-            let mut powers = vec![Terms::new(); order + 1];
-            powers[0].insert(0, coefficient);
-            for (step, source) in bits(mask).enumerate() {
-                let mut next = vec![Terms::new(); order + 1];
-                possible -= usize::from(!linear[source].is_empty());
-                let minimum = order.saturating_sub(possible);
-                let identity = [(source, Integer::from_i128(1))];
-                for (j, partial) in powers.iter().enumerate().take(step.min(order) + 1) {
-                    if j >= minimum {
-                        wedge_column(model, &mut next[j], partial, &identity)?;
-                    }
-                    if j < order && j + 1 >= minimum {
-                        wedge_column(model, &mut next[j + 1], partial, &linear[source])?;
-                    }
-                }
-                let entries = next.iter().map(Terms::len).sum::<usize>();
-                if entries * (WORK_LIMBS + 3) > crate::complex::MAX_PIVOT_CELLS {
-                    return Err(Form::work_limit());
-                }
-                powers = next;
-            }
-            Ok(powers
-                .pop()
-                .expect("the requested divided power is present"))
-        })
+        exterior_polynomial(model, input, dual, &linear, order, &weights)
     }
+
+    fn exterior_difference(
+        &self,
+        model: &mut Model,
+        m: i128,
+        order: usize,
+        input: &Form,
+        dual: bool,
+        bound: usize,
+    ) -> Result<Form> {
+        if order == 1 {
+            let mut terms = self.exponential_terms(model, m, input, dual)?;
+            model.spend(input.terms().len() * WORK_LIMBS)?;
+            for &(key, coefficient) in input.terms() {
+                Form::accumulate(&mut terms, key, coefficient.resize()?.negate())?;
+            }
+            return Form::integral(model, &terms);
+        }
+        // The jth forward difference of t^l at zero counts surjections
+        // from an l-set onto a j-set. Scale the columns by m before expanding.
+        let zero = Integer::from_i128(0);
+        let mut row = vec![zero; order + 1];
+        row[0] = Integer::from_i128(1);
+        let mut weights = vec![zero; bound + 1];
+        for (degree, weight) in weights.iter_mut().enumerate().skip(1) {
+            let active = order.min(degree);
+            model.spend(active * WORK_LIMBS)?;
+            for j in (1..=active).rev() {
+                row[j] = row[j].add(row[j - 1])?.multiply(j as i128)?;
+            }
+            row[0] = zero;
+            *weight = row[order];
+        }
+        let linear = self.exterior_columns(model, m, dual)?;
+        exterior_polynomial(model, input, dual, &linear, order, &weights)
+    }
+}
+
+fn exterior_polynomial(
+    model: &mut Model,
+    input: &Form,
+    dual: bool,
+    linear: &super::RegularColumns,
+    lower: usize,
+    weights: &[Integer],
+) -> Result<Form> {
+    let terms = exterior_transform(model, input, dual, |model, mask, coefficient| {
+        let mut possible = bits(mask).filter(|&i| !linear[i].is_empty()).count();
+        if possible < lower {
+            return Ok(Terms::new());
+        }
+        let upper = possible.min(weights.len() - 1);
+        let mut powers = vec![Terms::new(); upper + 1];
+        powers[0].insert(0, coefficient);
+        for (step, source) in bits(mask).enumerate() {
+            let mut next = vec![Terms::new(); upper + 1];
+            possible -= usize::from(!linear[source].is_empty());
+            let minimum = lower.saturating_sub(possible);
+            let identity = [(source, Integer::from_i128(1))];
+            for (j, partial) in powers.iter().enumerate().take(step.min(upper) + 1) {
+                if j >= minimum {
+                    wedge_column(model, &mut next[j], partial, &identity)?;
+                }
+                if j < upper && j + 1 >= minimum {
+                    wedge_column(model, &mut next[j + 1], partial, &linear[source])?;
+                }
+            }
+            let entries = next.iter().map(Terms::len).sum::<usize>();
+            if entries * (WORK_LIMBS + 3) > crate::complex::MAX_PIVOT_CELLS {
+                return Err(Form::work_limit());
+            }
+            powers = next;
+        }
+        let mut output = Terms::new();
+        for (terms, &weight) in powers.into_iter().zip(weights).skip(lower) {
+            model.spend(terms.len() * WORK_LIMBS)?;
+            for (mask, value) in terms {
+                Form::accumulate(&mut output, mask, weight.multiply_wide(value)?)?;
+            }
+        }
+        Ok(output)
+    })?;
+    Form::integral(model, &terms)
 }
 
 fn exterior_transform(
@@ -325,7 +411,7 @@ fn exterior_transform(
     input: &Form,
     dual: bool,
     blade: impl Fn(&mut Model, u64, Integer) -> Result<Terms>,
-) -> Result<Form> {
+) -> Result<Terms> {
     let mut output = Terms::new();
     for &(mask, coefficient) in input.terms() {
         let coefficient: Integer = coefficient.resize()?;
@@ -343,7 +429,7 @@ fn exterior_transform(
             Form::accumulate(&mut output, key, value)?;
         }
     }
-    Form::integral(model, &output)
+    Ok(output)
 }
 
 fn wedge_column(

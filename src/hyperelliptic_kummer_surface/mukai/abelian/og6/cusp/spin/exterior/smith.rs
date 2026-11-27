@@ -11,6 +11,46 @@ use crate::model::Model;
 const PRIMES: [u128; 11] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31];
 type Factors = Vec<(Magnitude, u128)>;
 
+pub(super) struct Spectrum {
+    pub(super) dimension: u128,
+    pub(super) base: Magnitude,
+    pub(super) power: usize,
+    factors: Factors,
+}
+
+impl Spectrum {
+    pub(super) fn zero(dimension: u128) -> Self {
+        Self {
+            dimension,
+            base: Magnitude::from_small(1),
+            power: 0,
+            factors: Vec::new(),
+        }
+    }
+
+    pub(super) fn rank(&self) -> u128 {
+        self.factors.iter().map(|(_, count)| count).sum()
+    }
+
+    pub(super) fn free(&self) -> u128 {
+        self.dimension - self.rank()
+    }
+
+    pub(super) fn factor_text(&self, omit_unit: bool) -> String {
+        let mut entries = String::new();
+        for &(factor, count) in &self.factors {
+            if omit_unit && factor.small() == Some(1) {
+                continue;
+            }
+            if !entries.is_empty() {
+                entries.push_str(", ");
+            }
+            write!(entries, "({}, {count})", decimal(factor)).unwrap();
+        }
+        entries
+    }
+}
+
 impl Algebra {
     pub(crate) fn exterior_smith_report(
         &self,
@@ -20,26 +60,44 @@ impl Algebra {
         degree: usize,
         order: usize,
     ) -> Result<String> {
+        let spectrum = self.exterior_smith_spectrum(model, limit, degree, order)?;
+        let dimension = spectrum.dimension;
+        let rank = spectrum.rank();
+        let free = spectrum.free();
+        let power = spectrum.power;
+        let entries = spectrum.factor_text(false);
+        Ok(format!(
+            "rvKSExteriorSmith[{label},{degree},{order}] = dimension={dimension}, rank={rank}, kernel={free}, cokernel_free={free}, common_base={}, common_power={power}, factors=[{entries}]",
+            decimal(spectrum.base),
+        ))
+    }
+
+    pub(super) fn exterior_smith_spectrum(
+        &self,
+        model: &mut Model,
+        limit: &Limit,
+        degree: usize,
+        order: usize,
+    ) -> Result<Spectrum> {
         if degree > EVEN_RANK {
             return Err(Error::plain(
                 "Kuga–Satake cohomological degree must be between 0 and 64",
             ));
         }
         let degree_bound = degree.min(EVEN_RANK - degree);
-        model.spend(EVEN_RANK * (EVEN_RANK + 1) / 2)?;
-        let binomial = binomial();
-        let dimension = binomial[EVEN_RANK][degree];
+        let dimension = exterior_dimension(degree);
         let one = Magnitude::from_small(1);
         let (base, power, factors) = if order == 0 {
             (one, 0, vec![(one, dimension)])
         } else if order > degree_bound {
-            (one, 0, Vec::new())
+            return Ok(Spectrum::zero(dimension));
         } else {
             let spin = self.action(model, limit)?.smith(model)?;
             if order > spin.len() {
-                (one, 0, Vec::new())
+                return Ok(Spectrum::zero(dimension));
             } else if spin.iter().all(|d| *d == spin[0]) {
-                let factors = uniform(model, &binomial, degree_bound, order, spin.len())?;
+                model.spend(EVEN_RANK * (EVEN_RANK + 1) / 2)?;
+                let factors = uniform(model, &binomial(), degree_bound, order, spin.len())?;
                 (spin[0], order, factors)
             } else if degree_bound <= 2 {
                 (
@@ -53,20 +111,23 @@ impl Algebra {
                 ));
             }
         };
-        let rank: u128 = factors.iter().map(|(_, count)| count).sum();
-        let free = dimension - rank;
-        let mut entries = String::new();
-        for (i, (factor, count)) in factors.into_iter().enumerate() {
-            if i != 0 {
-                entries.push_str(", ");
-            }
-            write!(entries, "({}, {count})", decimal(factor)).unwrap();
-        }
-        Ok(format!(
-            "rvKSExteriorSmith[{label},{degree},{order}] = dimension={dimension}, rank={rank}, kernel={free}, cokernel_free={free}, common_base={}, common_power={power}, factors=[{entries}]",
-            decimal(base),
-        ))
+        Ok(Spectrum {
+            dimension,
+            base,
+            power,
+            factors,
+        })
     }
+}
+
+pub(super) fn exterior_dimension(degree: usize) -> u128 {
+    if degree > EVEN_RANK {
+        return 0;
+    }
+    let degree = degree.min(EVEN_RANK - degree);
+    (0..degree).fold(1, |value, i| {
+        value * (EVEN_RANK - i) as u128 / (i + 1) as u128
+    })
 }
 
 type Binomial = [[u128; EVEN_RANK + 1]; EVEN_RANK + 1];

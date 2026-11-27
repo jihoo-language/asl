@@ -3183,22 +3183,36 @@ impl<'src> Parser<'src> {
         use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Command;
         self.advance()?;
         self.expect(Token::LBracket)?;
-        let command = if matches!(operation, "rvKSExteriorData" | "rvKSExteriorSmith") {
-            let name = self.label()?;
-            self.expect(Token::Comma)?;
-            let degree = self.number()?.0;
-            let command = if operation == "rvKSExteriorSmith" {
-                self.expect(Token::Comma)?;
-                Command::Smith(name, degree, self.number()?.0)
-            } else {
-                Command::Data(name, degree)
-            };
-            self.expect(Token::RBracket)?;
-            command
-        } else {
+        let command = if operation == "rvKSExteriorCoeff" {
             let mask = self.ks_exterior_mask()?;
             self.expect(Token::RBracket)?;
             Command::Coefficient(mask, Box::new(self.paren_expr(0)?))
+        } else {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let command = if operation == "rvKSMappingTorus" {
+                let m = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+                self.expect(Token::Comma)?;
+                Command::MappingTorus(name, m, self.number()?.0)
+            } else {
+                let degree = self.number()?.0;
+                match operation {
+                    "rvKSExteriorSmith" => {
+                        self.expect(Token::Comma)?;
+                        Command::Smith(name, degree, self.number()?.0)
+                    }
+                    "rvKSExteriorGroupSmith" => {
+                        self.expect(Token::Comma)?;
+                        let m =
+                            self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+                        self.expect(Token::Comma)?;
+                        Command::GroupSmith(name, degree, m, self.number()?.0)
+                    }
+                    _ => Command::Data(name, degree),
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
         };
         Ok(StatementForm::KSExterior(Box::new(command)))
     }
@@ -3251,6 +3265,12 @@ impl<'src> Parser<'src> {
                 let action = match operation {
                     "rvKSExteriorPower" => Operation::Power(self.number()?.0),
                     "rvKSExteriorDivided" => Operation::Divided(self.number()?.0),
+                    "rvKSExteriorDifference" => {
+                        let m =
+                            self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+                        self.expect(Token::Comma)?;
+                        Operation::Difference(m, self.number()?.0)
+                    }
                     _ => Operation::Exp(
                         self.signed_wide("a signed integer", "Kuga–Satake exterior exponent")?,
                     ),
@@ -7655,7 +7675,11 @@ impl<'src> Parser<'src> {
                 self.og6_spin_statement(operation, span)?
             }
             Token::Word(
-                operation @ ("rvKSExteriorData" | "rvKSExteriorSmith" | "rvKSExteriorCoeff"),
+                operation @ ("rvKSExteriorData"
+                | "rvKSExteriorSmith"
+                | "rvKSExteriorGroupSmith"
+                | "rvKSMappingTorus"
+                | "rvKSExteriorCoeff"),
             ) => self.ks_exterior_statement(operation)?,
             Token::Word(
                 operation @ ("rvKSVolumeSquare" | "rvKSEndCoeff" | "rvKSEndTrace"
@@ -13550,6 +13574,7 @@ impl<'src> Parser<'src> {
                         | "rvKSExteriorScale"
                         | "rvKSExteriorPower"
                         | "rvKSExteriorDivided"
+                        | "rvKSExteriorDifference"
                         | "rvKSExteriorExp"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
