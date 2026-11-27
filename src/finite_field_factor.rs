@@ -53,16 +53,19 @@ pub(crate) fn factor_squarefree(
                 factors.push(block);
                 continue;
             }
-            // Cantor–Zassenhaus separates the factors on which a candidate
-            // has quadratic character +1. Charge each attempt to the work
-            // budget, including attempts that leave the block intact.
+            // Cantor–Zassenhaus separates by quadratic character or, in
+            // characteristic two, by absolute trace. Charge every attempt.
             loop {
                 model.spend(block.len() * field.cells())?;
                 let candidate = candidates.polynomial(field, block.len() - 1);
-                let sign = quadratic_sign(model, field, q, &block, degree, &candidate)?;
-                let positive = poly::sum(model, field, &sign, &[field.one()], true)?;
+                let splitter = if field.ring.prime() == 2 {
+                    binary_trace(model, field, &block, degree, candidate)?
+                } else {
+                    let sign = quadratic_sign(model, field, q, &block, degree, &candidate)?;
+                    poly::sum(model, field, &sign, &[field.one()], true)?
+                };
                 model.spend(block.len() * field.cells())?;
-                let factor = poly::monic_gcd(model, field, block.clone(), positive)?;
+                let factor = poly::monic_gcd(model, field, block.clone(), splitter)?;
                 if factor.len() > 1 && factor.len() < block.len() {
                     pending.push(poly::exact_divide(model, field, &block, &factor)?);
                     pending.push(factor);
@@ -73,6 +76,21 @@ pub(crate) fn factor_squarefree(
         Ok(())
     })?;
     Ok(factors)
+}
+
+fn binary_trace(
+    model: &mut Model,
+    field: Field<'_>,
+    block: &[Scalar],
+    degree: usize,
+    mut power: Polynomial,
+) -> Result<Polynomial> {
+    let mut trace = power.clone();
+    for _ in 1..field.ring.degree() * degree {
+        power = poly::multiply_mod(model, field, &power, &power, block)?;
+        trace = poly::sum(model, field, &trace, &power, false)?;
+    }
+    Ok(trace)
 }
 
 struct Candidates(u64);

@@ -44,6 +44,10 @@ impl Order {
         Magnitude::from_small(self.discriminant.unsigned_abs())
     }
 
+    pub(crate) fn discriminant(self) -> i128 {
+        self.discriminant
+    }
+
     fn parity(self) -> i128 {
         self.discriminant.rem_euclid(2)
     }

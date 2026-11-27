@@ -164,6 +164,10 @@ pub(crate) struct Certificate {
 }
 
 impl Certificate {
+    pub(crate) fn discriminant(&self) -> i128 {
+        self.discriminant
+    }
+
     pub(crate) fn report(&self, name: &str) -> String {
         let Element {
             constant,

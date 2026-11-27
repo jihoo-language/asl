@@ -1570,6 +1570,14 @@ For certified Frobenius $\pi=c+b\omega$ with trace $a$ and norm $q$, `rvECEndUni
 
 `rvECEndCanonicalPhi[M,W]` evaluates $\Phi_p(J,\sigma J)$ in the full ring using integral coefficients at available levels. The short Weierstrass certificates start at $p=5$, so this check applies there at $p=5,7$. `rvModularPolyWittEval[ell](x,y)` also evaluates the integral polynomial in a shared named unramified ring at levels $2,3,5,7$. See Serre and Tate, *Good reduction of abelian varieties*, Katz, *Serre–Tate local moduli*, and Satoh, *The canonical lift of an ordinary elliptic curve over a finite field and its point counting*. [Canonical CM lift example](examples/elliptic-serre-tate-canonical-lifts.asl)
 
+#### Split-prime CM Artin reciprocity
+
+`rvCMArtinPrime[O,p,s];` reports the norm-$p$ prime ideal through its form $[p,b,(b^2-D)/(4p)]$, its reduced class and its order. Here $p$ must split and be prime to the order discriminant $D$. For odd $p$, orientation $s=0$ takes the smaller square root of $D$ modulo $p$ and chooses the signed representative with the parity of $D$. For split $p=2$, it takes $b=1$. Orientation $s=1$ negates $b$, exchanging the two ideals $\langle p,(-b+\sqrt D)/2\rangle$. `rvCMArtinClass[O,p,s]` returns the proper class in `RVCMClass(O)`.
+
+`rvCMArtinTranslate[O,p,s,n](x)` acts on the class torsor by the $n$th power of this ideal class for signed integer $n$. `rvCMArtinOrbit[O,p,s](x);` gives its cycle from a chosen class. Exchanging the prime orientation reverses the cycle. Identifying this abstract torsor with geometric roots requires a CM embedding and an origin. The two orientations have the same orbit lengths.
+
+`rvCMArtinFactors[H,F];` factors the integral ring class polynomial `H` in the named precision-one residue field `F`. It checks squarefreeness and reconstructs the reduction from the monic factors. If the prime ideal class has order $f$, each irreducible factor over $\mathbb F_{p^r}$ has degree $f/\gcd(f,r)$. The report checks this degree and the predicted factor count against the actual factorization. Coefficients are listed in ascending degree with the coordinates of `F`. `rvCMArtinLift[M,W];` verifies the exact Frobenius period of the canonical lift of a certified ordinary $j$ in the compatible unramified ring `W`. See Cox, *Primes of the Form $x^2+ny^2$*, for the Artin map on ring class fields and its CM interpretation. [CM Artin reciprocity example](examples/cm-artin-reciprocity.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

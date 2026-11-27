@@ -1017,6 +1017,7 @@ pub(crate) enum ExprForm {
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
     CMClassPolynomial(Box<crate::cm_class_poly::Expression>),
+    CMArtin(Box<crate::cm_artin::Expression>),
     ECEndOrder(Box<crate::elliptic_end_order::Expression>),
     ECEndCanonical(Box<crate::elliptic_end_order::canonical::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
@@ -1247,6 +1248,7 @@ pub(crate) enum StatementForm {
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
     CMClassPolynomial(Box<crate::cm_class_poly::Statement>),
+    CMArtin(Box<crate::cm_artin::Statement>),
     ECEndOrder(Box<crate::elliptic_end_order::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
@@ -3852,6 +3854,65 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::ECEndOrder(Box::new(expression)), depth)
+    }
+
+    fn cm_artin_address(&mut self) -> Result<crate::cm_artin::Address> {
+        let order = self.label()?;
+        self.expect(Token::Comma)?;
+        let p = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let (orientation, span) = self.number()?;
+        if orientation > 1 {
+            return Err(Error::new(span, "CM Artin orientation must be 0 or 1"));
+        }
+        Ok(crate::cm_artin::Address(order, p, orientation == 1))
+    }
+
+    fn cm_artin_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::cm_artin::Statement;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let statement = if matches!(name, "rvCMArtinPrime" | "rvCMArtinOrbit") {
+            let address = self.cm_artin_address()?;
+            self.expect(Token::RBracket)?;
+            if name == "rvCMArtinPrime" {
+                Statement::Prime(address)
+            } else {
+                Statement::Orbit(address, Box::new(self.paren_expr(0)?))
+            }
+        } else {
+            let first = self.label()?;
+            self.expect(Token::Comma)?;
+            let field = self.label()?;
+            self.expect(Token::RBracket)?;
+            if name == "rvCMArtinFactors" {
+                Statement::Factors(first, field)
+            } else {
+                Statement::Lift(first, field)
+            }
+        };
+        Ok(StatementForm::CMArtin(Box::new(statement)))
+    }
+
+    fn cm_artin_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::cm_artin::Expression;
+        self.expect(Token::LBracket)?;
+        let address = self.cm_artin_address()?;
+        let (expression, depth) = if name == "rvCMArtinClass" {
+            self.expect(Token::RBracket)?;
+            (Expression::Class(address), 0)
+        } else {
+            self.expect(Token::Comma)?;
+            let exponent = self.signed_wide("a signed exponent", "CM Artin exponent")?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (
+                Expression::Translate(address, exponent, Box::new(input)),
+                depth,
+            )
+        };
+        expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
     }
 
     fn cm_class_poly_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -7080,6 +7141,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(
+                name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
+            ) => self.cm_artin_statement(name)?,
             Token::Word(
                 name @ ("rvecendorder" | "rvECEndData" | "rvECEndCheck" | "rvECEndTrace"
                 | "rvECEndNorm"),
@@ -12714,6 +12778,11 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.cm_class_poly_expression(&name.text, span, nest);
+                }
+                if matches!(name.text.as_str(), "rvCMArtinClass" | "rvCMArtinTranslate")
+                    && self.token() == Token::LBracket
+                {
+                    return self.cm_artin_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

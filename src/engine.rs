@@ -12,6 +12,7 @@ use crate::bp_triple;
 use crate::bp_vpage;
 use crate::bracket;
 use crate::ce;
+use crate::cm_artin;
 use crate::cm_class_poly;
 use crate::cobar;
 use crate::cobar_squares;
@@ -757,6 +758,7 @@ enum TypedForm {
     HilbertCohomologySchur(u128, u128, Vec<u128>, Box<TypedExpr>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     CMClass(cm_ring::Order, CMClassAction),
+    CMArtin(cm_ring::Order, cm_ring::Class, Box<TypedExpr>),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
     EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
     ECEnd(ECEndAction),
@@ -1992,6 +1994,7 @@ impl Engine {
             StatementForm::CMClassPolynomial(command) => {
                 return self.cm_class_poly_statement(*command)
             }
+            StatementForm::CMArtin(command) => return self.cm_artin_statement(*command).map(Some),
             StatementForm::ECEndOrder(command) => return self.ec_end_order_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
@@ -5160,6 +5163,62 @@ impl Engine {
             }
         };
         Ok(Some(report))
+    }
+
+    fn cm_artin_statement(&mut self, statement: cm_artin::Statement) -> Result<String> {
+        use cm_artin::Statement;
+        match statement {
+            Statement::Prime(address) => {
+                let (order, ideal) = address.ideal(&mut self.model)?;
+                ideal.report(
+                    &mut self.model,
+                    order,
+                    &address.0.text,
+                    address.1,
+                    address.2,
+                )
+            }
+            Statement::Orbit(address, input) => {
+                let (order, ideal) = address.ideal(&mut self.model)?;
+                let checker = &mut self.checker();
+                let required = checker.model.cm_class_type(&address.0)?;
+                let input = checker.expr(*input)?;
+                checker.require_type(required, &input, "CM Artin orbit input")?;
+                let Value::CMClass(element) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                ideal.orbit(
+                    &mut self.model,
+                    order,
+                    &address.0.text,
+                    address.1,
+                    address.2,
+                    element,
+                )
+            }
+            Statement::Factors(polynomial, field) => {
+                let class_polynomial = self.model.cm_class_polynomial(&polynomial)?;
+                let ring = self.model.rv_unram(&field)?;
+                cm_artin::factor_report(
+                    &mut self.model,
+                    &class_polynomial,
+                    &ring,
+                    &polynomial.text,
+                    &field.text,
+                )
+            }
+            Statement::Lift(certificate, ring) => {
+                let value = self.model.ec_end_order(&certificate.text)?;
+                let unramified = self.model.rv_unram(&ring)?;
+                cm_artin::lift_report(
+                    &mut self.model,
+                    value,
+                    unramified,
+                    &certificate.text,
+                    &ring.text,
+                )
+            }
+        }
     }
 
     fn cm_class_poly_statement(
@@ -9545,6 +9604,16 @@ impl Engine {
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
+            TypedForm::CMArtin(order, translation, input) => {
+                let Value::CMClass(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMClass(order.compose(
+                    &mut self.model,
+                    *translation,
+                    input,
+                )?))
+            }
             TypedForm::EllipticModular(field, prime, action) => {
                 self.eval_elliptic_modular(field, *prime, action)
             }
@@ -15458,6 +15527,7 @@ impl Checker<'_> {
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::CMClassPolynomial(expression) => self.cm_class_poly_expression(*expression),
+            ExprForm::CMArtin(expression) => self.cm_artin_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
             ExprForm::ECEndCanonical(expression) => self.ec_end_canonical_expression(*expression),
             ExprForm::CMNeighbor(expression) => {
@@ -22213,6 +22283,27 @@ impl Checker<'_> {
                     TypedForm::ECEnd(ECEndAction::Conjugate(order, Box::new(input))),
                 ))
             }
+        }
+    }
+
+    fn cm_artin_expression(
+        &mut self,
+        expression: cm_artin::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_artin::Expression;
+        let (address, translation) = match expression {
+            Expression::Class(address) => (address, None),
+            Expression::Translate(address, exponent, input) => (address, Some((exponent, input))),
+        };
+        let (order, ideal) = address.ideal(self.model)?;
+        let ty = self.model.cm_class_type(&address.0)?;
+        if let Some((exponent, input)) = translation {
+            let input = self.expr(*input)?;
+            self.require_type(ty, &input, "CM Artin translation argument")?;
+            let translation = order.signed_power(self.model, exponent, ideal.class)?;
+            Ok((ty, TypedForm::CMArtin(order, translation, Box::new(input))))
+        } else {
+            Ok((ty, TypedForm::Constant(Value::CMClass(ideal.class))))
         }
     }
 
