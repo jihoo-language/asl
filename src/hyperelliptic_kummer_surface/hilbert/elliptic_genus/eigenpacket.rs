@@ -86,6 +86,10 @@ impl Packet {
         })
     }
 
+    pub(super) fn polynomial(&self) -> &[Integer] {
+        &self.polynomial
+    }
+
     pub(crate) fn degree(&self) -> usize {
         self.polynomial.len() - 1
     }
@@ -100,11 +104,17 @@ impl Packet {
     }
 
     pub(crate) fn image(&self, model: &mut Model, operator: &Operator) -> Result<Value> {
+        self.image_element(model, operator)?.persist(model)
+    }
+
+    pub(super) fn image_element(&self, model: &mut Model, operator: &Operator) -> Result<Element> {
         if let Some(scalar) = operator.scalar() {
-            return self.constant(model, scalar, Magnitude::from_small(1));
+            let mut value = Element::zero(self.degree());
+            value.numerator[0] = canonical(scalar);
+            return Ok(value);
         }
         if operator.compare(model, &self.generator)?.is_eq() {
-            return self.element_generator(model);
+            return Ok(self.generator_element());
         }
         let mut trace_cache = hecke::Support::new();
         let mut mixed = operator.clone();
@@ -115,17 +125,21 @@ impl Packet {
                 mixed = mixed.multiply(model, self.weight, &self.generator)?;
             }
         }
-        self.gram.solve(model, traces)?.persist(model)
+        self.gram.solve(model, traces)
     }
 
     pub(crate) fn element_generator(&self, model: &mut Model) -> Result<Value> {
+        self.generator_element().persist(model)
+    }
+
+    fn generator_element(&self) -> Element {
         let mut value = Element::zero(self.degree());
         if self.degree() == 1 {
             value.numerator[0] = canonical(self.polynomial[1].negate());
         } else {
             value.numerator[1] = integer(1);
         }
-        value.persist(model)
+        value
     }
 
     pub(crate) fn scalar(&self, model: &mut Model, n: i128, d: u128) -> Result<Value> {
@@ -320,6 +334,10 @@ impl Element {
             .map(|(&a, &b)| compare_integers(a, b))
             .find(|order| !order.is_eq())
             .unwrap_or(Ordering::Equal))
+    }
+
+    pub(super) fn fraction_parts(&self) -> (&[Integer], Magnitude) {
+        (&self.numerator, self.denominator)
     }
 
     pub(crate) fn coordinates(&self) -> impl Iterator<Item = String> + '_ {

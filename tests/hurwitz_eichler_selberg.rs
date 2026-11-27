@@ -641,3 +641,205 @@ fn eigenpacket_certificate_detects_repeated_eigenvalues_and_nominal_mismatch() {
         assert!(error.contains(expected), "{source}: {error}");
     }
 }
+
+#[test]
+fn sturm_certifies_classical_congruences_and_distinguishes_residual_branches() {
+    assert_eq!(
+        stdout(example("hecke-eisenstein-congruences")),
+        concat!(
+            "rvHeckeEisensteinSturm[R] = congruent modulo 691 (Sturm bound 1)\n",
+            "rvHeckeEisensteinSturm[S16] = congruent modulo 3617 (Sturm bound 1)\n",
+            "rvHeckeEisensteinSturm[Good] = congruent modulo 103 (Sturm bound 2)\n",
+            "rvHeckeEisensteinSturm[Other] = mismatch at q^2 modulo 103 (eigenform 70, Eisenstein 83; Sturm bound 2)\n",
+            "rvHeckeEisensteinSturm[Large] = congruent modulo 2294797 (Sturm bound 2)\n",
+            "PrimeScalar(103){96}\n",
+        )
+    );
+    assert_eq!(
+        stdout(interpret(
+            "rvheckepacket W(rvHeckeT[24,2]);
+             rvheckeresidual R[W,2294797,791659]; rvHeckeEisensteinSturm[R];
+             rvheckepacket D(rvHeckeT[12,2]);
+             rvheckeresidual X[D,13,-24]; rvHeckeEisensteinSturm[X];
+             rvheckeresidual Y[D,17,-24]; rvHeckeEisensteinSturm[Y];"
+        )),
+        concat!(
+            "rvHeckeEisensteinSturm[R] = mismatch at q^2 modulo 2294797 (eigenform 791659, Eisenstein 1504218; Sturm bound 2)\n",
+            "rvHeckeEisensteinSturm[X] = unavailable modulo 13: Eisenstein coefficient q^0 is nonintegral\n",
+            "rvHeckeEisensteinSturm[Y] = mismatch at q^0 modulo 17 (eigenform 0, Eisenstein 14; Sturm bound 1)\n",
+        )
+    );
+}
+
+fn bernoulli_by_recurrence(weight: usize) -> (i128, i128) {
+    fn gcd(mut a: i128, mut b: i128) -> i128 {
+        a = a.abs();
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    }
+    fn reduce(a: i128, b: i128) -> (i128, i128) {
+        let g = gcd(a, b);
+        (a / g, b / g)
+    }
+    // Independent Bernoulli recurrence from t/(exp(t)-1).
+    let mut numbers = vec![(1, 1)];
+    for n in 1..=weight {
+        let (mut a, mut b) = (0, 1);
+        let mut binomial = 1;
+        for (j, &(x, y)) in numbers.iter().enumerate() {
+            (a, b) = reduce(a * y + b * binomial * x, b * y);
+            binomial = binomial * (n + 1 - j) as i128 / (j + 1) as i128;
+        }
+        numbers.push(reduce(-a, b * (n + 1) as i128));
+    }
+    numbers[weight]
+}
+
+#[test]
+fn residual_bernoulli_constants_match_independent_rational_recurrence() {
+    let mut program = String::new();
+    let mut expected = String::new();
+    for weight in (4..=26).step_by(2) {
+        let (mut a, mut b) = bernoulli_by_recurrence(weight);
+        a = -a;
+        b *= 2 * weight as i128;
+        for p in [5, 7, 11, 13, 17, 19, 103, 691] {
+            let (mut num, mut den) = (a, b);
+            while den % p == 0 && num % p == 0 {
+                (num, den) = (num / p, den / p);
+            }
+            let source = format!("show rvHeckeEisensteinCoeff[{weight},{p},0];");
+            if den % p == 0 {
+                assert!(
+                    diagnostic(interpret(&source)).contains("is nonintegral"),
+                    "{source}"
+                );
+            } else {
+                let result = (0..p).find(|r| (r * den - num) % p == 0).unwrap();
+                writeln!(program, "{source}").unwrap();
+                writeln!(expected, "PrimeScalar({p}){{{result}}}").unwrap();
+            }
+        }
+    }
+    assert_eq!(stdout(interpret(&program)), expected);
+}
+
+#[test]
+fn residual_fourier_values_match_independent_modular_form_expansions_beyond_sturm() {
+    let bound = 14;
+    let d = delta(bound);
+    let e = e4(bound);
+    let e_cubed = convolve(&convolve(&e, &e, bound), &e, bound);
+    let w16 = convolve(&d, &e, bound);
+    let f24 = convolve(&d, &e_cubed, bound);
+    let g24 = convolve(&d, &d, bound);
+    let mut program = String::from(
+        "rvheckepacket D(rvHeckeT[12,2]);
+         rvheckepacket M(rvHeckeT[16,2]);
+         rvheckepacket W(rvHeckeT[24,2]);
+         rvheckeresidual Alpha[D,691,-24];
+         rvheckeresidual Beta[M,3617,216];
+         rvheckeresidual Gamma[W,103,83];
+         rvheckeresidual Other[W,103,70];
+         rvheckeresidual Large[W,2294797,1504218];",
+    );
+    let mut expected = String::new();
+    for n in 1..=bound {
+        for (name, weight, p, a_n, congruent) in [
+            ("Alpha", 12, 691, d[n], true),
+            ("Beta", 16, 3617, w16[n], true),
+            ("Gamma", 24, 103, f24[n] + (83 - 696) * g24[n], true),
+            ("Other", 24, 103, f24[n] + (70 - 696) * g24[n], false),
+            (
+                "Large",
+                24,
+                2294797,
+                f24[n] + (1504218 - 696) * g24[n],
+                true,
+            ),
+        ] {
+            writeln!(program, "show rvHeckeResidualCoeff[{name},{n}];").unwrap();
+            let residue = a_n.rem_euclid(p);
+            writeln!(expected, "PrimeScalar({p}){{{residue}}}").unwrap();
+            if congruent {
+                let sigma = (1..=n)
+                    .filter(|d| n.is_multiple_of(*d))
+                    .map(|d| (d as i128).pow(weight - 1))
+                    .sum::<i128>();
+                assert_eq!(residue, sigma.rem_euclid(p), "{name} coefficient {n}");
+                writeln!(program, "assert rvHeckeResidualCoeff[{name},{n}] == rvHeckeEisensteinCoeff[{weight},{p},{n}];").unwrap();
+            }
+        }
+    }
+    assert_eq!(stdout(interpret(&program)), expected);
+}
+
+#[test]
+fn hensel_evaluation_preserves_integral_hecke_values_with_nonunit_coordinates() {
+    let source = "
+        let a = rvHeckeT[36,2];
+        rvheckepacket W(add(rvHeckeMul(a,a),rvHeckeScale[-4](a)));
+        rvheckeresidual R[W,11,10];
+        let value = rvHeckeEigenCoeff[W,2];
+        show value;
+        show rvHeckeResidualReduce[R](value);
+        show rvHeckeResidualCoeff[R,2];
+        rvheckepacket Q(rvHeckeT[24,2]);
+        rvheckeresidual S[Q,103,83];
+        let x = rvHeckeEigenGenerator[Q];
+        let p2 = rvHeckeEigenMul(add(x,rvHeckeEigenScalar[Q,-83,1]),rvHeckeEigenScalar[Q,1,103]);
+        let p3 = rvHeckeEigenMul(add(x,rvHeckeEigenScalar[Q,-4306,1]),rvHeckeEigenScalar[Q,1,10609]);
+        show rvHeckeResidualReduce[S](p2);
+        show rvHeckeResidualReduce[S](p3);";
+    let report = stdout(interpret(source));
+    let mut lines = report.lines();
+    let power_basis = lines.next().unwrap();
+    let denominator = power_basis
+        .rsplit_once('/')
+        .unwrap()
+        .1
+        .strip_suffix('}')
+        .unwrap()
+        .parse::<i128>()
+        .unwrap();
+    assert_eq!(denominator % 11, 0, "{power_basis}");
+    assert_eq!(
+        lines.collect::<Vec<_>>(),
+        [
+            "PrimeScalar(11){7}",
+            "PrimeScalar(11){7}",
+            "PrimeScalar(103){41}",
+            "PrimeScalar(103){16}",
+        ]
+    );
+}
+
+#[test]
+fn residual_maps_reject_invalid_roots_nominal_mismatches_and_precision_limits() {
+    let delta_packet = "rvheckepacket D(rvHeckeT[12,2]);";
+    let cubic =
+        "let a = rvHeckeT[36,2]; rvheckepacket W(add(rvHeckeMul(a,a),rvHeckeScale[-4](a)));";
+    for (source, expected) in [
+        (format!("{delta_packet} rvheckeresidual R[D,689,-24];"), "not prime"),
+        (format!("{delta_packet} rvheckeresidual R[D,3,-24];"), "prime at least 5"),
+        (format!("{delta_packet} rvheckeresidual R[D,691,24];"), "is not a root"),
+        (format!("{cubic} rvheckeresidual R[W,11,8];"), "root must be simple"),
+        (
+            format!("{delta_packet} rvheckeresidual R[D,691,-24]; rvheckepacket E(rvHeckeT[12,2]); show rvHeckeResidualReduce[R](rvHeckeEigenCoeff[E,2]);"),
+            "RVHeckeEigen(D)",
+        ),
+        (
+            format!("{delta_packet} rvheckeresidual R[D,691,-24]; show rvHeckeResidualReduce[R](rvHeckeEigenScalar[D,1,691]);"),
+            "is nonintegral",
+        ),
+        (
+            format!("{delta_packet} rvheckeresidual R[D,691,-24]; show rvHeckeResidualReduce[R](rvHeckeEigenScalar[D,1,{}]);", 691_i128.pow(7)),
+            "prime-power precision",
+        ),
+    ] {
+        let error = diagnostic(interpret(&source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}

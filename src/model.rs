@@ -33,6 +33,7 @@ use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynomial as period;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::residual_hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
@@ -686,6 +687,7 @@ pub(crate) struct Model {
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
     elliptic_gluings: HashMap<String, Rc<crate::elliptic_gluing::Gluing>>,
     hecke_eigenpackets: HashMap<String, Rc<eigenpacket::Packet>>,
+    hecke_residuals: HashMap<String, Rc<residual_hecke::Specialization>>,
     period_bases: HashMap<period::Grade, Rc<period::Basis>>,
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
@@ -806,6 +808,7 @@ impl Model {
             bielliptic_quotients: HashMap::new(),
             elliptic_gluings: HashMap::new(),
             hecke_eigenpackets: HashMap::new(),
+            hecke_residuals: HashMap::new(),
             period_bases: HashMap::new(),
             siegel_maass_forms: HashMap::new(),
             siegel_chambers: HashMap::new(),
@@ -4533,6 +4536,47 @@ impl Model {
     pub(crate) fn hecke_eigen_type(&mut self, name: &Label) -> Result<TypeId> {
         self.hecke_eigenpacket(name)?;
         self.inhabited_type(Kind::HeckeEigen(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn register_hecke_residual(
+        &mut self,
+        name: Label,
+        source: Label,
+        prime: usize,
+        root: i128,
+    ) -> Result<()> {
+        if self.hecke_residuals.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "residual Hecke specialization '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let packet = self.hecke_eigenpacket(&source)?;
+        let cells = name.text.len() + source.text.len() + 8;
+        let specialization = residual_hecke::Specialization::new(self, source, packet, prime, root)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(cells)?;
+        self.hecke_residuals
+            .insert(name.text, Rc::new(specialization));
+        Ok(())
+    }
+
+    pub(crate) fn hecke_residual(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<residual_hecke::Specialization>> {
+        self.hecke_residuals
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown residual Hecke specialization '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn period_type(&mut self, grade: period::Grade) -> Result<TypeId> {

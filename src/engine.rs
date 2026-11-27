@@ -43,7 +43,7 @@ use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
-    eigenpacket, hecke, period_polynomial as period,
+    eigenpacket, hecke, period_polynomial as period, residual_hecke,
 };
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
@@ -814,6 +814,8 @@ enum TypedForm {
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     SiegelReflect(usize, Box<TypedExpr>),
     HeckeEigenImage(Rc<eigenpacket::Packet>, Box<TypedExpr>),
+    HeckeResidualReduce(Rc<residual_hecke::Specialization>, Box<TypedExpr>),
+    HeckeResidualCoefficient(Rc<residual_hecke::Specialization>, u128),
     HeckeEigenCoefficient(Rc<eigenpacket::Packet>, hecke::Operator),
     HeckeEigenMultiply(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
     HeckeEigenNegate(Box<TypedExpr>),
@@ -2064,6 +2066,7 @@ impl Engine {
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
             StatementForm::PeriodPolynomial(report) => return self.period_statement(report),
+            StatementForm::HeckeResidual(command) => return self.hecke_residual_statement(command),
             StatementForm::HeckeEigen(command) => return self.hecke_eigen_statement(command),
             StatementForm::ModularHecke(query, input) => {
                 let input = self.checker().expr(*input)?;
@@ -5643,6 +5646,23 @@ impl Engine {
                 basis
                     .hecke_matrix(&mut self.model, grade, &operator)
                     .map(Some)
+            }
+        }
+    }
+
+    fn hecke_residual_statement(
+        &mut self,
+        command: residual_hecke::Statement,
+    ) -> Result<Option<String>> {
+        match command {
+            residual_hecke::Statement::Declare(name, source, prime, root) => {
+                self.model
+                    .register_hecke_residual(name, source, prime, root)?;
+                Ok(None)
+            }
+            residual_hecke::Statement::Sturm(name) => {
+                let specialization = self.model.hecke_residual(&name)?;
+                specialization.sturm(&mut self.model, &name.text).map(Some)
             }
         }
     }
@@ -10034,6 +10054,17 @@ impl Engine {
                     .hecke(&mut self.model, *grade, &operator)?
                     .persist(&mut self.model)
             }
+            TypedForm::HeckeResidualReduce(specialization, input) => {
+                let Value::HeckeEigen(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                specialization
+                    .reduce(&mut self.model, &value)
+                    .map(Value::PrimeScalar)
+            }
+            TypedForm::HeckeResidualCoefficient(specialization, index) => specialization
+                .fourier(&mut self.model, *index)
+                .map(Value::PrimeScalar),
             TypedForm::HeckeEigenImage(packet, input) => {
                 let Value::ModularHecke(operator) = self.eval(input)? else {
                     unreachable!()
@@ -15819,6 +15850,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::PeriodPolynomial(operation) => self.period_expression(operation),
+            ExprForm::HeckeResidual(operation) => self.hecke_residual_expression(operation),
             ExprForm::HeckeEigen(operation) => self.hecke_eigen_expression(operation),
             ExprForm::ModularHecke(operation) => match operation {
                 hecke::Expression::Basis(weight, index) => Ok((
@@ -23563,6 +23595,39 @@ impl Checker<'_> {
             Ok(grade)
         } else {
             Err(self.invalid_operand(input, operation, "an RVPeriod(k,sign) polynomial"))
+        }
+    }
+
+    fn hecke_residual_expression(
+        &mut self,
+        expression: residual_hecke::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use residual_hecke::Expression;
+        match expression {
+            Expression::Reduce(name, input) => {
+                let specialization = self.model.hecke_residual(&name)?;
+                let source = self.model.hecke_eigen_type(&specialization.source)?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvHeckeResidualReduce input")?;
+                let ty = self.model.prime_scalar_type(specialization.prime)?;
+                Ok((
+                    ty,
+                    TypedForm::HeckeResidualReduce(specialization, Box::new(input)),
+                ))
+            }
+            Expression::Fourier(name, index) => {
+                let specialization = self.model.hecke_residual(&name)?;
+                let ty = self.model.prime_scalar_type(specialization.prime)?;
+                Ok((
+                    ty,
+                    TypedForm::HeckeResidualCoefficient(specialization, index),
+                ))
+            }
+            Expression::Eisenstein(weight, prime, index) => {
+                let (prime, value) = residual_hecke::eisenstein(self.model, weight, prime, index)?;
+                let ty = self.model.prime_scalar_type(prime)?;
+                Ok((ty, TypedForm::Constant(Value::PrimeScalar(value))))
+            }
         }
     }
 

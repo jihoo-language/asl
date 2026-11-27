@@ -8,6 +8,7 @@ use crate::error::{Error, Result, Span};
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::period_polynomial as period;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::residual_hecke;
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
 use crate::map_transfer::Operation as MapTransferOp;
@@ -1043,6 +1044,7 @@ pub(crate) enum ExprForm {
     SiegelWeight(crate::siegel::Weight),
     ModularHecke(hecke::Expression),
     HeckeEigen(eigenpacket::Expression),
+    HeckeResidual(residual_hecke::Expression),
     PeriodPolynomial(period::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
@@ -1284,6 +1286,7 @@ pub(crate) enum StatementForm {
     ),
     ModularHecke(hecke::Report, Box<ParsedExpr>),
     HeckeEigen(eigenpacket::Statement),
+    HeckeResidual(residual_hecke::Statement),
     PeriodPolynomial(period::Report),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
@@ -4733,6 +4736,64 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::PeriodPolynomial(operation), depth)
     }
 
+    fn hecke_residual_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use residual_hecke::Statement;
+        self.advance()?;
+        let statement = if name == "rvheckeresidual" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let source = self.label()?;
+            self.expect(Token::Comma)?;
+            let (prime, _) = self.number()?;
+            self.expect(Token::Comma)?;
+            let root = self.signed_wide("a residual generator root", "residual generator root")?;
+            self.expect(Token::RBracket)?;
+            Statement::Declare(name, source, prime, root)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            Statement::Sturm(name)
+        };
+        Ok(StatementForm::HeckeResidual(statement))
+    }
+
+    fn hecke_residual_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use residual_hecke::Expression;
+        self.expect(Token::LBracket)?;
+        let (operation, depth) = match name {
+            "rvHeckeResidualReduce" => {
+                let branch = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Reduce(branch, Box::new(input)), depth)
+            }
+            "rvHeckeResidualCoeff" => {
+                let branch = self.label()?;
+                self.expect(Token::Comma)?;
+                let index = self.wide_unsigned("residual Fourier index")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Fourier(branch, index), 0)
+            }
+            _ => {
+                let weight = self.wide_unsigned("Eisenstein weight")?;
+                self.expect(Token::Comma)?;
+                let (prime, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let index = self.wide_unsigned("Eisenstein Fourier index")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Eisenstein(weight, prime, index), 0)
+            }
+        };
+        expr(span, ExprForm::HeckeResidual(operation), depth)
+    }
+
     fn hecke_eigen_statement(&mut self, name: &str) -> Result<StatementForm> {
         use eigenpacket::{Report, Statement};
         self.advance()?;
@@ -7530,6 +7591,9 @@ impl<'src> Parser<'src> {
                 name @ ("rvheckepacket" | "rvHeckeEigenData" | "rvHeckeEigenTrace"
                 | "rvHeckeEigenNorm" | "rvHeckeEigenCoord"),
             ) => self.hecke_eigen_statement(name)?,
+            Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
+                self.hecke_residual_statement(name)?
+            }
             Token::Word(name @ ("rvPeriodDim" | "rvPeriodCoeff" | "rvPeriodHeckeMatrix")) => {
                 self.period_statement(name)?
             }
@@ -13324,6 +13388,13 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvPeriodHecke" && self.token() == Token::LParen)
                 {
                     return self.period_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvHeckeResidualReduce" | "rvHeckeResidualCoeff" | "rvHeckeEisensteinCoeff"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.hecke_residual_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
