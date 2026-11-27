@@ -9,6 +9,8 @@ const MAX_RANK: usize = 64;
 const MAX_POLYNOMIAL_CELLS: usize = 300_000;
 const MAX_PERIOD: usize = 4096;
 
+mod integer_gcd;
+
 pub(crate) type Polynomial = Vec<i128>;
 
 pub(crate) fn storage(size: usize) -> Result<()> {
@@ -228,19 +230,23 @@ fn subtract(model: &mut Model, mut left: Polynomial, right: &[i128]) -> Result<P
     Ok(left)
 }
 
-pub(crate) fn exact_divide(
-    model: &mut Model,
-    mut value: Polynomial,
-    divisor: &[i128],
-) -> Result<Polynomial> {
+enum Division {
+    Exact(Polynomial),
+    NotExact,
+    OutOfRange,
+}
+
+fn checked_divide(model: &mut Model, mut value: Polynomial, divisor: &[i128]) -> Result<Division> {
     if divisor == [1] || value.is_empty() {
-        return Ok(value);
+        return Ok(Division::Exact(value));
     }
     let mut quotient = vec![0; value.len().saturating_sub(divisor.len() - 1)];
     let lead = *divisor.last().unwrap();
     while value.len() >= divisor.len() {
         let current = *value.last().unwrap();
-        let coefficient = current.checked_div(lead).ok_or_else(arithmetic)?;
+        let Some(coefficient) = current.checked_div(lead) else {
+            return Ok(Division::OutOfRange);
+        };
         if current % lead != 0 {
             break;
         }
@@ -248,20 +254,42 @@ pub(crate) fn exact_divide(
         quotient[shift] = coefficient;
         model.spend(divisor.len())?;
         for (entry, &a) in value[shift..].iter_mut().zip(divisor) {
-            *entry = coefficient
+            let Some(next) = coefficient
                 .checked_mul(a)
                 .and_then(|term| entry.checked_sub(term))
-                .ok_or_else(arithmetic)?;
+            else {
+                return Ok(Division::OutOfRange);
+            };
+            *entry = next;
         }
         trim(&mut value);
     }
     if !value.is_empty() {
-        return Err(Error::plain(
-            "quantum differential fraction-free division was not exact",
-        ));
+        return Ok(Division::NotExact);
     }
     trim(&mut quotient);
-    Ok(quotient)
+    Ok(Division::Exact(quotient))
+}
+
+pub(crate) fn exact_divide(
+    model: &mut Model,
+    value: Polynomial,
+    divisor: &[i128],
+) -> Result<Polynomial> {
+    if divisor == [1] || value.is_empty() {
+        return Ok(value);
+    }
+    let result = match checked_divide(model, value.clone(), divisor)? {
+        Division::OutOfRange => integer_gcd::wide_divide(model, &value, divisor)?,
+        result => result,
+    };
+    match result {
+        Division::Exact(quotient) => Ok(quotient),
+        Division::NotExact => Err(Error::plain(
+            "quantum differential fraction-free division was not exact",
+        )),
+        Division::OutOfRange => Err(arithmetic()),
+    }
 }
 
 fn checked_cells_of(polys: impl IntoIterator<Item = usize>) -> Result<usize> {
@@ -354,13 +382,11 @@ fn primitive(poly: &mut Polynomial) {
     divide_content(poly, content(poly));
 }
 
-pub(crate) fn polynomial_gcd(
+fn primitive_gcd(
     model: &mut Model,
     mut a: Polynomial,
     mut b: Polynomial,
-) -> Result<Polynomial> {
-    primitive(&mut a);
-    primitive(&mut b);
+) -> Result<Option<Polynomial>> {
     while !b.is_empty() {
         while a.len() >= b.len() {
             let x = *a.last().unwrap();
@@ -378,10 +404,13 @@ pub(crate) fn polynomial_gcd(
             model.spend(a.len())?;
             for (i, value) in a.iter_mut().enumerate() {
                 let term = i.checked_sub(offset).map_or(0, |j| b[j]);
-                *value = value
+                let Some(next) = value
                     .checked_mul(y)
                     .and_then(|l| term.checked_mul(x).and_then(|r| l.checked_sub(r)))
-                    .ok_or_else(arithmetic)?;
+                else {
+                    return Ok(None);
+                };
+                *value = next;
             }
             trim(&mut a);
             primitive(&mut a);
@@ -393,7 +422,25 @@ pub(crate) fn polynomial_gcd(
             *entry = entry.checked_neg().ok_or_else(arithmetic)?;
         }
     }
-    Ok(a)
+    Ok(Some(a))
+}
+
+pub(crate) fn polynomial_gcd(
+    model: &mut Model,
+    mut a: Polynomial,
+    mut b: Polynomial,
+) -> Result<Polynomial> {
+    model.spend(a.len() + b.len())?;
+    primitive(&mut a);
+    primitive(&mut b);
+    if a.len() == 1 || b.len() == 1 {
+        return Ok(vec![1]);
+    }
+    if let Some(result) = primitive_gcd(model, a.clone(), b.clone())? {
+        Ok(result)
+    } else {
+        integer_gcd::gcd_fallback(model, &a, &b)
+    }
 }
 
 fn primitive_relation(model: &mut Model, relation: &mut [Polynomial]) -> Result<()> {

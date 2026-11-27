@@ -111,3 +111,52 @@ fn regularization_checks_type_degree_storage_and_arithmetic() {
         assert!(error.contains(expected), "{program}\n{error}");
     }
 }
+
+#[test]
+fn euler_gcd_certifies_the_small_factor_when_pseudo_remainders_overflow() {
+    let program = r"
+        let first = add(rvOre[1,4],rvOre[1,0]);
+        let transformed = rvOreFactorial[4](add(first,rvOre[6,0]));
+        let factor = rvOre[0,4];
+        let reduced = add(first,rvOreMul(rvOre[1,0],rvOreFactorial[4](rvOre[5,0])));
+        assert rvOreMul(factor,reduced) == transformed;
+        assert rvOreEulerFactor(transformed) == factor;
+        assert rvOreEulerReduce(transformed) == reduced;
+
+        let left = add(add(rvOre[0,3,-3],rvOre[0,2,-2]),add(rvOre[0,0,-2],add(rvOre[2,2,3],rvOre[2,1,-1])));
+        let right = add(rvOre[2,3,-2],add(rvOre[2,2,1],rvOre[2,1,-1]));
+        let second = rvOreFactorial[3](rvOreMul(left,right));
+        let expected = add(rvOre[0,7],add(rvOre[0,6,-5],add(rvOre[0,5,9],add(rvOre[0,4,-7],rvOre[0,3,2]))));
+        assert rvOreEulerFactor(second) == expected;
+        assert rvOreMul(expected,rvOreEulerReduce(second)) == second;
+    ";
+    assert_eq!(stdout(interpret(program)), "");
+}
+
+#[test]
+fn euler_reduction_checks_actual_quotient_range_after_exact_cancellation() {
+    let high = i128::MAX;
+    let cancellation = format!(
+        "let divisor = add(rvOre[0,0],add(rvOre[0,1],rvOre[0,2]));
+         let a = add(rvOre[0,0,{high}],add(rvOre[0,2,{}],add(rvOre[0,3,{}],rvOre[0,5,{high}])));
+         let shifted_divisor = add(rvOre[1,0,3],add(rvOre[1,1,3],rvOre[1,2]));
+         let input = add(a,shifted_divisor);
+         let q = add(rvOre[0,0,{high}],add(rvOre[0,1,{}],add(rvOre[0,2,{}],rvOre[0,3,{high}])));
+         assert rvOreEulerFactor(input) == divisor;
+         assert rvOreEulerReduce(input) == add(q,rvOre[1,0]);",
+        -high, -high, -high, -high,
+    );
+    assert_eq!(stdout(interpret(&cancellation)), "");
+
+    let out_of_range = format!(
+        "let a = add(rvOre[0,0,-1],add(rvOre[0,1,{high}],add(rvOre[0,2,{high}],rvOre[0,3,-1])));
+         let input = add(a,add(rvOre[1,0,2],rvOre[1,1]));
+         assert rvOreEulerFactor(input) == add(rvOre[0,0],rvOre[0,1]);
+         show rvOreEulerReduce(input);",
+    );
+    let error = diagnostic(interpret(&out_of_range));
+    assert!(
+        error.contains("integer arithmetic is out of range"),
+        "{error}"
+    );
+}
