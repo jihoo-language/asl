@@ -1270,6 +1270,7 @@ pub(crate) enum StatementForm {
     ),
     KSLinkCertificate(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification>),
     QZOrder(Box<ParsedExpr>),
+    KSAlexander(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander::Command>),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
@@ -3224,6 +3225,49 @@ impl<'src> Parser<'src> {
             bounds: [d, e],
             inputs,
         })
+    }
+
+    fn ks_alexander_field(&mut self) -> Result<Option<usize>> {
+        if self.eat(Token::Word("Q"))? {
+            Ok(None)
+        } else {
+            Ok(Some(self.number()?.0))
+        }
+    }
+
+    fn ks_alexander_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let cover = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+        self.expect(Token::Comma)?;
+        if operation == "rvKSAlexanderWitness" {
+            let field = self.ks_alexander_field()?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LParen)?;
+            let forward = self.arguments(0)?;
+            self.expect(Token::LParen)?;
+            let adjoint = self.arguments(0)?;
+            return Ok(StatementForm::KSAlexander(Box::new(Command::Witness(
+                name,
+                cover,
+                field,
+                Box::new([forward, adjoint]),
+            ))));
+        }
+        let degree = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let command = if operation == "rvKSAlexanderJets" {
+            let length = self.wide_unsigned("Kuga–Satake Alexander jet length")?;
+            self.expect(Token::Comma)?;
+            Command::Jets(name, cover, degree, length, self.ks_alexander_field()?)
+        } else {
+            Command::Data(name, cover, degree, self.ks_alexander_field()?)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KSAlexander(Box::new(command)))
     }
 
     fn ks_exterior_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -8142,6 +8186,9 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
             }
+            Token::Word(
+                operation @ ("rvKSAlexander" | "rvKSAlexanderJets" | "rvKSAlexanderWitness"),
+            ) => self.ks_alexander_statement(operation)?,
             Token::Word(
                 operation @ ("rvKSExteriorData"
                 | "rvKSExteriorSmith"

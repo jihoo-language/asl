@@ -50,6 +50,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
     eigenpacket, hecke, period_polynomial as period, quadratic_hecke, residual_hecke,
 };
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
 use crate::hyperelliptic_kummer_surface::mukai::{
@@ -2119,6 +2120,9 @@ impl Engine {
                 return self.ks_exterior_command(*command).map(Some)
             }
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
+            StatementForm::KSAlexander(command) => {
+                return self.ks_alexander_command(*command).map(Some)
+            }
             StatementForm::KSLinkCertificate(specification) => {
                 let span = specification.name.span;
                 let checked = self
@@ -6845,6 +6849,107 @@ impl Engine {
             .cusp
             .spin_algebra(&mut self.model, &lattice)?
             .torsion_link(&mut self.model, &action.limit, action.cover, left, right)
+    }
+
+    fn ks_alexander_command(&mut self, command: alexander::Command) -> Result<String> {
+        let (name, cover, degree, length, prime) = match command {
+            alexander::Command::Data(name, cover, degree, prime) => {
+                (name, cover, degree, None, prime)
+            }
+            alexander::Command::Jets(name, cover, degree, length, prime) => {
+                (name, cover, degree, Some(length), prime)
+            }
+            alexander::Command::Witness(name, cover, prime, lifts) => {
+                return self.ks_alexander_witness(name, cover, prime, *lifts);
+            }
+        };
+        let system = alexander::LocalSystem::new(&mut self.model, cover, prime)?;
+        let limit = self.model.og6_nilpotent(&name)?;
+        let lattice = self.og6_spin_lattice(&limit.cusp, name.span)?;
+        let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+        if let Some(length) = length {
+            algebra.alexander_jets_report(
+                &mut self.model,
+                &name.text,
+                &limit,
+                system,
+                degree,
+                length,
+            )
+        } else {
+            algebra.alexander_report(&mut self.model, &name.text, &limit, system, degree)
+        }
+    }
+
+    fn ks_alexander_witness(
+        &mut self,
+        name: Label,
+        cover: i128,
+        prime: Option<usize>,
+        lifts: [Vec<ParsedExpr>; 2],
+    ) -> Result<String> {
+        let [forward, adjoint] = lifts;
+        if forward.len() != adjoint.len() || !(1..=alexander::MAX_LIFT).contains(&forward.len()) {
+            return Err(Error::new(
+                name.span,
+                "Alexander lifts must have the same length between 1 and 33",
+            ));
+        }
+        let limit = self.model.og6_nilpotent(&name)?;
+        let system = alexander::LocalSystem::new(&mut self.model, cover, prime)?;
+        let cusp = Label {
+            text: limit.cusp.name.to_string(),
+            span: name.span,
+        };
+        let op = "rvKSAlexanderWitness";
+        let mut forward = forward.into_iter();
+        let first = self
+            .checker()
+            .expr(forward.next().expect("checked lift length"))?;
+        let (_, degree) = self.checker().ks_exterior_operand(&first, op)?;
+        let degree = usize::try_from(degree)
+            .ok()
+            .filter(|&d| d <= alexander::FIBER_DEGREE)
+            .ok_or_else(|| {
+                Error::new(
+                    first.span,
+                    "Kuga–Satake Alexander fiber degree must be between 0 and 64",
+                )
+            })?;
+        let left = self.model.ks_exterior_type(&cusp, degree as i128)?;
+        let right = self
+            .model
+            .ks_exterior_type(&cusp, (alexander::FIBER_DEGREE - degree) as i128)?;
+        let mut checked_left = vec![self.eval_alexander_input(left, first)?];
+        for input in forward {
+            let input = self.checker().expr(input)?;
+            checked_left.push(self.eval_alexander_input(left, input)?);
+        }
+        let mut checked_right = Vec::with_capacity(adjoint.len());
+        for input in adjoint {
+            let input = self.checker().expr(input)?;
+            checked_right.push(self.eval_alexander_input(right, input)?);
+        }
+        let witness = alexander::Witness {
+            degree,
+            lifts: [checked_left, checked_right],
+        };
+        let lattice = self.og6_spin_lattice(&limit.cusp, name.span)?;
+        let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+        algebra.alexander_witness_report(&mut self.model, &name.text, &limit, system, witness)
+    }
+
+    fn eval_alexander_input(
+        &mut self,
+        expected: TypeId,
+        input: TypedExpr,
+    ) -> Result<Rc<ks_exterior::Form>> {
+        self.checker()
+            .require_type(expected, &input, "rvKSAlexanderWitness")?;
+        let Value::KSExterior(value) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok(value)
     }
 
     fn ks_exterior_command(&mut self, command: ks_exterior::Command) -> Result<String> {

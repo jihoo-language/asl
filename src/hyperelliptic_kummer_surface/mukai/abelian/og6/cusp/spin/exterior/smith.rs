@@ -10,6 +10,7 @@ use crate::model::Model;
 
 const PRIMES: [u128; 11] = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31];
 type Factors = Vec<(Magnitude, u128)>;
+type Diagonal = BTreeMap<u128, u128>;
 
 pub(super) struct Spectrum {
     pub(super) dimension: u128,
@@ -153,6 +154,17 @@ fn uniform(
     order: usize,
     rank: usize,
 ) -> Result<Factors> {
+    let diagonal = uniform_diagonal(model, binomial, degree, order, rank)?;
+    canonical_valuations(model, &diagonal)
+}
+
+fn uniform_diagonal(
+    model: &mut Model,
+    binomial: &Binomial,
+    degree: usize,
+    order: usize,
+    rank: usize,
+) -> Result<Diagonal> {
     let inert = EVEN_RANK - 2 * rank;
     let mut diagonal = BTreeMap::<u128, u128>::new();
     for singles in order..=rank.min(degree) {
@@ -177,7 +189,33 @@ fn uniform(
             }
         }
     }
-    canonical_valuations(model, &diagonal)
+    Ok(diagonal)
+}
+
+pub(super) fn exterior_group_ranks_modulo(
+    model: &mut Model,
+    degree: usize,
+    active_rank: usize,
+    prime: u32,
+) -> Result<Vec<u128>> {
+    let mut ranks = vec![exterior_dimension(degree)];
+    let degree = degree.min(EVEN_RANK - degree);
+    let bound = degree.min(active_rank).min(prime as usize - 1);
+    if bound == 0 {
+        return Ok(ranks);
+    }
+    model.spend(EVEN_RANK * (EVEN_RANK + 1) / 2)?;
+    let binomial = binomial();
+    for order in 1..=bound {
+        let diagonal = uniform_diagonal(model, &binomial, degree, order, active_rank)?;
+        let rank = diagonal
+            .into_iter()
+            .filter(|&(value, _)| !value.is_multiple_of(u128::from(prime)))
+            .map(|(_, count)| count)
+            .sum();
+        ranks.push(rank);
+    }
+    Ok(ranks)
 }
 
 fn canonical_valuations(model: &mut Model, diagonal: &BTreeMap<u128, u128>) -> Result<Factors> {

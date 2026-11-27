@@ -8,8 +8,10 @@ use crate::hyperelliptic_kummer_surface::rational_sparse::{
     Coefficients, Domain, Integer, Magnitude, WORK_LIMBS,
 };
 use crate::model::{Model, Value};
+use crate::odd_cobar::Prime;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod alexander;
 pub(crate) mod linking;
 mod mapping_torus;
 mod smith;
@@ -210,13 +212,7 @@ impl Algebra {
             .filter(|(_, count)| **count != 0)
             .map(|(i, &count)| (degree as isize + i as isize - rank as isize, count))
             .collect::<Vec<_>>();
-        // A highest weight j contributes once in weights j,j-2,...,-j.
-        let jordan = (0..=rank)
-            .filter_map(|j| {
-                let count = character[rank + j] - character.get(rank + j + 2).unwrap_or(&0);
-                (count != 0).then_some((j + 1, count))
-            })
-            .collect::<Vec<_>>();
+        let jordan = jordan_from_character(&character, rank);
         let index = jordan
             .last()
             .expect("an exterior degree from 0 through 64 is nonzero")
@@ -256,22 +252,30 @@ impl Action {
     fn exterior_columns(
         &self,
         model: &mut Model,
-        m: i128,
+        m: Integer,
         dual: bool,
+        prime: Option<Prime>,
     ) -> Result<super::RegularColumns> {
         // The complementary wedge pairing identifies Λ^k(A) with
         // Λ^(64−k)(A^−transpose) for det(A)=1. Here A=1+mS and S²=0.
         let mut linear = (0..EVEN_RANK).map(|_| Vec::new()).collect::<Vec<_>>();
+        let modular_scale = prime.map(|p| (p, residue(m, p)));
         for (source, column) in self.columns.iter().enumerate() {
             model.spend((1 + column.len()) * WORK_LIMBS)?;
             for &(target, entry) in column {
-                let scaled = entry.multiply(m)?;
+                let scaled = if let Some((p, scalar)) = modular_scale {
+                    Integer::from_i128(i128::from(p.mul(residue(entry, p), scalar)))
+                } else {
+                    entry.multiply_wide(m)?
+                };
                 let (i, j, value) = if dual {
                     (target, source, scaled.negate())
                 } else {
                     (source, target, scaled)
                 };
-                linear[i].push((j, value));
+                if !value.is_zero() {
+                    linear[i].push((j, value));
+                }
             }
         }
         Ok(linear)
@@ -289,25 +293,42 @@ impl Action {
         input: &Form,
         dual: bool,
     ) -> Result<Terms> {
-        let mut linear = self.exterior_columns(model, m, dual)?;
+        self.field_exponential_terms(model, Integer::from_i128(m), input, dual, None)
+    }
+
+    fn field_exponential_terms(
+        &self,
+        model: &mut Model,
+        m: Integer,
+        input: &Form,
+        dual: bool,
+        prime: Option<Prime>,
+    ) -> Result<Terms> {
+        let mut linear = self.exterior_columns(model, m, dual, prime)?;
         let one = Integer::from_i128(1);
         for (i, column) in linear.iter_mut().enumerate() {
             if let Some((_, entry)) = column.iter_mut().find(|(j, _)| *j == i) {
                 *entry = entry.add(one)?;
+                if let Some(p) = prime {
+                    *entry = Integer::from_i128(i128::from(residue(*entry, p)));
+                }
             } else {
                 column.push((i, one));
             }
             column.retain(|(_, coefficient)| !coefficient.is_zero());
         }
-        exterior_transform(model, input, dual, |model, mask, coefficient| {
+        let mut output = exterior_transform(model, input, dual, |model, mask, coefficient| {
             let mut partial = Terms::from([(0, coefficient)]);
             for source in bits(mask) {
                 let mut next = Terms::new();
                 wedge_column(model, &mut next, &partial, &linear[source])?;
+                reduce_terms(model, &mut next, prime)?;
                 partial = next;
             }
             Ok(partial)
-        })
+        })?;
+        reduce_terms(model, &mut output, prime)?;
+        Ok(output)
     }
 
     fn exterior_divided(
@@ -319,7 +340,7 @@ impl Action {
     ) -> Result<Form> {
         let mut weights = vec![Integer::from_i128(0); order + 1];
         weights[order] = Integer::from_i128(1);
-        let linear = self.exterior_columns(model, 1, dual)?;
+        let linear = self.exterior_columns(model, Integer::from_i128(1), dual, None)?;
         exterior_polynomial(model, input, dual, &linear, order, &weights)
     }
 
@@ -351,7 +372,7 @@ impl Action {
             row[0] = zero;
             *weight = row[order];
         }
-        let linear = self.exterior_columns(model, m, dual)?;
+        let linear = self.exterior_columns(model, Integer::from_i128(m), dual, None)?;
         exterior_polynomial(model, input, dual, &linear, order, &weights)
     }
 
@@ -369,6 +390,26 @@ impl Action {
         }
         Ok(terms)
     }
+}
+
+fn residue(value: Integer, prime: Prime) -> u32 {
+    let magnitude = value.magnitude.residue(prime.get());
+    if value.negative {
+        prime.negate(magnitude)
+    } else {
+        magnitude
+    }
+}
+
+fn reduce_terms(model: &mut Model, terms: &mut Terms, prime: Option<Prime>) -> Result<()> {
+    if let Some(p) = prime {
+        model.spend(terms.len() * WORK_LIMBS)?;
+        terms.retain(|_, value| {
+            *value = Integer::from_i128(i128::from(residue(*value, p)));
+            !value.is_zero()
+        });
+    }
+    Ok(())
 }
 
 fn exterior_polynomial(
@@ -477,6 +518,24 @@ fn complement_coefficient(mask: u64, coefficient: Integer) -> Integer {
     }
 }
 
+fn top_pair(
+    model: &mut Model,
+    left: impl ExactSizeIterator<Item = Result<(u64, Integer)>>,
+    right: &Form,
+) -> Result<Integer> {
+    let right = right.terms();
+    model.spend(left.len() * (EVEN_RANK + WORK_LIMBS + right.len().max(1).ilog2() as usize))?;
+    let mut total = Integer::from_i128(0);
+    for term in left {
+        let (mask, coefficient) = term?;
+        if let Ok(index) = right.binary_search_by_key(&!mask, |&(key, _)| key) {
+            let product = coefficient.multiply_wide(right[index].1.resize()?)?;
+            total = total.add(complement_coefficient(mask, product))?;
+        }
+    }
+    Ok(total)
+}
+
 fn bits(mut mask: u64) -> impl Iterator<Item = usize> {
     std::iter::from_fn(move || {
         if mask == 0 {
@@ -518,4 +577,14 @@ fn character(model: &mut Model, rank: usize, degree: usize) -> Result<Vec<u128>>
     Ok(table
         .pop()
         .expect("the requested exterior degree is present"))
+}
+
+fn jordan_from_character(weights: &[u128], rank: usize) -> Vec<(usize, u128)> {
+    // A highest weight j contributes once in weights j,j-2,...,-j.
+    (0..=rank)
+        .filter_map(|j| {
+            let count = weights[rank + j] - weights.get(rank + j + 2).unwrap_or(&0);
+            (count != 0).then_some((j + 1, count))
+        })
+        .collect()
 }

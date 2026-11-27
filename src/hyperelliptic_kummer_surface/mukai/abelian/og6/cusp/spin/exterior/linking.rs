@@ -1,4 +1,4 @@
-use super::{complement_coefficient, Algebra, Form, Terms, EVEN_RANK};
+use super::{top_pair, Algebra, Form, Terms, EVEN_RANK};
 use crate::error::{Error, Result};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::nilpotent::Limit;
 use crate::hyperelliptic_kummer_surface::qz::Scalar;
@@ -43,7 +43,12 @@ impl Algebra {
         }
         self.check_linking_witness(model, limit, cover, &left, "left")?;
         self.check_linking_witness(model, limit, cover, &right, "right")?;
-        let numerator = top_pair(model, left.preimage, right.class)?;
+        let terms = left
+            .preimage
+            .terms()
+            .iter()
+            .map(|&(mask, value)| Ok((mask, value.resize()?)));
+        let numerator = top_pair(model, terms, right.class)?;
         Scalar::from_wide(model, numerator, Magnitude::from_small(left.bound))
     }
 
@@ -96,21 +101,4 @@ pub(crate) fn certificate(value: Scalar, bounds: [u128; 2]) -> String {
         value.text(),
         value.order(),
     )
-}
-
-fn top_pair(model: &mut Model, left: &Form, right: &Form) -> Result<Integer> {
-    let right = right.terms();
-    model.spend(
-        left.terms().len() * (EVEN_RANK + WORK_LIMBS + right.len().max(1).ilog2() as usize),
-    )?;
-    let mut total = Integer::from_i128(0);
-    for &(mask, coefficient) in left.terms() {
-        if let Ok(index) = right.binary_search_by_key(&!mask, |&(key, _)| key) {
-            let product: Integer = coefficient
-                .resize::<WORK_LIMBS>()?
-                .multiply_wide(right[index].1.resize()?)?;
-            total = total.add(complement_coefficient(mask, product))?;
-        }
-    }
-    Ok(total)
 }
