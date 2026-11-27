@@ -1,5 +1,7 @@
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
@@ -8,7 +10,6 @@ use crate::model::{Model, Value};
 use crate::odd_ext;
 use crate::prime_linear::{self, Basis, Coordinate};
 use crate::sheaf::{self, Cochain, Cochains, Generator, Layer, Support, Term};
-use crate::sheaf_hyper::Complex;
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Grade {
@@ -75,12 +76,10 @@ impl Grade {
         })
     }
 
-    pub(crate) fn has_leading(self, complex: &Complex) -> bool {
-        usize::try_from(self.q).ok().is_some_and(|q| {
-            complex
-                .component_at(q)
-                .is_some_and(|part| self.p < part.sheaf.height)
-        })
+    pub(crate) fn has_leading(self, complex: &dyn FilteredCochains) -> bool {
+        usize::try_from(self.q)
+            .ok()
+            .is_some_and(|q| complex.has_leading(self.p, q))
     }
 }
 
@@ -118,6 +117,41 @@ impl Lift {
     }
 }
 
+pub(crate) trait FilteredCochains: Cochains {
+    fn has_leading(&self, p: usize, q: usize) -> bool;
+
+    fn page(&self, model: &mut Model, grade: Grade) -> Result<Rc<Page>>;
+
+    fn layer_window(
+        &self,
+        model: &mut Model,
+        degree: usize,
+        lo: usize,
+        hi: usize,
+        limit: usize,
+    ) -> Result<Layer>;
+}
+
+#[derive(Default)]
+pub(crate) struct Pages(RefCell<BTreeMap<Grade, Rc<Page>>>);
+
+impl Pages {
+    pub(crate) fn get(
+        &self,
+        model: &mut Model,
+        complex: &dyn FilteredCochains,
+        grade: Grade,
+    ) -> Result<Rc<Page>> {
+        if let Some(page) = self.0.borrow().get(&grade) {
+            return Ok(page.clone());
+        }
+        let page = Rc::new(Page::build(model, complex, grade)?);
+        model.allocate(1)?;
+        self.0.borrow_mut().insert(grade, page.clone());
+        Ok(page)
+    }
+}
+
 pub(crate) struct Page {
     grade: Grade,
     layer: Layer,
@@ -128,7 +162,11 @@ pub(crate) struct Page {
 }
 
 impl Page {
-    pub(crate) fn build(model: &mut Model, complex: &Complex, grade: Grade) -> Result<Self> {
+    pub(crate) fn build(
+        model: &mut Model,
+        complex: &dyn FilteredCochains,
+        grade: Grade,
+    ) -> Result<Self> {
         let mut page = Self {
             grade,
             layer: Layer::default(),
@@ -168,7 +206,12 @@ impl Page {
         Ok(self.layer.index(model, term)? - self.leading_start)
     }
 
-    fn quotient(&mut self, model: &mut Model, complex: &Complex, total: usize) -> Result<()> {
+    fn quotient(
+        &mut self,
+        model: &mut Model,
+        complex: &dyn FilteredCochains,
+        total: usize,
+    ) -> Result<()> {
         let prime = complex.prime();
         let mut span = self.boundaries(model, complex, total)?;
         let mut rows = Rows::new("sheaf hypercohomology");
@@ -209,7 +252,12 @@ impl Page {
         Ok(())
     }
 
-    fn boundaries(&self, model: &mut Model, complex: &Complex, total: usize) -> Result<Basis> {
+    fn boundaries(
+        &self,
+        model: &mut Model,
+        complex: &dyn FilteredCochains,
+        total: usize,
+    ) -> Result<Basis> {
         let mut span = Basis::default();
         let Some(previous) = total.checked_sub(1) else {
             return Ok(span);
@@ -252,7 +300,7 @@ impl Page {
     pub(crate) fn project(
         &self,
         model: &mut Model,
-        complex: &Complex,
+        complex: &dyn FilteredCochains,
         terms: &[Term],
     ) -> Result<Vec<Coordinate>> {
         let mut leading = Vec::new();
@@ -286,7 +334,7 @@ impl Page {
     pub(crate) fn representative(
         &self,
         model: &mut Model,
-        complex: &Complex,
+        complex: &dyn FilteredCochains,
         class: &[Coordinate],
     ) -> Result<Vec<Term>> {
         let coordinates = if self.grade.r == 0 {
@@ -314,7 +362,7 @@ impl Page {
     pub(crate) fn next(
         &self,
         model: &mut Model,
-        complex: &Complex,
+        complex: &dyn FilteredCochains,
         class: &[Coordinate],
     ) -> Result<Value> {
         let transition = if let Some(transition) = self.transition.get() {
@@ -334,7 +382,7 @@ impl Page {
         odd_ext::persist(model, next)
     }
 
-    fn build_transition(&self, model: &mut Model, complex: &Complex) -> Result<Basis> {
+    fn build_transition(&self, model: &mut Model, complex: &dyn FilteredCochains) -> Result<Basis> {
         let mut cycles = Basis::default();
         let prime = complex.prime();
         if let Some(grade) = self.grade.incoming() {
@@ -366,7 +414,7 @@ impl Page {
 
 pub(crate) fn class(
     model: &mut Model,
-    complex: &Complex,
+    complex: &dyn FilteredCochains,
     grade: Grade,
     raw: &[Term],
 ) -> Result<Value> {
@@ -379,7 +427,7 @@ pub(crate) fn class(
 
 pub(crate) fn apply(
     model: &mut Model,
-    complex: &Complex,
+    complex: &dyn FilteredCochains,
     grade: Grade,
     operation: Operation,
     coordinates: &[Coordinate],
@@ -411,7 +459,7 @@ pub(crate) fn apply(
 
 pub(crate) fn correct(
     model: &mut Model,
-    complex: &Complex,
+    complex: &dyn FilteredCochains,
     grade: Grade,
     raw: &Support,
 ) -> Result<Value> {
@@ -462,7 +510,7 @@ pub(crate) fn correct(
 
 fn below_column(
     model: &mut Model,
-    complex: &Complex,
+    complex: &dyn FilteredCochains,
     source: &Generator,
     cutoff: u128,
     rows: &mut Rows<Generator>,
@@ -481,7 +529,7 @@ fn below_column(
 
 fn below_differential(
     model: &mut Model,
-    complex: &Complex,
+    complex: &dyn FilteredCochains,
     terms: &[Term],
     cutoff: u128,
 ) -> Result<Vec<Term>> {
@@ -500,11 +548,11 @@ fn below_differential(
 }
 
 fn cells(generator: &Generator) -> usize {
-    5 + generator.chain.len()
+    generator.cells()
 }
 
 fn filtration(term: &Generator) -> usize {
-    term.chain.len() - 1
+    term.place.degree()
 }
 
 fn sort(model: &mut Model, column: &mut [Coordinate]) -> Result<()> {

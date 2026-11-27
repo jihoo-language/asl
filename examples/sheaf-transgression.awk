@@ -1,5 +1,5 @@
 # Generate a length-r complex on the 2r+2-point model of the r-sphere.
-# Use -v r=4 -v prime=3 and optionally -v untwisted=1.
+# Use -v r=4 -v prime=3 and optionally -v untwisted=1 or -v cellular=1.
 function dim(q, point,    level, edge) {
     level = int(point / 2)
     if (q == 0)
@@ -28,8 +28,9 @@ BEGIN {
     if (prime == "")
         prime = 3
     if (r != int(r) || r < 2 || r > 255 || prime != int(prime) ||
-            prime < 2 || prime > 4294967295 || (untwisted != "" && untwisted != 0 && untwisted != 1)) {
-        print "Use an integer r in 2..255, a u32 prime, and optional untwisted=0 or untwisted=1." > "/dev/stderr"
+            prime < 2 || prime > 4294967295 || (untwisted != "" && untwisted != 0 && untwisted != 1) ||
+            (cellular != "" && cellular != 0 && cellular != 1)) {
+        print "Use an integer r in 2..255, a u32 prime, and optional 0 or 1 for untwisted and cellular." > "/dev/stderr"
         exit 1
     }
 
@@ -75,10 +76,22 @@ BEGIN {
         }
         print "};"
     }
-    printf "shcomplex K {"
+    printf "shcomplex %s {", cellular ? "Ordinary" : "K"
     for (q = 0; q < r - 1; q++)
         printf "F%d,d%d,", q, q
     printf "F%d};\n", r - 1
+    if (cellular) {
+        printf "shresolution R[Sphere,%.0f] {", prime
+        for (a = 0; a < 2 * r + 2; a++)
+            printf "%se%d:(%d,a%d)", a ? "," : "", a, int(a / 2), a
+        printf "} {"
+        for (a = 2; a < 2 * r + 2; a++) {
+            previous = 2 * (int(a / 2) - 1)
+            printf "%se%d:[e%d:1,e%d:-1]", (a > 2 ? "," : ""), a, previous, previous + 1
+        }
+        print "} {e0:1,e1:1};"
+        print "shcellular K[R,Ordinary];"
+    }
 
     printf "shedim[K,2,0,%d];\n", r - 1
     printf "let v2 = shegen[K,2,0,%d,0];\n", r - 1

@@ -117,6 +117,7 @@ mod rv_witt_cartier;
 mod rv_witt_cover;
 mod rv_witt_tower;
 mod sheaf;
+mod sheaf_cellular;
 mod sheaf_ext;
 mod sheaf_hyper;
 mod sheaf_image;

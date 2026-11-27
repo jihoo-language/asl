@@ -1,0 +1,20 @@
+// A small projective resolution over the two-point chain and a nonconstant restriction.
+space X {a<b};
+sheaf F[X,3] {a:1,b:1} {a<b:[2]};
+shresolution R[X,3] {u:(0,a),v:(0,b),e:(1,b)} {e:[u:1,v:-1]} {u:1,v:1};
+shcomplex Ordinary {F};
+shcellular C[R,Ordinary];
+let x = shCellTerm[C,0,u,0];
+let y = shCellTerm[C,0,v,0];
+let e = shCellTerm[C,0,e,0];
+assert shD(x) == shScale[-1](e);
+assert shD(y) == shScale[-1](e);
+assert shD(shD(x)) == zero[ShTot(C,2)];
+assert shD(add(x,shScale[-1](y))) == zero[ShTot(C,1)];
+let h = shClass(add(x,shScale[-1](y)));
+assert shClass(shRep(h)) == h;
+shhyperdim[Ordinary,0];
+shhyperdim[C,0];
+shhyperdim[C,1];
+shedim[C,2,0,0];
+shedim[C,2,1,0];

@@ -145,6 +145,20 @@ The transgression generator builds a length-$r$ complex on a $2r+2$-point model 
 awk -v r=6 -v prime=3 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
 ```
 
+### Certified cellular resolutions
+
+`shresolution R[X,p] {u:(0,a),v:(0,b),e:(1,b)} {e:[u:1,v:-1]} {u:1,v:1};` declares an augmented chain complex resolving the constant sheaf on `X` over $\mathbb F_p$. Each generator `(degree,point)` contributes the projective sheaf $P_x$, with a one-dimensional stalk at every $y\ge x$ and identity restrictions between those stalks. The second block lists sparse boundaries and the third lists the augmentation. A boundary term must lower the degree by one and be anchored at or below the point of its source. Coefficients are signed integers reduced modulo $p$, and omitted entries are zero. The checker verifies that the augmented differential squares to zero and tests exactness at every point $y$ on the generators anchored at $x\le y$.
+
+`shcellular C[R,K];` uses the certified resolution for a complex `K` on the same named space and field. The horizontal degree is the generator's resolution degree. The summand at a generator anchored at $x$ in stalk degree $q$ is $K^q(x)$. Use `shCellTerm[C,q,e,i]` for the $i$-th coordinate there, optionally followed by a signed coefficient inside the brackets. The horizontal differential combines the boundary coefficients with the restriction maps of `K`. The vertical differential carries the sign $(-1)^a$ in horizontal degree $a$.
+
+Use `ShTot`, `ShHyper`, `ShE` and their usual operations with the name `C`. `shTotEmbed` and `shTotPart` use the chain coordinates of ordinary Roos cochains. Comparing the two projective resolutions of the constant sheaf gives the same hypercohomology and identifies the spectral sequences from $E_2^{a,q}=H^a(X;H^q(K))$ onward. [Cellular cochain example](examples/sheaf-cellular.asl)
+
+With `cellular=1`, the transgression generator certifies a resolution with two generators in each degree. The twisted $\mathbb F_3$ example has rank-one $d_{20}$ from $(0,19)$ to $(20,0)$, and both groups vanish on page 21. With `untwisted=1` the differential is zero and both groups survive. [Transgression generator](examples/sheaf-transgression.awk)
+
+```sh
+awk -v r=20 -v prime=3 -v cellular=1 -f examples/sheaf-transgression.awk | cargo run --quiet -- -
+```
+
 ### The Leray complex of a finite map
 
 `shleray K[f,F];` constructs the derived direct image of a sheaf $F$ on the named source of $f:X\to Y$. Its stalk in degree $q$ at $y$ is the actual Roos cochain space $C^q(X_y;F)$ with the Roos differential. The restriction maps keep the chains in the smaller inverse-image open. The declared complex uses the component names `K__0`, `K__1`, and so on. Its spectral sequence has $E_2^{p,q}=H^p(Y;R^q f_*F)$.

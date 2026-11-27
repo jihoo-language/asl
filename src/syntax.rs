@@ -578,6 +578,7 @@ pub(crate) enum ExprForm {
     MixedGenerator(MixedSpec, usize, Span),
     MixedClass(usize, usize, Box<ParsedExpr>),
     SheafTerm(Label, Vec<Label>, usize, i64),
+    SheafCellTerm(Label, usize, Label, usize, i64),
     SheafGenerator(Label, usize, usize),
     SheafLerayIncl(Label, Box<ParsedExpr>),
     SheafApply(Label, Box<ParsedExpr>),
@@ -799,6 +800,8 @@ pub(crate) enum StatementForm {
     SheafMap(Label, Label, Label, Vec<(Label, Vec<i64>)>),
     SheafExtDimension(Label, Label, usize),
     SheafComplex(Label, Vec<Label>),
+    SheafResolution(Label, Label, usize, crate::sheaf_cellular::Presentation),
+    SheafCellular(Label, Label, Label),
     SheafHyperDimension(Label, usize),
     SheafPageDimension(Label, SheafPageGrade),
     SheafDimension(Label, usize),
@@ -1360,6 +1363,58 @@ impl<'src> Parser<'src> {
         Ok(crate::q_module::Presentation { generators, rules })
     }
 
+    fn sheaf_incidence(&mut self, end: Token<'src>) -> Result<Vec<(Label, i64)>> {
+        let mut terms = Vec::new();
+        while self.token() != end {
+            let label = self.label()?;
+            self.expect(Token::Colon)?;
+            terms.push((label, self.signed_number("signed incidence coefficient")?));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(end)?;
+        Ok(terms)
+    }
+
+    fn sheaf_resolution(&mut self) -> Result<crate::sheaf_cellular::Presentation> {
+        self.expect(Token::LBrace)?;
+        let mut cells = Vec::new();
+        while self.token() != Token::RBrace {
+            let label = self.label()?;
+            self.expect(Token::Colon)?;
+            self.expect(Token::LParen)?;
+            let degree = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let point = self.label()?;
+            self.expect(Token::RParen)?;
+            cells.push((label, degree, point));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::LBrace)?;
+        let mut boundaries = Vec::new();
+        while self.token() != Token::RBrace {
+            let label = self.label()?;
+            self.expect(Token::Colon)?;
+            self.expect(Token::LBracket)?;
+            boundaries.push((label, self.sheaf_incidence(Token::RBracket)?));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.expect(Token::LBrace)?;
+        let augmentation = self.sheaf_incidence(Token::RBrace)?;
+        Ok(crate::sheaf_cellular::Presentation {
+            cells,
+            boundaries,
+            augmentation,
+        })
+    }
+
     fn sheaf_page_grade(&mut self) -> Result<SheafPageGrade> {
         let r = self.number()?.0;
         self.expect(Token::Comma)?;
@@ -1692,6 +1747,26 @@ impl<'src> Parser<'src> {
                 }
                 self.expect(Token::RBrace)?;
                 StatementForm::SheafMap(name, source, target, matrices)
+            }
+            Token::Word("shresolution") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafResolution(name, base, prime, self.sheaf_resolution()?)
+            }
+            Token::Word("shcellular") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let resolution = self.label()?;
+                self.expect(Token::Comma)?;
+                let complex = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafCellular(name, resolution, complex)
             }
             Token::Word("shcomplex") => {
                 self.advance()?;
@@ -5049,6 +5124,26 @@ impl<'src> Parser<'src> {
                     let value = self.paren_expr(nest)?;
                     let depth = value.depth + 1;
                     return expr(span, ExprForm::RVScale(scalar, Box::new(value)), depth);
+                }
+                if name.text == "shCellTerm" && self.eat(Token::LBracket)? {
+                    let context = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let q = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let cell = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.signed_number("signed sheaf coefficient")?
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(
+                        span,
+                        ExprForm::SheafCellTerm(context, q, cell, index, coefficient),
+                        0,
+                    );
                 }
                 if name.text == "shHomTerm" && self.eat(Token::LBracket)? {
                     let source = self.label()?;

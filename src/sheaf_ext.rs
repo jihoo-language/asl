@@ -4,7 +4,9 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
-use crate::sheaf::{self, Cochain, Cochains, Cohomology, Generator, Layer, Sheaf, Sink, Term};
+use crate::sheaf::{
+    self, Cochain, Cochains, Cohomology, Generator, Layer, Place, Sheaf, Sink, Term,
+};
 use crate::sheaf_hyper::Map;
 use crate::syntax::Label;
 
@@ -62,7 +64,7 @@ impl Hom {
     }
 
     pub(crate) fn decode(&self, generator: &Generator) -> (usize, usize) {
-        let rows = self.target.dims()[*generator.chain.last().unwrap()];
+        let rows = self.target.dims()[*generator.place.chain().last().unwrap()];
         (generator.index / rows, generator.index % rows)
     }
 
@@ -156,7 +158,7 @@ fn coordinate(chain: Rc<[usize]>, rows: usize, column: usize, row: usize) -> Res
         .ok_or_else(matrix_size)?;
     Ok(Generator {
         vertical: 0,
-        chain,
+        place: Place::Chain(chain),
         index,
     })
 }
@@ -173,7 +175,7 @@ impl Cochains for Hom {
         coefficient: u32,
         emit: &mut Sink<'_>,
     ) -> Result<()> {
-        let chain = &generator.chain;
+        let chain = generator.place.chain();
         if chain.len() >= self.height {
             return Ok(());
         }
@@ -226,7 +228,7 @@ impl Cochains for Hom {
                     emit(
                         model,
                         Generator {
-                            chain: next,
+                            place: Place::Chain(next),
                             ..generator.clone()
                         },
                         scalar,
@@ -311,7 +313,7 @@ pub(crate) fn compose(
     for (generator, coefficient) in after {
         model.spend(1 + matching.len().max(1).ilog2() as usize)?;
         let (column, row) = a.decode(generator);
-        let bucket = match matching.entry((generator.chain[0], column)) {
+        let bucket = match matching.entry((generator.place.chain()[0], column)) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 cells += 5;
@@ -326,17 +328,18 @@ pub(crate) fn compose(
     for (generator, coefficient) in before {
         model.spend(1 + matching.len().max(1).ilog2() as usize)?;
         let (column, middle) = b.decode(generator);
-        let junction = *generator.chain.last().unwrap();
+        let junction = *generator.place.chain().last().unwrap();
         if let Some(candidates) = matching.get(&(junction, middle)) {
             for &(after, row, factor) in candidates {
-                model.spend(generator.chain.len() + after.chain.len())?;
+                model.spend(generator.place.chain().len() + after.place.chain().len())?;
                 let chain = generator
-                    .chain
+                    .place
+                    .chain()
                     .iter()
                     .copied()
-                    .chain(after.chain.iter().skip(1).copied())
+                    .chain(after.place.chain().iter().skip(1).copied())
                     .collect();
-                let rows = a.target.dims()[*after.chain.last().unwrap()];
+                let rows = a.target.dims()[*after.place.chain().last().unwrap()];
                 let scalar = prime.mul(sign, prime.mul(*coefficient, factor));
                 result.add(model, prime, coordinate(chain, rows, column, row)?, scalar)?;
             }

@@ -70,6 +70,7 @@ use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
+use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
 use crate::sheaf_hyper;
 use crate::sheaf_leray::Leray;
@@ -408,7 +409,8 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
     sheaf_homs: HashMap<SheafEnds, Rc<SheafHom>>,
-    sheaf_complexes: HashMap<String, Rc<sheaf_hyper::Complex>>,
+    sheaf_complexes: HashMap<String, Total>,
+    sheaf_resolutions: HashMap<String, Rc<Resolution>>,
     leray_complexes: HashMap<String, Rc<Leray>>,
     serre_shifts: HashMap<String, usize>,
     type_ids: HashMap<Kind, TypeId>,
@@ -454,6 +456,7 @@ impl Model {
             sheaf_maps: HashMap::new(),
             sheaf_homs: HashMap::new(),
             sheaf_complexes: HashMap::new(),
+            sheaf_resolutions: HashMap::new(),
             leray_complexes: HashMap::new(),
             serre_shifts: HashMap::new(),
             type_ids: HashMap::new(),
@@ -538,12 +541,12 @@ impl Model {
             Kind::MixedChain(..) | Kind::MixedPage(..) => usize::MAX,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
             Kind::SheafComplex(_, ref name, k)
-                if k >= self.sheaf_complexes[name.as_ref()].height =>
+                if k >= self.sheaf_complexes[name.as_ref()].height() =>
             {
                 1
             }
             Kind::SheafPage(ref name, grade)
-                if !grade.has_leading(&self.sheaf_complexes[name.as_ref()]) =>
+                if !grade.has_leading(self.sheaf_complexes[name.as_ref()].filtered()) =>
             {
                 1
             }
@@ -1116,7 +1119,7 @@ impl Model {
         name: String,
         complex: Rc<sheaf_hyper::Complex>,
     ) {
-        self.sheaf_complexes.insert(name, complex);
+        self.sheaf_complexes.insert(name, Total::Roos(complex));
     }
 
     pub(crate) fn define_serre_shift(&mut self, name: String, shift: usize) {
@@ -1149,12 +1152,53 @@ impl Model {
     }
 
     pub(crate) fn sheaf_complex(&self, name: &Label) -> Result<Rc<sheaf_hyper::Complex>> {
-        self.sheaf_complex_named(&name.text)
+        match self.sheaf_total(name)? {
+            Total::Roos(complex) => Ok(complex),
+            Total::Cellular(_) => Err(Error::new(name.span, format!(
+                "'{}' is a cellular total complex; this operation requires an ordinary Roos complex", name.text
+            ))),
+        }
+    }
+
+    pub(crate) fn sheaf_total(&self, name: &Label) -> Result<Total> {
+        self.sheaf_total_named(&name.text)
             .ok_or_else(|| Error::new(name.span, format!("unknown sheaf complex '{}'", name.text)))
     }
 
-    pub(crate) fn sheaf_complex_named(&self, name: &str) -> Option<Rc<sheaf_hyper::Complex>> {
+    pub(crate) fn sheaf_total_named(&self, name: &str) -> Option<Total> {
         self.sheaf_complexes.get(name).cloned()
+    }
+
+    pub(crate) fn define_sheaf_cellular(&mut self, name: String, complex: Cellular) {
+        self.sheaf_complexes
+            .insert(name, Total::Cellular(Rc::new(complex)));
+    }
+
+    pub(crate) fn define_sheaf_resolution(&mut self, name: &Label, resolution: Resolution) {
+        self.sheaf_resolutions
+            .insert(name.text.clone(), Rc::new(resolution));
+    }
+
+    pub(crate) fn check_new_sheaf_resolution(&self, name: &Label) -> Result<()> {
+        if self.sheaf_resolutions.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("sheaf resolution '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sheaf_resolution(&self, name: &Label) -> Result<Rc<Resolution>> {
+        self.sheaf_resolutions
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown sheaf resolution '{}'", name.text),
+                )
+            })
     }
 
     pub(crate) fn sheaf_complex_type(
@@ -1163,7 +1207,7 @@ impl Model {
         name: &Label,
         degree: usize,
     ) -> Result<TypeId> {
-        self.sheaf_complex(name)?;
+        self.sheaf_total(name)?;
         self.known_sheaf_complex_type(form, name.text.as_str().into(), degree)
     }
 
@@ -1181,7 +1225,7 @@ impl Model {
         name: &Label,
         grade: sheaf_page::Grade,
     ) -> Result<TypeId> {
-        self.sheaf_complex(name)?;
+        self.sheaf_total(name)?;
         self.known_sheaf_page_type(name.text.as_str().into(), grade)
     }
 
@@ -3895,22 +3939,24 @@ impl Model {
                 }
                 Kind::SheafComplex(form, ref name, degree) => {
                     let data = self
-                        .sheaf_complex_named(name)
+                        .sheaf_total_named(name)
                         .expect("registered sheaf complex");
                     match form {
-                        SheafForm::Cochain => data.elements(self, degree, MAX_ELEMENTS)?,
+                        SheafForm::Cochain => {
+                            data.filtered().elements(self, degree, MAX_ELEMENTS)?
+                        }
                         SheafForm::Class => {
                             let rank = data.rank(self, degree)?;
-                            odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
+                            odd_ext::elements(self, data.filtered().prime(), rank, MAX_ELEMENTS)?
                         }
                     }
                 }
                 Kind::SheafPage(ref name, grade) => {
                     let data = self
-                        .sheaf_complex_named(name)
+                        .sheaf_total_named(name)
                         .expect("registered sheaf complex");
-                    let rank = data.page(self, grade)?.rank();
-                    odd_ext::elements(self, data.prime(), rank, MAX_ELEMENTS)?
+                    let rank = data.filtered().page(self, grade)?.rank();
+                    odd_ext::elements(self, data.filtered().prime(), rank, MAX_ELEMENTS)?
                 }
                 Kind::Operations(degree) => steenrod::elements(self, degree, MAX_ELEMENTS)?,
                 Kind::RhoLoc(grade) => {
@@ -4273,24 +4319,22 @@ impl Model {
                 let (poset, total, hom) = match self.kind(ty) {
                     Kind::SheafHom(_, ends, _) => {
                         let data = self.sheaf_hom(ends);
-                        (data.source.poset.clone(), false, Some(data))
+                        (data.source.poset.clone(), None, Some(data))
                     }
                     Kind::Sheaf(_, name, _) => (
                         self.sheaf_named(name)
                             .expect("registered sheaf")
                             .poset
                             .clone(),
-                        false,
+                        None,
                         None,
                     ),
-                    Kind::SheafComplex(_, name, _) => (
-                        self.sheaf_complex_named(name)
-                            .expect("registered sheaf complex")
-                            .poset()
-                            .clone(),
-                        true,
-                        None,
-                    ),
+                    Kind::SheafComplex(_, name, _) => {
+                        let total = self
+                            .sheaf_total_named(name)
+                            .expect("registered sheaf complex");
+                        (total.poset().clone(), Some(total), None)
+                    }
                     _ => unreachable!(),
                 };
                 self.write_type(out, ty, 0)?;
@@ -4305,21 +4349,29 @@ impl Model {
                     if *coefficient != 1 {
                         out.push(&format!("{coefficient}*"))?;
                     }
-                    if total {
+                    if total.is_some() {
                         out.push(&format!("q{}:", generator.vertical))?;
                     }
-                    out.push("[")?;
-                    for (i, &point) in generator.chain.iter().enumerate() {
-                        if i != 0 {
-                            out.push("<")?;
+                    match &generator.place {
+                        sheaf::Place::Chain(chain) => {
+                            out.push("[")?;
+                            for (i, &point) in chain.iter().enumerate() {
+                                if i != 0 {
+                                    out.push("<")?;
+                                }
+                                out.push(&poset.names[point])?;
+                            }
+                            out.push("]")?;
                         }
-                        out.push(&poset.names[point])?;
+                        sheaf::Place::Cell { ordinal, .. } => {
+                            out.push(total.as_ref().unwrap().cell_label(*ordinal))?;
+                        }
                     }
                     if let Some(hom) = &hom {
                         let (column, row) = hom.decode(generator);
-                        out.push(&format!("]#{column}->{row}"))?;
+                        out.push(&format!("#{column}->{row}"))?;
                     } else {
-                        out.push(&format!("]#{}", generator.index))?;
+                        out.push(&format!("#{}", generator.index))?;
                     }
                 }
                 out.push("}")

@@ -131,7 +131,7 @@ impl Cochains for Local<'_> {
         coefficient: u32,
         emit: &mut Sink<'_>,
     ) -> Result<()> {
-        if generator.vertical + generator.chain.len() >= self.height {
+        if generator.vertical + generator.place.chain().len() >= self.height {
             return Ok(());
         }
         self.input.cochains().cofaces(
@@ -262,7 +262,7 @@ impl Leray {
                     let index = layers[local].index(model, term)?;
                     let generator = Generator {
                         vertical: degree,
-                        chain: Rc::clone(&chain),
+                        place: sheaf::Place::Chain(Rc::clone(&chain)),
                         index,
                     };
                     output.add(model, prime, generator, *coefficient)?;

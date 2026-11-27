@@ -65,8 +65,43 @@ pub(crate) struct Cover {
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Generator {
     pub(crate) vertical: usize,
-    pub(crate) chain: Rc<[usize]>,
+    pub(crate) place: Place,
     pub(crate) index: usize,
+}
+
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Place {
+    Chain(Rc<[usize]>),
+    Cell { degree: usize, ordinal: usize },
+}
+
+impl Place {
+    pub(crate) fn chain(&self) -> &[usize] {
+        match self {
+            Self::Chain(chain) => chain,
+            Self::Cell { .. } => unreachable!("expected an ordinary Roos coordinate"),
+        }
+    }
+
+    pub(crate) fn degree(&self) -> usize {
+        match self {
+            Self::Chain(chain) => chain.len() - 1,
+            Self::Cell { degree, .. } => *degree,
+        }
+    }
+
+    fn payload_cells(&self) -> usize {
+        match self {
+            Self::Chain(chain) => chain.len(),
+            Self::Cell { .. } => 2,
+        }
+    }
+}
+
+impl Generator {
+    pub(crate) fn cells(&self) -> usize {
+        5 + self.place.payload_cells()
+    }
 }
 
 pub(crate) type Term = (Generator, u32);
@@ -238,15 +273,7 @@ impl Sheaf {
         characteristic: usize,
         presentation: Presentation,
     ) -> Result<Self> {
-        let prime = match characteristic {
-            2 => Prime::validated(2),
-            n if n < 2 || n % 2 == 0 => {
-                return Err(Error::plain(format!(
-                    "sheaf characteristic {n} is not prime"
-                )));
-            }
-            n => Prime::new(model, n)?,
-        };
+        let prime = field(model, characteristic)?;
         let poset = model.poset(base).expect("named base poset");
         let size = poset.names.len();
         let mut dims = vec![None; size];
@@ -430,7 +457,7 @@ impl Sheaf {
             vec![(
                 Generator {
                     vertical: 0,
-                    chain: points.into(),
+                    place: Place::Chain(points.into()),
                     index,
                 },
                 coefficient,
@@ -519,7 +546,7 @@ impl Cochains for Sheaf {
         coefficient: u32,
         emit: &mut Sink<'_>,
     ) -> Result<()> {
-        let chain = &generator.chain;
+        let chain = generator.place.chain();
         if chain.len() >= self.height {
             return Ok(());
         }
@@ -543,7 +570,7 @@ impl Cochains for Sheaf {
                         model,
                         Generator {
                             vertical: generator.vertical,
-                            chain,
+                            place: Place::Chain(chain),
                             index: generator.index,
                         },
                         factor,
@@ -563,7 +590,7 @@ impl Cochains for Sheaf {
                             model,
                             Generator {
                                 vertical: generator.vertical,
-                                chain: chain.clone(),
+                                place: Place::Chain(chain.clone()),
                                 index,
                             },
                             self.prime.mul(factor, scalar),
@@ -656,7 +683,7 @@ impl<'a> Open<'a> {
     }
 
     pub(crate) fn contains(&self, generator: &Generator) -> bool {
-        self.longest[generator.chain[0]] != 0
+        self.longest[generator.place.chain()[0]] != 0
     }
 }
 
@@ -672,7 +699,7 @@ impl Cochains for Open<'_> {
         coefficient: u32,
         emit: &mut Sink<'_>,
     ) -> Result<()> {
-        if generator.chain.len() >= self.height {
+        if generator.place.chain().len() >= self.height {
             return Ok(());
         }
         self.sheaf.cofaces(
@@ -930,7 +957,7 @@ pub(crate) struct Layer {
 
 struct Block {
     vertical: usize,
-    chain: Rc<[usize]>,
+    place: Place,
     start: usize,
 }
 
@@ -957,7 +984,7 @@ impl Layer {
         model.spend(1 + chain.len())?;
         self.blocks.push(Block {
             vertical: 0,
-            chain,
+            place: Place::Chain(chain),
             start: self.size,
         });
         self.size = size;
@@ -972,13 +999,41 @@ impl Layer {
     ) -> Result<()> {
         model.spend(sort_work(self.blocks.len()).saturating_mul(degree + 1))?;
         self.blocks
-            .sort_unstable_by(|left, right| left.chain.cmp(&right.chain));
+            .sort_unstable_by(|left, right| left.place.cmp(&right.place));
         let mut next = 0;
         for block in &mut self.blocks {
             block.start = next;
-            next += dimension(&block.chain);
+            next += dimension(block.place.chain());
         }
         Ok(())
+    }
+
+    pub(crate) fn cellular(
+        model: &mut Model,
+        degree: usize,
+        entries: impl Iterator<Item = (usize, usize)>,
+        limit: usize,
+    ) -> Result<Self> {
+        let mut output = Self::default();
+        for (ordinal, dimension) in entries {
+            model.spend(1)?;
+            if dimension == 0 {
+                continue;
+            }
+            let start = output.size;
+            output.size = start
+                .checked_add(dimension)
+                .filter(|&size| size <= limit)
+                .ok_or_else(|| layer_limit(limit))?;
+            output.cells += 6;
+            check_cells(output.cells)?;
+            output.blocks.push(Block {
+                vertical: 0,
+                place: Place::Cell { degree, ordinal },
+                start,
+            });
+        }
+        Ok(output)
     }
 
     pub(crate) fn append_layer(
@@ -1020,19 +1075,21 @@ impl Layer {
         let block = &self.blocks[self.blocks.partition_point(|block| block.start <= index) - 1];
         Generator {
             vertical: block.vertical,
-            chain: block.chain.clone(),
+            place: block.place.clone(),
             index: index - block.start,
         }
     }
 
     pub(crate) fn index(&self, model: &mut Model, generator: &Generator) -> Result<usize> {
-        model.spend(1 + generator.chain.len() * (1 + self.blocks.len().max(1).ilog2() as usize))?;
+        model.spend(
+            1 + generator.place.payload_cells() * (1 + self.blocks.len().max(1).ilog2() as usize),
+        )?;
         let block = self
             .blocks
             .binary_search_by(|block| {
-                (block.vertical, &block.chain).cmp(&(generator.vertical, &generator.chain))
+                (block.vertical, &block.place).cmp(&(generator.vertical, &generator.place))
             })
-            .map_err(|_| Error::plain("sheaf cochain chain is outside its degree"))?;
+            .map_err(|_| Error::plain("sheaf cochain coordinate is outside its degree"))?;
         Ok(self.blocks[block].start + generator.index)
     }
 }
@@ -1192,7 +1249,7 @@ impl Cochain {
         if coefficient == 0 {
             return Ok(());
         }
-        let term_cells = 5 + generator.chain.len();
+        let term_cells = generator.cells();
         model.spend(term_cells * (1 + self.terms.len().max(1).ilog2() as usize))?;
         match self.terms.entry(generator) {
             Entry::Vacant(slot) => {
@@ -1243,13 +1300,23 @@ pub(crate) fn compare(
 ) -> Result<std::cmp::Ordering> {
     // Field digits at larger chain coordinates are more significant.
     for (a, b) in left.iter().rev().zip(right.iter().rev()) {
-        model.spend(1 + a.0.chain.len().min(b.0.chain.len()))?;
+        model.spend(1 + a.0.place.payload_cells().min(b.0.place.payload_cells()))?;
         let comparison = a.cmp(b);
         if !comparison.is_eq() {
             return Ok(comparison);
         }
     }
     Ok(left.len().cmp(&right.len()))
+}
+
+pub(crate) fn field(model: &mut Model, characteristic: usize) -> Result<Prime> {
+    match characteristic {
+        2 => Ok(Prime::validated(2)),
+        n if n < 2 || n % 2 == 0 => Err(Error::plain(format!(
+            "sheaf characteristic {n} is not prime"
+        ))),
+        n => Prime::new(model, n),
+    }
 }
 
 pub(crate) fn residue(prime: Prime, value: i64) -> u32 {
@@ -1271,10 +1338,7 @@ pub(crate) fn inserted(
 }
 
 pub(crate) fn persist(model: &mut Model, terms: Vec<Term>) -> Result<Value> {
-    let cells = terms
-        .iter()
-        .map(|(generator, _)| 5 + generator.chain.len())
-        .sum();
+    let cells = terms.iter().map(|(generator, _)| generator.cells()).sum();
     check_cells(cells)?;
     model.allocate(cells)?;
     Ok(Value::SheafC(terms.into()))

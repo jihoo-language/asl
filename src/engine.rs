@@ -103,6 +103,7 @@ use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
+use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_ext::{self, Ends as SheafEnds};
 use crate::sheaf_hyper::{self, NamedSheaf};
 use crate::sheaf_image::{Operation as SheafImageOp, Site as SheafSite};
@@ -309,7 +310,7 @@ enum ClassBracketFamily {
 
 enum SheafComputation {
     Ordinary(Rc<Sheaf>),
-    Total(Rc<sheaf_hyper::Complex>),
+    Total(SheafTotal),
     Hom(Rc<sheaf_ext::Hom>),
 }
 
@@ -317,7 +318,7 @@ impl SheafComputation {
     fn data(&self) -> (&dyn Cochains, &sheaf::Cohomology) {
         match self {
             Self::Ordinary(data) => (data.as_ref(), &data.cohomology),
-            Self::Total(data) => (data.as_ref(), &data.cohomology),
+            Self::Total(data) => (data.filtered(), data.cohomology()),
             Self::Hom(data) => (data.as_ref(), &data.cohomology),
         }
     }
@@ -429,18 +430,8 @@ enum TypedForm {
     Equator,
     Suspend(Box<TypedExpr>),
     Shift(Box<TypedExpr>),
-    SheafPageOperation(
-        SheafPageOp,
-        Rc<sheaf_hyper::Complex>,
-        SheafPageGrade,
-        Box<TypedExpr>,
-    ),
-    SheafPageLift(
-        SheafPageLift,
-        Rc<sheaf_hyper::Complex>,
-        SheafPageGrade,
-        Box<TypedExpr>,
-    ),
+    SheafPageOperation(SheafPageOp, SheafTotal, SheafPageGrade, Box<TypedExpr>),
+    SheafPageLift(SheafPageLift, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
     MixedComposition([Rc<mixed_hom::Hom>; 3], Box<TypedExpr>, Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
@@ -682,6 +673,27 @@ impl Engine {
                 self.model.define_sheaf_map(name.text, map);
                 return Ok(None);
             }
+            StatementForm::SheafResolution(name, base, characteristic, presentation) => {
+                self.model.check_new_sheaf_resolution(&name)?;
+                let ty = self.model.named(&base.text).ok_or_else(|| {
+                    Error::new(
+                        base.span,
+                        format!("unknown named resolution base '{}'", base.text),
+                    )
+                })?;
+                let prime = sheaf::field(&mut self.model, characteristic)?;
+                let resolution = Resolution::build(&mut self.model, ty, prime, presentation)?;
+                self.model.define_sheaf_resolution(&name, resolution);
+                return Ok(None);
+            }
+            StatementForm::SheafCellular(name, resolution, complex) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let resolution = self.model.sheaf_resolution(&resolution)?;
+                let complex = self.model.sheaf_complex(&complex)?;
+                let total = Cellular::new(&mut self.model, resolution, complex)?;
+                self.model.define_sheaf_cellular(name.text, total);
+                return Ok(None);
+            }
             StatementForm::SheafComplex(name, entries) => {
                 self.model.check_new_sheaf_complex(&name)?;
                 if entries.len() % 2 == 0 {
@@ -706,15 +718,15 @@ impl Engine {
                 return Ok(None);
             }
             StatementForm::SheafPageDimension(name, grade) => {
-                let complex = self.model.sheaf_complex(&name)?;
-                let rank = complex.page(&mut self.model, grade)?.rank();
+                let complex = self.model.sheaf_total(&name)?;
+                let rank = complex.filtered().page(&mut self.model, grade)?.rank();
                 format!(
                     "shedim[{}, {}, {}, {}] = {rank}",
                     name.text, grade.r, grade.p, grade.q
                 )
             }
             StatementForm::SheafHyperDimension(name, degree) => {
-                let data = self.model.sheaf_complex(&name)?;
+                let data = self.model.sheaf_total(&name)?;
                 let rank = data.rank(&mut self.model, degree)?;
                 format!("shhyperdim[{}, {degree}] = {rank}", name.text)
             }
@@ -2146,8 +2158,9 @@ impl Engine {
             Kind::SheafHom(_, ends, _) => self.model.sheaf_hom(ends).prime(),
             Kind::SheafComplex(_, name, _) | Kind::SheafPage(name, _) => self
                 .model
-                .sheaf_complex_named(name)
+                .sheaf_total_named(name)
                 .expect("registered sheaf complex")
+                .filtered()
                 .prime(),
             _ => unreachable!(),
         }
@@ -4061,7 +4074,13 @@ impl Engine {
                 let Value::OddClass(coordinates) = self.eval(input)? else {
                     unreachable!()
                 };
-                sheaf_page::apply(&mut self.model, complex, *grade, *operation, &coordinates)
+                sheaf_page::apply(
+                    &mut self.model,
+                    complex.filtered(),
+                    *grade,
+                    *operation,
+                    &coordinates,
+                )
             }
             TypedForm::SheafPageLift(operation, complex, grade, input) => {
                 let Value::SheafC(terms) = self.eval(input)? else {
@@ -4069,10 +4088,10 @@ impl Engine {
                 };
                 match operation {
                     SheafPageLift::Class => {
-                        sheaf_page::class(&mut self.model, complex, *grade, &terms)
+                        sheaf_page::class(&mut self.model, complex.filtered(), *grade, &terms)
                     }
                     SheafPageLift::Correct => {
-                        sheaf_page::correct(&mut self.model, complex, *grade, &terms)
+                        sheaf_page::correct(&mut self.model, complex.filtered(), *grade, &terms)
                     }
                 }
             }
@@ -5322,6 +5341,19 @@ impl Checker<'_> {
                     .mixed_page_type(mixed_page::Grade { chain, r, f })?;
                 Ok((ty, TypedForm::Cobar(CobarOp::MixClass, Box::new(input))))
             }
+            ExprForm::SheafCellTerm(name, q, cell, index, coefficient) => {
+                let SheafTotal::Cellular(data) = self.model.sheaf_total(&name)? else {
+                    return Err(Error::new(
+                        name.span,
+                        "shCellTerm requires a declared cellular total complex",
+                    ));
+                };
+                let (degree, value) = data.term(self.model, q, &cell, index, coefficient)?;
+                let ty = self
+                    .model
+                    .sheaf_complex_type(SheafForm::Cochain, &name, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::SheafTerm(name, chain, index, coefficient) => {
                 let data = self.model.sheaf(&name)?;
                 let value = data.term(self.model, &chain, index, coefficient)?;
@@ -5339,10 +5371,10 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::SheafHyperGenerator(name, degree, index) => {
-                let data = self.model.sheaf_complex(&name)?;
-                let value = data
-                    .cohomology
-                    .generator(self.model, data.as_ref(), degree, index)?;
+                let data = self.model.sheaf_total(&name)?;
+                let value =
+                    data.cohomology()
+                        .generator(self.model, data.filtered(), degree, index)?;
                 let ty = self
                     .model
                     .sheaf_complex_type(SheafForm::Class, &name, degree)?;
@@ -5508,10 +5540,16 @@ impl Checker<'_> {
                 else {
                     return Err(self.invalid_operand(&input, "shTotPart", "a ShTot cochain"));
                 };
-                let data = self
+                let SheafTotal::Roos(data) = self
                     .model
-                    .sheaf_complex_named(name)
-                    .expect("registered sheaf complex");
+                    .sheaf_total_named(name)
+                    .expect("registered sheaf complex")
+                else {
+                    return Err(Error::new(
+                        input.span,
+                        "shTotPart requires ordinary Roos cochains",
+                    ));
+                };
                 let component = data.component(q)?;
                 let p = degree.checked_sub(q).ok_or_else(|| {
                     Error::new(input.span, "shTotPart would have a negative Roos degree")
@@ -5522,8 +5560,8 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::SheafPart(data, q, Box::new(input))))
             }
             ExprForm::SheafPageGenerator(name, grade, index) => {
-                let complex = self.model.sheaf_complex(&name)?;
-                let rank = complex.page(self.model, grade)?.rank();
+                let complex = self.model.sheaf_total(&name)?;
+                let rank = complex.filtered().page(self.model, grade)?.rank();
                 if index >= rank {
                     return Err(Error::new(
                         name.span,
@@ -5544,7 +5582,7 @@ impl Checker<'_> {
                 let grade = SheafPageGrade::from_total(r, p, *total);
                 let complex = self
                     .model
-                    .sheaf_complex_named(&name)
+                    .sheaf_total_named(&name)
                     .expect("registered sheaf complex");
                 let ty = match operation {
                     SheafPageLift::Class => self.model.known_sheaf_page_type(name, grade)?,
@@ -5564,7 +5602,7 @@ impl Checker<'_> {
                 let grade = *grade;
                 let complex = self
                     .model
-                    .sheaf_complex_named(&name)
+                    .sheaf_total_named(&name)
                     .expect("registered sheaf complex");
                 let ty = match operation {
                     SheafPageOp::Differential => {
@@ -5625,8 +5663,9 @@ impl Checker<'_> {
                 {
                     let prime = self
                         .model
-                        .sheaf_complex_named(name)
+                        .sheaf_total_named(name)
                         .expect("registered sheaf complex")
+                        .filtered()
                         .prime();
                     let scalar = sheaf::residue(prime, scalar) as usize;
                     return Ok((input.ty, TypedForm::PScale(prime, scalar, Box::new(input))));
@@ -5660,7 +5699,7 @@ impl Checker<'_> {
                 let (ty, data) = if total {
                     let data = self
                         .model
-                        .sheaf_complex_named(&name)
+                        .sheaf_total_named(&name)
                         .expect("registered sheaf complex");
                     (
                         self.model.known_sheaf_complex_type(output, name, grade)?,
