@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -10,6 +11,7 @@ use super::super::super::matrix::{self, Field, Matrix};
 use super::{Category, Double};
 
 mod build;
+pub(crate) mod modular;
 mod stack;
 use build::Builder;
 
@@ -47,6 +49,7 @@ pub(crate) struct Tube {
     inverse: Matrix,
     unit: Element,
     boundary_simples: usize,
+    modular: OnceCell<modular::Torus>,
 }
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -105,6 +108,7 @@ impl Tube {
             inverse,
             unit,
             boundary_simples: category.count(),
+            modular: OnceCell::new(),
         };
         let actual = result.transform(&mut builder.field, &result.forward, &result.unit)?;
         let mut expected = vec![Rational::zero(); result.forms.len()];

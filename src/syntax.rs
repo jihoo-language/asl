@@ -83,6 +83,7 @@ pub(crate) enum TypeForm {
     DoubleDefectSixJ(Label, usize),
     DoubleCentralMap(Label, usize),
     DoubleTube(Label),
+    DoubleTubeRotation(Label),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -815,6 +816,7 @@ pub(crate) enum ExprForm {
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Expression>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Expression>),
     DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Expression>),
+    DoubleTubeModular(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1324,6 +1326,7 @@ pub(crate) enum StatementForm {
     DoubleDefectSixJ(Box<crate::rv_crossed::drinfeld_double::defects::relative::sixj::Command>),
     DoubleCentral(Box<crate::rv_crossed::drinfeld_double::defects::relative::central::Command>),
     DoubleTube(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::Command>),
+    DoubleTubeModular(Box<crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4922,6 +4925,107 @@ impl<'src> Parser<'src> {
             (entry, depth)
         };
         expr(span, ExprForm::DoubleDefectSixJ(Box::new(form)), depth + 1)
+    }
+
+    fn tube_modular_statement(&mut self, op: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Command;
+        self.advance()?;
+        let command = if op == "rvDoubleTubeRotationData" {
+            Command::RotationData(Box::new(self.paren_expr(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            let command = if op == "rvDoubleTubeIndicatorPeriod" {
+                let [i] = self.following_indices()?;
+                Command::Period(name, i)
+            } else {
+                Command::Data(name)
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::DoubleTubeModular(Box::new(command)))
+    }
+
+    fn tube_modular_expression(&mut self, op: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::defects::relative::tube::modular::Expression;
+        let (form, depth) = match op {
+            "rvDoubleTubeRotationEntry" => {
+                let key = self.relative_indices()?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::RotationEntry(key, input), depth)
+            }
+            "rvDoubleTubeRotationTrace" => {
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::RotationTrace(input), depth)
+            }
+            "rvDoubleTubeWord" => {
+                let word = self.gluing_word()?;
+                let input = Box::new(self.paren_expr(nest)?);
+                let depth = input.depth + 1;
+                (Expression::Word(word, input), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let form = match op {
+                    "rvDoubleTubeSEntry" => Expression::SEntry(name, self.following_indices()?),
+                    "rvDoubleTubeTwist" => {
+                        let [a] = self.following_indices()?;
+                        Expression::Twist(name, a)
+                    }
+                    "rvDoubleTubeLens" => {
+                        self.expect(Token::Comma)?;
+                        let power = self
+                            .signed_wide("a signed surgery twist power", "surgery twist power")?;
+                        Expression::Lens(name, power)
+                    }
+                    "rvDoubleTubeIndicator" => {
+                        Expression::Indicator(name, self.following_indices()?)
+                    }
+                    _ => Expression::Rotate(name, self.following_indices()?),
+                };
+                self.expect(Token::RBracket)?;
+                (form, 0)
+            }
+        };
+        expr(span, ExprForm::DoubleTubeModular(Box::new(form)), depth)
+    }
+
+    fn gluing_word(&mut self) -> Result<Vec<crate::rv_lens::Step>> {
+        use crate::rv_lens::{Step, MAX_WORD};
+        self.expect(Token::LBrace)?;
+        let mut steps = Vec::new();
+        while self.token() != Token::RBrace {
+            if steps.len() == MAX_WORD {
+                return Err(Error::new(
+                    self.span(),
+                    "gluing word exceeds the limit of 256 letters",
+                ));
+            }
+            let step = match self.token() {
+                Token::Word("S") => {
+                    self.advance()?;
+                    Step::S
+                }
+                Token::Word("T") => {
+                    self.advance()?;
+                    self.expect(Token::LBracket)?;
+                    let power = self.signed_wide("a signed twist power", "twist power")?;
+                    self.expect(Token::RBracket)?;
+                    Step::T(power)
+                }
+                _ => return Err(self.expected("S or T[power] in the gluing word")),
+            };
+            steps.push(step);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(steps)
     }
 
     fn tube_statement(&mut self, op: &str) -> Result<StatementForm> {
@@ -14761,6 +14865,11 @@ impl<'src> Parser<'src> {
                 | "rvDoubleDefectFusionProjector"),
             ) => self.double_defect_statement(op)?,
             Token::Word(
+                op @ ("rvDoubleTubeModular"
+                | "rvDoubleTubeIndicatorPeriod"
+                | "rvDoubleTubeRotationData"),
+            ) => self.tube_modular_statement(op)?,
+            Token::Word(
                 op @ ("rvdoubletube"
                 | "rvDoubleTubeData"
                 | "rvDoubleTubeAnnular"
@@ -19335,6 +19444,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleTubeRotation" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleTubeRotation(name), 0);
+        }
         if name.text == "RVDoubleTube" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -22672,6 +22786,20 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LBracket)
                 {
                     return self.tube_expression(&name.text, span, nest);
+                }
+                if (name.text == "rvDoubleTubeWord" && self.token() == Token::LBrace)
+                    || (name.text == "rvDoubleTubeRotationTrace" && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvDoubleTubeSEntry"
+                            | "rvDoubleTubeTwist"
+                            | "rvDoubleTubeLens"
+                            | "rvDoubleTubeIndicator"
+                            | "rvDoubleTubeRotate"
+                            | "rvDoubleTubeRotationEntry"
+                    ) && self.token() == Token::LBracket)
+                {
+                    return self.tube_modular_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDoubleRelative" && self.eat(Token::LBracket)? {
                     let name = self.label()?;

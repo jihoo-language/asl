@@ -222,6 +222,7 @@ pub(crate) enum Kind {
     DoubleDefectSixJ(Rc<str>, usize),
     DoubleCentralMap(Rc<str>, usize),
     DoubleTube(Rc<str>),
+    DoubleTubeRotation(Rc<str>),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -546,6 +547,7 @@ pub(crate) enum Value {
     DoubleDefectSixJ(Rc<dd::defects::relative::sixj::SixJ>),
     DoubleCentralMap(Rc<dd::defects::relative::central::CentralMap>),
     DoubleTube(Rc<dd::defects::relative::tube::Element>),
+    DoubleTubeRotation(Rc<dd::defects::relative::tube::modular::Rotation>),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -1327,6 +1329,20 @@ impl Model {
             .ok_or_else(|| Error::new(name.span, format!("unknown tube algebra '{}'", name.text)))
     }
 
+    pub(crate) fn double_tube_rotation_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.double_tube(name)?;
+        self.inhabited_type(Kind::DoubleTubeRotation(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn tube_geometry(
+        &self,
+        tube: &dd::defects::relative::tube::Tube,
+    ) -> Result<(Rc<dd::Double>, Rc<dd::defects::Category>)> {
+        let category = self.double_defects(&tube.category)?;
+        let double = self.defect_bulk(&category, tube.category.span)?;
+        Ok((double, category))
+    }
+
     pub(crate) fn double_tube_type(&mut self, name: &Label) -> Result<TypeId> {
         self.double_tube(name)?;
         self.inhabited_type(Kind::DoubleTube(name.text.as_str().into()), 0)
@@ -1928,7 +1944,8 @@ impl Model {
             | Kind::DoubleRelative(..)
             | Kind::DoubleDefectSixJ(..)
             | Kind::DoubleCentralMap(..)
-            | Kind::DoubleTube(..) => usize::MAX,
+            | Kind::DoubleTube(..)
+            | Kind::DoubleTubeRotation(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -2244,6 +2261,7 @@ impl Model {
                 | Kind::DoubleDefectSixJ(..)
                 | Kind::DoubleCentralMap(..)
                 | Kind::DoubleTube(..)
+                | Kind::DoubleTubeRotation(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -8484,6 +8502,7 @@ impl Model {
             | Kind::DoubleDefectSixJ(..)
             | Kind::DoubleCentralMap(..)
             | Kind::DoubleTube(..)
+            | Kind::DoubleTubeRotation(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -8677,6 +8696,7 @@ impl Model {
             }
             Kind::DoubleRelative(name) => out.push(&format!("RVDoubleRelative({name})")),
             Kind::DoubleTube(name) => out.push(&format!("RVDoubleTube({name})")),
+            Kind::DoubleTubeRotation(name) => out.push(&format!("RVDoubleTubeRotation({name})")),
             Kind::DoubleCentralMap(name, n) => out.push(&format!("RVDoubleCentralMap({name},{n})")),
             Kind::DoubleDefectSixJ(name, n) => out.push(&format!("RVDoubleDefectSixJ({name},{n})")),
             Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
@@ -9401,6 +9421,7 @@ impl Model {
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a == b),
             (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a == b),
             (Value::DoubleTube(a), Value::DoubleTube(b)) => Ok(a == b),
+            (Value::DoubleTubeRotation(a), Value::DoubleTubeRotation(b)) => Ok(a == b),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -9793,6 +9814,7 @@ impl Model {
             (Value::DoubleDefectSixJ(a), Value::DoubleDefectSixJ(b)) => Ok(a.cmp(b)),
             (Value::DoubleCentralMap(a), Value::DoubleCentralMap(b)) => Ok(a.cmp(b)),
             (Value::DoubleTube(a), Value::DoubleTube(b)) => Ok(a.cmp(b)),
+            (Value::DoubleTubeRotation(a), Value::DoubleTubeRotation(b)) => Ok(a.cmp(b)),
             (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
@@ -10883,6 +10905,9 @@ impl Model {
                         "cannot enumerate a double braid operator type",
                     ));
                 }
+                Kind::DoubleTubeRotation(..) => {
+                    return Err(Error::plain("cannot enumerate pivotal tube rotations"));
+                }
                 Kind::DoubleTube(..) => {
                     return Err(Error::plain("cannot enumerate a cyclotomic tube algebra"));
                 }
@@ -11902,6 +11927,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleTubeRotation(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}}}", value.data()))
             }
             Value::DoubleTube(value) => {
                 self.write_type(out, ty, 0)?;

@@ -5,6 +5,7 @@ use super::super::super::matrix::{Field, Matrix};
 use super::tensor::Layout;
 use super::{Ambient, Image, Module, Pair};
 
+#[derive(Clone)]
 pub(super) struct GradedMap {
     pub(super) grades: Vec<Matrix>,
 }

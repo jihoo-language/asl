@@ -337,7 +337,7 @@ impl<'a> Builder<'a> {
     }
 }
 
-fn unitor(
+pub(super) fn unitor(
     ambient: &Ambient<'_>,
     layout: Layout<'_>,
     object: &Module,

@@ -909,6 +909,7 @@ enum TubeOp {
     Add(Box<[TypedExpr; 2]>),
     Product(Box<[TypedExpr; 2]>),
     Scale(Box<[TypedExpr; 2]>),
+    Word(Vec<crate::rv_lens::Step>, Box<TypedExpr>),
 }
 
 struct CentralMove {
@@ -990,6 +991,7 @@ enum TypedForm {
     DoubleDefectSixJ(SixJAction),
     DoubleCentral(CentralAction),
     DoubleTube(TubeAction),
+    DoubleTubeRotationEntry(Option<[usize; 2]>, Box<TypedExpr>),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2792,6 +2794,9 @@ impl Engine {
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
             StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
+            StatementForm::DoubleTubeModular(command) => {
+                return self.tube_modular_command(*command).map(Some)
+            }
             StatementForm::DoubleTube(command) => return self.tube_command(*command),
             StatementForm::DoubleCentral(command) => {
                 return self.central_command(*command).map(Some)
@@ -9995,6 +10000,33 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn tube_modular_command(
+        &mut self,
+        command: dd::defects::relative::tube::modular::Command,
+    ) -> Result<String> {
+        use dd::defects::relative::tube::modular::Command;
+        let (name, period) = match command {
+            Command::Data(name) => (name, None),
+            Command::Period(name, i) => (name, Some(i)),
+            Command::RotationData(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().tube_rotation_operand(&input)?;
+                let Value::DoubleTubeRotation(state) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(state.data());
+            }
+        };
+        let tube = self.model.double_tube(&name)?;
+        let (double, category) = self.model.tube_geometry(&tube)?;
+        let torus = tube.torus(&mut self.model, &double, &category)?;
+        if let Some(i) = period {
+            tube.period(torus, i)
+        } else {
+            Ok(torus.data(&name.text))
+        }
+    }
+
     fn tube_command(
         &mut self,
         command: dd::defects::relative::tube::Command,
@@ -10044,6 +10076,14 @@ impl Engine {
     fn eval_tube(&mut self, action: &TubeAction) -> Result<Value> {
         let algebra = &action.algebra;
         match &action.op {
+            TubeOp::Word(steps, input) => {
+                let x = self.eval_tube_element(input)?;
+                let (double, category) = self.model.tube_geometry(algebra)?;
+                let torus = algebra.torus(&mut self.model, &double, &category)?;
+                algebra
+                    .modular_word(&mut self.model, torus, &x, steps)?
+                    .persist(&mut self.model)
+            }
             TubeOp::Coefficient(i, x) => {
                 let x = self.eval_tube_element(x)?;
                 rv_lens::rational_value(&mut self.model, algebra.coefficient(&x, *i)?)
@@ -16114,6 +16154,18 @@ impl Engine {
             TypedForm::DoubleDefectSixJ(action) => self.eval_sixj(action),
             TypedForm::DoubleCentral(action) => self.eval_central(action),
             TypedForm::DoubleTube(action) => self.eval_tube(action),
+            TypedForm::DoubleTubeRotationEntry(key, input) => {
+                let Value::DoubleTubeRotation(rotation) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = if let Some(key) = key {
+                    rotation.entry(*key)?
+                } else {
+                    rotation.trace()
+                };
+                rv_lens::rational_value(&mut self.model, value)
+            }
+
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -20852,6 +20904,7 @@ impl Checker<'_> {
             TypeForm::DoubleDefectSixJ(name, n) => self.model.double_sixj_type(&name, n),
             TypeForm::DoubleCentralMap(name, n) => self.model.double_central_type(&name, n),
             TypeForm::DoubleTube(name) => self.model.double_tube_type(&name),
+            TypeForm::DoubleTubeRotation(name) => self.model.double_tube_rotation_type(&name),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -21743,6 +21796,7 @@ impl Checker<'_> {
             ExprForm::DoubleDefectSixJ(expression) => self.sixj_expression(*expression),
             ExprForm::DoubleCentral(expression) => self.central_expression(*expression),
             ExprForm::DoubleTube(expression) => self.tube_expression(*expression),
+            ExprForm::DoubleTubeModular(expression) => self.tube_modular_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -34442,6 +34496,81 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn tube_rotation_operand(
+        &self,
+        input: &TypedExpr,
+    ) -> Result<Rc<dd::defects::relative::tube::Tube>> {
+        let Kind::DoubleTubeRotation(name) = self.model.kind(input.ty) else {
+            return Err(Error::new(
+                input.span,
+                "rotation query requires a pivotal tube rotation",
+            ));
+        };
+        self.model.double_tube(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn tube_modular_expression(
+        &mut self,
+        expr: dd::defects::relative::tube::modular::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::relative::tube::modular::Expression;
+        let name = match &expr {
+            Expression::SEntry(name, _)
+            | Expression::Twist(name, _)
+            | Expression::Lens(name, _)
+            | Expression::Indicator(name, _)
+            | Expression::Rotate(name, _) => name,
+            _ => {
+                let (key, input) = match expr {
+                    Expression::RotationEntry(key, input) => (Some(key), input),
+                    Expression::RotationTrace(input) => (None, input),
+                    Expression::Word(steps, input) => {
+                        let input = self.expr(*input)?;
+                        let algebra = self.tube_operand(&input)?;
+                        return Ok((
+                            input.ty,
+                            TypedForm::DoubleTube(TubeAction {
+                                algebra,
+                                op: TubeOp::Word(steps, Box::new(input)),
+                            }),
+                        ));
+                    }
+                    _ => unreachable!(),
+                };
+                let input = self.expr(*input)?;
+                let tube = self.tube_rotation_operand(&input)?;
+                let ty = self.model.cyclotomic_rational_type(tube.conductor)?;
+                return Ok((ty, TypedForm::DoubleTubeRotationEntry(key, Box::new(input))));
+            }
+        };
+        let tube = self.model.double_tube(name)?;
+        let (double, category) = self.model.tube_geometry(&tube)?;
+        let torus = tube.torus(self.model, &double, &category)?;
+        let ty = if matches!(expr, Expression::Rotate(..)) {
+            self.model.double_tube_rotation_type(name)?
+        } else {
+            self.model.cyclotomic_rational_type(tube.conductor)?
+        };
+        let value = match expr {
+            Expression::SEntry(_, key) => torus.s_entry(key)?,
+            Expression::Twist(_, a) => torus.twist(self.model, a)?,
+            Expression::Lens(_, n) => torus.lens(self.model, n)?,
+            Expression::Indicator(_, key) => tube.indicator(self.model, torus, key)?,
+            Expression::Rotate(_, key) => {
+                let value = tube.rotate(self.model, &double, &category, torus, key)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            _ => unreachable!(),
+        };
+        Ok((
+            ty,
+            TypedForm::Constant(rv_lens::rational_value(self.model, value)?),
+        ))
     }
 
     fn tube_operand(&self, input: &TypedExpr) -> Result<Rc<dd::defects::relative::tube::Tube>> {
