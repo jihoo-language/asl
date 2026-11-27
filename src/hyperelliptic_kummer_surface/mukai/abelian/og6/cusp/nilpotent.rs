@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use super::{
     add_scaled, column_integer, dot, dual_plane, pairing_row, polarized_basis, raw, realize,
-    render_integer, Class, Column, ColumnInteger, Cusp, Lattice, COLUMN_CELLS, RAW_RANK,
+    render_integer, Class, Column, ColumnInteger, Cusp, Integer, Lattice, COLUMN_CELLS, RAW_RANK,
 };
 use crate::error::{Error, Result};
 use crate::model::Model;
@@ -44,14 +44,14 @@ pub(crate) struct Limit {
 }
 
 enum Direction {
-    II {
+    Central {
         k: i128,
         dual: Box<[Column; 2]>,
     },
-    III {
+    Eichler {
         index: usize,
         u: Rc<Class>,
-        square: ColumnInteger,
+        square: Integer,
     },
 }
 
@@ -69,7 +69,7 @@ impl Limit {
         }
         let [e, f] = &cusp.oriented_plane;
         let dual = Box::new(dual_plane(model, &raw(e), &raw(f))?);
-        Self::new(model, lattice, cusp, Direction::II { k, dual })
+        Self::new(model, lattice, cusp, Direction::Central { k, dual })
     }
 
     pub(crate) fn type_iii(
@@ -98,11 +98,7 @@ impl Limit {
             model,
             lattice,
             cusp,
-            Direction::III {
-                index,
-                u,
-                square: square.resize()?,
-            },
+            Direction::Eichler { index, u, square },
         )
     }
 
@@ -129,15 +125,25 @@ impl Limit {
         // determinantal divisors of columns originating in H are also
         // their determinantal divisors in any integral basis of H.
         limit.smith[0] = smith_image(model, &first, 2)?;
-        let rank2 = usize::from(matches!(limit.direction, Direction::III { .. }));
+        let rank2 = usize::from(matches!(limit.direction, Direction::Eichler { .. }));
         limit.smith[1] = smith_image(model, &second, rank2)?;
         Ok(limit)
     }
 
+    pub(super) fn spin_factors(&self) -> (&Class, &Class, i128) {
+        match &self.direction {
+            Direction::Central { k, .. } => {
+                let [e, f] = &self.cusp.oriented_plane;
+                (f, e, *k)
+            }
+            Direction::Eichler { index, u, .. } => (u, &self.cusp.oriented_plane[*index], 1),
+        }
+    }
+
     pub(crate) fn cells(&self) -> usize {
         let direction = match self.direction {
-            Direction::II { .. } => 2 * RAW_RANK,
-            Direction::III { .. } => 1,
+            Direction::Central { .. } => 2 * RAW_RANK,
+            Direction::Eichler { .. } => 1,
         };
         let smith_entries = self.smith.iter().map(Vec::len).sum::<usize>();
         5 + (direction + smith_entries) * COLUMN_CELLS
@@ -147,14 +153,14 @@ impl Limit {
         let mut result = [column_integer(0); RAW_RANK];
         match (&self.direction, order) {
             (_, 0) => return Ok(*x),
-            (Direction::II { k, .. }, 1) => {
+            (Direction::Central { k, .. }, 1) => {
                 let [e, f] = self.cusp.oriented_plane.each_ref().map(|a| raw(a));
                 let ex = dot(model, &pairing_row(&e)?, x)?.multiply(*k)?;
                 let fx = dot(model, &pairing_row(&f)?, x)?.multiply(*k)?.negate();
                 add_scaled(model, &mut result, &f, ex)?;
                 add_scaled(model, &mut result, &e, fx)?;
             }
-            (Direction::III { index, u, square }, 1 | 2) => {
+            (Direction::Eichler { index, u, square }, 1 | 2) => {
                 let a = raw(&self.cusp.oriented_plane[*index]);
                 let ax = dot(model, &pairing_row(&a)?, x)?;
                 if order == 1 {
@@ -163,6 +169,7 @@ impl Limit {
                     add_scaled(model, &mut result, &u, ax)?;
                     add_scaled(model, &mut result, &a, ux.negate())?;
                 } else {
+                    let square: ColumnInteger = square.resize()?;
                     add_scaled(model, &mut result, &a, square.multiply_wide(ax)?.negate())?;
                 }
             }
@@ -185,7 +192,7 @@ impl Limit {
                 if m != 0 {
                     let first = self.image(model, 1, &x)?;
                     add_scaled(model, &mut result, &first, column_integer(m))?;
-                    if matches!(self.direction, Direction::III { .. }) {
+                    if matches!(self.direction, Direction::Eichler { .. }) {
                         let second = self.image(model, 2, &x)?;
                         // The even lattice makes each coordinate of N²(x) even.
                         let half = column_integer(2);
@@ -216,10 +223,11 @@ impl Limit {
         }
         let x = raw(class);
         match (&self.direction, weight) {
-            (Direction::II { .. }, i128::MIN..=0) | (Direction::III { .. }, i128::MIN..=-1) => {
+            (Direction::Central { .. }, i128::MIN..=0)
+            | (Direction::Eichler { .. }, i128::MIN..=-1) => {
                 Ok(x.iter().all(|entry| entry.is_zero()))
             }
-            (Direction::II { dual, .. }, 1) => {
+            (Direction::Central { dual, .. }, 1) => {
                 let mut residual = x;
                 for (axis, covector) in self.cusp.oriented_plane.iter().zip(dual.iter()) {
                     let coefficient = dot(model, covector, &x)?.negate();
@@ -227,14 +235,14 @@ impl Limit {
                 }
                 Ok(residual.iter().all(|entry| entry.is_zero()))
             }
-            (Direction::II { .. }, 2) => {
+            (Direction::Central { .. }, 2) => {
                 let [e, f] = &self.cusp.oriented_plane;
                 Ok(class.wide_pair(model, e)?.is_zero() && class.wide_pair(model, f)?.is_zero())
             }
-            (Direction::III { index, .. }, 0 | 1) => {
+            (Direction::Eichler { index, .. }, 0 | 1) => {
                 on_axis(model, &x, &raw(&self.cusp.oriented_plane[*index]))
             }
-            (Direction::III { index, .. }, 2 | 3) => Ok(class
+            (Direction::Eichler { index, .. }, 2 | 3) => Ok(class
                 .wide_pair(model, &self.cusp.oriented_plane[*index])?
                 .is_zero()),
             _ => Ok(true),
@@ -243,8 +251,8 @@ impl Limit {
 
     pub(crate) fn report(&self, name: &str) -> Result<String> {
         let (label, graded) = match self.direction {
-            Direction::II { .. } => ("II", [0, 2, 3, 2, 0]),
-            Direction::III { .. } => ("III", [1, 0, 5, 0, 1]),
+            Direction::Central { .. } => ("II", [0, 2, 3, 2, 0]),
+            Direction::Eichler { .. } => ("III", [1, 0, 5, 0, 1]),
         };
         let smith_entries = |index: usize| {
             self.smith[index]

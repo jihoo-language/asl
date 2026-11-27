@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use super::super::WEDGE_SIGNS;
@@ -12,6 +13,7 @@ use crate::syntax::{Label, ParsedExpr};
 use crate::wide_integer::Natural;
 
 pub(crate) mod nilpotent;
+pub(crate) mod spin;
 
 const RAW_RANK: usize = RANK + 1;
 const CUSP_RANK: usize = 3;
@@ -29,6 +31,8 @@ pub(crate) enum Command {
 }
 
 pub(crate) struct Cusp {
+    pub(crate) name: Rc<str>,
+    spin: OnceCell<Box<spin::Algebra>>,
     pub(crate) lattice_name: Rc<str>,
     polarization: Rc<Class>,
     oriented_plane: [Rc<Class>; 2],
@@ -38,6 +42,7 @@ pub(crate) struct Cusp {
 impl Cusp {
     pub(crate) fn new(
         model: &mut Model,
+        name: Rc<str>,
         lattice_name: Rc<str>,
         lattice: &Lattice,
         [polarization, e, f]: [Rc<Class>; 3],
@@ -87,6 +92,8 @@ impl Cusp {
         debug_assert_eq!(lifts.len(), CUSP_RANK);
 
         Ok(Self {
+            name,
+            spin: OnceCell::new(),
             lattice_name,
             polarization,
             oriented_plane: [e, f],

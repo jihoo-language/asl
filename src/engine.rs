@@ -583,6 +583,13 @@ enum KummerWeilAction {
     Frobenius(nikulin::Action, Box<TypedExpr>),
 }
 
+enum OG6CliffordAction {
+    Vector(Rc<og6::cusp::Cusp>, Box<TypedExpr>),
+    Multiply(Rc<og6::cusp::Cusp>, Box<[TypedExpr; 2]>),
+    Scale(i128, Box<TypedExpr>),
+    Spin(Rc<og6::cusp::nilpotent::Limit>, Option<i128>),
+}
+
 enum CliffordAction {
     Vector(Box<TypedExpr>),
     Reverse(Box<TypedExpr>),
@@ -701,6 +708,7 @@ enum TypedForm {
     K3LatticeNegate(Box<TypedExpr>),
     Nakajima(nakajima::Operation, Box<TypedExpr>),
     NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
+    OG6Clifford(OG6CliffordAction),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
@@ -1905,6 +1913,9 @@ impl Engine {
             }
             StatementForm::AbMukaiPair(inputs) => {
                 return self.abelian_mukai_pair(*inputs).map(Some)
+            }
+            StatementForm::OG6Clifford(command) => {
+                return self.og6_spin_command(*command).map(Some)
             }
             StatementForm::OG6Nilpotent(command) => return self.og6_nilpotent_command(*command),
             StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
@@ -6098,6 +6109,80 @@ impl Engine {
         ))
     }
 
+    fn og6_spin_command(&mut self, command: og6::cusp::spin::Command) -> Result<String> {
+        use og6::cusp::spin::{self, Command};
+        match command {
+            Command::Data(name) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let lattice = self.og6_spin_lattice(&limit.cusp, name.span)?;
+                let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.report(&mut self.model, &name.text, &limit)
+            }
+            Command::Coefficient(mask, input) => {
+                spin::check_mask(mask)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .og6_clifford_operand(&input, "rvOG6CliffordCoeff")?;
+                let Value::OG6Clifford(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = value.coefficient(&mut self.model, mask)?;
+                Ok(format!("rvOG6CliffordCoeff[{mask}] = {coefficient}"))
+            }
+        }
+    }
+
+    fn og6_spin_lattice(&self, cusp: &og6::cusp::Cusp, span: Span) -> Result<Rc<og6::Lattice>> {
+        self.model.og6_lattice(&Label {
+            text: cusp.lattice_name.to_string(),
+            span,
+        })
+    }
+
+    fn eval_og6_clifford(&mut self, action: &OG6CliffordAction, span: Span) -> Result<Value> {
+        let value = match action {
+            OG6CliffordAction::Vector(cusp, input) => {
+                let Value::OG6(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                cusp.spin_algebra(&mut self.model, &lattice)?.vector(
+                    &mut self.model,
+                    cusp,
+                    &vector,
+                )?
+            }
+            OG6CliffordAction::Multiply(cusp, operands) => {
+                let (Value::OG6Clifford(left), Value::OG6Clifford(right)) =
+                    (self.eval(&operands[0])?, self.eval(&operands[1])?)
+                else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(cusp, span)?;
+                cusp.spin_algebra(&mut self.model, &lattice)?.multiply(
+                    &mut self.model,
+                    &left,
+                    &right,
+                )?
+            }
+            OG6CliffordAction::Scale(k, input) => {
+                let Value::OG6Clifford(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.scale(&mut self.model, *k, 1)?
+            }
+            OG6CliffordAction::Spin(limit, exponent) => {
+                let lattice = self.og6_spin_lattice(&limit.cusp, span)?;
+                limit.cusp.spin_algebra(&mut self.model, &lattice)?.spin(
+                    &mut self.model,
+                    limit,
+                    *exponent,
+                )?
+            }
+        };
+        value.persist(&mut self.model)
+    }
+
     fn og6_nilpotent_command(
         &mut self,
         command: og6::cusp::nilpotent::Command,
@@ -7456,6 +7541,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Lattice(a), Value::K3Lattice(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::OG6Clifford(a), Value::OG6Clifford(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Clifford(a), Value::K3Clifford(b)) => {
@@ -9202,6 +9290,7 @@ impl Engine {
                 };
                 vector.negate(&mut self.model)?.persist(&mut self.model)
             }
+            TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
@@ -11751,6 +11840,7 @@ impl Checker<'_> {
             TypeForm::Nakajima(name, length, degree) => {
                 self.model.nakajima_type(&name, length, degree)
             }
+            TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
@@ -12803,6 +12893,7 @@ impl Checker<'_> {
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
+                    Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -14974,6 +15065,7 @@ impl Checker<'_> {
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
             }
+            ExprForm::OG6Clifford(expression) => self.og6_clifford_expression(*expression),
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
@@ -15766,6 +15858,12 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
                     return Ok((input.ty, TypedForm::K3LatticeNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::OG6Clifford(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::OG6Clifford(OG6CliffordAction::Scale(-1, Box::new(input))),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::K3Clifford(..)) {
                     return Ok((
@@ -19563,6 +19661,7 @@ impl Checker<'_> {
                         | Kind::Nakajima(..)
                         | Kind::HilbertCohomology(..)
                         | Kind::K3Clifford(..)
+                        | Kind::OG6Clifford(..)
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
@@ -21809,6 +21908,92 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Spinor(action)))
+    }
+
+    fn og6_clifford_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, u8)> {
+        let Kind::OG6Clifford(name, parity) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVOG6Clifford element"));
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            *parity,
+        ))
+    }
+
+    fn og6_clifford_expression(
+        &mut self,
+        expression: og6::cusp::spin::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use og6::cusp::spin::{Element, Expression};
+        let exponent = match &expression {
+            Expression::Exp(_, m) => Some(*m),
+            _ => None,
+        };
+        let (ty, action) = match expression {
+            Expression::Basis(name, mask) => {
+                let blade = Element::blade(mask)?;
+                let ty = self
+                    .model
+                    .og6_clifford_type(&name, (mask.count_ones() % 2) as u8)?;
+                return Ok((ty, TypedForm::Constant(blade.persist(self.model)?)));
+            }
+            Expression::PolarizedBasis(name, index) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                let lattice_name = Label {
+                    text: cusp.lattice_name.to_string(),
+                    span: name.span,
+                };
+                let lattice = self.model.og6_lattice(&lattice_name)?;
+                let ty = self.model.og6_type(&lattice_name)?;
+                let vector = cusp.spin_algebra(self.model, &lattice)?.basis(index)?;
+                return Ok((ty, TypedForm::Constant(vector.persist(self.model)?)));
+            }
+            Expression::Vector(name, input) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                let lattice = Label {
+                    text: cusp.lattice_name.to_string(),
+                    span: name.span,
+                };
+                let expected = self.model.og6_type(&lattice)?;
+                let input = self.expr(*input)?;
+                self.require_type(expected, &input, "rvOG6CliffordVector")?;
+                let ty = self.model.og6_clifford_type(&name, 1)?;
+                (ty, OG6CliffordAction::Vector(cusp, Box::new(input)))
+            }
+            Expression::Multiply(operands) => {
+                let [left, right] = *operands;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let (name, p) = self.og6_clifford_operand(&left, "rvOG6CliffordMul")?;
+                let (_, q) = self.og6_clifford_operand(&right, "rvOG6CliffordMul")?;
+                let expected = self.model.og6_clifford_type(&name, q)?;
+                self.require_type(expected, &right, "rvOG6CliffordMul")?;
+                let ty = self.model.og6_clifford_type(&name, p ^ q)?;
+                let cusp = self.model.og6_cusp(&name)?;
+                (
+                    ty,
+                    OG6CliffordAction::Multiply(cusp, Box::new([left, right])),
+                )
+            }
+            Expression::Scale(k, input) => {
+                let input = self.expr(*input)?;
+                self.og6_clifford_operand(&input, "rvOG6CliffordScale")?;
+                (input.ty, OG6CliffordAction::Scale(k, Box::new(input)))
+            }
+            Expression::Log(name) | Expression::Exp(name, _) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let cusp = Label {
+                    text: limit.cusp.name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.og6_clifford_type(&cusp, 0)?;
+                (ty, OG6CliffordAction::Spin(limit, exponent))
+            }
+        };
+        Ok((ty, TypedForm::OG6Clifford(action)))
     }
 
     fn clifford_operand(&self, input: &TypedExpr, operation: &str) -> Result<(&Rc<str>, u8)> {

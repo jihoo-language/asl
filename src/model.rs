@@ -269,6 +269,7 @@ pub(crate) enum Kind {
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
     K3Clifford(Rc<str>, u8),
+    OG6Clifford(Rc<str>, u8),
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
     OG10(Rc<str>),
@@ -454,6 +455,7 @@ pub(crate) enum Value {
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
     K3Clifford(Rc<clifford::Element>),
+    OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     OG10(Rc<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Class>),
@@ -1091,7 +1093,7 @@ impl Model {
             }
             Kind::HilbertSquare(_, degree) if hilbert_square::dimension(degree) == 0 => 1,
             Kind::HilbertSquare(..) => usize::MAX,
-            Kind::K3Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
+            Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1314,6 +1316,7 @@ impl Model {
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
                 | Kind::K3Clifford(..)
+                | Kind::OG6Clifford(..)
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
@@ -4162,6 +4165,11 @@ impl Model {
         self.inhabited_type(Kind::K3Lattice(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn og6_clifford_type(&mut self, name: &Label, parity: u8) -> Result<TypeId> {
+        self.og6_cusp(name)?;
+        self.inhabited_type(Kind::OG6Clifford(name.text.as_str().into(), parity), 0)
+    }
+
     pub(crate) fn k3_clifford_type(&mut self, basis: &Label, parity: u8) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -4280,6 +4288,7 @@ impl Model {
         let lattice = self.og6_lattice(lattice_name)?;
         let cusp = hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp::new(
             self,
+            name.text.as_str().into(),
             lattice_name.text.as_str().into(),
             &lattice,
             inputs,
@@ -5685,6 +5694,7 @@ impl Model {
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
             | Kind::K3Clifford(..)
+            | Kind::OG6Clifford(..)
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -6213,6 +6223,7 @@ impl Model {
                 grade.basis, grade.length, grade.degree
             )),
             Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
+            Kind::OG6Clifford(name, parity) => out.push(&format!("RVOG6Clifford({name},{parity})")),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::OG10(name) => out.push(&format!("RVOG10({name})")),
@@ -6516,6 +6527,7 @@ impl Model {
                 Ok(a.compare(self, b)?.is_eq())
             }
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::OG6Clifford(a), Value::OG6Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::AbMukai(a), Value::AbMukai(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6861,6 +6873,7 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
+            (Value::OG6Clifford(a), Value::OG6Clifford(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
             (Value::AbMukai(a), Value::AbMukai(b)) => a.compare(self, b),
@@ -7254,6 +7267,11 @@ impl Model {
                     return Err(Error::plain(
                         "an elliptic rational morphism type cannot be enumerated",
                     ));
+                }
+                Kind::OG6Clifford(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an OG6 integral Clifford component",
+                    ))
                 }
                 Kind::K3Clifford(..) => {
                     return Err(Error::plain(
@@ -8792,6 +8810,7 @@ impl Model {
                 out.push(&format!("{{w={w:?}, b={b:?}}}"))
             }
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
+            Value::OG6Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::AbMukai(vector) => {
                 let (r, wedge, s) = vector.coordinates();

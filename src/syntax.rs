@@ -135,6 +135,7 @@ pub(crate) enum TypeForm {
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
     K3Clifford(Label, u8),
+    OG6Clifford(Label, u8),
     K3Spinor(Label, u8),
     Mukai(Label),
     MukaiQuotient(Label),
@@ -996,6 +997,9 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
+    OG6Clifford(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression>,
+    ),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
@@ -1215,6 +1219,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
+    OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
@@ -3024,6 +3029,81 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn og6_spin_statement(&mut self, operation: &str, span: Span) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let command = if operation == "rvOG6SpinData" {
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Data(name)
+        } else {
+            let mask = self.number()?.0.try_into().map_err(|_| {
+                Error::new(span, "OG6 Clifford blade mask must be between 0 and 127")
+            })?;
+            self.expect(Token::RBracket)?;
+            Command::Coefficient(mask, Box::new(self.paren_expr(0)?))
+        };
+        Ok(StatementForm::OG6Clifford(Box::new(command)))
+    }
+
+    fn og6_clifford_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression;
+        let (expression, depth) = if operation == "rvOG6CliffordMul" {
+            let operands = self.paren_pair(nest)?;
+            let depth = 1 + operands[0].depth.max(operands[1].depth);
+            (Expression::Multiply(Box::new(operands)), depth)
+        } else if operation == "rvOG6CliffordScale" {
+            self.expect(Token::LBracket)?;
+            let k = self.signed_wide("a signed integer", "OG6 Clifford scalar")?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Scale(k, Box::new(input)), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            match operation {
+                "rvOG6CliffordBasis" | "rvOG6PolarizedBasis" => {
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let expression = if operation == "rvOG6CliffordBasis" {
+                        let mask = index.try_into().map_err(|_| {
+                            Error::new(span, "OG6 Clifford blade mask must be between 0 and 127")
+                        })?;
+                        Expression::Basis(name, mask)
+                    } else {
+                        Expression::PolarizedBasis(name, index)
+                    };
+                    (expression, 0)
+                }
+                "rvOG6SpinLog" => {
+                    self.expect(Token::RBracket)?;
+                    (Expression::Log(name), 0)
+                }
+                "rvOG6SpinExp" => {
+                    self.expect(Token::Comma)?;
+                    let m = self.signed_wide("a signed integer", "OG6 spin exponent")?;
+                    self.expect(Token::RBracket)?;
+                    (Expression::Exp(name, m), 0)
+                }
+                _ => {
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    (Expression::Vector(name, Box::new(input)), depth)
+                }
+            }
+        };
+        expr(span, ExprForm::OG6Clifford(Box::new(expression)), depth)
     }
 
     fn og6_nilpotent_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -6498,6 +6578,9 @@ impl<'src> Parser<'src> {
                 | "rvOG6NilpotentData"
                 | "rvOG6NilpotentInWeight"),
             ) => self.og6_nilpotent_statement(operation)?,
+            Token::Word(operation @ ("rvOG6SpinData" | "rvOG6CliffordCoeff")) => {
+                self.og6_spin_statement(operation, span)?
+            }
             Token::Word(operation @ ("rvog6cusp" | "rvOG6CuspGram")) => {
                 self.og6_cusp_statement(operation)?
             }
@@ -9939,6 +10022,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVOG6Clifford" && self.eat(Token::LParen)? {
+            let cusp = self.label()?;
+            self.expect(Token::Comma)?;
+            let parity = self.number()?.0;
+            self.expect(Token::RParen)?;
+            if parity > 1 {
+                return Err(Error::new(span, "OG6 Clifford parity must be 0 or 1"));
+            }
+            return ty(span, TypeForm::OG6Clifford(cusp, parity as u8), 0);
+        }
         if name.text == "RVK3Clifford" && self.eat(Token::LParen)? {
             let basis = self.label()?;
             self.expect(Token::Comma)?;
@@ -12158,6 +12251,19 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.og6_nilpotent_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvOG6CliffordBasis"
+                        | "rvOG6PolarizedBasis"
+                        | "rvOG6CliffordVector"
+                        | "rvOG6CliffordScale"
+                        | "rvOG6SpinLog"
+                        | "rvOG6SpinExp"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvOG6CliffordMul" && self.token() == Token::LParen)
+                {
+                    return self.og6_clifford_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
