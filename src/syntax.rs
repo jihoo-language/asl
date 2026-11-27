@@ -2967,6 +2967,22 @@ impl<'src> Parser<'src> {
                     depth,
                 )
             }
+            "rvJacQuadTrace" => {
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                let radicand = self.paren_expr(nest)?;
+                let depth = 1 + radicand.depth;
+                let components = [
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                ];
+                (
+                    Expression::QuadraticTrace(curve, Box::new(radicand), Box::new(components)),
+                    depth,
+                )
+            }
             "rvJacRechart" | "rvJacUnchart" => {
                 use crate::hyperelliptic_chart::Direction;
                 let chart = self.label()?;
@@ -8571,6 +8587,7 @@ impl<'src> Parser<'src> {
                         | "rvJacDescend"
                         | "rvJacRechart"
                         | "rvJacUnchart"
+                        | "rvJacQuadTrace"
                         | "rvJacFrob"
                         | "rvJacWeilApply"
                         | "rvJacTate"

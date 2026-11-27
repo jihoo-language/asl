@@ -29,7 +29,7 @@ use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
-use crate::hyperelliptic_jacobian::{self, point_halving, Divisor};
+use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::jet_hom;
 use crate::jet_page;
@@ -438,6 +438,11 @@ enum JacobianAction {
     RichelotPoint(
         Box<crate::richelot::correspondence::Correspondence>,
         Box<[TypedExpr; 2]>,
+    ),
+    QuadraticTrace(
+        Rc<hw_closed::Curve>,
+        Box<TypedExpr>,
+        Box<[crate::ec_poly::Polynomial; 4]>,
     ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
@@ -4637,6 +4642,16 @@ impl Engine {
                 correspondence
                     .point(&mut self.model, &x, &y)?
                     .persist(&mut self.model, &correspondence.target)
+            }
+            JacobianAction::QuadraticTrace(curve, radicand, components) => {
+                let Value::RVUnram(k) = self.eval(radicand)? else {
+                    unreachable!()
+                };
+                let count = components.iter().map(Vec::len).sum::<usize>();
+                self.model.spend(count * (3 + curve.ring.degree()))?;
+                let [a, b, p, q] = components.as_ref().clone();
+                quadratic_trace::trace(&mut self.model, curve, &k.to_vec(), [a, b], [p, q])?
+                    .persist(&mut self.model, curve)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17545,6 +17560,36 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::Jacobian(JacobianAction::HalfAt(curve, index, Box::new(xy))),
+                ))
+            }
+            Expression::QuadraticTrace(name, radicand, coordinates) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                let field = Label {
+                    text: curve.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let coefficient = self.model.rv_unram_type(&field)?;
+                let radicand = self.expr(*radicand)?;
+                self.require_type(coefficient, &radicand, "rvJacQuadTrace radicand")?;
+                let field = crate::ec_poly::Field { ring: &curve.ring };
+                let count = coordinates.iter().map(Vec::len).sum::<usize>();
+                field.check_polynomial(count)?;
+                let mut components = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+                for (part, polynomial) in (*coordinates).into_iter().zip(&mut components) {
+                    *polynomial = part
+                        .into_iter()
+                        .map(|value| curve.ring.literal(self.model, value))
+                        .collect::<Result<_>>()?;
+                }
+                self.model.allocate(count * (3 + curve.ring.degree()))?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::QuadraticTrace(
+                        curve,
+                        Box::new(radicand),
+                        Box::new(components),
+                    )),
                 ))
             }
             Expression::Transport(name, direction, input) => {

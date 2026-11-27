@@ -14,6 +14,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod miller;
 pub(crate) mod point_halving;
+pub(crate) mod quadratic_trace;
 
 pub(crate) enum Command {
     Base(Label, Label, Label),
@@ -31,6 +32,7 @@ pub(crate) enum Expression {
     HalfAt(Label, String, Box<[ParsedExpr; 2]>),
     RichelotPoint(Label, Box<[ParsedExpr; 2]>),
     Transport(Label, Direction, Box<ParsedExpr>),
+    QuadraticTrace(Label, Box<ParsedExpr>, Box<[Vec<Vec<i128>>; 4]>),
     Apply(Operation, Box<ParsedExpr>),
     Pair(Pairing, Box<[ParsedExpr; 2]>),
 }
