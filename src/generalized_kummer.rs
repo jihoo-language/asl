@@ -10,6 +10,7 @@ use crate::rv_ore::gcd;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod cohomology;
+pub(crate) mod hodge;
 
 pub(crate) enum Command {
     Hilbert(Label, u128, u128),

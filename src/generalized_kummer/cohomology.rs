@@ -115,38 +115,66 @@ fn character_terms(
     top: usize,
     order: usize,
 ) -> Result<Vec<(usize, usize, i128)>> {
-    let mut orders = vec![(1, 1i128)];
-    let mut terms = Vec::new();
+    let divisors = torsion_divisors(model, n, top / 2)?;
+    let counts = torsion_characters(model, n as u128, order as u128, &divisors)?;
+    Ok(divisors
+        .into_iter()
+        .zip(counts)
+        .skip(1)
+        .map(|(d, count)| (n / d, 2 * (n - n / d), count))
+        .collect())
+}
+
+// Include only divisor terms whose Tate shift can reach the requested grade.
+pub(crate) fn torsion_divisors(model: &mut Model, n: usize, shift: usize) -> Result<Vec<usize>> {
+    let mut divisors = vec![1];
     for d in 2..=n {
         model.spend(1)?;
-        if !n.is_multiple_of(d) {
-            continue;
-        }
-        let k = n / d;
-        let shift = 2 * (n - k);
-        if shift > top {
+        if n - n / d > shift {
             break;
         }
+        if n.is_multiple_of(d) {
+            divisors.push(d);
+        }
+    }
+    Ok(divisors)
+}
+
+pub(crate) fn torsion_characters(
+    model: &mut Model,
+    n: u128,
+    order: u128,
+    divisors: &[usize],
+) -> Result<Vec<i128>> {
+    exact_order_sums(model, divisors, |d| {
         // Characters of order dividing d sum to d^4 when the translation
         // belongs to d*A[n], which means its order divides n/d.
-        let mut exact = if (n / order).is_multiple_of(d) {
-            (d as i128)
-                .checked_pow(4)
-                .ok_or_else(intermediate_overflow)?
+        if (n / order).is_multiple_of(d as u128) {
+            (d as i128).checked_pow(4).ok_or_else(intermediate_overflow)
         } else {
-            0
-        };
-        // Invert the divisor sums to get the trace on exact-order characters.
-        model.spend(orders.len())?;
-        for &(e, count) in &orders {
+            Ok(0)
+        }
+    })
+}
+
+// Divisors are increasing and include all proper divisors of each entry.
+pub(crate) fn exact_order_sums(
+    model: &mut Model,
+    divisors: &[usize],
+    mut cumulative: impl FnMut(usize) -> Result<i128>,
+) -> Result<Vec<i128>> {
+    let mut exact = Vec::with_capacity(divisors.len());
+    for &d in divisors {
+        model.spend(exact.len() + 1)?;
+        let mut value = cumulative(d)?;
+        for (&e, &count) in divisors.iter().zip(&exact) {
             if d.is_multiple_of(e) {
-                exact = exact.checked_sub(count).ok_or_else(intermediate_overflow)?;
+                value = value.checked_sub(count).ok_or_else(intermediate_overflow)?;
             }
         }
-        orders.push((d, exact));
-        terms.push((k, shift, exact));
+        exact.push(value);
     }
-    Ok(terms)
+    Ok(exact)
 }
 
 pub(crate) fn trace(

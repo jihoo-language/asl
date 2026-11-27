@@ -1664,6 +1664,7 @@ impl Engine {
             StatementForm::GeneralizedKummer(command) => {
                 return self.generalized_kummer_command(*command).map(Some);
             }
+            StatementForm::Hodge(command) => return command.execute(&mut self.model).map(Some),
             StatementForm::KummerDiv(command) => {
                 return self.kummer_divisor_command(*command).map(Some)
             }

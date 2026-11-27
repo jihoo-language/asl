@@ -1172,6 +1172,7 @@ pub(crate) enum StatementForm {
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     CrystallineNewton(crate::hyperelliptic_kummer_surface::newton::Command),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
+    Hodge(crate::generalized_kummer::hodge::Command),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
@@ -3869,6 +3870,33 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::CrystallineNewton(command))
     }
 
+    fn hodge_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::generalized_kummer::hodge::{Command, Operation};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let n = self.wide_unsigned("Hilbert-scheme length")?;
+        self.expect(Token::Comma)?;
+        let operation = match name {
+            "rvK3HilbHodge" => Operation::K3Hilbert,
+            "rvJacHilbHodge" => Operation::JacobianHilbert,
+            "rvGenKummerHodge" => Operation::Generalized,
+            _ => {
+                let h = self.wide_unsigned("translation order")?;
+                self.expect(Token::Comma)?;
+                if name == "rvGenKummerTranslateHodge" {
+                    Operation::Translate(h)
+                } else {
+                    Operation::Spectrum(h)
+                }
+            }
+        };
+        let p = self.wide_unsigned("first Hodge index")?;
+        self.expect(Token::Comma)?;
+        let q = self.wide_unsigned("second Hodge index")?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::Hodge(Command(operation, n, p, q)))
+    }
+
     fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hilbert::{elliptic_genus::Query, Command};
         self.advance()?;
@@ -5082,6 +5110,13 @@ impl<'src> Parser<'src> {
                 command @ ("rvKummerK3Height" | "rvKummerHilbNewton" | "rvJacHilbNewton"
                 | "rvGenKummerNewton"),
             ) => self.crystalline_newton_statement(command)?,
+            Token::Word(
+                command @ ("rvK3HilbHodge"
+                | "rvJacHilbHodge"
+                | "rvGenKummerHodge"
+                | "rvGenKummerTranslateHodge"
+                | "rvGenKummerHodgeSpectrum"),
+            ) => self.hodge_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(
                 operation @ ("rvmukaimoduli"
