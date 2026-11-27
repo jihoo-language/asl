@@ -88,6 +88,7 @@ mod odd_profile;
 mod odd_restriction_transfer;
 mod odd_transfer;
 mod page_transition;
+mod partition_algebra;
 mod prime_linear;
 mod profile;
 mod q_koszul;

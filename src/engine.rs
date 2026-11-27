@@ -802,6 +802,8 @@ enum TypedForm {
     StableSchurScale(i128, Box<TypedExpr>),
     StableSchurProduct(Box<[TypedExpr; 2]>),
     StableSchurSpecialize(u128, Box<TypedExpr>),
+    PartitionUnary(crate::partition_algebra::Unary, Box<TypedExpr>),
+    PartitionBinary(crate::partition_algebra::Binary, Box<[TypedExpr; 2]>),
     WittExterior(u128, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
@@ -2035,6 +2037,18 @@ impl Engine {
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
             StatementForm::WittSchurBranch(branch) => {
                 return branch.report(&mut self.model).map(Some)
+            }
+            StatementForm::PartitionReport(report) => {
+                return report.execute(&mut self.model).map(Some)
+            }
+            StatementForm::PartitionQuery(query, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .partition_operand(&input, "partition diagram query")?;
+                let Value::RVPartitionAlgebra(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return value.query(&mut self.model, query).map(Some);
             }
             StatementForm::StableSchurCharacterCoeff(shape, input) => {
                 let input = self.checker().expr(*input)?;
@@ -8983,6 +8997,9 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11019,6 +11036,23 @@ impl Engine {
                 };
                 value
                     .specialize(&mut self.model, *rank)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionUnary(operation, input) => {
+                let Value::RVPartitionAlgebra(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .unary(&mut self.model, *operation)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionBinary(operation, inputs) => {
+                let (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.binary(&mut self.model, *operation, &b)?
                     .persist(&mut self.model)
             }
             TypedForm::SchurCharacterEvaluate(inputs) => {
@@ -13399,6 +13433,7 @@ impl Checker<'_> {
             TypeForm::RVWittSpectrum => self.model.witt_spectrum_type(),
             TypeForm::RVSchurCharacter(weight) => self.model.schur_character_type(weight),
             TypeForm::RVStableSchurCharacter => self.model.stable_schur_character_type(),
+            TypeForm::RVPartitionAlgebra(rank) => self.model.partition_algebra_type(rank),
             TypeForm::RVCTState(name, p, s) => {
                 let grade = self.model.rv_ct_state_grade(name, p, s)?;
                 self.model.rv_ct_state_type(grade)
@@ -14467,6 +14502,7 @@ impl Checker<'_> {
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
+                    Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
                     Kind::RVSchurCharacter(weight) => crate::rv_witt_spectrum::character::Character::zero(*weight).persist(self.model)?,
                     Kind::RVCTState(..) => Value::PeriodState([].into()),
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
@@ -16619,6 +16655,7 @@ impl Checker<'_> {
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::WittSpectrum(expression) => self.witt_spectrum_expression(*expression),
             ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
+            ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
@@ -17653,6 +17690,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::QpQuadUnary(field, QuadUnary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionAlgebra(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PartitionUnary(
+                            crate::partition_algebra::Unary::Scale(-1, 0),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVStableSchurCharacter) {
@@ -21424,6 +21470,7 @@ impl Checker<'_> {
                         | Kind::RVWittSpectrum
                         | Kind::RVSchurCharacter(..)
                         | Kind::RVStableSchurCharacter
+                        | Kind::RVPartitionAlgebra(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
@@ -23287,6 +23334,54 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_expression(
+        &mut self,
+        expression: crate::partition_algebra::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::{Algebra, Expression};
+        match expression {
+            Expression::Basis(rank, labels, orbit) => {
+                let ty = self.model.partition_algebra_type(rank)?;
+                let value = Algebra::basis(self.model, rank, labels, orbit)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Identity(rank) => {
+                let ty = self.model.partition_algebra_type(rank)?;
+                let value = Algebra::identity(rank).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                self.partition_operand(&input, "partition diagram unary operation")?;
+                Ok((
+                    input.ty,
+                    TypedForm::PartitionUnary(operation, Box::new(input)),
+                ))
+            }
+            Expression::Binary(operation, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let a_rank = self.partition_operand(&a, operation.name())?;
+                let b_rank = self.partition_operand(&b, operation.name())?;
+                let rank = operation.rank(a_rank, b_rank)?;
+                let ty = self.model.partition_algebra_type(rank)?;
+                Ok((ty, TypedForm::PartitionBinary(operation, Box::new([a, b]))))
+            }
+        }
+    }
+
+    fn partition_operand(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
+        if let Kind::RVPartitionAlgebra(rank) = *self.model.kind(input.ty) {
+            Ok(rank)
+        } else {
+            Err(Error::new(
+                input.span,
+                format!("{operation} requires an RVPartitionAlgebra value"),
+            ))
         }
     }
 

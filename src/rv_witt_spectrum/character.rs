@@ -94,6 +94,15 @@ impl Character {
         })
     }
 
+    pub(crate) fn squared_multiplicities(&self, model: &mut Model) -> Result<super::Integer> {
+        let mut sum = super::zero();
+        for &value in self.terms.values() {
+            model.spend(1)?;
+            sum = super::add(sum, super::Integer::product(value, value))?;
+        }
+        Ok(sum)
+    }
+
     pub(crate) fn evaluation(&self, model: &mut Model, input: &Spectrum) -> Result<Spectrum> {
         let mut sum = Spectrum::zero();
         for (shape, &coefficient) in &self.terms {

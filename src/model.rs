@@ -262,6 +262,7 @@ pub(crate) enum Kind {
     RVWittSpectrum,
     RVSchurCharacter(u128),
     RVStableSchurCharacter,
+    RVPartitionAlgebra(usize),
     RVCTState(PeriodGrade),
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
@@ -461,6 +462,7 @@ pub(crate) enum Value {
     RVWittSpectrum(Rc<crate::rv_witt_spectrum::Spectrum>),
     RVSchurCharacter(Rc<crate::rv_witt_spectrum::character::Character>),
     RVStableSchurCharacter(Rc<crate::rv_witt_spectrum::character::StableCharacter>),
+    RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     PeriodState(rv_period::State),
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
@@ -1185,7 +1187,8 @@ impl Model {
             | Kind::RVOre
             | Kind::RVWittSpectrum
             | Kind::RVSchurCharacter(..)
-            | Kind::RVStableSchurCharacter => usize::MAX,
+            | Kind::RVStableSchurCharacter
+            | Kind::RVPartitionAlgebra(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
             Kind::RVHive(..) => {
@@ -1379,6 +1382,7 @@ impl Model {
                 | Kind::RVWittSpectrum
                 | Kind::RVSchurCharacter(..)
                 | Kind::RVStableSchurCharacter
+                | Kind::RVPartitionAlgebra(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
@@ -3372,6 +3376,10 @@ impl Model {
 
     pub(crate) fn stable_schur_character_type(&mut self) -> Result<TypeId> {
         self.inhabited_type(Kind::RVStableSchurCharacter, 0)
+    }
+
+    pub(crate) fn partition_algebra_type(&mut self, rank: usize) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVPartitionAlgebra(rank), 0)
     }
 
     pub(crate) fn quantum_mod_type(&mut self, grade: rv_pcurv::ModGrade) -> Result<TypeId> {
@@ -6190,6 +6198,7 @@ impl Model {
             | Kind::RVWittSpectrum
             | Kind::RVSchurCharacter(..)
             | Kind::RVStableSchurCharacter
+            | Kind::RVPartitionAlgebra(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
@@ -6809,6 +6818,7 @@ impl Model {
             Kind::RVWittSpectrum => out.push("RVWittSpectrum"),
             Kind::RVSchurCharacter(weight) => out.push(&format!("RVSchurCharacter({weight})")),
             Kind::RVStableSchurCharacter => out.push("RVStableSchurCharacter"),
+            Kind::RVPartitionAlgebra(rank) => out.push(&format!("RVPartitionAlgebra({rank})")),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
                 grade.prime.get(),
@@ -7079,6 +7089,9 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7482,6 +7495,7 @@ impl Model {
             (Value::RVOre(left), Value::RVOre(right)) => rv_ore::compare(self, left, right),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => a.compare(self, b),
             (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => a.compare(self, b),
+            (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
                 a.compare(self, b)
             }
@@ -7993,6 +8007,9 @@ impl Model {
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
+                }
+                Kind::RVPartitionAlgebra(..) => {
+                    return Err(Error::plain("cannot enumerate a partition diagram algebra"))
                 }
                 Kind::RVSchurCharacter(..) | Kind::RVStableSchurCharacter => {
                     return Err(Error::plain("cannot enumerate a Schur character group"))
@@ -9771,6 +9788,7 @@ impl Model {
             Value::RVWittSpectrum(value) => out.push(&value.render()),
             Value::RVSchurCharacter(value) => out.push(&value.render()),
             Value::RVStableSchurCharacter(value) => out.push(&value.render()),
+            Value::RVPartitionAlgebra(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
                 out.push("RVOre{")?;
                 self.spend(terms.len())?;

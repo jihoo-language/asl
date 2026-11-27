@@ -126,6 +126,7 @@ pub(crate) enum TypeForm {
     RVWittSpectrum,
     RVSchurCharacter(u128),
     RVStableSchurCharacter,
+    RVPartitionAlgebra(usize),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
@@ -842,6 +843,7 @@ pub(crate) enum ExprForm {
     OreUnary(OreOp, Box<ParsedExpr>),
     WittSpectrum(Box<crate::rv_witt_spectrum::Expression>),
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
+    PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
     FusionBasis(usize, Vec<i128>),
@@ -1342,6 +1344,8 @@ pub(crate) enum StatementForm {
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
+    PartitionQuery(crate::partition_algebra::Query, Box<ParsedExpr>),
+    PartitionReport(crate::partition_algebra::Report),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
     StableSchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -5831,6 +5835,84 @@ impl<'src> Parser<'src> {
         }
     }
 
+    fn partition_rank(&mut self) -> Result<usize> {
+        let span = self.span();
+        crate::partition_algebra::require_rank(self.wide_unsigned("partition diagram rank")?)
+            .map_err(|error| error.at(span))
+    }
+
+    fn partition_labels(&mut self, brackets: bool) -> Result<Vec<u128>> {
+        let (open, close) = if brackets {
+            (Token::LBracket, Token::RBracket)
+        } else {
+            (Token::LBrace, Token::RBrace)
+        };
+        self.expect(open)?;
+        let mut labels = Vec::new();
+        while self.token() != close {
+            labels.push(self.wide_unsigned("partition vertex label")?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(close)?;
+        Ok(labels)
+    }
+
+    fn partition_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::partition_algebra::{Binary, Expression, Unary};
+        let (expression, depth) = match name {
+            "rvPartitionDiagram" | "rvPartitionOrbit" | "rvPartitionIdentity" => {
+                self.expect(Token::LBracket)?;
+                let rank = self.partition_rank()?;
+                self.expect(Token::RBracket)?;
+                let form = if name == "rvPartitionIdentity" {
+                    Expression::Identity(rank)
+                } else {
+                    Expression::Basis(
+                        rank,
+                        self.partition_labels(false)?,
+                        name == "rvPartitionOrbit",
+                    )
+                };
+                (form, 0)
+            }
+            "rvPartitionReflect" | "rvPartitionScale" => {
+                let operation = if name == "rvPartitionReflect" {
+                    Unary::Reflect
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let coefficient = self.signed_wide(
+                        "a signed diagram coefficient",
+                        "partition diagram coefficient",
+                    )?;
+                    self.expect(Token::Comma)?;
+                    let degree = self.wide_unsigned("partition diagram t degree")?;
+                    self.expect(Token::RBracket)?;
+                    Unary::Scale(coefficient, degree)
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+            _ => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                let operation = if name == "rvPartitionCompose" {
+                    Binary::Compose
+                } else {
+                    Binary::Tensor
+                };
+                (Expression::Binary(operation, Box::new(inputs)), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::PartitionAlgebra(Box::new(expression)),
+            depth,
+        )
+    }
+
     fn witt_schur_shape(&mut self) -> Result<crate::rv_witt_spectrum::SchurShape> {
         let span = self.span();
         self.expect(Token::LBracket)?;
@@ -9474,6 +9556,47 @@ impl<'src> Parser<'src> {
                     input,
                 )
             }
+            Token::Word(name @ ("rvPartitionDimensions" | "rvPartitionCentralizerCheck")) => {
+                use crate::partition_algebra::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let rank = self.partition_rank()?;
+                self.expect(Token::Comma)?;
+                let dimension = self.wide_unsigned("finite permutation dimension")?;
+                self.expect(Token::RBracket)?;
+                StatementForm::PartitionReport(if name == "rvPartitionDimensions" {
+                    Report::Dimensions(rank, dimension)
+                } else {
+                    Report::Centralizer(rank, dimension)
+                })
+            }
+            Token::Word(
+                name @ ("rvPartitionTrace" | "rvPartitionEntry" | "rvPartitionCoefficient"),
+            ) => {
+                use crate::partition_algebra::Query;
+                self.advance()?;
+                let query = if name == "rvPartitionTrace" {
+                    Query::Trace
+                } else {
+                    self.expect(Token::LBracket)?;
+                    let query = if name == "rvPartitionEntry" {
+                        let dimension = self.wide_unsigned("finite permutation dimension")?;
+                        self.expect(Token::Comma)?;
+                        let upper = self.partition_labels(true)?;
+                        self.expect(Token::Comma)?;
+                        let lower = self.partition_labels(true)?;
+                        Query::Entry(dimension, upper, lower)
+                    } else {
+                        let labels = self.partition_labels(true)?;
+                        self.expect(Token::Comma)?;
+                        let degree = self.wide_unsigned("partition diagram t degree")?;
+                        Query::Coefficient(labels, degree)
+                    };
+                    self.expect(Token::RBracket)?;
+                    query
+                };
+                StatementForm::PartitionQuery(query, Box::new(self.paren_expr(0)?))
+            }
             Token::Word(name @ ("rvSchurCharacterCoeff" | "rvStableSchurCharacterCoeff")) => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -12103,6 +12226,11 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVPartitionAlgebra" && self.eat(Token::LParen)? {
+            let rank = self.partition_rank()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionAlgebra(rank), 0);
         }
         if name.text == "RVStableSchurCharacter" {
             return ty(span, TypeForm::RVStableSchurCharacter, 0);
@@ -16584,6 +16712,18 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionDiagram"
+                        | "rvPartitionOrbit"
+                        | "rvPartitionIdentity"
+                        | "rvPartitionReflect"
+                        | "rvPartitionScale"
+                        | "rvPartitionCompose"
+                        | "rvPartitionTensor"
+                ) {
+                    return self.partition_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
