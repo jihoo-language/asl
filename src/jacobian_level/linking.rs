@@ -297,13 +297,8 @@ impl Pairing {
         if self.base.text != source.base.text || self.degree != source.degree {
             return Err(Error::plain("Kummer Brauer marking change requires the same named base curve and extension degree"));
         }
-        let (matrix, _, exponent) = self.basis.transition(model, &source.basis)?;
         let m = self.ring.modulus;
-        let inverse = self.ring.inverse_unit(model, &exponent)?;
-        // The exterior-square coordinate change must also transport
-        // the inverse Tate twist as the primitive Weil root varies.
-        let matrix = scale_matrix(exterior_square(&matrix, m), inverse, m);
-        verify_isometry(model, m, &matrix)?;
+        let matrix = exterior_change(model, &self.basis, &source.basis, self.ring)?;
         model.spend(2 * 6 * 6 * 6)?;
         if product(&self.difference, &matrix, m) != product(&matrix, &source.difference, m) {
             return Err(Error::plain(
@@ -379,7 +374,25 @@ pub(super) fn intersection(v: Fixed, w: Fixed, modulus: u64) -> u64 {
     mul_mod(result, modulus / 2 + 1, modulus)
 }
 
-fn verify_isometry(model: &mut Model, modulus: u64, matrix: &Exterior) -> Result<()> {
+pub(super) fn exterior_change(
+    model: &mut Model,
+    target: &Basis,
+    source: &Basis,
+    ring: Residues,
+) -> Result<Exterior> {
+    let (matrix, _, exponent) = target.transition(model, source)?;
+    let inverse = ring.inverse_unit(model, &exponent)?;
+    // Transport the inverse Tate twist along with the exterior square.
+    let result = scale_matrix(
+        exterior_square(&matrix, ring.modulus),
+        inverse,
+        ring.modulus,
+    );
+    verify_isometry(model, ring.modulus, &result)?;
+    Ok(result)
+}
+
+pub(super) fn verify_isometry(model: &mut Model, modulus: u64, matrix: &Exterior) -> Result<()> {
     for i in 0..6 {
         for j in i..6 {
             model.spend(72)?;

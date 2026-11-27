@@ -74,6 +74,7 @@ use crate::hyperelliptic_kummer_surface::{
 };
 use crate::jacobian_level;
 use crate::jacobian_level::cm_cycles as kummer_cm;
+use crate::jacobian_level::cm_hom;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -698,6 +699,12 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+struct TypedCMHomOperator {
+    modulus: u64,
+    operator: [[u64; 6]; 6],
+    input: TypedExpr,
+}
+
 struct TypedKummerCM {
     cycles: Rc<kummer_cm::Cycles>,
     level: usize,
@@ -905,6 +912,9 @@ enum TypedForm {
     BrauerMukaiNegate(u64, Box<TypedExpr>),
     KummerCMOperation(Box<TypedKummerCM>),
     KummerCMNegate(Box<TypedExpr>),
+    CMHomLift(Rc<cm_hom::marked::Marking>, Box<TypedExpr>),
+    CMHomOperator(Box<TypedCMHomOperator>),
+    CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
     K3LatticeReflect(Box<[TypedExpr; 2]>),
@@ -2720,6 +2730,7 @@ impl Engine {
             }
             StatementForm::Hurwitz(query) => return query.report(&mut self.model).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
+            StatementForm::CMHom(command) => return self.cm_hom_statement(*command),
             StatementForm::KummerCMCycle(command) => return self.kummer_cm_statement(*command),
             StatementForm::BrauerMukai(command) => return self.brauer_mukai_statement(*command),
             StatementForm::KummerBrauerTransfer(command) => {
@@ -7363,6 +7374,119 @@ impl Engine {
         }
     }
 
+    fn cm_hom_statement(&mut self, statement: cm_hom::Statement) -> Result<Option<String>> {
+        use cm_hom::Statement;
+        match statement {
+            Statement::Define(name, certs, expressions) => {
+                let [left, right] = *expressions;
+                let left = self.checker().expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::ECMap(..)) {
+                    return Err(self.checker().invalid_operand(
+                        &left,
+                        "rvcmhom",
+                        "a certified elliptic morphism",
+                    ));
+                }
+                let right = self.checker().expr(right)?;
+                self.checker().require_type(
+                    left.ty,
+                    &right,
+                    "CM Hom maps require the same named source and target",
+                )?;
+                let (Value::ECMap(left), Value::ECMap(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                self.model.define_cm_hom(name, |model| {
+                    let certificates = if let Some([e, f]) = certs {
+                        Some([model.ec_end_order(&e.text)?, model.ec_end_order(&f.text)?])
+                    } else {
+                        None
+                    };
+                    cm_hom::Hom::new(model, [left, right], certificates)
+                })?;
+                Ok(None)
+            }
+            Statement::Mark(name, hom, base, jacobian, [left, right]) => {
+                self.model.define_cm_hom_mark(name, |model| {
+                    let witness = model.cm_hom(&hom.text)?;
+                    let jacobian = model.jacobian_power_level(&jacobian)?;
+                    let left = model.jacobian_power_level(&left)?;
+                    let right = model.jacobian_power_level(&right)?;
+                    cm_hom::marked::Marking::new(
+                        model,
+                        hom,
+                        &witness,
+                        base,
+                        jacobian,
+                        [&left, &right],
+                    )
+                })?;
+                Ok(None)
+            }
+            Statement::Data(name) => Ok(Some(self.model.cm_hom(&name.text)?.report(&name.text))),
+            Statement::MarkedData(name) => {
+                Ok(Some(self.model.cm_hom_mark(&name.text)?.report(&name.text)))
+            }
+            Statement::Norm(name, coefficient) => {
+                let witness = self.model.cm_hom(&name.text)?;
+                let degree = witness.degree(&mut self.model, coefficient)?;
+                Ok(Some(format!(
+                    "rvCMHomNorm[{}] = degree={degree}",
+                    name.text
+                )))
+            }
+            Statement::CyclePair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let Kind::CMHomCycle(name) = self.model.kind(left.ty) else {
+                    return Err(self.checker().invalid_operand(
+                        &left,
+                        "rvCMHomCyclePair",
+                        "a CM Hom cycle",
+                    ));
+                };
+                let witness = self.model.cm_hom(name)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "CM Hom cycle pairing argument")?;
+                let (Value::CMHomCycle(left), Value::CMHomCycle(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let pairing = witness.pair(&mut self.model, left, right)?;
+                let normalized = if pairing % 2 == 0 {
+                    (pairing / 2).to_string()
+                } else {
+                    format!("{pairing}/2")
+                };
+                Ok(Some(format!(
+                    "rvCMHomCyclePair = product={pairing}, normalized_kummer={normalized}"
+                )))
+            }
+            Statement::WedgePair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let marked = self.checker().cm_hom_wedge_operand(&left)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "CM Hom wedge pairing argument")?;
+                let (Value::CMHomWedge(left), Value::CMHomWedge(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let n = marked.modulus();
+                let pairing = cm_hom::marked::pair(left, right, n);
+                Ok(Some(format!(
+                    "rvCMHomWedgePair = residue={pairing}, modulus={n}"
+                )))
+            }
+        }
+    }
+
     fn kummer_cm_statement(&mut self, statement: kummer_cm::Statement) -> Result<Option<String>> {
         use kummer_cm::Statement;
         match statement {
@@ -10752,6 +10876,16 @@ impl Engine {
                             std::array::from_fn(|i| ec_level::add_vectors(a.0[i], b.0[i], n));
                         Ok(Value::ECLevelMat(ec_level::Matrix(columns)))
                     }
+                    (BinaryOp::Add, Value::CMHomCycle(a), Value::CMHomCycle(b)) => {
+                        Ok(Value::CMHomCycle(kummer_cm::cycle_add(a, b)?))
+                    }
+                    (BinaryOp::Add, Value::CMHomWedge(a), Value::CMHomWedge(b)) => {
+                        let Kind::CMHomWedge(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let n = self.model.cm_hom_mark(name)?.modulus();
+                        Ok(Value::CMHomWedge(brauer_linking::add_vectors(a, b, n)))
+                    }
                     (BinaryOp::Add, Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => {
                         Ok(Value::KummerCMCycle(kummer_cm::cycle_add(a, b)?))
                     }
@@ -12533,11 +12667,39 @@ impl Engine {
                     }
                 }
             },
-            TypedForm::KummerCMNegate(input) => {
-                let Value::KummerCMCycle(cycle) = self.eval(input)? else {
+            TypedForm::KummerCMNegate(input) => match self.eval(input)? {
+                Value::KummerCMCycle(cycle) => {
+                    Ok(Value::KummerCMCycle(kummer_cm::cycle_negate(cycle)?))
+                }
+                Value::CMHomCycle(cycle) => Ok(Value::CMHomCycle(kummer_cm::cycle_negate(cycle)?)),
+                _ => unreachable!(),
+            },
+            TypedForm::CMHomLift(marked, input) => {
+                let Value::CMHomCycle(cycle) = self.eval(input)? else {
                     unreachable!()
                 };
-                Ok(Value::KummerCMCycle(kummer_cm::cycle_negate(cycle)?))
+                Ok(Value::CMHomWedge(marked.cycle(&mut self.model, cycle)?))
+            }
+            TypedForm::CMHomOperator(plan) => {
+                let Value::CMHomWedge(value) = self.eval(&plan.input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMHomWedge(cm_hom::marked::apply_operator(
+                    &mut self.model,
+                    &plan.operator,
+                    plan.modulus,
+                    value,
+                )?))
+            }
+            TypedForm::CMHomWedgeNegate(modulus, input) => {
+                let Value::CMHomWedge(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMHomWedge(brauer_linking::scaled(
+                    value,
+                    *modulus - 1,
+                    *modulus,
+                )))
             }
             TypedForm::KummerCMOperation(plan) => {
                 let result = match (self.eval(&plan.input)?, &plan.operation) {
@@ -16372,6 +16534,8 @@ impl Checker<'_> {
             TypeForm::KummerBrauerClass(name) => self.model.kummer_brauer_class_type(&name),
             TypeForm::BrauerMukai(name) => self.model.brauer_mukai_type(&name),
             TypeForm::KummerCMCycle(name) => self.model.kummer_cm_cycle_type(&name),
+            TypeForm::CMHomCycle(name) => self.model.cm_hom_cycle_type(&name),
+            TypeForm::CMHomWedge(name) => self.model.cm_hom_wedge_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -17553,6 +17717,8 @@ impl Checker<'_> {
                     Kind::KummerBrauerClass(..) => Value::KummerBrauerClass([0; 6]),
                     Kind::BrauerMukai(..) => Value::BrauerMukai([0; 8]),
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
+                    Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
+                    Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
                     Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
                     Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
@@ -19807,6 +19973,7 @@ impl Checker<'_> {
             }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerCMCycle(expression) => self.kummer_cm_expression(*expression),
+            ExprForm::CMHom(expression) => self.cm_hom_expression(*expression),
             ExprForm::BrauerMukai(expression) => self.brauer_mukai_expression(*expression),
             ExprForm::KummerBrauerTransfer(expression) => {
                 self.kummer_brauer_transfer_expression(*expression)
@@ -20935,7 +21102,17 @@ impl Checker<'_> {
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::KummerCMCycle(..)) {
+                if let Kind::CMHomWedge(name) = self.model.kind(input.ty) {
+                    let modulus = self.model.cm_hom_mark(name)?.modulus();
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMHomWedgeNegate(modulus, Box::new(input)),
+                    ));
+                }
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::KummerCMCycle(..) | Kind::CMHomCycle(..)
+                ) {
                     return Ok((input.ty, TypedForm::KummerCMNegate(Box::new(input))));
                 }
                 if let Kind::BrauerMukai(name) = self.model.kind(input.ty) {
@@ -24811,6 +24988,8 @@ impl Checker<'_> {
                         | Kind::KummerBrauerClass(..)
                         | Kind::BrauerMukai(..)
                         | Kind::KummerCMCycle(..)
+                        | Kind::CMHomCycle(..)
+                        | Kind::CMHomWedge(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
@@ -30431,6 +30610,99 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVSiegelWeight"))
         }
+    }
+
+    fn cm_hom_wedge_operand(&self, value: &TypedExpr) -> Result<Rc<cm_hom::marked::Marking>> {
+        let Kind::CMHomWedge(name) = self.model.kind(value.ty) else {
+            return Err(self.invalid_operand(
+                value,
+                "CM Hom marked operator",
+                "a CM Hom wedge vector",
+            ));
+        };
+        self.model.cm_hom_mark(name)
+    }
+
+    fn cm_hom_expression(&mut self, expression: cm_hom::Expression) -> Result<(TypeId, TypedForm)> {
+        use cm_hom::Expression;
+        let (ty, modulus, operator, input) = match expression {
+            Expression::Class(order, hom) => {
+                let witness = self.model.cm_hom(&hom.text)?;
+                let cm_order = self.model.cm_ring_order(&order)?;
+                let class = witness.class(self.model, cm_order)?;
+                let ty = self.model.cm_class_type(&order)?;
+                return Ok((ty, TypedForm::Constant(Value::CMClass(class))));
+            }
+            Expression::Map(name, coefficients) => {
+                let witness = self.model.cm_hom(&name.text)?;
+                let map = witness.combination(self.model, coefficients)?;
+                let ty = self
+                    .model
+                    .ec_map_type(map.source.clone(), map.target.clone())?;
+                let value = ec_morphism::persist(self.model, map)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Cycle(name, coordinates) => {
+                let ty = self.model.cm_hom_cycle_type(&name)?;
+                return Ok((ty, TypedForm::Constant(Value::CMHomCycle(coordinates))));
+            }
+            Expression::Wedge(name, coordinates) => {
+                let marked = self.model.cm_hom_mark(&name.text)?;
+                let ty = self.model.cm_hom_wedge_type(&name)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMHomWedge(marked.vector(coordinates))),
+                ));
+            }
+            Expression::Lift(name, input) => {
+                let input = self.expr(*input)?;
+                let marked = self.model.cm_hom_mark(&name.text)?;
+                let expected = self.model.cm_hom_cycle_type(&marked.hom_name)?;
+                self.require_type(expected, &input, "CM Hom cycle lift argument")?;
+                let ty = self.model.cm_hom_wedge_type(&name)?;
+                return Ok((ty, TypedForm::CMHomLift(marked, Box::new(input))));
+            }
+            Expression::Project(transcendental, input) => {
+                let input = self.expr(*input)?;
+                let marked = self.cm_hom_wedge_operand(&input)?;
+                (
+                    input.ty,
+                    marked.modulus(),
+                    marked.projector(transcendental)?,
+                    input,
+                )
+            }
+            Expression::Frobenius(power, input) => {
+                let input = self.expr(*input)?;
+                let marked = self.cm_hom_wedge_operand(&input)?;
+                (
+                    input.ty,
+                    marked.modulus(),
+                    marked.power(self.model, power)?,
+                    input,
+                )
+            }
+            Expression::Change(name, input) => {
+                let input = self.expr(*input)?;
+                let source = self.cm_hom_wedge_operand(&input)?;
+                let target = self.model.cm_hom_mark(&name.text)?;
+                let ty = self.model.cm_hom_wedge_type(&name)?;
+                (
+                    ty,
+                    target.modulus(),
+                    target.change(self.model, &source)?,
+                    input,
+                )
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::CMHomOperator(Box::new(TypedCMHomOperator {
+                modulus,
+                operator,
+                input,
+            })),
+        ))
     }
 
     fn kummer_cm_expression(

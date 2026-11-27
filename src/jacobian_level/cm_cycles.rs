@@ -253,16 +253,7 @@ impl Cycles {
     }
 
     pub(crate) fn pair(&self, model: &mut Model, left: Cycle, right: Cycle) -> Result<i128> {
-        model.spend(16)?;
-        let mut pairing = Wide::<16>::from_i128(0);
-        for (a, row) in left.into_iter().zip(self.gram) {
-            for (b, g) in right.into_iter().zip(row) {
-                pairing = pairing.add(Wide::product(a, b).multiply(g)?)?;
-            }
-        }
-        pairing.signed().ok_or_else(|| {
-            Error::plain("Kummer CM product intersection exceeds signed 128-bit range")
-        })
+        pair_gram(model, &self.gram, left, right)
     }
 
     pub(crate) fn hermitian(
@@ -388,6 +379,24 @@ impl Cycles {
     }
 }
 
+pub(super) fn pair_gram(
+    model: &mut Model,
+    gram: &[[i128; 4]; 4],
+    left: Cycle,
+    right: Cycle,
+) -> Result<i128> {
+    model.spend(16)?;
+    let mut pairing = Wide::<16>::from_i128(0);
+    for (a, row) in left.into_iter().zip(gram) {
+        for (b, &g) in right.into_iter().zip(row) {
+            pairing = pairing.add(Wide::product(a, b).multiply(g)?)?;
+        }
+    }
+    pairing
+        .signed()
+        .ok_or_else(|| Error::plain("Kummer CM product intersection exceeds signed 128-bit range"))
+}
+
 pub(crate) fn cycle_add(left: Cycle, right: Cycle) -> Result<Cycle> {
     cycle_coefficients(|i| left[i].checked_add(right[i]))
 }
@@ -413,7 +422,7 @@ fn gaussian_product((a, b): (u64, u64), (c, d): (u64, u64), n: u64) -> (u64, u64
     )
 }
 
-fn symplectic(x: [u64; 4], y: [u64; 4], modulus: u64) -> u64 {
+pub(super) fn symplectic(x: [u64; 4], y: [u64; 4], modulus: u64) -> u64 {
     (0..2).fold(0, |value, i| {
         add_mod(
             value,
@@ -427,7 +436,7 @@ fn symplectic(x: [u64; 4], y: [u64; 4], modulus: u64) -> u64 {
     })
 }
 
-fn wedge(x: [u64; 4], y: [u64; 4], modulus: u64) -> Fixed {
+pub(super) fn wedge(x: [u64; 4], y: [u64; 4], modulus: u64) -> Fixed {
     PAIRS.map(|(i, j)| {
         sub_mod(
             mul_mod(x[i], y[j], modulus),
@@ -438,7 +447,21 @@ fn wedge(x: [u64; 4], y: [u64; 4], modulus: u64) -> Fixed {
 }
 
 fn projector(model: &mut Model, pairing: &Pairing, generators: &[Fixed; 4]) -> Result<Exterior> {
-    let ring = pairing.ring;
+    let result = orthogonal_projector(model, pairing.ring, generators)?;
+    let n = pairing.ring.modulus;
+    if product(&pairing.difference, &result, n) != [[0; 6]; 6]
+        || product(&result, &pairing.difference, n) != [[0; 6]; 6]
+    {
+        return Err(inconsistent());
+    }
+    Ok(result)
+}
+
+pub(super) fn orthogonal_projector(
+    model: &mut Model,
+    ring: crate::hyperelliptic::Residues,
+    generators: &[Fixed; 4],
+) -> Result<Exterior> {
     let n = ring.modulus;
     let cells = generators
         .iter()
@@ -464,10 +487,7 @@ fn projector(model: &mut Model, pairing: &Pairing, generators: &[Fixed; 4]) -> R
                 .fold(0, |sum, (v, c)| add_mod(sum, mul_mod(v[i], c, n), n));
         }
     }
-    if product(&result, &result, n) != result
-        || product(&pairing.difference, &result, n) != [[0; 6]; 6]
-        || product(&result, &pairing.difference, n) != [[0; 6]; 6]
-    {
+    if product(&result, &result, n) != result {
         return Err(inconsistent());
     }
     for i in 0..6 {

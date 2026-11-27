@@ -49,7 +49,7 @@ use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
 };
 use crate::hyperelliptic_kummer_surface::{clifford, cm_ring, rational_sparse, spinor};
-use crate::jacobian_level::{cm_cycles, linking};
+use crate::jacobian_level::{cm_cycles, cm_hom, linking};
 use crate::jacobian_level::{transfers, twisted_mukai};
 use crate::jet_hom;
 use crate::jet_page;
@@ -306,6 +306,8 @@ pub(crate) enum Kind {
     KummerBrauerClass(Rc<str>),
     BrauerMukai(Rc<str>),
     KummerCMCycle(Rc<str>),
+    CMHomCycle(Rc<str>),
+    CMHomWedge(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
@@ -536,6 +538,8 @@ pub(crate) enum Value {
     KummerBrauerClass(transfers::Class),
     BrauerMukai(twisted_mukai::Vector),
     KummerCMCycle(cm_cycles::Cycle),
+    CMHomCycle(cm_cycles::Cycle),
+    CMHomWedge(linking::Fixed),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
@@ -766,6 +770,8 @@ pub(crate) struct Model {
     kummer_brauer_quotients: HashMap<String, Rc<transfers::Quotient>>,
     brauer_mukai_charts: HashMap<String, Rc<twisted_mukai::Chart>>,
     kummer_cm_cycles: HashMap<String, Rc<cm_cycles::Cycles>>,
+    cm_hom: HashMap<String, Rc<cm_hom::Hom>>,
+    cm_hom_markings: HashMap<String, Rc<cm_hom::marked::Marking>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
@@ -923,6 +929,8 @@ impl Model {
             kummer_brauer_quotients: HashMap::new(),
             brauer_mukai_charts: HashMap::new(),
             kummer_cm_cycles: HashMap::new(),
+            cm_hom: HashMap::new(),
+            cm_hom_markings: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
@@ -1483,7 +1491,9 @@ impl Model {
             | Kind::K3PencilKummer2(..)
             | Kind::K3PencilCoverPoint(..) => usize::MAX,
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
-            Kind::KummerBrauerFixed(..) | Kind::KummerCMCycle(..) => usize::MAX,
+            Kind::KummerBrauerFixed(..) | Kind::KummerCMCycle(..) | Kind::CMHomCycle(..) => {
+                usize::MAX
+            }
             Kind::BrauerMukai(ref name) => {
                 usize::try_from(self.brauer_mukai_charts[name.as_ref()].modulus())
                     .unwrap_or(usize::MAX)
@@ -1491,6 +1501,11 @@ impl Model {
             }
             Kind::KummerBrauerClass(ref name) => {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
+            }
+            Kind::CMHomWedge(ref name) => {
+                usize::try_from(self.cm_hom_markings[name.as_ref()].modulus())
+                    .unwrap_or(usize::MAX)
+                    .saturating_pow(6)
             }
             Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
@@ -1805,6 +1820,8 @@ impl Model {
                 | Kind::KummerBrauerClass(..)
                 | Kind::BrauerMukai(..)
                 | Kind::KummerCMCycle(..)
+                | Kind::CMHomCycle(..)
+                | Kind::CMHomWedge(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
@@ -4410,6 +4427,58 @@ impl Model {
         self.allocate(1 + name.text.len())?;
         self.jacobian_levels.insert(name.text, Rc::new(basis));
         Ok(())
+    }
+
+    pub(crate) fn define_cm_hom(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<cm_hom::Hom>,
+    ) -> Result<()> {
+        if self.cm_hom.contains_key(&name.text) {
+            return Err(Error::new(name.span, "CM Hom witness is already defined"));
+        }
+        let entry = build(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_hom.insert(name.text, Rc::new(entry));
+        Ok(())
+    }
+
+    pub(crate) fn define_cm_hom_mark(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<cm_hom::marked::Marking>,
+    ) -> Result<()> {
+        if self.cm_hom_markings.contains_key(&name.text) {
+            return Err(Error::new(name.span, "CM Hom marking is already defined"));
+        }
+        let entry = build(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_hom_markings.insert(name.text, Rc::new(entry));
+        Ok(())
+    }
+
+    pub(crate) fn cm_hom(&self, name: &str) -> Result<Rc<cm_hom::Hom>> {
+        self.cm_hom
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM Hom witness '{name}'")))
+    }
+
+    pub(crate) fn cm_hom_mark(&self, name: &str) -> Result<Rc<cm_hom::marked::Marking>> {
+        self.cm_hom_markings
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM Hom marking '{name}'")))
+    }
+
+    pub(crate) fn cm_hom_cycle_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cm_hom(&name.text)?;
+        self.inhabited_type(Kind::CMHomCycle(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn cm_hom_wedge_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cm_hom_mark(&name.text)?;
+        self.inhabited_type(Kind::CMHomWedge(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_kummer_cm_cycles(
@@ -7201,6 +7270,8 @@ impl Model {
             | Kind::KummerBrauerClass(..)
             | Kind::BrauerMukai(..)
             | Kind::KummerCMCycle(..)
+            | Kind::CMHomCycle(..)
+            | Kind::CMHomWedge(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
@@ -7768,6 +7839,8 @@ impl Model {
             Kind::KummerBrauerClass(name) => out.push(&format!("RVKummerBrauerClass({name})")),
             Kind::BrauerMukai(name) => out.push(&format!("RVBrauerMukai({name})")),
             Kind::KummerCMCycle(name) => out.push(&format!("RVKummerCMCycle({name})")),
+            Kind::CMHomCycle(name) => out.push(&format!("RVCMHomCycle({name})")),
+            Kind::CMHomWedge(name) => out.push(&format!("RVCMHomWedge({name})")),
             Kind::KummerBrauerFixed(name, level) => {
                 out.push(&format!("RVKummerBrauerFixed({name},{level})"))
             }
@@ -8200,6 +8273,8 @@ impl Model {
             (Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => Ok(a == b),
             (Value::BrauerMukai(a), Value::BrauerMukai(b)) => Ok(a == b),
             (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a == b),
+            (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a == b),
+            (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -8615,6 +8690,8 @@ impl Model {
             (Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => Ok(a.cmp(b)),
             (Value::BrauerMukai(a), Value::BrauerMukai(b)) => Ok(a.cmp(b)),
             (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a.cmp(b)),
+            (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a.cmp(b)),
+            (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -9057,6 +9134,29 @@ impl Model {
                         .into_iter()
                         .map(Value::KummerBrauerClass)
                         .collect()
+                }
+                Kind::CMHomWedge(ref name) => {
+                    let modulus = self.cm_hom_mark(name)?.modulus();
+                    let count = usize::try_from(modulus)
+                        .unwrap_or(usize::MAX)
+                        .saturating_pow(6);
+                    self.check_element_limit(count)?;
+                    self.spend(count * 6)?;
+                    self.allocate(count * 6)?;
+                    (0..count)
+                        .map(|index| {
+                            let mut index = index as u64;
+                            let coordinates = std::array::from_fn(|_| {
+                                let coordinate = index % modulus;
+                                index /= modulus;
+                                coordinate
+                            });
+                            Value::CMHomWedge(coordinates)
+                        })
+                        .collect()
+                }
+                Kind::CMHomCycle(..) => {
+                    return Err(Error::plain("cannot enumerate integral CM Hom cycles"));
                 }
                 Kind::KummerCMCycle(..) => {
                     return Err(Error::plain("cannot enumerate integral Kummer CM cycles"));
@@ -10899,7 +10999,7 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::KummerCMCycle(coordinates) => {
+            Value::KummerCMCycle(coordinates) | Value::CMHomCycle(coordinates) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{coordinates:?}}}"))
             }
@@ -10907,7 +11007,9 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{coordinates:?}}}"))
             }
-            Value::KummerBrauerFixed(coordinates) | Value::KummerBrauerClass(coordinates) => {
+            Value::KummerBrauerFixed(coordinates)
+            | Value::KummerBrauerClass(coordinates)
+            | Value::CMHomWedge(coordinates) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{coordinates:?}}}"))
             }

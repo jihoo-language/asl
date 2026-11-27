@@ -156,6 +156,8 @@ pub(crate) enum TypeForm {
     KummerBrauerClass(Label),
     BrauerMukai(Label),
     KummerCMCycle(Label),
+    CMHomCycle(Label),
+    CMHomWedge(Label),
     KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -1063,6 +1065,7 @@ pub(crate) enum ExprForm {
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Expression>),
     BrauerMukai(Box<crate::jacobian_level::twisted_mukai::Expression>),
     KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Expression>),
+    CMHom(Box<crate::jacobian_level::cm_hom::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
@@ -1332,6 +1335,7 @@ pub(crate) enum StatementForm {
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Statement>),
     BrauerMukai(Box<crate::jacobian_level::twisted_mukai::Statement>),
     KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Statement>),
+    CMHom(Box<crate::jacobian_level::cm_hom::Statement>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
@@ -3159,6 +3163,144 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Jacobian(Box::new(command)))
+    }
+
+    fn cm_hom_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::Statement;
+        self.advance()?;
+        let result = match command {
+            "rvcmhom" => {
+                let name = self.label()?;
+                let witnesses = if self.eat(Token::LBracket)? {
+                    let source = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    Some([source, target])
+                } else {
+                    None
+                };
+                Statement::Define(name, witnesses, Box::new(self.paren_pair(0)?))
+            }
+            "rvcmhommark" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let hom = self.label()?;
+                self.expect(Token::Comma)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let jacobian = self.label()?;
+                self.expect(Token::Comma)?;
+                let left = self.label()?;
+                self.expect(Token::Comma)?;
+                let right = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Mark(name, hom, base, jacobian, [left, right])
+            }
+            "rvCMHomCyclePair" => Statement::CyclePair(Box::new(self.paren_pair(0)?)),
+            "rvCMHomWedgePair" => Statement::WedgePair(Box::new(self.paren_pair(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let output = match command {
+                    "rvCMHomNorm" => Statement::Norm(name, self.cm_hom_coefficients()?),
+                    "rvCMHomMarkData" => Statement::MarkedData(name),
+                    _ => Statement::Data(name),
+                };
+                self.expect(Token::RBracket)?;
+                output
+            }
+        };
+        Ok(StatementForm::CMHom(Box::new(result)))
+    }
+
+    fn cm_hom_coefficients(&mut self) -> Result<[i128; 2]> {
+        self.expect(Token::Comma)?;
+        let a = self.signed_wide("a signed Hom coefficient", "Hom coefficient")?;
+        self.expect(Token::Comma)?;
+        Ok([
+            a,
+            self.signed_wide("a signed Hom coefficient", "Hom coefficient")?,
+        ])
+    }
+
+    fn cm_hom_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::Expression;
+        if matches!(name, "rvCMHomAlgebraic" | "rvCMHomTranscendental") {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::CMHom(Box::new(Expression::Project(
+                    name == "rvCMHomTranscendental",
+                    Box::new(input),
+                ))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        if name == "rvCMHomFrob" {
+            let power = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::CMHom(Box::new(Expression::Frobenius(power, Box::new(input)))),
+                depth,
+            );
+        }
+        let label = self.label()?;
+        let (value, depth) = match name {
+            "rvCMHomClass" => {
+                self.expect(Token::Comma)?;
+                let hom = self.label()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Class(label, hom), 0)
+            }
+            "rvCMHomMap" => {
+                let coefficients = self.cm_hom_coefficients()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Map(label, coefficients), 0)
+            }
+            "rvCMHomCycle" | "rvCMHomWedge" => {
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let coordinates =
+                    self.signed_list(Token::RBrace, "a signed Hom coordinate", "Hom coordinate")?;
+                let output = if name == "rvCMHomCycle" {
+                    Expression::Cycle(
+                        label,
+                        coordinates.try_into().map_err(|_| {
+                            Error::new(span, "CM Hom cycle requires four coordinates")
+                        })?,
+                    )
+                } else {
+                    Expression::Wedge(
+                        label,
+                        coordinates.try_into().map_err(|_| {
+                            Error::new(span, "CM Hom wedge requires six coordinates")
+                        })?,
+                    )
+                };
+                (output, 0)
+            }
+            _ => {
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let input = Box::new(input);
+                (
+                    if name == "rvCMHomLift" {
+                        Expression::Lift(label, input)
+                    } else {
+                        Expression::Change(label, input)
+                    },
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::CMHom(Box::new(value)), depth)
     }
 
     fn kummer_cm_cycle_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -11169,6 +11311,10 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                name @ ("rvcmhom" | "rvcmhommark" | "rvCMHomData" | "rvCMHomMarkData"
+                | "rvCMHomNorm" | "rvCMHomCyclePair" | "rvCMHomWedgePair"),
+            ) => self.cm_hom_statement(name)?,
+            Token::Word(
                 name @ ("rvkummercmcycles"
                 | "rvKummerCMCycleData"
                 | "rvKummerCMCyclePair"
@@ -15044,6 +15190,18 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if matches!(name.text.as_str(), "RVCMHomCycle" | "RVCMHomWedge")
+            && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            let form = if name.text == "RVCMHomCycle" {
+                TypeForm::CMHomCycle(label)
+            } else {
+                TypeForm::CMHomWedge(label)
+            };
+            return ty(span, form, 0);
+        }
         if name.text == "RVKummerCMCycle" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -17510,6 +17668,23 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMHomClass"
+                        | "rvCMHomMap"
+                        | "rvCMHomCycle"
+                        | "rvCMHomWedge"
+                        | "rvCMHomLift"
+                        | "rvCMHomChange"
+                        | "rvCMHomFrob"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCMHomAlgebraic" | "rvCMHomTranscendental"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cm_hom_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

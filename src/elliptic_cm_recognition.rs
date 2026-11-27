@@ -266,6 +266,22 @@ pub(crate) fn extend(
     let old_target = model.ec_curve(&map.target)?;
     let new_source = model.ec_curve(&source_name)?;
     let new_target = model.ec_curve(&target_name)?;
+    extend_over(
+        model,
+        map,
+        [source_name, target_name],
+        [&old_source, &old_target],
+        [&new_source, &new_target],
+    )
+}
+
+pub(crate) fn extend_over(
+    model: &mut Model,
+    map: &Morphism,
+    [source_name, target_name]: [Rc<str>; 2],
+    [old_source, old_target]: [&Curve; 2],
+    [new_source, new_target]: [&Curve; 2],
+) -> Result<Morphism> {
     if old_source.ring_name != old_target.ring_name || new_source.ring_name != new_target.ring_name
     {
         return Err(Error::plain(
@@ -316,8 +332,8 @@ pub(crate) fn extend(
         model,
         source_name,
         target_name,
-        &new_source,
-        &new_target,
+        new_source,
+        new_target,
         coordinates,
     )
 }

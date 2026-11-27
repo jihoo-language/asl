@@ -16,6 +16,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod brauer;
 pub(crate) mod cm_cycles;
+pub(crate) mod cm_hom;
 pub(crate) mod linking;
 pub(crate) mod richelot;
 pub(crate) mod transfers;
