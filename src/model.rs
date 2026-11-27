@@ -25,6 +25,7 @@ use crate::map_may::MapMayPage;
 use crate::may::MayPage;
 use crate::milnor::MilnorBasis;
 use crate::mixed_bars;
+use crate::mixed_cone;
 use crate::mixed_hom;
 use crate::mixed_minimal;
 use crate::mixed_tensor;
@@ -422,6 +423,7 @@ pub(crate) struct Model {
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
     mixed_tensors: HashMap<mixed::Id, Rc<mixed_tensor::Tensor>>,
+    mixed_cones: HashMap<mixed::Id, Rc<mixed_cone::Cone>>,
     mixed_homs: HashMap<mixed::Id, Rc<mixed_hom::Hom>>,
     mixed_minimals: Vec<(String, Rc<mixed_minimal::Minimal>)>,
     mixed_minimal_ids: HashMap<String, mixed_minimal::Id>,
@@ -473,6 +475,7 @@ impl Model {
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
             mixed_tensors: HashMap::new(),
+            mixed_cones: HashMap::new(),
             mixed_homs: HashMap::new(),
             mixed_minimals: Vec::new(),
             mixed_minimal_ids: HashMap::new(),
@@ -969,6 +972,23 @@ impl Model {
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::plain("operation requires a mixed complex imported by rvHHMixed"))
+    }
+
+    pub(crate) fn define_mixed_cone(
+        &mut self,
+        name: String,
+        complex: mixed::Complex,
+        cone: mixed_cone::Cone,
+    ) {
+        let id = self.define_mixed(name, complex);
+        self.mixed_cones.insert(id, Rc::new(cone));
+    }
+
+    pub(crate) fn mixed_cone(&self, id: mixed::Id) -> Result<Rc<mixed_cone::Cone>> {
+        self.mixed_cones
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Error::plain("operation requires a mixed mapping cone"))
     }
 
     pub(crate) fn define_mixed_hom(

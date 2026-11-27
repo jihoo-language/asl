@@ -30,6 +30,7 @@ use crate::map_transfer;
 use crate::may;
 use crate::may_lift;
 use crate::milnor;
+use crate::mixed_cone;
 use crate::mixed_hom;
 use crate::mixed_minimal;
 use crate::mixed_tensor;
@@ -465,6 +466,15 @@ enum TypedForm {
     SheafPageOperation(SheafPageOp, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     SheafPageLift(SheafPageLift, SheafTotal, SheafPageGrade, Box<TypedExpr>),
     RvHHToMixed(Rc<rv_hh_mixed::Origin>, Box<TypedExpr>),
+    MixedConeMap(Rc<mixed_cone::Cone>, mixed_cone::Operation, Box<TypedExpr>),
+    MixedConeShear(
+        Rc<mixed_cone::Cone>,
+        Rc<mixed_cone::Cone>,
+        mixed::Id,
+        Box<TypedExpr>,
+        Box<TypedExpr>,
+    ),
+    MixedRawDelta(Rc<mixed::Complex>, usize, Box<TypedExpr>),
     MixedTensorProduct(Rc<mixed_tensor::Tensor>, Box<TypedExpr>, Box<TypedExpr>),
     MixedTensorSwap(
         Rc<mixed_tensor::Tensor>,
@@ -548,6 +558,35 @@ impl Engine {
         let line = match statement {
             StatementForm::QModule(name, selected, presentation) => {
                 self.model.define_q_module(&name, selected, presentation)?;
+                return Ok(None);
+            }
+            StatementForm::MixedHigher(name, prime, generators, rules) => {
+                self.model.check_new_mixed(&name)?;
+                let complex =
+                    mixed::Complex::build_higher(&mut self.model, prime, generators, rules)?;
+                self.model.define_mixed(name.text, complex);
+                return Ok(None);
+            }
+            StatementForm::MixedCone(name, map) => {
+                self.model.check_new_mixed(&name)?;
+                let map = self.checker().expr(map)?;
+                let Kind::MixedChain(
+                    mixed::Grade {
+                        complex: map_id,
+                        b: 0,
+                    },
+                    true,
+                ) = *self.model.kind(map.ty)
+                else {
+                    return Err(Error::plain(
+                        "mixcone requires a degree-zero MixedU map in a mixhom complex",
+                    ));
+                };
+                let Value::OddClass(terms) = self.eval(&map)? else {
+                    unreachable!()
+                };
+                let (cone, complex) = mixed_cone::Cone::build(&mut self.model, map_id, terms)?;
+                self.model.define_mixed_cone(name.text, complex, cone);
                 return Ok(None);
             }
             StatementForm::MixedTensor(name, left, right) => {
@@ -4409,6 +4448,30 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::MixedConeMap(cone, operation, input) => {
+                let Value::OddClass(support) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = cone.apply(&mut self.model, *operation, &support)?;
+                odd_ext::persist(&mut self.model, image)
+            }
+            TypedForm::MixedConeShear(target, source, map, homotopy, input) => {
+                let Value::OddClass(homotopy) = self.eval(homotopy)? else {
+                    unreachable!()
+                };
+                let Value::OddClass(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = target.shear(&mut self.model, source, *map, &homotopy, &input)?;
+                odd_ext::persist(&mut self.model, image)
+            }
+            TypedForm::MixedRawDelta(data, order, input) => {
+                let Value::OddClass(support) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let image = data.delta(&mut self.model, *order, &support)?;
+                odd_ext::persist(&mut self.model, image)
+            }
             TypedForm::MixedTensorProduct(tensor, left, right) => {
                 let Value::OddClass(left) = self.eval(left)? else {
                     unreachable!()
@@ -5659,6 +5722,65 @@ impl Checker<'_> {
                 let value = odd_ext::persist(self.model, entries)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MixedConeMap(name, operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, total) = self.mixed_chain(&input, "mixed mapping cone operation")?;
+                let id = self.model.mixed_id(&name)?;
+                let cone = self.model.mixed_cone(id)?;
+                let ty = self
+                    .model
+                    .mixed_chain_type(cone.map_grade(id, grade, operation)?, total)?;
+                Ok((
+                    ty,
+                    TypedForm::MixedConeMap(cone, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::MixedConeShear(name, homotopy, input) => {
+                let homotopy = self.expr(*homotopy)?;
+                let input = self.expr(*input)?;
+                let (h, true) = self.mixed_chain(&homotopy, "mixConeShear")? else {
+                    return Err(self.invalid_operand(
+                        &homotopy,
+                        "mixConeShear",
+                        "a degree-one MixedU map",
+                    ));
+                };
+                if h.b != 1 {
+                    return Err(self.invalid_operand(
+                        &homotopy,
+                        "mixConeShear",
+                        "a degree-one MixedU map",
+                    ));
+                }
+                let (grade, true) = self.mixed_chain(&input, "mixConeShear")? else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "mixConeShear",
+                        "a MixedU cone chain",
+                    ));
+                };
+                let source = self.model.mixed_cone(grade.complex)?;
+                let id = self.model.mixed_id(&name)?;
+                let target = self.model.mixed_cone(id)?;
+                target.check_shear(&source, self.model, h.complex)?;
+                let ty = self.model.mixed_chain_type(
+                    mixed::Grade {
+                        complex: id,
+                        b: grade.b,
+                    },
+                    true,
+                )?;
+                Ok((
+                    ty,
+                    TypedForm::MixedConeShear(
+                        target,
+                        source,
+                        h.complex,
+                        Box::new(homotopy),
+                        Box::new(input),
+                    ),
+                ))
+            }
             ExprForm::MixedTensorProduct(name, left, right) => {
                 let left = self.expr(*left)?;
                 let right = self.expr(*right)?;
@@ -5829,14 +5951,24 @@ impl Checker<'_> {
             }
             ExprForm::MixedDelta(order, input) => {
                 let input = self.expr(*input)?;
-                let Kind::MixedMinimum(grade, false) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "mixDelta", "a MixedMin class"));
-                };
-                let ty = self
-                    .model
-                    .mixed_minimal_type(grade.shift(2 * order as i128 - 1)?, false)?;
-                let data = self.model.mixed_minimal(grade.minimal);
-                Ok((ty, TypedForm::MixedDelta(data, order, Box::new(input))))
+                let degree = 2 * order as i128 - 1;
+                match *self.model.kind(input.ty) {
+                    Kind::MixedMinimum(grade, false) => {
+                        let ty = self.model.mixed_minimal_type(grade.shift(degree)?, false)?;
+                        let data = self.model.mixed_minimal(grade.minimal);
+                        Ok((ty, TypedForm::MixedDelta(data, order, Box::new(input))))
+                    }
+                    Kind::MixedChain(grade, false) => {
+                        let ty = self.model.mixed_chain_type(grade.shift(degree)?, false)?;
+                        let data = self.model.mixed_complex(grade.complex);
+                        Ok((ty, TypedForm::MixedRawDelta(data, order, Box::new(input))))
+                    }
+                    _ => Err(self.invalid_operand(
+                        &input,
+                        "mixDelta",
+                        "a MixedMin class or a raw MixedChain",
+                    )),
+                }
             }
             ExprForm::MixedGenerator(spec, index, at) => {
                 let grade = self.mixed_grade(spec)?;
@@ -9752,6 +9884,9 @@ impl Checker<'_> {
                 let Kind::MixedChain(grade, false) = *self.model.kind(argument.ty) else {
                     return Err(self.invalid_operand(argument, name, "a MixedChain"));
                 };
+                if !self.model.mixed_complex(grade.complex).is_strict() {
+                    return Err(Error::plain("mixb and mixB require a strict mixed complex. Use mixDelta on a higher complex."));
+                }
                 let offset = if matches!(op, CobarOp::MixUp) { 1 } else { -1 };
                 return self.model.mixed_chain_type(grade.shift(offset)?, false);
             }

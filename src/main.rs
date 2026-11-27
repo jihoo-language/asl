@@ -40,6 +40,7 @@ mod may_lift;
 mod milnor;
 mod mixed;
 mod mixed_bars;
+mod mixed_cone;
 mod mixed_hom;
 mod mixed_minimal;
 mod mixed_page;

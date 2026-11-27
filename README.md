@@ -1425,6 +1425,18 @@ The witness `mixTensorTorNull[T,i,j]` is $X\otimes Y$, with differential $u^r W$
 
 The length-two and length-three staircase tensor has two length-two bars born in degrees five and ten. The example checks the signed secondary cycle, both nulls, and the surviving first multiples on page three. The test suite also tensors two actual imported exterior Hochschild weight complexes. [Tensor and Künneth example](examples/mixed-tensor.asl)
 
+#### Higher complexes and mapping cones
+
+`mixedhigher K[p] {x:a,y:b,...} {x => [(r,y,c),...],...};` declares a finite free graded $\mathbb F_p[u]$ complex with $|u|=-2$. Each entry gives the term $c u^r y$ of $D(x)$ and must have $|y|=|x|+2r-1$. Missing columns are zero. The interpreter checks $D^2=0$ coefficientwise. Indeed, the source and target degrees determine the only possible exponent in each matrix entry, so checking at $u=1$ detects every coefficient of the homogeneous relation. Large exponents occupy a single sparse entry.
+
+Use `MixedChain` and `MixedU` for underlying and total chains, and `mixDelta[r]` for the raw operator of degree $2r-1$. On total chains `mixD` computes $D=\sum_{r\ge0}u^r\delta_r$. The existing page and bar operations use this full differential, and `mixhom` uses the corresponding signed total Hom differential. The individual mixed operators `mixb` and `mixB`, strict mixed tensor, and strict mixed minimal-model declarations require a complex with no higher components.
+
+`mixcone K(f);` takes a closed degree-zero total chain $f$ in a declared Hom complex from $C$ to $E$. Its cone has underlying generators from $E$ followed by the degree-one suspension of those from $C$. It has differential
+$D(y,sx)=(D_Ey+f(x),-sD_Cx)$.
+The maps `mixConeI[K]`, `mixConeLift[K]` and `mixConeP[K]` send $y$ to $(y,0)$, $x$ to $(0,sx)$ and $(y,sx)$ to $x$, respectively. Projection lowers degree by one and anticommutes with $D$. For $g=f+D_Hh$ with $|h|=1$, `mixConeShear[L](h,z)` gives the isomorphism from the cone of $f$ into the cone $L$ of $g$ by $(y,sx)\mapsto(y-h(x),sx)$.
+
+The cone of $x\mapsto u^{1000000000}y$ on two generators verifies a nonzero $d_{1000000000}$ and gives the torsion bar $(2000000000,1000000000)$ over $\mathbb F_3$. The zero map gives two free bars in degrees $1$ and $2000000000$. A second test uses a three-term coherent map whose cone has $\delta_1^2\ne0$, with its contribution to $D^2$ canceled by $\delta_0\delta_2$. [Two-generator cone example](examples/mixed-cone.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

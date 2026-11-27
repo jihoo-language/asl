@@ -46,6 +46,18 @@ impl Hom {
             }
         }
         let mut cells = 6 * dimension;
+        if !domain.is_strict() || !range.is_strict() {
+            let columns = hom.matrices(
+                model,
+                &domain,
+                &range,
+                Differential::Total,
+                &degrees,
+                &mut cells,
+            )?;
+            let complex = Complex::from_total(model, hom.prime, degrees, columns)?;
+            return Ok((hom, complex));
+        }
         let down = hom.matrices(
             model,
             &domain,
@@ -81,21 +93,39 @@ impl Hom {
         let mut source_rows = vec![Vec::new(); self.columns];
         let mut row_cells = self.columns;
         for x in 0..self.columns {
-            let column = source.column(operation, x);
+            let column = source.operator_column(model, operation, x)?;
             model.spend(1 + column.len())?;
             row_cells += 2 * column.len();
             check_storage(*cells + row_cells)?;
-            for &(z, coefficient) in column {
+            for &(z, coefficient) in column.iter() {
                 source_rows[z].push((x, coefficient));
             }
         }
+        let mut target_cells = 0;
+        let target_columns = if matches!(operation, Differential::Total) {
+            target_cells = 3 * self.rows;
+            check_storage(*cells + row_cells + target_cells)?;
+            let mut target_columns = Vec::with_capacity(self.rows);
+            for y in 0..self.rows {
+                let column = target.total_column(model, y)?;
+                target_cells += 2 * column.len();
+                check_storage(*cells + row_cells + target_cells)?;
+                target_columns.push(column);
+            }
+            Some(target_columns)
+        } else {
+            None
+        };
         let mut columns = Vec::with_capacity(degrees.len());
         for (x, row) in source_rows.iter().enumerate() {
             for y in 0..self.rows {
-                let target_column = target.column(operation, y);
+                let target_column = match &target_columns {
+                    Some(target_columns) => &target_columns[y],
+                    None => target.column(operation, y),
+                };
                 let count = row.len() + target_column.len();
                 *cells += 2 * count;
-                check_storage(*cells + row_cells)?;
+                check_storage(*cells + row_cells + target_cells)?;
                 model.spend(1 + count * (1 + count.max(1).ilog2() as usize))?;
                 let mut column = Vec::with_capacity(count);
                 column.extend(
@@ -125,7 +155,7 @@ impl Hom {
         source * self.rows + target
     }
 
-    fn split(&self, index: usize) -> (usize, usize) {
+    pub(crate) fn split(&self, index: usize) -> (usize, usize) {
         (index / self.rows, index % self.rows)
     }
 

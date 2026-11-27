@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -10,6 +11,7 @@ use crate::syntax::Label;
 
 pub(crate) type Terms = Vec<(Label, i64)>;
 pub(crate) type Rules = Vec<(Label, Terms)>;
+pub(crate) type HigherRules = Vec<(Label, Vec<(usize, Label, i64)>)>;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) struct Id(pub(crate) usize);
@@ -52,6 +54,7 @@ pub(crate) struct Complex {
     indices: HashMap<String, usize>,
     down: Vec<Vec<Coordinate>>,
     up: Vec<Vec<Coordinate>>,
+    higher: Option<Vec<Vec<Coordinate>>>,
 }
 
 impl Complex {
@@ -62,6 +65,13 @@ impl Complex {
         down: Rules,
         up: Rules,
     ) -> Result<Self> {
+        let mut complex = Self::declared(model, field, generators)?;
+        complex.down = complex.columns(model, down, Differential::Down)?;
+        complex.up = complex.columns(model, up, Differential::Up)?;
+        complex.finish(model)
+    }
+
+    fn declared(model: &mut Model, field: usize, generators: Vec<(Label, i64)>) -> Result<Self> {
         let prime = match field {
             2 => Prime::validated(2),
             3.. if field % 2 == 1 => Prime::new(model, field)?,
@@ -74,6 +84,7 @@ impl Complex {
             indices: HashMap::new(),
             down: Vec::new(),
             up: Vec::new(),
+            higher: None,
         };
         for (name, degree) in generators {
             model.spend(1 + name.text.len())?;
@@ -84,9 +95,101 @@ impl Complex {
             complex.names.push(name.text);
             complex.degrees.push(degree);
         }
-        complex.down = complex.columns(model, down, Differential::Down)?;
-        complex.up = complex.columns(model, up, Differential::Up)?;
-        complex.finish(model)
+        Ok(complex)
+    }
+
+    pub(crate) fn build_higher(
+        model: &mut Model,
+        field: usize,
+        generators: Vec<(Label, i64)>,
+        rules: HigherRules,
+    ) -> Result<Self> {
+        let complex = Self::declared(model, field, generators)?;
+        model.spend(complex.len())?;
+        let mut columns = vec![None; complex.len()];
+        for (source, entries) in rules {
+            let index = complex.index(&source)?;
+            if columns[index].is_some() {
+                return Err(Error::new(
+                    source.span,
+                    "duplicate higher mixed differential column",
+                ));
+            }
+            let mut column = BTreeMap::new();
+            for (power, target, coefficient) in entries {
+                model.spend(1 + target.text.len())?;
+                let i = complex.index(&target)?;
+                if complex.delay(index, i) != 2 * power as i128 {
+                    return Err(Error::new(
+                        target.span,
+                        "higher mixed term has the wrong homological degree for its power",
+                    ));
+                }
+                let coefficient =
+                    i128::from(coefficient).rem_euclid(i128::from(complex.prime.get())) as u32;
+                let current = column.entry(i).or_insert(0);
+                *current = complex.prime.add(*current, coefficient);
+            }
+            columns[index] = Some(column.into_iter().filter(|&(_, c)| c != 0).collect());
+        }
+        complex.finish_total(
+            model,
+            columns.into_iter().map(Option::unwrap_or_default).collect(),
+        )
+    }
+
+    pub(crate) fn from_total(
+        model: &mut Model,
+        prime: Prime,
+        degrees: Vec<i64>,
+        columns: Vec<Vec<Coordinate>>,
+    ) -> Result<Self> {
+        Self::numbered(model, prime, degrees)?.finish_total(model, columns)
+    }
+
+    fn finish_total(mut self, model: &mut Model, columns: Vec<Vec<Coordinate>>) -> Result<Self> {
+        if columns.len() != self.len() {
+            return Err(Error::plain(
+                "higher mixed differential has the wrong number of columns",
+            ));
+        }
+        let mut extras = Vec::with_capacity(self.len());
+        let mut found = false;
+        for (source, column) in columns.into_iter().enumerate() {
+            model.spend(1 + column.len())?;
+            let mut down = Vec::new();
+            let mut up = Vec::new();
+            let mut higher = Vec::new();
+            for term in column {
+                if term.0 >= self.len() {
+                    return Err(Error::plain(
+                        "higher mixed differential target is out of range",
+                    ));
+                }
+                match self.delay(source, term.0) {
+                    0 => down.push(term),
+                    2 => up.push(term),
+                    delay if delay > 2 && delay % 2 == 0 => higher.push(term),
+                    _ => {
+                        return Err(Error::plain(
+                            "higher mixed differential has a negative or nonintegral power of u",
+                        ))
+                    }
+                }
+            }
+            found |= !higher.is_empty();
+            self.down.push(down);
+            self.up.push(up);
+            extras.push(higher);
+        }
+        if found {
+            self.higher = Some(extras);
+        }
+        self.finish(model)
+    }
+
+    fn delay(&self, source: usize, target: usize) -> i128 {
+        i128::from(self.degrees[target]) - i128::from(self.degrees[source]) + 1
     }
 
     pub(crate) fn from_columns(
@@ -101,14 +204,6 @@ impl Complex {
                 "imported mixed differential has the wrong number of columns",
             ));
         }
-        let mut names = Vec::with_capacity(degrees.len());
-        let mut indices = HashMap::with_capacity(degrees.len());
-        for index in 0..degrees.len() {
-            let name = format!("w{index}");
-            model.spend(1 + name.len())?;
-            indices.insert(name.clone(), index);
-            names.push(name);
-        }
         for (columns, op) in [(&down, Differential::Down), (&up, Differential::Up)] {
             for (source, column) in columns.iter().enumerate() {
                 let expected = i128::from(degrees[source]) + op.degree();
@@ -122,15 +217,30 @@ impl Complex {
                 }
             }
         }
-        Self {
+        let mut complex = Self::numbered(model, prime, degrees)?;
+        complex.down = down;
+        complex.up = up;
+        complex.finish(model)
+    }
+
+    fn numbered(model: &mut Model, prime: Prime, degrees: Vec<i64>) -> Result<Self> {
+        let mut names = Vec::with_capacity(degrees.len());
+        let mut indices = HashMap::with_capacity(degrees.len());
+        for index in 0..degrees.len() {
+            let name = format!("w{index}");
+            model.spend(1 + name.len())?;
+            indices.insert(name.clone(), index);
+            names.push(name);
+        }
+        Ok(Self {
             prime,
             names,
             degrees,
             indices,
-            down,
-            up,
-        }
-        .finish(model)
+            down: Vec::new(),
+            up: Vec::new(),
+            higher: None,
+        })
     }
 
     fn finish(self, model: &mut Model) -> Result<Self> {
@@ -143,7 +253,10 @@ impl Complex {
                     .chain(&self.up)
                     .map(|column| 2 * column.len())
                     .sum::<usize>()
-                + 2 * self.names.iter().map(String::len).sum::<usize>(),
+                + 2 * self.names.iter().map(String::len).sum::<usize>()
+                + self.higher.as_ref().map_or(0, |higher| {
+                    3 * higher.len() + higher.iter().map(|col| 2 * col.len()).sum::<usize>()
+                }),
         )?;
         Ok(self)
     }
@@ -158,6 +271,55 @@ impl Complex {
             Differential::Up => &self.up[index],
             Differential::Total => unreachable!(),
         }
+    }
+
+    pub(crate) fn is_strict(&self) -> bool {
+        self.higher.is_none()
+    }
+
+    pub(crate) fn total_column(&self, model: &mut Model, index: usize) -> Result<Vec<Coordinate>> {
+        self.apply(model, Differential::Total, &[(index, 1)])
+    }
+
+    pub(crate) fn operator_column(
+        &self,
+        model: &mut Model,
+        op: Differential,
+        index: usize,
+    ) -> Result<Cow<'_, [Coordinate]>> {
+        if matches!(op, Differential::Total) {
+            Ok(Cow::Owned(self.total_column(model, index)?))
+        } else {
+            Ok(Cow::Borrowed(self.column(op, index)))
+        }
+    }
+
+    pub(crate) fn delta(
+        &self,
+        model: &mut Model,
+        power: usize,
+        input: &[Coordinate],
+    ) -> Result<Vec<Coordinate>> {
+        match power {
+            0 => return self.apply(model, Differential::Down, input),
+            1 => return self.apply(model, Differential::Up, input),
+            _ => {}
+        }
+        let Some(columns) = &self.higher else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        for &(i, coefficient) in input {
+            let column = &columns[i];
+            model.spend(1 + column.len())?;
+            let component: Vec<_> = column
+                .iter()
+                .copied()
+                .filter(|&(j, _)| self.delay(i, j) == 2 * power as i128)
+                .collect();
+            result = add_scaled(model, self.prime, &result, &component, coefficient)?;
+        }
+        Ok(result)
     }
 
     pub(crate) fn raw_degree(&self, index: usize) -> i64 {
@@ -227,6 +389,20 @@ impl Complex {
     }
 
     fn validate(&self, model: &mut Model) -> Result<()> {
+        if !self.is_strict() {
+            // For fixed source and target, homogeneity forces a unique
+            // power of u in D², so specializing u=1 tests every coefficient.
+            for i in 0..self.len() {
+                let image = self.total_column(model, i)?;
+                if !self.apply(model, Differential::Total, &image)?.is_empty() {
+                    return Err(Error::plain(format!(
+                        "higher mixed D squared is nonzero on '{}'",
+                        self.names[i]
+                    )));
+                }
+            }
+            return Ok(());
+        }
         for i in 0..self.len() {
             let down_down = self.apply(model, Differential::Down, &self.down[i])?;
             if !down_down.is_empty() {
@@ -268,6 +444,9 @@ impl Complex {
             }
             if !matches!(op, Differential::Down) {
                 result = add_scaled(model, self.prime, &result, &self.up[index], coefficient)?;
+            }
+            if let (Differential::Total, Some(higher)) = (op, &self.higher) {
+                result = add_scaled(model, self.prime, &result, &higher[index], coefficient)?;
             }
         }
         Ok(result)

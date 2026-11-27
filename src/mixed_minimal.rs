@@ -51,6 +51,10 @@ pub(crate) struct Minimal {
 impl Minimal {
     pub(crate) fn build(model: &mut Model, source: mixed::Id) -> Result<Self> {
         let complex = model.mixed_complex(source);
+        if !complex.is_strict() {
+            return Err(Error::plain("mixminimal requires a strict mixed complex"));
+        }
+
         let prime = complex.prime;
         let mut boundary_lifts = Basis::default();
         let mut boundaries = Basis::default();

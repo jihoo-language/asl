@@ -608,6 +608,8 @@ pub(crate) enum ExprForm {
     MixedLiteral(Label, i64, crate::mixed::Terms),
     MixedUnit(Label, Label, Label),
     MixedIdentity(Label),
+    MixedConeMap(Label, crate::mixed_cone::Operation, Box<ParsedExpr>),
+    MixedConeShear(Label, Box<ParsedExpr>, Box<ParsedExpr>),
     MixedTensorProduct(Label, Box<ParsedExpr>, Box<ParsedExpr>),
     MixedTensorSwap(Label, Box<ParsedExpr>),
     MixedTensorCertificate(Label, usize, usize, crate::mixed_tensor::Certificate),
@@ -856,6 +858,8 @@ pub(crate) enum StatementForm {
     MixedBars(Label),
     MixedBarRank(Label, i64, Option<i64>),
     MixedPeriodicRank(Label, i64),
+    MixedHigher(Label, usize, Vec<(Label, i64)>, crate::mixed::HigherRules),
+    MixedCone(Label, ParsedExpr),
     MixedTensor(Label, Label, Label),
     MixedHom(Label, Label, Label),
     MixedMinimal(Label, Label),
@@ -1570,6 +1574,37 @@ impl<'src> Parser<'src> {
         Ok(rules)
     }
 
+    fn mixed_higher_rules(&mut self) -> Result<crate::mixed::HigherRules> {
+        self.expect(Token::LBrace)?;
+        let mut rules = Vec::new();
+        while self.token() != Token::RBrace {
+            let generator = self.label()?;
+            self.expect(Token::FatArrow)?;
+            self.expect(Token::LBracket)?;
+            let mut terms = Vec::new();
+            while self.token() != Token::RBracket {
+                self.expect(Token::LParen)?;
+                let power = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::Comma)?;
+                let coefficient = self.signed_number("higher mixed coefficient")?;
+                self.expect(Token::RParen)?;
+                terms.push((power, target, coefficient));
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            rules.push((generator, terms));
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rules)
+    }
+
     fn mixed_spec(&mut self) -> Result<MixedSpec> {
         let complex = self.label()?;
         self.expect(Token::Comma)?;
@@ -1652,6 +1687,12 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvHHMixed(name, ideal, weight)
             }
+            Token::Word("mixcone") => {
+                self.advance()?;
+                let name = self.label()?;
+                let map = self.paren_expr(0)?;
+                StatementForm::MixedCone(name, map)
+            }
             Token::Word("mixtensor") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -1689,7 +1730,7 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::MixedMinDimension(name, b)
             }
-            Token::Word("mixedcomplex") => {
+            Token::Word(command @ ("mixedcomplex" | "mixedhigher")) => {
                 self.advance()?;
                 let complex = self.label()?;
                 self.expect(Token::LBracket)?;
@@ -1706,9 +1747,14 @@ impl<'src> Parser<'src> {
                     }
                 }
                 self.expect(Token::RBrace)?;
-                let b = self.mixed_rules()?;
-                let big_b = self.mixed_rules()?;
-                StatementForm::MixedComplex(complex, prime, generators, b, big_b)
+                if command == "mixedhigher" {
+                    let rules = self.mixed_higher_rules()?;
+                    StatementForm::MixedHigher(complex, prime, generators, rules)
+                } else {
+                    let b = self.mixed_rules()?;
+                    let big_b = self.mixed_rules()?;
+                    StatementForm::MixedComplex(complex, prime, generators, b, big_b)
+                }
             }
             Token::Word("mixbars") => {
                 self.advance()?;
@@ -4371,6 +4417,40 @@ impl<'src> Parser<'src> {
                         ExprForm::MixedTensorProduct(complex, Box::new(left), Box::new(right))
                     };
                     return expr(span, form, depth);
+                }
+                if matches!(name.text.as_str(), "mixConeI" | "mixConeLift" | "mixConeP")
+                    && self.eat(Token::LBracket)?
+                {
+                    use crate::mixed_cone::Operation;
+                    let operation = match name.text.as_str() {
+                        "mixConeI" => Operation::Include,
+                        "mixConeLift" => Operation::Lift,
+                        _ => Operation::Project,
+                    };
+                    let cone = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::MixedConeMap(cone, operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "mixConeShear" && self.eat(Token::LBracket)? {
+                    let cone = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LParen)?;
+                    let homotopy = self.expr(nest + 1)?;
+                    self.expect(Token::Comma)?;
+                    let input = self.expr(nest + 1)?;
+                    self.expect(Token::RParen)?;
+                    let depth = 1 + homotopy.depth.max(input.depth);
+                    return expr(
+                        span,
+                        ExprForm::MixedConeShear(cone, Box::new(homotopy), Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "mixSwap" && self.eat(Token::LBracket)? {
                     let target = self.label()?;

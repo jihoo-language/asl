@@ -25,6 +25,12 @@ impl Tensor {
     pub(crate) fn build(model: &mut Model, left: Id, right: Id) -> Result<(Self, Complex)> {
         let a = model.mixed_complex(left);
         let b = model.mixed_complex(right);
+        if !a.is_strict() || !b.is_strict() {
+            return Err(Error::plain(
+                "mixtensor requires two strict mixed complexes",
+            ));
+        }
+
         if a.prime != b.prime {
             return Err(Error::plain(
                 "mixtensor factors must have the same prime field",
