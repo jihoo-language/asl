@@ -870,6 +870,8 @@ enum TypedForm {
     HeckeEigenCoefficient(Rc<eigenpacket::Packet>, hecke::Operator),
     HeckeEigenMultiply(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
     HeckeEigenNegate(Box<TypedExpr>),
+    HeckeSymbolCoefficient(usize, Box<TypedExpr>),
+    HeckeSymbolNegate(Box<TypedExpr>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -8724,6 +8726,9 @@ impl Engine {
                     (BinaryOp::Add, Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::HeckeEigen(a), Value::HeckeEigen(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -10835,6 +10840,18 @@ impl Engine {
                     unreachable!()
                 };
                 packet.multiply(&mut self.model, &a, &b)
+            }
+            TypedForm::HeckeSymbolCoefficient(index, input) => {
+                let Value::HeckeSymbol(symbol) = self.eval(input)? else {
+                    unreachable!()
+                };
+                symbol.coefficient(&mut self.model, *index)
+            }
+            TypedForm::HeckeSymbolNegate(input) => {
+                let Value::HeckeSymbol(symbol) = self.eval(input)? else {
+                    unreachable!()
+                };
+                symbol.negate(&mut self.model)?.persist(&mut self.model)
             }
             TypedForm::HeckeEigenNegate(input) => {
                 let Value::HeckeEigen(element) = self.eval(input)? else {
@@ -13358,6 +13375,7 @@ impl Checker<'_> {
             TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::HeckeSymbol(name) => self.model.hecke_symbol_type(&name),
             TypeForm::PeriodPolynomial(grade) => self.model.period_type(grade),
             TypeForm::HeckeEigen(name) => self.model.hecke_eigen_type(&name),
             TypeForm::ModularHecke(weight) => self.model.modular_hecke_type(weight),
@@ -14421,6 +14439,10 @@ impl Checker<'_> {
                     Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::HeckeSymbol(name) => {
+                        let period = self.model.hecke_eigenperiod(&Label { text: name.to_string(), span })?;
+                        period::modular_symbol::Symbol::zero(&period).persist(self.model)?
+                    }
                     Kind::PeriodPolynomial(grade) => period::Polynomial::zero(*grade).persist(self.model)?,
                     Kind::HeckeEigen(ref name) => {
                         let packet = self.model.hecke_eigenpacket(&Label {
@@ -16757,6 +16779,7 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
                 let eigenperiod = self.model.hecke_eigenperiod(&name)?;
@@ -17570,6 +17593,9 @@ impl Checker<'_> {
                             Box::new(input),
                         ),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::HeckeSymbol(..)) {
+                    return Ok((input.ty, TypedForm::HeckeSymbolNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::HeckeEigen(..)) {
                     return Ok((input.ty, TypedForm::HeckeEigenNegate(Box::new(input))));
@@ -21377,6 +21403,7 @@ impl Checker<'_> {
                         | Kind::SiegelWeight
                         | Kind::ModularHecke(..)
                         | Kind::HeckeEigen(..)
+                        | Kind::HeckeSymbol(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
@@ -24803,6 +24830,47 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn hecke_symbol_expression(
+        &mut self,
+        expression: period::modular_symbol::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use period::modular_symbol::{self, Expression};
+        match expression {
+            Expression::Symbol(name, endpoints) => {
+                let period = self.model.hecke_eigenperiod(&name)?;
+                let ty = self.model.hecke_symbol_type(&name)?;
+                let value = modular_symbol::Symbol::new(self.model, &period, endpoints)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Coefficient(index, input) => {
+                let input = self.expr(*input)?;
+                let Kind::HeckeSymbol(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvHeckeSymbolCoeff",
+                        "an RVHeckeSymbol(P) element",
+                    ));
+                };
+                let period = self.model.hecke_eigenperiod(&Label {
+                    text: name.to_string(),
+                    span: input.span,
+                })?;
+                let ty = self.model.hecke_eigen_type(&period.source)?;
+                Ok((
+                    ty,
+                    TypedForm::HeckeSymbolCoefficient(index, Box::new(input)),
+                ))
+            }
+            Expression::Twist(name, discriminant, s, t) => {
+                let period = self.model.hecke_eigenperiod(&name)?;
+                let ty = self.model.hecke_eigen_type(&period.source)?;
+                let value = modular_symbol::twist_ratio(self.model, &period, discriminant, s, t)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+        }
     }
 
     fn period_expression(&mut self, expression: period::Expression) -> Result<(TypeId, TypedForm)> {

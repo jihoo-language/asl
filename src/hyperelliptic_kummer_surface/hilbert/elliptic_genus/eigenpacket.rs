@@ -362,6 +362,42 @@ impl Element {
         Self::new(model, numerator, denominator)
     }
 
+    pub(super) fn scale(
+        &self,
+        model: &mut Model,
+        numerator: Integer,
+        denominator: Magnitude,
+    ) -> Result<Self> {
+        if numerator.is_zero() || self.is_zero() {
+            return Ok(Self::zero(self.numerator.len()));
+        }
+        let one = Magnitude::from_small(1);
+        if denominator == one && numerator.magnitude == one {
+            if numerator.negative {
+                return self.negate(model);
+            }
+            model.spend(1)?;
+            return Ok(self.clone());
+        }
+        let common = positive(numerator.magnitude.gcd(model, self.denominator)?);
+        let numerator = quotient(model, numerator, common)?;
+        let left_denominator = quotient(model, positive(self.denominator), common)?;
+
+        let mut common = denominator;
+        for coefficient in &self.numerator {
+            common = common.gcd(model, coefficient.magnitude)?;
+        }
+        let common = positive(common);
+        let mut coefficients = Vec::with_capacity(self.numerator.len());
+        for &coefficient in &self.numerator {
+            let reduced = quotient(model, coefficient, common)?;
+            coefficients.push(product(model, reduced, numerator)?);
+        }
+        let right_denominator = quotient(model, positive(denominator), common)?;
+        let denominator = product(model, left_denominator, right_denominator)?;
+        Self::new(model, coefficients, denominator.magnitude)
+    }
+
     pub(crate) fn negate(&self, model: &mut Model) -> Result<Self> {
         model.spend(self.numerator.len() * INTEGER_WORDS)?;
         Ok(Self {

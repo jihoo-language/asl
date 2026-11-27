@@ -685,3 +685,193 @@ fn eigenperiod_rejects_invalid_charts_coefficients_and_ratios() {
         assert!(error.contains(expected), "{source}: {error}");
     }
 }
+
+#[test]
+fn modular_symbols_are_typed_oriented_additive_and_normalize_cusps() {
+    let mut source = String::from(
+        "rvheckepacket D(rvHeckeT[12,2]);
+         rvheckeeigenperiod P[D,plus,2];
+         let base = rvHeckeSymbol[P,0,1,1,0];
+         let a = rvHeckeSymbol[P,-3,7,2,5];
+         let b = rvHeckeSymbol[P,2,5,1,0];
+         assert rvHeckeSymbol[P,1,0,0,1] == neg(base);
+         assert add(a,b) == rvHeckeSymbol[P,-3,7,1,0];
+         assert add(a,neg(a)) == zero[RVHeckeSymbol(P)];
+         assert rvHeckeSymbol[P,3,-7,4,10] == a;
+         assert rvHeckeSymbol[P,-2,-3,1,0] == rvHeckeSymbol[P,2,3,-1,0];
+         assert rvHeckeSymbol[P,-3,7,6,-14] == zero[RVHeckeSymbol(P)];
+         assert rvHeckeSymbolCoeff[11](base) == rvHeckeEigenScalar[D,0,1];",
+    );
+    for j in 0..=10 {
+        writeln!(
+            source,
+            "assert rvHeckeSymbolCoeff[{j}](base) == rvHeckePeriodCoeff[P,{j}];",
+        )
+        .unwrap();
+    }
+    assert_eq!(stdout(interpret(&source)), "");
+}
+
+fn clear_rational_rows(rows: &[(Vec<i128>, i128)]) -> (Vec<i128>, i128) {
+    let d = rows.iter().fold(1, |a, &(_, b)| a / gcd(a, b) * b);
+    let terms = rows
+        .iter()
+        .map(|(v, b)| {
+            assert_eq!(v.len(), 1);
+            v[0] * (d / b)
+        })
+        .collect();
+    (terms, d)
+}
+
+#[test]
+fn farey_continuation_is_equivariant_for_an_independently_expanded_sl2_matrix() {
+    for (sign, pivot) in [("plus", 2), ("minus", 1)] {
+        let mut source = format!(
+            "rvheckepacket D(rvHeckeT[12,2]);
+             rvheckeeigenperiod P[D,{sign},{pivot}];
+             let a = rvHeckeSymbol[P,-3,7,2,5];
+             let b = rvHeckeSymbol[P,1,4,9,7];
+             let edge = rvHeckeSymbol[P,1,1,2,1];",
+        );
+        for symbol in ["a", "b", "edge"] {
+            for j in 0..=10 {
+                writeln!(source, "show rvHeckeSymbolCoeff[{j}]({symbol});").unwrap();
+            }
+        }
+        for j in 0..=10 {
+            writeln!(source, "show rvHeckePeriodCoeff[P,{j}];").unwrap();
+        }
+        let report = stdout(interpret(&source));
+        let rows: Vec<_> = report.lines().map(field_coordinates).collect();
+        assert_eq!(rows.len(), 44);
+        // gamma=(2 1;1 1) sends (-3/7,2/5) to (1/4,9/7),
+        // and (0,infinity) to (1,2).
+        for (from, to) in [(0, 11), (33, 22)] {
+            let (a, denominator) = clear_rational_rows(&rows[from..from + 11]);
+            let expected = direct_substitution(&a, [1, -1, -1, 2]);
+            for (&value, (n, d)) in expected.iter().zip(&rows[to..to + 11]) {
+                assert_eq!(n[0] * denominator, value * d, "sign {sign}");
+            }
+        }
+    }
+}
+
+#[test]
+fn delta_twist_ratios_include_odd_even_dyadic_and_trivial_characters() {
+    let mut source = String::from(
+        "rvheckepacket D(rvHeckeT[12,2]);
+         rvheckeeigenperiod P[D,plus,2]; rvheckeeigenperiod Q[D,minus,1];",
+    );
+    for (p, disc, s, t, num, den) in [
+        ("P", 5, 3, 3, 186624, 5),
+        ("P", 5, 1, 3, -52254720, 1),
+        ("Q", -3, 3, 2, 2800, 3),
+        ("P", -4, 2, 3, -194400, 1),
+        ("P", -4, 6, 3, 0, 1),
+        ("P", 1, 1, 3, -1620, 691),
+        ("P", 8, 3, 3, 758160, 1),
+        ("Q", -8, 3, 2, 533925, 1),
+        ("P", 12, 3, 3, 10730880, 1),
+        ("P", -7, 2, 3, -154275840, 7),
+        ("Q", 1, 6, 4, -4, 5),
+    ] {
+        writeln!(
+            source,
+            "assert rvHeckeTwistRatio[{p},{disc},{s},{t}] == rvHeckeEigenScalar[D,{num},{den}];"
+        )
+        .unwrap();
+    }
+    source.push_str(
+        "assert rvHeckeTwistRatio[P,5,3,3] ==
+            rvHeckeEigenMul(rvHeckeEigenScalar[D,-15625,1],rvHeckeTwistRatio[P,5,9,3]);
+         assert rvHeckeTwistRatio[Q,-3,3,2] ==
+            rvHeckeEigenMul(rvHeckeEigenScalar[D,729,1],rvHeckeTwistRatio[Q,-3,9,2]);
+         assert rvHeckeTwistRatio[P,1,1,3] == neg(rvHeckeCriticalRatio[P,1,3]);",
+    );
+    assert_eq!(stdout(interpret(&source)), "");
+}
+
+#[test]
+fn quadratic_twist_ratios_preserve_field_and_period_normalization() {
+    let report = stdout(interpret(
+        "let a = rvHeckeT[24,2];
+         rvheckepacket E(a);
+         rvheckepacket F(add(rvHeckeScale[5](a),rvHeckeScale[7](rvHeckeUnit[24])));
+         rvheckeeigenperiod P[E,plus,2]; rvheckeeigenperiod Q[E,plus,4];
+         rvheckeeigenperiod R[F,plus,2];
+         assert rvHeckeTwistRatio[P,5,3,3] == rvHeckeTwistRatio[Q,5,3,3];
+         assert rvHeckeTwistRatio[P,-4,12,3] == rvHeckeEigenScalar[E,0,1];
+         show rvHeckeTwistRatio[P,5,3,3];
+         show rvHeckeTwistRatio[R,5,3,3];",
+    ));
+    let rows: Vec<_> = report.lines().map(field_coordinates).collect();
+    assert_eq!(rows.len(), 2);
+    let ((a, a_d), (b, b_d)) = (&rows[0], &rows[1]);
+    assert_ne!(a[1], 0);
+    assert_eq!(a[0] * b_d, (b[0] + 7 * b[1]) * a_d);
+    assert_eq!(a[1] * b_d, 5 * b[1] * a_d);
+
+    let demo = stdout(example("hecke-twisted-modular-symbols"));
+    let lines: Vec<_> = demo.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "RVHeckeEigen(Delta){[36]/691}",
+            "RVHeckeEigen(Delta){[186624]/5}",
+            "RVHeckeEigen(Delta){[2800]/3}",
+            "RVHeckeEigen(Delta){[0]/1}",
+            "RVHeckeEigen(E){[42648401680128, -40258992]/5}",
+            "RVHeckeEigen(E){[27104237664, -19334]/135}",
+        ]
+    );
+    assert_eq!(field_coordinates(lines[4]), rows[0]);
+}
+
+#[test]
+fn modular_symbols_and_twists_reject_invalid_endpoints_parities_and_nonprimitive_characters() {
+    let header = "rvheckepacket D(rvHeckeT[12,2]); rvheckeeigenperiod P[D,plus,2]; rvheckeeigenperiod Q[D,minus,1];";
+    for (suffix, expected) in [
+        ("show rvHeckeSymbol[P,0,0,1,0];", "cusp cannot be 0/0"),
+        (
+            "show rvHeckeSymbolCoeff[0](One.pt);",
+            "an RVHeckeSymbol(P) element",
+        ),
+        (
+            "show add(zero[RVHeckeSymbol(P)],zero[RVHeckeSymbol(Q)]);",
+            "RVHeckeSymbol(P)",
+        ),
+        (
+            "show rvHeckeTwistRatio[P,0,3,3];",
+            "fundamental discriminant",
+        ),
+        (
+            "show rvHeckeTwistRatio[P,9,3,3];",
+            "fundamental discriminant",
+        ),
+        (
+            "show rvHeckeTwistRatio[P,20,3,3];",
+            "fundamental discriminant",
+        ),
+        (
+            "show rvHeckeTwistRatio[P,-3,3,3];",
+            "must match the eigenperiod sign",
+        ),
+        ("show rvHeckeTwistRatio[P,5,0,3];", "between 1 and k−1"),
+        (
+            "show rvHeckeTwistRatio[P,34028236692093846346337460743176821145,3,3];",
+            "conductor exceeds",
+        ),
+    ] {
+        let result = diagnostic(interpret(&format!("{header} {suffix}")));
+        assert!(result.contains(expected), "{suffix}: {result}");
+    }
+    let result = diagnostic(interpret(
+        "rvheckepacket E(rvHeckeT[18,2]); rvheckeeigenperiod P[E,plus,2];
+         show rvHeckeTwistRatio[P,1,1,9];",
+    ));
+    assert!(
+        result.contains("denominator critical L-value vanishes"),
+        "{result}"
+    );
+}

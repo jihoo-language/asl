@@ -159,6 +159,7 @@ pub(crate) enum TypeForm {
     SiegelWeight,
     ModularHecke(u128),
     HeckeEigen(Label),
+    HeckeSymbol(Label),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1060,6 +1061,7 @@ pub(crate) enum ExprForm {
     HeckeResidual(residual_hecke::Expression),
     PeriodPolynomial(period::Expression),
     HeckeEigenperiod(period::eigenperiod::Expression),
+    HeckeSymbol(period::modular_symbol::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -4979,6 +4981,46 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::HeckeEigenperiod(
             period::eigenperiod::Declare(name, source, sign, pivot),
         ))
+    }
+
+    fn hecke_symbol_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use period::modular_symbol::Expression;
+        self.expect(Token::LBracket)?;
+        let (operation, depth) = if name == "rvHeckeSymbolCoeff" {
+            let (index, _) = self.number()?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Coefficient(index, Box::new(input)), depth)
+        } else {
+            let period = self.label()?;
+            let operation = if name == "rvHeckeSymbol" {
+                let mut cusps = [0; 4];
+                for coordinate in &mut cusps {
+                    self.expect(Token::Comma)?;
+                    *coordinate =
+                        self.signed_wide("a signed cusp coordinate", "cusp coordinate")?;
+                }
+                Expression::Symbol(period, cusps)
+            } else {
+                self.expect(Token::Comma)?;
+                let discriminant =
+                    self.signed_wide("a signed quadratic discriminant", "quadratic discriminant")?;
+                self.expect(Token::Comma)?;
+                let (s, _) = self.number()?;
+                self.expect(Token::Comma)?;
+                let (t, _) = self.number()?;
+                Expression::Twist(period, discriminant, s, t)
+            };
+            self.expect(Token::RBracket)?;
+            (operation, 0)
+        };
+        expr(span, ExprForm::HeckeSymbol(operation), depth)
     }
 
     fn hecke_eigenperiod_expression(&mut self, name: &str, span: Span) -> Result<ParsedExpr> {
@@ -11878,6 +11920,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::PeriodPolynomial(grade), 0);
         }
+        if name.text == "RVHeckeSymbol" && self.eat(Token::LParen)? {
+            let period = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HeckeSymbol(period), 0);
+        }
         if name.text == "RVHeckeEigen" && self.eat(Token::LParen)? {
             let packet = self.label()?;
             self.expect(Token::RParen)?;
@@ -14385,6 +14432,13 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvHeckeSymbol" | "rvHeckeSymbolCoeff" | "rvHeckeTwistRatio"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.hecke_symbol_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

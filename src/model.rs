@@ -296,6 +296,7 @@ pub(crate) enum Kind {
     SiegelWeight,
     ModularHecke(u128),
     HeckeEigen(Box<str>),
+    HeckeSymbol(Box<str>),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -494,6 +495,7 @@ pub(crate) enum Value {
     SiegelWeight(crate::siegel::Weight),
     ModularHecke(Rc<hecke::Operator>),
     HeckeEigen(Rc<eigenpacket::Element>),
+    HeckeSymbol(Rc<period::modular_symbol::Symbol>),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -1145,6 +1147,7 @@ impl Model {
             | Kind::SiegelWeight
             | Kind::ModularHecke(..)
             | Kind::HeckeEigen(..)
+            | Kind::HeckeSymbol(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade) | Kind::HilbertCohomology(ref grade) => {
                 if grade.supports_states() {
@@ -1410,6 +1413,7 @@ impl Model {
                 | Kind::SiegelWeight
                 | Kind::ModularHecke(..)
                 | Kind::HeckeEigen(..)
+                | Kind::HeckeSymbol(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -4903,6 +4907,11 @@ impl Model {
             })
     }
 
+    pub(crate) fn hecke_symbol_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.hecke_eigenperiod(name)?;
+        self.inhabited_type(Kind::HeckeSymbol(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn period_type(&mut self, grade: period::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::PeriodPolynomial(grade), 0)
     }
@@ -6215,6 +6224,7 @@ impl Model {
             | Kind::SiegelWeight
             | Kind::ModularHecke(..)
             | Kind::HeckeEigen(..)
+            | Kind::HeckeSymbol(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -6755,6 +6765,7 @@ impl Model {
             Kind::SiegelWeight => out.push("RVSiegelWeight"),
             Kind::ModularHecke(weight) => out.push(&format!("RVHecke({weight})")),
             Kind::HeckeEigen(name) => out.push(&format!("RVHeckeEigen({name})")),
+            Kind::HeckeSymbol(name) => out.push(&format!("RVHeckeSymbol({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
             }
@@ -7093,6 +7104,7 @@ impl Model {
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a == b),
             (Value::ModularHecke(a), Value::ModularHecke(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7451,6 +7463,7 @@ impl Model {
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a.cmp(b)),
             (Value::ModularHecke(a), Value::ModularHecke(b)) => a.compare(self, b),
             (Value::HeckeEigen(a), Value::HeckeEigen(b)) => a.compare(self, b),
+            (Value::HeckeSymbol(a), Value::HeckeSymbol(b)) => a.compare(self, b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -7847,6 +7860,11 @@ impl Model {
                 Kind::PeriodPolynomial(..) => {
                     return Err(Error::plain(
                         "cannot enumerate rational Manin period polynomials",
+                    ));
+                }
+                Kind::HeckeSymbol(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational Hecke modular-symbol space",
                     ));
                 }
                 Kind::HeckeEigen(..) => {
@@ -8781,6 +8799,18 @@ impl Model {
         out.push("}")
     }
 
+    fn write_hecke_element(out: &mut Text, element: &eigenpacket::Element) -> Result<()> {
+        out.push("[")?;
+        for (i, coefficient) in element.coordinates().enumerate() {
+            if i != 0 {
+                out.push(", ")?;
+            }
+            out.push(&coefficient)?;
+        }
+        out.push("]/")?;
+        out.push(&element.denominator())
+    }
+
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
             Value::Bar(support) => {
@@ -9555,16 +9585,20 @@ impl Model {
             }
             Value::HeckeEigen(element) => {
                 self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                Self::write_hecke_element(out, element)?;
+                out.push("}")
+            }
+            Value::HeckeSymbol(symbol) => {
+                self.write_type(out, ty, 0)?;
                 out.push("{[")?;
-                for (i, coefficient) in element.coordinates().enumerate() {
+                for (i, coefficient) in symbol.elements().iter().enumerate() {
                     if i != 0 {
                         out.push(", ")?;
                     }
-                    out.push(&coefficient)?;
+                    Self::write_hecke_element(out, coefficient)?;
                 }
-                out.push("]/")?;
-                out.push(&element.denominator())?;
-                out.push("}")
+                out.push("]}")
             }
             Value::ModularHecke(operator) => {
                 self.write_type(out, ty, 0)?;

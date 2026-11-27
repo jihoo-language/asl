@@ -26,9 +26,9 @@ pub(crate) enum Query {
 
 pub(crate) struct Eigenperiod {
     pub(crate) source: Label,
-    packet: Rc<Packet>,
-    grade: Grade,
-    coefficients: Vec<Element>,
+    pub(super) packet: Rc<Packet>,
+    pub(super) grade: Grade,
+    pub(super) coefficients: Vec<Element>,
 }
 
 impl Eigenperiod {
