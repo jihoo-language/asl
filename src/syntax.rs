@@ -22,6 +22,7 @@ use crate::rv_as_odd::Query as AsOddQuery;
 use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
 use crate::rv_as_odd_derham::Operation as AsOddDeRhamOp;
 use crate::rv_as_odd_tate::Operation as AsOddTateOp;
+use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -804,6 +805,8 @@ pub(crate) enum ExprForm {
     BinaryScalar(usize, usize),
     EOType(Vec<usize>),
     EOCover(Label),
+    CrystalEO(Label),
+    CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
@@ -980,6 +983,8 @@ pub(crate) enum StatementForm {
     RvAsOddQuery(AsOddQuery, Label),
     EOReport(EoReport, ParsedExpr),
     EOWitness(ParsedExpr, ParsedExpr),
+    RvCrystal(Label, usize, usize, CrystalEntries),
+    RvCrystalQuery(Label, CrystalQuery),
     RvAsWordQuery(AsWordQuery, Label, Vec<Vec<AsOperator>>),
     RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvWittQuery(WittQuery, Label),
@@ -2704,6 +2709,46 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::RvAsOddQuery(query, name)
+            }
+            Token::Word("rvcrystal") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let (prime, genus) = self.bidegree()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut entries = Vec::new();
+                while self.token() != Token::RBrace {
+                    self.expect(Token::LParen)?;
+                    let (row, column) = self.bidegree()?;
+                    self.expect(Token::Comma)?;
+                    let value =
+                        self.signed_wide("a signed matrix entry", "F-crystal matrix entry")?;
+                    self.expect(Token::RParen)?;
+                    entries.push((row, column, value));
+                    if !self.eat(Token::Comma)? {
+                        break;
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                StatementForm::RvCrystal(name, prime, genus, entries)
+            }
+            Token::Word("rvCrystalChar" | "rvCrystalNewton" | "rvCrystalMatrices") => {
+                let operation = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match operation {
+                    Token::Word("rvCrystalChar") => CrystalQuery::Characteristic,
+                    Token::Word("rvCrystalNewton") => CrystalQuery::Newton,
+                    Token::Word("rvCrystalMatrices") => {
+                        self.expect(Token::Comma)?;
+                        CrystalQuery::Matrices(self.number()?.0)
+                    }
+                    _ => unreachable!(),
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvCrystalQuery(name, query)
             }
             Token::Word("rvascover") => {
                 self.advance()?;
@@ -5177,6 +5222,20 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RvIdeal(op, ideal, Box::new(input)), depth);
+                }
+                if name.text == "rvCrystalEOType" && self.eat(Token::LBracket)? {
+                    let crystal = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::CrystalEO(crystal), 0);
+                }
+                if name.text == "rvCrystalCongruent" && self.eat(Token::LBracket)? {
+                    let left = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let right = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let level = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::CrystalCongruent(left, right, level), 0);
                 }
                 if name.text == "eoType" && self.eat(Token::LBrace)? {
                     let sequence = self.unsigned_list(Token::RBrace)?;

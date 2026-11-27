@@ -53,6 +53,7 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
+use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -450,6 +451,7 @@ pub(crate) struct Model {
     rv_ideals: HashMap<Rc<str>, Rc<RvIdeal>>,
     rv_curves: HashMap<String, Rc<RvCurve>>,
     rv_as_covers: HashMap<String, Rc<RvAsCover>>,
+    rv_crystals: HashMap<String, Rc<Crystal>>,
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -502,6 +504,7 @@ impl Model {
             rv_ideals: HashMap::new(),
             rv_curves: HashMap::new(),
             rv_as_covers: HashMap::new(),
+            rv_crystals: HashMap::new(),
             rv_as_odd_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -2358,6 +2361,32 @@ impl Model {
 
     pub(crate) fn define_rv_as_odd_cover(&mut self, name: String, cover: RvAsOddCover) {
         self.rv_as_odd_covers.insert(name, Rc::new(cover));
+    }
+
+    pub(crate) fn rv_crystal(&self, name: &Label) -> Result<Rc<Crystal>> {
+        self.rv_crystals
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown F-crystal '{}'", name.text)))
+    }
+
+    pub(crate) fn register_rv_crystal(
+        &mut self,
+        name: Label,
+        prime: usize,
+        genus: usize,
+        entries: CrystalEntries,
+    ) -> Result<()> {
+        if self.rv_crystals.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("F-crystal '{}' is already defined", name.text),
+            ));
+        }
+        let crystal =
+            Crystal::build(self, prime, genus, entries).map_err(|error| error.at(name.span))?;
+        self.rv_crystals.insert(name.text, Rc::new(crystal));
+        Ok(())
     }
 
     pub(crate) fn rv_as_cover_named(&self, name: &str) -> Option<Rc<RvAsCover>> {

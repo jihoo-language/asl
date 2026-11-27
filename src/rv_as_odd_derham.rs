@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{btree_map::Entry, BTreeMap, VecDeque};
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::rc::Rc;
 
 use crate::binary_linear::check_storage;
@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::odd_ext;
-use crate::prime_linear::{add_scaled, Basis, Coordinate};
+use crate::prime_linear::{add_scaled, Coordinate};
 use crate::rv_as_odd::Cover;
 use crate::rv_as_odd_cartier::{Cartier, Column};
 
@@ -475,149 +475,15 @@ fn basis_error() -> Error {
     Error::plain("odd Artin–Schreier Čech form is outside the expected differential basis")
 }
 
-struct FlagStep {
-    space: Basis,
-    image_rank: usize,
-}
-
-struct Flag {
-    steps: BTreeMap<usize, FlagStep>,
-    pending: VecDeque<usize>,
-    cells: usize,
-}
-
-impl Flag {
-    fn include(
-        &mut self,
-        model: &mut Model,
-        prime: Prime,
-        space: Basis,
-        retained: usize,
-    ) -> Result<()> {
-        let rank = space.rank();
-        if let Some(existing) = self.steps.get(&rank) {
-            return contained(model, prime, &space, &existing.space);
-        }
-        self.cells += 6 + space.cells();
-        check_storage(retained + self.cells)?;
-        self.steps.insert(
-            rank,
-            FlagStep {
-                space,
-                image_rank: 0,
-            },
-        );
-        self.pending.push_back(rank);
-        Ok(())
-    }
-}
-
 impl DeRham {
-    fn flag_image(
-        &self,
-        model: &mut Model,
-        cover: &Cover,
-        input: &Basis,
-        retained: usize,
-    ) -> Result<Basis> {
-        let mut result = Basis::default();
-        for vector in input.vectors(self.prime) {
-            let image = self.image(model, cover, Map::Verschiebung, &vector)?;
-            result.insert(model, self.prime, image)?;
-            check_storage(self.cells.get() + retained + result.cells())?;
-        }
-        Ok(result)
-    }
-
-    fn flag_preimage(
-        &self,
-        model: &mut Model,
-        cover: &Cover,
-        target: &Basis,
-        retained: usize,
-    ) -> Result<Basis> {
-        let mut quotient = Basis::default();
-        for vector in target.vectors(self.prime) {
-            quotient.insert(model, self.prime, vector)?;
-            check_storage(self.cells.get() + retained + quotient.cells())?;
-        }
-        let mut result = Basis::default();
-        // Solve the F-column relations modulo target. Target generators
-        // carry zero source witness, so dependencies give F^{-1}(target).
-        for i in 0..self.dimension {
-            let image = self.column(model, cover, Map::Frobenius, i)?;
-            if let Some(vector) =
-                quotient.insert_with_witness(model, self.prime, image.to_vec(), vec![(i, 1)])?
-            {
-                result.insert(model, self.prime, vector)?;
-            }
-            check_storage(self.cells.get() + retained + quotient.cells() + result.cells())?;
-        }
-        Ok(result)
-    }
-
     pub(crate) fn final_type(&self, model: &mut Model, cover: &Cover) -> Result<Vec<usize>> {
-        check_storage(self.dimension.saturating_mul(4))?;
-        let mut flag = Flag {
-            steps: BTreeMap::new(),
-            pending: VecDeque::new(),
-            cells: 0,
-        };
-        flag.include(model, self.prime, Basis::default(), self.cells.get())?;
-        let mut ambient = Basis::default();
-        for i in 0..self.dimension {
-            ambient.insert(model, self.prime, vec![(i, 1)])?;
-            check_storage(self.cells.get() + flag.cells + ambient.cells())?;
-        }
-        flag.include(model, self.prime, ambient, self.cells.get())?;
-        while let Some(rank) = flag.pending.pop_front() {
-            let step = flag.steps.get_mut(&rank).unwrap();
-            let image = self.flag_image(model, cover, &step.space, flag.cells)?;
-            let preimage =
-                self.flag_preimage(model, cover, &step.space, flag.cells + image.cells())?;
-            step.image_rank = image.rank();
-            flag.include(
-                model,
-                self.prime,
-                image,
-                self.cells.get() + preimage.cells(),
-            )?;
-            flag.include(model, self.prime, preimage, self.cells.get())?;
-        }
-        let mut previous = &flag.steps[&0];
-        let mut previous_rank = 0;
-        let mut sequence = Vec::with_capacity(self.genus);
-        for (&rank, step) in flag.steps.iter().skip(1) {
-            contained(model, self.prime, &previous.space, &step.space)?;
-            let width = rank - previous_rank;
-            let rise = step.image_rank.checked_sub(previous.image_rank);
-            if !matches!(rise, Some(0)) && rise != Some(width) {
-                return Err(Error::plain(
-                    "odd Artin–Schreier canonical EO flag has invalid Verschiebung ranks",
-                ));
-            }
-            for dimension in previous_rank + 1..=rank.min(self.genus) {
-                let increment = if rise == Some(width) {
-                    dimension - previous_rank
-                } else {
-                    0
-                };
-                sequence.push(previous.image_rank + increment);
-            }
-            previous = step;
-            previous_rank = rank;
-        }
-        Ok(sequence)
+        crate::rv_flag::final_type(
+            model,
+            self.prime,
+            self.dimension,
+            || self.cells.get(),
+            |model, i| self.column(model, cover, Map::Frobenius, i),
+            |model, i| self.column(model, cover, Map::Verschiebung, i),
+        )
     }
-}
-
-fn contained(model: &mut Model, prime: Prime, lower: &Basis, upper: &Basis) -> Result<()> {
-    for vector in lower.vectors(prime) {
-        if !upper.reduce(model, prime, vector)?.is_empty() {
-            return Err(Error::plain(
-                "odd Artin–Schreier canonical EO subspaces are not nested",
-            ));
-        }
-    }
-    Ok(())
 }

@@ -1672,6 +1672,16 @@ impl Engine {
                 self.model.define_rv_as_cover(name.text, cover);
                 return Ok(None);
             }
+            StatementForm::RvCrystal(name, prime, genus, entries) => {
+                self.model
+                    .register_rv_crystal(name, prime, genus, entries)?;
+                return Ok(None);
+            }
+            StatementForm::RvCrystalQuery(name, query) => {
+                self.model
+                    .rv_crystal(&name)?
+                    .report(&mut self.model, &name.text, query)?
+            }
             StatementForm::EOReport(report, expression) => {
                 let expression = self.checker().expr(expression)?;
                 self.checker().require_eo(&expression, report.name())?;
@@ -7432,6 +7442,23 @@ impl Checker<'_> {
                 let ty = self.model.eo_type(cover.genus())?;
                 let value = eo::persist(self.model, sequence)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CrystalEO(name) => {
+                let crystal = self.model.rv_crystal(&name)?;
+                let ty = self.model.eo_type(crystal.genus())?;
+                let value = crystal
+                    .eo_type(self.model)
+                    .map_err(|error| error.at(span))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CrystalCongruent(left, right, level) => {
+                let left = self.model.rv_crystal(&left)?;
+                let right = self.model.rv_crystal(&right)?;
+                let result = left
+                    .congruent(self.model, &right, level)
+                    .map_err(|error| error.at(span))?;
+                let ty = self.model.named("S").unwrap();
+                Ok((ty, TypedForm::Constant(Value::Point(usize::from(result)))))
             }
             ExprForm::EOCover(name) => {
                 let cover = self.model.rv_as_cover(&name)?;
