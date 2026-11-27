@@ -8,6 +8,8 @@ use crate::rv_ore::gcd;
 use crate::rv_unram::{mul_mod, reduce, sub_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod kummer;
+
 const MAX_DEGREE: usize = 32;
 
 pub(crate) struct Spec(pub(crate) Label, pub(crate) usize);
@@ -319,7 +321,7 @@ struct Polygon {
     different: usize,
 }
 
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Element(Vec<Vec<u64>>);
 
 impl Element {

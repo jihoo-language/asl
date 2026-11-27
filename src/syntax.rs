@@ -33,7 +33,7 @@ use crate::rv_as_odd_tate::Operation as AsOddTateOp;
 use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
-use crate::rv_eisenstein as eisenstein;
+use crate::rv_eisenstein::{self as eisenstein, kummer as local_kummer};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
 use crate::rv_qp_quad::Unary as QuadUnary;
@@ -193,6 +193,7 @@ pub(crate) enum TypeForm {
     Tate(usize, usize),
     Tame(tame::Spec),
     Eisenstein(eisenstein::Spec),
+    LocalKummer(local_kummer::Spec),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1130,6 +1131,7 @@ pub(crate) enum ExprForm {
     Tate(rv_tate::Expression),
     Tame(tame::Expression),
     Eisenstein(eisenstein::Expression),
+    LocalKummer(local_kummer::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1410,6 +1412,9 @@ pub(crate) enum StatementForm {
     EisensteinDeclaration(eisenstein::Declaration),
     EisensteinExtension(eisenstein::ExtensionReport),
     EisensteinElement(eisenstein::ElementReport, Box<ParsedExpr>),
+    LocalKummerDeclaration(local_kummer::Declaration),
+    LocalKummerField(local_kummer::FieldReport),
+    LocalKummerReport(local_kummer::Report, Box<ParsedExpr>),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -6720,6 +6725,118 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::Eisenstein(operation), depth)
     }
 
+    fn local_kummer_spec(&mut self) -> Result<local_kummer::Spec> {
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let (precision, _) = self.number()?;
+        Ok(local_kummer::Spec(name, precision))
+    }
+
+    fn local_kummer_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use local_kummer::{Declaration, FieldReport, Report};
+        self.advance()?;
+        match name {
+            "rvkummerlocal" => {
+                let field = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let (depth, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                let unit = self.local_coefficient_rows(
+                    "a signed Kummer unit coefficient",
+                    "Kummer unit coefficient",
+                )?;
+                Ok(StatementForm::LocalKummerDeclaration(Declaration(
+                    field, base, depth, unit,
+                )))
+            }
+            "rvKummerLocalData" | "rvKummerLocalPolynomial" | "rvKummerLocalBoundary" => {
+                self.expect(Token::LBracket)?;
+                let report = match name {
+                    "rvKummerLocalData" => FieldReport::Data(self.local_kummer_spec()?),
+                    "rvKummerLocalPolynomial" => FieldReport::Polynomial(self.local_kummer_spec()?),
+                    _ => FieldReport::Boundary(self.label()?),
+                };
+                self.expect(Token::RBracket)?;
+                Ok(StatementForm::LocalKummerField(report))
+            }
+            _ => {
+                let report = match name {
+                    "rvKummerLocalTrace" => Report::Trace,
+                    "rvKummerLocalNorm" => Report::Norm,
+                    _ => Report::Valuation,
+                };
+                Ok(StatementForm::LocalKummerReport(
+                    report,
+                    Box::new(self.paren_expr(0)?),
+                ))
+            }
+        }
+    }
+
+    fn local_kummer_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use local_kummer::{Expression, Generator};
+        let (operation, depth) = match name {
+            "rvKummerLocalMul" | "rvKummerLocalEval" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = pair[0].depth.max(pair[1].depth) + 1;
+                let operation = if name == "rvKummerLocalMul" {
+                    Expression::Multiply(Box::new(pair))
+                } else {
+                    Expression::Evaluate(Box::new(pair))
+                };
+                (operation, depth)
+            }
+            "rvKummerLocalSigma" => {
+                self.expect(Token::LBracket)?;
+                let index = self.signed_wide("a signed Kummer exponent", "Kummer exponent")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Sigma(index, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let spec = self.local_kummer_spec()?;
+                self.expect(Token::RBracket)?;
+                match name {
+                    "rvKummerLocalY" => (Expression::Generator(spec, Generator::Y), 0),
+                    "rvKummerLocalPi" => (Expression::Generator(spec, Generator::Uniformizer), 0),
+                    "rvKummerLocalTheta" => (Expression::Generator(spec, Generator::Theta), 0),
+                    "rvKummerLocalBase" => {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        (Expression::Base(spec, Box::new(input)), depth)
+                    }
+                    _ => {
+                        self.expect(Token::LParen)?;
+                        let mut coefficients = Vec::new();
+                        if !self.eat(Token::RParen)? {
+                            loop {
+                                coefficients.push(self.local_coefficient_rows(
+                                    "a signed local Kummer coefficient",
+                                    "local Kummer coefficient",
+                                )?);
+                                if !self.eat(Token::Comma)? {
+                                    self.expect(Token::RParen)?;
+                                    break;
+                                }
+                            }
+                        }
+                        (Expression::Literal(spec, coefficients), 0)
+                    }
+                }
+            }
+        };
+        expr(span, ExprForm::LocalKummer(operation), depth)
+    }
+
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
         use period::mazur_tate::{Embedding, Statement};
         self.advance()?;
@@ -11469,6 +11586,15 @@ impl<'src> Parser<'src> {
                 | "rvEisensteinTrace"
                 | "rvEisensteinNorm"),
             ) => self.eisenstein_statement(name)?,
+            Token::Word(
+                name @ ("rvkummerlocal"
+                | "rvKummerLocalData"
+                | "rvKummerLocalPolynomial"
+                | "rvKummerLocalBoundary"
+                | "rvKummerLocalTrace"
+                | "rvKummerLocalNorm"
+                | "rvKummerLocalVal"),
+            ) => self.local_kummer_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -15401,6 +15527,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Eisenstein(spec), 0);
         }
+        if name.text == "RVKummerLocal" && self.eat(Token::LParen)? {
+            let spec = self.local_kummer_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::LocalKummer(spec), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -18281,6 +18412,20 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKummerLocalY"
+                        | "rvKummerLocalPi"
+                        | "rvKummerLocalTheta"
+                        | "rvKummerLocalBase"
+                        | "rvKummerLocalElem"
+                        | "rvKummerLocalSigma"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvKummerLocalMul" | "rvKummerLocalEval")
+                        && self.token() == Token::LParen)
+                {
+                    return self.local_kummer_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

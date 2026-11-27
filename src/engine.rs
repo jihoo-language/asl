@@ -146,7 +146,7 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
-use crate::rv_eisenstein as eisenstein;
+use crate::rv_eisenstein::{self as eisenstein, kummer as local_kummer};
 use crate::rv_field;
 use crate::rv_fusion;
 use crate::rv_gauss;
@@ -1074,6 +1074,10 @@ enum TypedForm {
     EisensteinUnary(eisenstein::Unary, Box<TypedExpr>),
     EisensteinProduct(Box<[TypedExpr; 2]>),
     EisensteinEvaluate(Box<[TypedExpr; 2]>),
+    LocalKummerUnary(local_kummer::Unary, Box<TypedExpr>),
+    LocalKummerBase(Box<TypedExpr>),
+    LocalKummerProduct(Box<[TypedExpr; 2]>),
+    LocalKummerEvaluate(Box<[TypedExpr; 2]>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2709,6 +2713,44 @@ impl Engine {
                     .algebra(grade.precision)?
                     .report(&mut self.model, &value, report)
                     .map(Some);
+            }
+            StatementForm::LocalKummerDeclaration(declaration) => {
+                self.model.register_local_kummer(declaration)?;
+                return Ok(None);
+            }
+            StatementForm::LocalKummerField(report) => {
+                use local_kummer::{FieldReport, Spec};
+                return match report {
+                    FieldReport::Data(Spec(name, precision)) => {
+                        let field = self.model.local_kummer(&name)?;
+                        field
+                            .data_report(&mut self.model, &name.text, precision)
+                            .map(Some)
+                    }
+                    FieldReport::Polynomial(Spec(name, precision)) => {
+                        let field = self.model.local_kummer(&name)?;
+                        field
+                            .polynomial_report(&mut self.model, &name.text, precision)
+                            .map(Some)
+                    }
+                    FieldReport::Boundary(name) => {
+                        let field = self.model.local_kummer(&name)?;
+                        field.boundary_report(&mut self.model, &name.text).map(Some)
+                    }
+                };
+            }
+            StatementForm::LocalKummerReport(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().local_kummer_operand(&input, report.name())?;
+                let Value::LocalKummer(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let algebra = field.algebra(&mut self.model, grade.precision)?;
+                return algebra.report(&mut self.model, &value, report).map(Some);
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -11019,6 +11061,20 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::LocalKummer(a), Value::LocalKummer(b)) => {
+                        let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let field = self
+                            .model
+                            .local_kummer_named(&grade.name)
+                            .expect("registered local Kummer field");
+                        let precision = grade.precision;
+                        let algebra = field.algebra(&mut self.model, precision)?;
+                        algebra
+                            .add(&mut self.model, &a, &b)?
+                            .persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::Eisenstein(a), Value::Eisenstein(b)) => {
                         let Kind::Eisenstein(grade) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -13713,6 +13769,78 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::LocalKummerUnary(operation, input) => {
+                let Value::LocalKummer(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let precision = grade.precision;
+                let algebra = field.algebra(&mut self.model, precision)?;
+                let result = match operation {
+                    local_kummer::Unary::Negate => algebra.negate(&mut self.model, &value)?,
+                    local_kummer::Unary::Sigma(c) => algebra.sigma(&mut self.model, &value, *c)?,
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::LocalKummerBase(input) => {
+                let Value::Eisenstein(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let precision = grade.precision;
+                let algebra = field.algebra(&mut self.model, precision)?;
+                algebra.embed((*value).clone()).persist(&mut self.model)
+            }
+            TypedForm::LocalKummerProduct(inputs) => {
+                let (Value::LocalKummer(a), Value::LocalKummer(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let precision = grade.precision;
+                let algebra = field.algebra(&mut self.model, precision)?;
+                algebra
+                    .multiply(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::LocalKummerEvaluate(inputs) => {
+                let (Value::LocalKummer(point), Value::Tate(polynomial)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::LocalKummer(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let precision = grade.precision;
+                let algebra = field.algebra(&mut self.model, precision)?;
+                algebra
+                    .evaluate_rational(&mut self.model, polynomial.coefficients(), &point)?
                     .persist(&mut self.model)
             }
             TypedForm::EisensteinUnary(operation, input) => {
@@ -16636,6 +16764,10 @@ impl Checker<'_> {
                 let grade = Rc::new(disc::Grade::new(source, chart)?);
                 self.model.mazur_disc_type(grade, root)
             }
+            TypeForm::LocalKummer(spec) => {
+                let (grade, _) = local_kummer::Grade::resolve(self.model, spec)?;
+                self.model.local_kummer_type(grade)
+            }
             TypeForm::Eisenstein(spec) => {
                 let (grade, _) = eisenstein::Grade::resolve(self.model, spec)?;
                 self.model.eisenstein_type(grade)
@@ -17752,6 +17884,11 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::LocalKummer(grade) => {
+                        let field = self.model.local_kummer_named(&grade.name).expect("registered local Kummer field");
+                        let precision = grade.precision;
+                        field.algebra(self.model, precision)?.zero().persist(self.model)?
+                    }
                     Kind::Eisenstein(grade) => {
                         let field = self.model.eisenstein_named(&grade.name).expect("registered Eisenstein field");
                         field.algebra(grade.precision)?.zero().persist(self.model)?
@@ -20173,6 +20310,7 @@ impl Checker<'_> {
             ExprForm::Tate(operation) => self.tate_expression(operation),
             ExprForm::Tame(operation) => self.tame_expression(operation),
             ExprForm::Eisenstein(operation) => self.eisenstein_expression(operation),
+            ExprForm::LocalKummer(operation) => self.local_kummer_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -21060,6 +21198,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::LocalKummer(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::LocalKummerUnary(local_kummer::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Eisenstein(..)) {
@@ -25027,6 +25171,7 @@ impl Checker<'_> {
                         | Kind::Tate(..)
                         | Kind::Tame(..)
                         | Kind::Eisenstein(..)
+                        | Kind::LocalKummer(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -30331,6 +30476,113 @@ impl Checker<'_> {
             Ok(grade.clone())
         } else {
             Err(self.invalid_operand(input, operation, "an RVEisenstein(K,M) element"))
+        }
+    }
+
+    fn local_kummer_expression(
+        &mut self,
+        expression: local_kummer::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use local_kummer::Expression;
+        match expression {
+            Expression::Literal(spec, coefficients) => {
+                let (grade, field) = local_kummer::Grade::resolve(self.model, spec)?;
+                let algebra = field.algebra(self.model, grade.precision)?;
+                let value = algebra
+                    .literal(self.model, coefficients)?
+                    .persist(self.model)?;
+                let ty = self.model.local_kummer_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Generator(spec, generator) => {
+                let (grade, field) = local_kummer::Grade::resolve(self.model, spec)?;
+                let algebra = field.algebra(self.model, grade.precision)?;
+                let value = algebra
+                    .generator(self.model, generator)?
+                    .persist(self.model)?;
+                let ty = self.model.local_kummer_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Base(spec, input) => {
+                let (grade, field) = local_kummer::Grade::resolve(self.model, spec)?;
+                let input = self.expr(*input)?;
+                let needed = field.base_digits(grade.precision);
+                let expected = format!(
+                    "an RVEisenstein({},{needed}) element or higher precision",
+                    field.base_name
+                );
+                let Kind::Eisenstein(source) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvKummerLocalBase", &expected));
+                };
+                if source.name != field.base_name || source.precision < needed {
+                    return Err(self.invalid_operand(&input, "rvKummerLocalBase", &expected));
+                }
+                let ty = self.model.local_kummer_type(grade)?;
+                Ok((ty, TypedForm::LocalKummerBase(Box::new(input))))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.local_kummer_operand(&a, "rvKummerLocalMul")?;
+                self.require_type(a.ty, &b, "rvKummerLocalMul input")?;
+                Ok((a.ty, TypedForm::LocalKummerProduct(Box::new([a, b]))))
+            }
+            Expression::Evaluate(inputs) => {
+                let [point, polynomial] = *inputs;
+                let point = self.expr(point)?;
+                let grade = self.local_kummer_operand(&point, "rvKummerLocalEval")?;
+                let polynomial = self.expr(polynomial)?;
+                let Kind::Tate(source) = self.model.kind(polynomial.ty) else {
+                    return Err(self.invalid_operand(
+                        &polynomial,
+                        "rvKummerLocalEval",
+                        "an RVTate(p,s) series",
+                    ));
+                };
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                if source.prime.get() as usize != field.prime() {
+                    return Err(Error::new(
+                        polynomial.span,
+                        "relative Kummer and Tate coefficient primes do not match",
+                    ));
+                }
+                if source.digits * field.absolute_e() < grade.precision {
+                    return Err(Error::new(polynomial.span, "Tate coefficient precision is insufficient for this relative Kummer evaluation"));
+                }
+                Ok((
+                    point.ty,
+                    TypedForm::LocalKummerEvaluate(Box::new([point, polynomial])),
+                ))
+            }
+            Expression::Sigma(exponent, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.local_kummer_operand(&input, "rvKummerLocalSigma")?;
+                let field = self
+                    .model
+                    .local_kummer_named(&grade.name)
+                    .expect("registered local Kummer field");
+                let c = field.sigma_exponent(exponent);
+                Ok((
+                    input.ty,
+                    TypedForm::LocalKummerUnary(local_kummer::Unary::Sigma(c), Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn local_kummer_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<local_kummer::Grade> {
+        if let Kind::LocalKummer(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVKummerLocal(L,M) element"))
         }
     }
 
