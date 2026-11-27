@@ -1476,6 +1476,14 @@ For the source form $[a,b,c]$ of discriminant $D$, use the positively oriented p
 
 Restrict the norm form to the sublattice, divide by its content $g$, and reduce properly. The target has discriminant $D'=\ell^2D/g^2$. The cases $g=1,\ell,\ell^2$ give descending, horizontal, and ascending edges, respectively. At the top of the $\ell$-conductor tower there are $1+\left(\frac{D}{\ell}\right)$ horizontal kernels, using the Kronecker symbol. Below the top, one kernel ascends and $\ell$ descend. For background, see Kohel, *Endomorphism rings of elliptic curves over finite fields* (1996), and Sutherland, *Isogeny volcanoes* (2013). [Cyclic CM isogeny example](examples/hyperelliptic-cm-cyclic-isogeny-volcanoes.asl) · [Sutherland, *Isogeny volcanoes*](https://arxiv.org/abs/1208.5370)
 
+#### Classical elliptic modular polynomials
+
+`rvModularPolyDegree[ell];` gives the bidegree $(\ell+1,\ell+1)$ of the classical modular polynomial $\Phi_\ell$ at prime level. `rvModularPolyCoeff[ell,i,j];` gives the exact integer coefficient of $X^iY^j$. `rvModularPolyEval[ell](x,y)` evaluates the polynomial in a named precision-one `RVUnram` field. `rvModularPolySpecCoeff[ell,j](x)` gives the coefficient of $Y^j$ in $\Phi_\ell(x,Y)$ in the same field. Coefficients outside the bidegree are zero.
+
+The construction starts with $j=E_4^3/\Delta$. The power sum of the $\ell+1$ cyclic quotients is $j(q^\ell)^k+\ell\sum_n [q^{\ell n}]j(q)^k q^n$. Matching the nonpositive Laurent coefficients in the triangular basis $1,j,j^2,\ldots$ recovers that power sum as a polynomial in $j$. Newton identities recover the integral coefficients by exact division before any field reduction. Exact construction is available for levels $2,3,5,7$ within the work budget. In characteristic $\ell$, evaluation uses the Kronecker congruence $(X^\ell-Y)(X-Y^\ell)$, also at larger prime levels.
+
+At level two the fibers at $j=0$ and $1728$ are $(Y-54000)^3$ and $(Y-1728)(Y-287496)^2$, respectively. Their multiplicities come from the three cyclic kernels at the Eisenstein and Gaussian CM vertices. For the product construction and the Kronecker congruence, see Cox, *Primes of the Form $x^2+ny^2$*, and Bröker, Lauter and Sutherland, *Modular Polynomials via Isogeny Volcanoes*. [Classical modular polynomial example](examples/elliptic-modular-polynomials.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

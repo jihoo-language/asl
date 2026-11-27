@@ -997,6 +997,7 @@ pub(crate) enum ExprForm {
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
+    EllipticModular(Box<crate::elliptic_modular::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1209,6 +1210,7 @@ pub(crate) enum StatementForm {
     HilbertTautological(Box<crate::hyperelliptic_kummer_surface::nakajima::tautological::Command>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
+    EllipticModular(crate::elliptic_modular::Statement),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3364,6 +3366,52 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn elliptic_modular_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_modular::Statement;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let level = self.number()?.0;
+        let statement = if name == "rvModularPolyDegree" {
+            Statement::Degree(level)
+        } else {
+            self.expect(Token::Comma)?;
+            let i = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let j = self.number()?.0;
+            Statement::Coefficient(level, i, j)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::EllipticModular(statement))
+    }
+
+    fn elliptic_modular_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::elliptic_modular::Expression;
+        self.expect(Token::LBracket)?;
+        let level = self.number()?.0;
+        let (expression, depth) = if name == "rvModularPolyEval" {
+            self.expect(Token::RBracket)?;
+            let inputs = self.paren_pair(nest)?;
+            let depth = inputs[0].depth.max(inputs[1].depth) + 1;
+            (Expression::Evaluate(level, Box::new(inputs)), depth)
+        } else {
+            self.expect(Token::Comma)?;
+            let j = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (
+                Expression::SpecializeCoefficient(level, j, Box::new(input)),
+                depth,
+            )
+        };
+        expr(span, ExprForm::EllipticModular(Box::new(expression)), depth)
     }
 
     fn cm_neighbor_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -6080,6 +6128,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(name @ ("rvModularPolyDegree" | "rvModularPolyCoeff")) => {
+                self.elliptic_modular_statement(name)?
+            }
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -11563,6 +11614,13 @@ impl<'src> Parser<'src> {
                 }
                 if name.text == "rvCMNeighbor" && self.token() == Token::LBracket {
                     return self.cm_neighbor_expression(span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvModularPolyEval" | "rvModularPolySpecCoeff"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.elliptic_modular_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

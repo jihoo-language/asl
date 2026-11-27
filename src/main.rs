@@ -30,6 +30,7 @@ mod elliptic;
 mod elliptic_cm_recognition;
 mod elliptic_gluing;
 mod elliptic_local;
+mod elliptic_modular;
 mod engine;
 mod eo;
 mod error;

@@ -23,6 +23,7 @@ use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
+use crate::elliptic_modular;
 use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
@@ -600,6 +601,11 @@ enum CMClassAction {
     Power(i128, Box<TypedExpr>),
 }
 
+enum EllipticModularAction {
+    Evaluate(Box<[TypedExpr; 2]>),
+    SpecializeCoefficient(usize, Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -696,6 +702,7 @@ enum TypedForm {
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     CMClass(cm_ring::Order, CMClassAction),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
+    EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
     AbMukaiNegate(Box<TypedExpr>),
@@ -1854,6 +1861,9 @@ impl Engine {
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::K3Period(command) => return self.k3_period_statement(*command),
             StatementForm::CMClass(command) => return self.cm_class_statement(*command),
+            StatementForm::EllipticModular(command) => {
+                return self.elliptic_modular_statement(command).map(Some)
+            }
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -4975,6 +4985,36 @@ impl Engine {
         }
     }
 
+    fn elliptic_modular_statement(
+        &mut self,
+        statement: elliptic_modular::Statement,
+    ) -> Result<String> {
+        use elliptic_modular::Statement;
+        match statement {
+            Statement::Degree(level) => {
+                let prime = elliptic_modular::prime(&mut self.model, level)?;
+                let degree = elliptic_modular::degree(prime);
+                Ok(format!(
+                    "rvModularPolyDegree[{level}] = ({degree}, {degree})"
+                ))
+            }
+            Statement::Coefficient(level, i, j) => {
+                let prime = elliptic_modular::prime(&mut self.model, level)?;
+                let degree = elliptic_modular::degree(prime);
+                let coefficient = if i > degree || j > degree {
+                    "0".into()
+                } else {
+                    self.model
+                        .elliptic_modular_polynomial(prime)?
+                        .coefficient_text(i, j)
+                };
+                Ok(format!(
+                    "rvModularPolyCoeff[{level},{i},{j}] = {coefficient}"
+                ))
+            }
+        }
+    }
+
     fn cm_neighbor_statement(&mut self, statement: cm_neighbors::Statement) -> Result<String> {
         use cm_neighbors::Statement;
         let counts = matches!(&statement, Statement::Counts(..));
@@ -6143,6 +6183,48 @@ impl Engine {
         };
         let value = spinor.coefficient(&mut self.model, index)?;
         Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
+    }
+
+    fn eval_elliptic_modular(
+        &mut self,
+        field: &UnramRing,
+        prime: Prime,
+        action: &EllipticModularAction,
+    ) -> Result<Value> {
+        let special_char = field.prime() == u64::from(prime.get());
+        let result = match action {
+            EllipticModularAction::Evaluate(inputs) => {
+                let [x, y] = inputs.as_ref();
+                let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
+                    unreachable!()
+                };
+                if special_char {
+                    elliptic_modular::special_char_evaluate(&mut self.model, field, &x, &y)?
+                } else {
+                    self.model.elliptic_modular_polynomial(prime)?.evaluate(
+                        &mut self.model,
+                        field,
+                        &x,
+                        &y,
+                    )?
+                }
+            }
+            EllipticModularAction::SpecializeCoefficient(j, input) => {
+                let Value::RVUnram(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if *j > elliptic_modular::degree(prime) {
+                    field.scalar(0)
+                } else if special_char {
+                    elliptic_modular::special_char_coefficient(&mut self.model, field, &x, *j)?
+                } else {
+                    self.model
+                        .elliptic_modular_polynomial(prime)?
+                        .specialization(&mut self.model, field, &x, *j)?
+                }
+            }
+        };
+        rv_unram::persist(&mut self.model, result)
     }
 
     fn eval_cm_class(&mut self, order: cm_ring::Order, action: &CMClassAction) -> Result<Value> {
@@ -8805,6 +8887,9 @@ impl Engine {
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
+            TypedForm::EllipticModular(field, prime, action) => {
+                self.eval_elliptic_modular(field, *prime, action)
+            }
             TypedForm::CMNeighbor(source, target, ell, address, input) => {
                 let Value::CMClass(class) = self.eval(input)? else {
                     unreachable!()
@@ -14521,6 +14606,7 @@ impl Checker<'_> {
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
+            ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::CMNeighbor(expression) => {
                 let cm_neighbors::Expression(target, ell, address, input) = expression;
                 let input = self.expr(*input)?;
@@ -20949,6 +21035,45 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
         }
+    }
+
+    fn elliptic_modular_expression(
+        &mut self,
+        expression: elliptic_modular::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use elliptic_modular::Expression;
+        let (level, ty, field, action) = match expression {
+            Expression::Evaluate(level, inputs) => {
+                let [x, y] = *inputs;
+                let x = self.expr(x)?;
+                let field = self.unram_ring(&x, "rvModularPolyEval")?;
+                let y = self.expr(y)?;
+                self.require_type(x.ty, &y, "rvModularPolyEval second input")?;
+                (
+                    level,
+                    x.ty,
+                    field,
+                    EllipticModularAction::Evaluate(Box::new([x, y])),
+                )
+            }
+            Expression::SpecializeCoefficient(level, j, input) => {
+                let input = self.expr(*input)?;
+                let field = self.unram_ring(&input, "rvModularPolySpecCoeff")?;
+                (
+                    level,
+                    input.ty,
+                    field,
+                    EllipticModularAction::SpecializeCoefficient(j, Box::new(input)),
+                )
+            }
+        };
+        if field.precision() != 1 {
+            return Err(Error::plain(
+                "modular polynomial evaluation requires a precision-one RVUnram field",
+            ));
+        }
+        let prime = elliptic_modular::prime(self.model, level)?;
+        Ok((ty, TypedForm::EllipticModular(field, prime, action)))
     }
 
     fn cm_class_operand(&self, input: &TypedExpr, operation: &str) -> Result<cm_ring::Order> {

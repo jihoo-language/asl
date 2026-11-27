@@ -630,6 +630,7 @@ pub(crate) struct Model {
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     elliptic_curves: HashMap<Rc<str>, Rc<EllipticCurve>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
+    elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
@@ -741,6 +742,7 @@ impl Model {
             rv_witt_covers: HashMap::new(),
             elliptic_curves: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
+            elliptic_modular_polynomials: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
@@ -4776,6 +4778,19 @@ impl Model {
             exponent,
         };
         self.inhabited_type(Kind::CMOrder(grade), 0)
+    }
+
+    pub(crate) fn elliptic_modular_polynomial(
+        &mut self,
+        level: Prime,
+    ) -> Result<Rc<crate::elliptic_modular::Polynomial>> {
+        if let Some(polynomial) = self.elliptic_modular_polynomials.get(&level.get()) {
+            return Ok(Rc::clone(polynomial));
+        }
+        let polynomial = Rc::new(crate::elliptic_modular::Polynomial::new(self, level)?);
+        self.elliptic_modular_polynomials
+            .insert(level.get(), Rc::clone(&polynomial));
+        Ok(polynomial)
     }
 
     pub(crate) fn define_cm_ring_order(&mut self, name: Label, discriminant: i128) -> Result<()> {
