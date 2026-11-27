@@ -9,6 +9,8 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 use crate::wide_integer::Natural;
 
+pub(crate) mod moduli;
+
 pub(crate) enum Expression {
     FromDivisor(Box<ParsedExpr>),
     ToDivisor(Box<ParsedExpr>),
@@ -104,6 +106,11 @@ impl Vector {
     pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
         model.allocate(2 * (2 + unimodular::RANK) + 1)?;
         Ok(Value::Mukai(Rc::new(self)))
+    }
+
+    pub(crate) fn persist_quotient(self, model: &mut Model) -> Result<Value> {
+        model.allocate(2 * (2 + unimodular::RANK) + 1)?;
+        Ok(Value::MukaiQuotient(Rc::new(self)))
     }
 
     pub(crate) fn add(&self, model: &mut Model, rhs: &Self) -> Result<Self> {

@@ -267,6 +267,7 @@ pub(crate) enum Kind {
     K3Clifford(Rc<str>, u8),
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
+    MukaiQuotient(Rc<str>),
     HilbertSquare(Rc<str>, i128),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -442,6 +443,7 @@ pub(crate) enum Value {
     K3Clifford(Rc<clifford::Element>),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
+    MukaiQuotient(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -621,6 +623,7 @@ pub(crate) struct Model {
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
+    mukai_moduli: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>>,
     hilbert_square_form: Option<Rc<hilbert_square::Form>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
@@ -722,6 +725,7 @@ impl Model {
             k3_automorphisms: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
+            mukai_moduli: HashMap::new(),
             hilbert_square_form: None,
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
@@ -1012,7 +1016,7 @@ impl Model {
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::KummerWeil(..) => usize::MAX,
-            Kind::K3Lattice(..) | Kind::Mukai(..) => usize::MAX,
+            Kind::K3Lattice(..) | Kind::Mukai(..) | Kind::MukaiQuotient(..) => usize::MAX,
             Kind::Nakajima(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
@@ -1245,6 +1249,7 @@ impl Model {
                 | Kind::K3Clifford(..)
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
+                | Kind::MukaiQuotient(..)
                 | Kind::HilbertSquare(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -3926,6 +3931,43 @@ impl Model {
         self.inhabited_type(Kind::K3Spinor(basis.text.as_str().into(), chirality), 0)
     }
 
+    pub(crate) fn define_mukai_moduli(
+        &mut self,
+        name: Label,
+        marking: Rc<str>,
+        vector: Rc<hyperelliptic_kummer_surface::mukai::Vector>,
+    ) -> Result<()> {
+        if self.mukai_moduli.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Mukai moduli lattice '{}' is already defined", name.text),
+            ));
+        }
+        let lattice =
+            hyperelliptic_kummer_surface::mukai::moduli::Lattice::new(self, marking, vector)?;
+        self.allocate(name.text.len() + lattice.cells())?;
+        self.mukai_moduli.insert(name.text, Rc::new(lattice));
+        Ok(())
+    }
+
+    pub(crate) fn mukai_moduli(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>> {
+        self.mukai_moduli.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Mukai moduli lattice '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn mukai_quotient_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.mukai_moduli(name)?
+            .require_isotropic("RVMukaiQuotient")?;
+        self.inhabited_type(Kind::MukaiQuotient(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn mukai_type(&mut self, name: &Label) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -5120,6 +5162,7 @@ impl Model {
             | Kind::K3Clifford(..)
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
+            | Kind::MukaiQuotient(..)
             | Kind::HilbertSquare(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -5633,6 +5676,7 @@ impl Model {
             Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
+            Kind::MukaiQuotient(name) => out.push(&format!("RVMukaiQuotient({name})")),
             Kind::HilbertSquare(name, degree) => {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
             }
@@ -5923,7 +5967,8 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
-            (Value::Mukai(a), Value::Mukai(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::Mukai(a), Value::Mukai(b))
+            | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
@@ -6258,7 +6303,8 @@ impl Model {
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
-            (Value::Mukai(a), Value::Mukai(b)) => a.compare(self, b),
+            (Value::Mukai(a), Value::Mukai(b))
+            | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -6589,6 +6635,9 @@ impl Model {
                     return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
                 Kind::Mukai(..) => return Err(Error::plain("cannot enumerate a Mukai lattice")),
+                Kind::MukaiQuotient(..) => {
+                    return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
                 Kind::Nakajima(ref grade) => {
                     if grade.supports_states() {
                         return Err(Error::plain(
@@ -8113,7 +8162,7 @@ impl Model {
             }
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
-            Value::Mukai(vector) => {
+            Value::Mukai(vector) | Value::MukaiQuotient(vector) => {
                 let (w, b) = vector.c.coordinates();
                 self.write_type(out, ty, 0)?;
                 out.push(&format!(

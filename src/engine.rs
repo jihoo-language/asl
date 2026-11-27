@@ -665,6 +665,9 @@ enum TypedForm {
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     Mukai(MukaiAction),
+    MukaiQuotient(Rc<mukai::moduli::Lattice>, Box<TypedExpr>),
+    MukaiQuotientLift(Box<TypedExpr>),
+    MukaiQuotientNegate(Box<TypedExpr>),
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     K3AutoLattice(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     HilbertSquareDivisor(i128, Box<TypedExpr>),
@@ -1701,6 +1704,7 @@ impl Engine {
             StatementForm::K3SpinorCoefficient(command) => {
                 return self.spinor_coefficient(command).map(Some)
             }
+            StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
@@ -5449,6 +5453,85 @@ impl Engine {
         }
     }
 
+    fn mukai_moduli_command(&mut self, command: mukai::moduli::Command) -> Result<Option<String>> {
+        use mukai::moduli::Command;
+        let result = match command {
+            Command::Define(name, input) => {
+                let input = self.checker().expr(*input)?;
+                let marking = self
+                    .checker()
+                    .mukai_operand(&input, "rvmukaimoduli")?
+                    .clone();
+                let Value::Mukai(vector) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                self.model.define_mukai_moduli(name, marking, vector)?;
+                return Ok(None);
+            }
+            Command::Lattice(name) => self.model.mukai_moduli(&name)?.report(&name.text),
+            Command::Divisibility(name, input) => {
+                let lattice = self.model.mukai_moduli(&name)?;
+                let x = self.mukai_moduli_input(*input, &name, &lattice, "rvMukaiModuliDiv")?;
+                let value = lattice.divisibility(&mut self.model, &x)?;
+                format!("rvMukaiModuliDiv[{}] = {value}", name.text)
+            }
+            Command::Fujiki(name, j, inputs) => {
+                let lattice = self.model.mukai_moduli(&name)?;
+                let [x, y] = *inputs;
+                let x = self.mukai_moduli_input(x, &name, &lattice, "rvMukaiModuliFujiki")?;
+                let y = self.mukai_moduli_input(y, &name, &lattice, "rvMukaiModuliFujiki")?;
+                let value = lattice.fujiki(&mut self.model, &x, &y, j)?;
+                format!("rvMukaiModuliFujiki[{}, {j}] = {value}", name.text)
+            }
+            Command::RiemannRoch(name, input) => {
+                let lattice = self.model.mukai_moduli(&name)?;
+                let x = self.mukai_moduli_input(*input, &name, &lattice, "rvMukaiModuliRR")?;
+                let value = lattice.riemann_roch(&mut self.model, &x)?;
+                format!("rvMukaiModuliRR[{}] = {value}", name.text)
+            }
+            Command::QuotientPair(inputs) => {
+                let [left, right] = *inputs;
+                let checker = &mut self.checker();
+                let left = checker.expr(left)?;
+                let right = checker.expr(right)?;
+                checker.mukai_quotient_operand(&left, "rvMukaiQuotientPair")?;
+                checker.require_type(left.ty, &right, "rvMukaiQuotientPair")?;
+                let (Value::MukaiQuotient(left), Value::MukaiQuotient(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let result = left.pair(&mut self.model, &right)?;
+                format!("rvMukaiQuotientPair = {result}")
+            }
+        };
+        Ok(Some(result))
+    }
+
+    fn mukai_moduli_input(
+        &mut self,
+        input: ParsedExpr,
+        name: &Label,
+        lattice: &mukai::moduli::Lattice,
+        operation: &str,
+    ) -> Result<Rc<mukai::Vector>> {
+        let input = self.checker().expr(input)?;
+        let expected = if matches!(self.model.kind(input.ty), Kind::MukaiQuotient(..)) {
+            self.model.mukai_quotient_type(name)?
+        } else {
+            let marking = Label {
+                text: lattice.marking.to_string(),
+                span: input.span,
+            };
+            self.model.mukai_type(&marking)?
+        };
+        self.checker().require_type(expected, &input, operation)?;
+        match self.eval(&input)? {
+            Value::Mukai(vector) | Value::MukaiQuotient(vector) => Ok(vector),
+            _ => unreachable!(),
+        }
+    }
+
     fn mukai_command(&mut self, command: mukai::Command) -> Result<String> {
         let (inputs, hilbert, name) = match command {
             mukai::Command::Pair(inputs) => (inputs, None, "rvMukaiPair"),
@@ -6376,6 +6459,9 @@ impl Engine {
                     (BinaryOp::Add, Value::K3Spinor(a), Value::K3Spinor(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a
+                        .add(&mut self.model, &b)?
+                        .persist_quotient(&mut self.model),
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -7841,6 +7927,28 @@ impl Engine {
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
+            TypedForm::MukaiQuotient(lattice, input) => {
+                let Value::Mukai(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                lattice
+                    .project(&mut self.model, &input)?
+                    .persist_quotient(&mut self.model)
+            }
+            TypedForm::MukaiQuotientLift(input) => {
+                let Value::MukaiQuotient(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::Mukai(vector))
+            }
+            TypedForm::MukaiQuotientNegate(input) => {
+                let Value::MukaiQuotient(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector
+                    .negate(&mut self.model)?
+                    .persist_quotient(&mut self.model)
+            }
             TypedForm::Mukai(action) => self.eval_mukai(action),
             TypedForm::HilbertSquareDivisor(delta, input) => {
                 let Value::K3Lattice(vector) = self.eval(input)? else {
@@ -10317,6 +10425,7 @@ impl Checker<'_> {
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
+            TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
@@ -11362,6 +11471,7 @@ impl Checker<'_> {
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
+                    Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
@@ -13500,6 +13610,7 @@ impl Checker<'_> {
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
+            ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
@@ -14226,6 +14337,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::K3Spinor(SpinorAction::Negate(Box::new(input))),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::MukaiQuotient(..)) {
+                    return Ok((input.ty, TypedForm::MukaiQuotientNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Mukai(..)) {
                     return Ok((
@@ -17982,6 +18096,7 @@ impl Checker<'_> {
                         | Kind::K3Clifford(..)
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
+                        | Kind::MukaiQuotient(..)
                         | Kind::HilbertSquare(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
@@ -19826,6 +19941,70 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Clifford(action)))
+    }
+
+    fn mukai_quotient_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {
+        let Kind::MukaiQuotient(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVMukaiQuotient class"));
+        };
+        Ok(name)
+    }
+
+    fn mukai_moduli_expression(
+        &mut self,
+        expression: mukai::moduli::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use mukai::moduli::Expression;
+        let (name, index, dual) = match expression {
+            Expression::Basis(name, index) => (name, Some(index), false),
+            Expression::Glue(name) => (name, None, false),
+            Expression::Dual(name) => (name, None, true),
+            Expression::Quotient(name, input) => {
+                let lattice = self.model.mukai_moduli(&name)?;
+                lattice.require_isotropic("rvMukaiQuotient")?;
+                let input = self.expr(*input)?;
+                let marking = Label {
+                    text: lattice.marking.to_string(),
+                    span: input.span,
+                };
+                let expected = self.model.mukai_type(&marking)?;
+                self.require_type(expected, &input, "rvMukaiQuotient")?;
+                return Ok((
+                    self.model.mukai_quotient_type(&name)?,
+                    TypedForm::MukaiQuotient(lattice, Box::new(input)),
+                ));
+            }
+            Expression::Lift(input) => {
+                let input = self.expr(*input)?;
+                let name = Label {
+                    text: self
+                        .mukai_quotient_operand(&input, "rvMukaiQuotientLift")?
+                        .to_string(),
+                    span: input.span,
+                };
+                let lattice = self.model.mukai_moduli(&name)?;
+                let marking = Label {
+                    text: lattice.marking.to_string(),
+                    span: input.span,
+                };
+                return Ok((
+                    self.model.mukai_type(&marking)?,
+                    TypedForm::MukaiQuotientLift(Box::new(input)),
+                ));
+            }
+        };
+        let lattice = self.model.mukai_moduli(&name)?;
+        let marking = Label {
+            text: lattice.marking.to_string(),
+            span: name.span,
+        };
+        let ty = self.model.mukai_type(&marking)?;
+        let vector = match index {
+            Some(index) => lattice.basis(self.model, index)?,
+            None if dual => lattice.dual(self.model)?,
+            None => lattice.glue(self.model)?,
+        };
+        Ok((ty, TypedForm::Constant(vector.persist(self.model)?)))
     }
 
     fn mukai_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {

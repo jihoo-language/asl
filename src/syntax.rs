@@ -134,6 +134,7 @@ pub(crate) enum TypeForm {
     K3Clifford(Label, u8),
     K3Spinor(Label, u8),
     Mukai(Label),
+    MukaiQuotient(Label),
     HilbertSquare(Label, i128),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -984,6 +985,7 @@ pub(crate) enum ExprForm {
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
+    MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1180,6 +1182,7 @@ pub(crate) enum StatementForm {
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
+    MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -2923,6 +2926,78 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
+    }
+
+    fn mukai_moduli_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::moduli::Command;
+        self.advance()?;
+        if operation == "rvmukaimoduli" {
+            let name = self.label()?;
+            let input = self.paren_expr(0)?;
+            return Ok(StatementForm::MukaiModuli(Box::new(Command::Define(
+                name,
+                Box::new(input),
+            ))));
+        }
+        if operation == "rvMukaiQuotientPair" {
+            return Ok(StatementForm::MukaiModuli(Box::new(Command::QuotientPair(
+                Box::new(self.paren_pair(0)?),
+            ))));
+        }
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let command = if operation == "rvMukaiModuliFujiki" {
+            self.expect(Token::Comma)?;
+            let exponent = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Command::Fujiki(name, exponent, Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::RBracket)?;
+            match operation {
+                "rvMukaiModuliLattice" => Command::Lattice(name),
+                "rvMukaiModuliDiv" => Command::Divisibility(name, Box::new(self.paren_expr(0)?)),
+                _ => Command::RiemannRoch(name, Box::new(self.paren_expr(0)?)),
+            }
+        };
+        Ok(StatementForm::MukaiModuli(Box::new(command)))
+    }
+
+    fn mukai_moduli_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::moduli::Expression;
+        if operation == "rvMukaiQuotientLift" {
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            return expr(
+                span,
+                ExprForm::MukaiModuli(Expression::Lift(Box::new(input))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let index = if operation == "rvMukaiModuliBasis" {
+            self.expect(Token::Comma)?;
+            Some(self.number()?.0)
+        } else {
+            None
+        };
+        self.expect(Token::RBracket)?;
+        let (expression, depth) = match operation {
+            "rvMukaiModuliBasis" => (Expression::Basis(name, index.unwrap()), 0),
+            "rvMukaiModuliDual" => (Expression::Dual(name), 0),
+            "rvMukaiQuotient" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Quotient(name, Box::new(input)), depth)
+            }
+            _ => (Expression::Glue(name), 0),
+        };
+        expr(span, ExprForm::MukaiModuli(expression), depth)
     }
 
     fn mukai_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -5008,6 +5083,14 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerNewton"),
             ) => self.crystalline_newton_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word(
+                operation @ ("rvmukaimoduli"
+                | "rvMukaiModuliLattice"
+                | "rvMukaiModuliDiv"
+                | "rvMukaiModuliFujiki"
+                | "rvMukaiModuliRR"
+                | "rvMukaiQuotientPair"),
+            ) => self.mukai_moduli_statement(operation)?,
             Token::Word(name @ ("rvMukaiPair" | "rvMukaiHilbFujiki")) => {
                 self.mukai_statement(name)?
             }
@@ -8338,6 +8421,7 @@ impl<'src> Parser<'src> {
                 | "RVK3Lattice"
                 | "RVMukai"
                 | "RVKummerWeil"
+                | "RVMukaiQuotient"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -8349,6 +8433,7 @@ impl<'src> Parser<'src> {
                 "RVEnriques" => TypeForm::Enriques(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
+                "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
                 "RVKummerWeil" => TypeForm::KummerWeil(endpoint),
                 _ => TypeForm::K3Lattice(endpoint),
@@ -10405,6 +10490,17 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvNakajimaBoundary" && self.token() == Token::LParen)
                 {
                     return self.nakajima_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvMukaiModuliBasis"
+                        | "rvMukaiModuliGlue"
+                        | "rvMukaiModuliDual"
+                        | "rvMukaiQuotient"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvMukaiQuotientLift" && self.token() == Token::LParen)
+                {
+                    return self.mukai_moduli_expression(&name.text, span, nest);
                 }
                 if (matches!(name.text.as_str(), "rvMukai" | "rvMukaiIdeal")
                     && self.token() == Token::LBracket)
