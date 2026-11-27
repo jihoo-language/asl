@@ -15,6 +15,7 @@ use crate::rv_unram::{mul_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod brauer;
+pub(crate) mod cm_cycles;
 pub(crate) mod linking;
 pub(crate) mod richelot;
 pub(crate) mod transfers;
@@ -232,6 +233,45 @@ impl Basis {
             .evaluate(model, &self.curve.ring, order, value)
     }
 
+    pub(super) fn generators(&self) -> &[Rc<Divisor>] {
+        &self.generators
+    }
+
+    pub(super) fn polarization_scale(
+        &self,
+        model: &mut Model,
+        source: &Self,
+        degree: u64,
+    ) -> Result<u64> {
+        let value = self.curve.ring.power(model, &source.root, degree)?;
+        self.logarithm
+            .evaluate(model, &self.curve.ring, self.order, value)
+    }
+
+    pub(super) fn checked_coordinates(
+        &self,
+        model: &mut Model,
+        value: &Divisor,
+    ) -> Result<Vec<u64>> {
+        let curve = &self.curve;
+        let mut reconstruction = Divisor::zero(curve);
+        let mut coefficients = Vec::with_capacity(self.len());
+        for (row, generator) in self.generators.iter().enumerate() {
+            let coefficient = self.coordinate_of_torsion(model, value, row)?;
+            coefficients.push(coefficient);
+            if coefficient != 0 {
+                let term = generator.scale(model, curve, i128::from(coefficient))?;
+                reconstruction = reconstruction.add(model, curve, &term)?;
+            }
+        }
+        if !reconstruction.compare(model, value)?.is_eq() {
+            return Err(Error::plain(
+                "Jacobian torsion matrix column failed to reconstruct its divisor class",
+            ));
+        }
+        Ok(coefficients)
+    }
+
     /// Express images of `source` generators in this basis, checking every
     /// column by recombining the actual divisor classes on the target curve.
     pub(crate) fn action_matrix(
@@ -240,7 +280,6 @@ impl Basis {
         source: &Self,
         mut image_of: impl FnMut(&mut Model, &Divisor) -> Result<Divisor>,
     ) -> Result<Matrix<u64>> {
-        let curve = &self.curve;
         let width = self.len();
         if width != source.len() || self.order != source.order || self.prime != source.prime {
             return Err(Error::plain(
@@ -253,19 +292,12 @@ impl Basis {
         let mut entries = vec![0; cells];
         for (column, generator) in source.generators.iter().enumerate() {
             let image = image_of(model, generator)?;
-            let mut reconstruction = Divisor::zero(curve);
-            for (row, basis_element) in self.generators.iter().enumerate() {
-                let coefficient = self.coordinate_of_torsion(model, &image, row)?;
+            for (row, coefficient) in self
+                .checked_coordinates(model, &image)?
+                .into_iter()
+                .enumerate()
+            {
                 entries[row * width + column] = coefficient;
-                if coefficient != 0 {
-                    let term = basis_element.scale(model, curve, i128::from(coefficient))?;
-                    reconstruction = reconstruction.add(model, curve, &term)?;
-                }
-            }
-            if !reconstruction.compare(model, &image)?.is_eq() {
-                return Err(Error::plain(
-                    "Jacobian torsion matrix column failed to reconstruct its divisor class",
-                ));
             }
         }
         Matrix::from_entries(width, entries)

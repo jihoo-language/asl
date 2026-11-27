@@ -72,6 +72,7 @@ use crate::hyperelliptic_kummer_surface::{
     polarized as kummer_div, unimodular, Point as KummerPoint,
 };
 use crate::jacobian_level;
+use crate::jacobian_level::cm_cycles as kummer_cm;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jet_hom;
@@ -689,6 +690,18 @@ enum EllipticModularAction {
     SpecializeCoefficient(usize, Box<TypedExpr>),
 }
 
+enum KummerCMOperation {
+    Lift,
+    Project(bool),
+}
+
+struct TypedKummerCM {
+    cycles: Rc<kummer_cm::Cycles>,
+    level: usize,
+    operation: KummerCMOperation,
+    input: TypedExpr,
+}
+
 struct TypedBrauerTransfer {
     target: Rc<brauer_linking::Pairing>,
     level: usize,
@@ -871,6 +884,8 @@ enum TypedForm {
     KummerBrauerLift(Rc<brauer_transfers::Quotient>, Box<TypedExpr>),
     KummerBrauerClassScale(Rc<brauer_transfers::Quotient>, i128, Box<TypedExpr>),
     KummerBrauerTransfer(Box<TypedBrauerTransfer>),
+    KummerCMOperation(Box<TypedKummerCM>),
+    KummerCMNegate(Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
     K3LatticeReflect(Box<[TypedExpr; 2]>),
@@ -2595,6 +2610,7 @@ impl Engine {
             }
             StatementForm::Hurwitz(query) => return query.report(&mut self.model).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
+            StatementForm::KummerCMCycle(command) => return self.kummer_cm_statement(*command),
             StatementForm::KummerBrauerTransfer(command) => {
                 return self.kummer_brauer_transfer_statement(*command)
             }
@@ -7088,6 +7104,89 @@ impl Engine {
         }
     }
 
+    fn kummer_cm_statement(&mut self, statement: kummer_cm::Statement) -> Result<Option<String>> {
+        use kummer_cm::Statement;
+        match statement {
+            Statement::Define(name, pairing_name, elliptic, index, gaussian) => {
+                let pairing = self.model.kummer_brauer_pairing(&pairing_name.text)?;
+                let elliptic = self.model.jacobian_power_level(&elliptic)?;
+                let base = self.model.kummer_curve(&pairing.base_name().text)?;
+                let field = Label {
+                    text: base.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let expected = self.model.rv_unram_type(&field)?;
+                let gaussian = self.checker().expr(*gaussian)?;
+                self.checker()
+                    .require_type(expected, &gaussian, "Kummer CM Gaussian unit")?;
+                let Value::RVUnram(gaussian) = self.eval(&gaussian)? else {
+                    unreachable!()
+                };
+                let cycles = kummer_cm::Cycles::new(
+                    &mut self.model,
+                    pairing_name,
+                    pairing,
+                    &elliptic,
+                    index,
+                    gaussian.to_vec(),
+                )?;
+                self.model.define_kummer_cm_cycles(name, cycles)?;
+                Ok(None)
+            }
+            Statement::Data(name) => Ok(Some(
+                self.model.kummer_cm_cycles(&name.text)?.report(&name.text),
+            )),
+            Statement::Defect(name, degree) => {
+                let cycles = self.model.kummer_cm_cycles(&name.text)?;
+                cycles.defect(&mut self.model, &name.text, degree).map(Some)
+            }
+            Statement::Hermitian(input) => {
+                let input = self.checker().expr(*input)?;
+                let Kind::KummerCMCycle(name) = self.model.kind(input.ty) else {
+                    return Err(self.checker().invalid_operand(
+                        &input,
+                        "rvKummerCMCycleHermitian",
+                        "a certified Kummer CM cycle",
+                    ));
+                };
+                let cycles = self.model.kummer_cm_cycles(name)?;
+                let Value::KummerCMCycle(cycle) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                cycles.hermitian(&mut self.model, cycle).map(Some)
+            }
+            Statement::Pair(pair) => {
+                let [left, right] = *pair;
+                let left = self.checker().expr(left)?;
+                let Kind::KummerCMCycle(name) = self.model.kind(left.ty) else {
+                    return Err(self.checker().invalid_operand(
+                        &left,
+                        "rvKummerCMCyclePair",
+                        "a certified Kummer CM cycle",
+                    ));
+                };
+                let cycles = self.model.kummer_cm_cycles(name)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "Kummer CM intersection argument")?;
+                let (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let pairing = cycles.pair(&mut self.model, a, b)?;
+                let normalized = if pairing % 2 == 0 {
+                    (pairing / 2).to_string()
+                } else {
+                    format!("{pairing}/2")
+                };
+                Ok(Some(format!(
+                    "rvKummerCMCyclePair = product={pairing}, normalized_kummer={normalized}"
+                )))
+            }
+        }
+    }
+
     fn kummer_brauer_transfer_statement(
         &mut self,
         statement: brauer_transfers::Statement,
@@ -10095,6 +10194,9 @@ impl Engine {
                             std::array::from_fn(|i| ec_level::add_vectors(a.0[i], b.0[i], n));
                         Ok(Value::ECLevelMat(ec_level::Matrix(columns)))
                     }
+                    (BinaryOp::Add, Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => {
+                        Ok(Value::KummerCMCycle(kummer_cm::cycle_add(a, b)?))
+                    }
                     (BinaryOp::Add, Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => {
                         let Kind::KummerBrauerClass(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -11827,6 +11929,28 @@ impl Engine {
                     }
                 }
             },
+            TypedForm::KummerCMNegate(input) => {
+                let Value::KummerCMCycle(cycle) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::KummerCMCycle(kummer_cm::cycle_negate(cycle)?))
+            }
+            TypedForm::KummerCMOperation(plan) => {
+                let result = match (self.eval(&plan.input)?, &plan.operation) {
+                    (Value::KummerCMCycle(cycle), KummerCMOperation::Lift) => {
+                        plan.cycles.lift(&mut self.model, plan.level, cycle)?
+                    }
+                    (
+                        Value::KummerBrauerFixed(value),
+                        KummerCMOperation::Project(transcendental),
+                    ) => {
+                        plan.cycles
+                            .project(&mut self.model, *transcendental, plan.level, value)?
+                    }
+                    _ => unreachable!(),
+                };
+                Ok(Value::KummerBrauerFixed(result))
+            }
             TypedForm::KummerBrauerProject(quotient, algebraic, input) => {
                 let Value::KummerBrauerFixed(value) = self.eval(input)? else {
                     unreachable!()
@@ -15353,6 +15477,7 @@ impl Checker<'_> {
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerBrauerFixed(name, level) => self.model.kummer_brauer_type(&name, level),
             TypeForm::KummerBrauerClass(name) => self.model.kummer_brauer_class_type(&name),
+            TypeForm::KummerCMCycle(name) => self.model.kummer_cm_cycle_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -16506,6 +16631,7 @@ impl Checker<'_> {
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
                     Kind::KummerBrauerFixed(..) => Value::KummerBrauerFixed([0; 6]),
                     Kind::KummerBrauerClass(..) => Value::KummerBrauerClass([0; 6]),
+                    Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
                     Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
@@ -18743,6 +18869,7 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
+            ExprForm::KummerCMCycle(expression) => self.kummer_cm_expression(*expression),
             ExprForm::KummerBrauerTransfer(expression) => {
                 self.kummer_brauer_transfer_expression(*expression)
             }
@@ -19838,6 +19965,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KummerCMCycle(..)) {
+                    return Ok((input.ty, TypedForm::KummerCMNegate(Box::new(input))));
                 }
                 if let Kind::KummerBrauerClass(name) = self.model.kind(input.ty) {
                     let quotient = self.model.kummer_brauer_quotient(name)?;
@@ -23645,6 +23775,7 @@ impl Checker<'_> {
                         | Kind::KummerDisc(..)
                         | Kind::KummerBrauerFixed(..)
                         | Kind::KummerBrauerClass(..)
+                        | Kind::KummerCMCycle(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
@@ -28650,6 +28781,66 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVSiegelWeight"))
         }
+    }
+
+    fn kummer_cm_expression(
+        &mut self,
+        expression: kummer_cm::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use kummer_cm::Expression;
+        let (cycles, level, operation, input) = match expression {
+            Expression::Cycle(name, value) => {
+                let ty = self.model.kummer_cm_cycle_type(&name)?;
+                return Ok((ty, TypedForm::Constant(Value::KummerCMCycle(value))));
+            }
+            Expression::Lift(level, input) => {
+                let input = self.expr(*input)?;
+                let Kind::KummerCMCycle(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvKummerCMCycleLift",
+                        "a certified Kummer CM cycle",
+                    ));
+                };
+                (
+                    self.model.kummer_cm_cycles(name)?,
+                    level,
+                    KummerCMOperation::Lift,
+                    input,
+                )
+            }
+            Expression::Project(name, transcendental, input) => {
+                let cycles = self.model.kummer_cm_cycles(&name.text)?;
+                cycles.require_projector()?;
+                let input = self.expr(*input)?;
+                let Kind::KummerBrauerFixed(_, level) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "Kummer CM projection",
+                        "a Kummer Brauer fixed lift",
+                    ));
+                };
+                let level = *level;
+                let expected = self.model.kummer_brauer_type(&cycles.pairing_name, level)?;
+                self.require_type(expected, &input, "Kummer CM projection argument")?;
+                (
+                    cycles,
+                    level,
+                    KummerCMOperation::Project(transcendental),
+                    input,
+                )
+            }
+        };
+        let ty = self.model.kummer_brauer_type(&cycles.pairing_name, level)?;
+        Ok((
+            ty,
+            TypedForm::KummerCMOperation(Box::new(TypedKummerCM {
+                cycles,
+                level,
+                operation,
+                input,
+            })),
+        ))
     }
 
     fn kummer_brauer_transfer_expression(

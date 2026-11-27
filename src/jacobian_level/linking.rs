@@ -103,6 +103,10 @@ impl Pairing {
         })
     }
 
+    pub(crate) fn base_name(&self) -> &Label {
+        &self.base
+    }
+
     pub(crate) fn modulus(&self, level: usize) -> Result<u64> {
         if level == 0 || level > self.ring.precision {
             return Err(Error::plain(
@@ -360,7 +364,7 @@ pub(super) fn product(a: &Exterior, b: &Exterior, modulus: u64) -> Exterior {
 // In the listed order (e1,e2,f1,f2), positive volume is
 // e1 ^ f1 ^ e2 ^ f2. Pullback along the degree-two quotient multiplies
 // cup products by two, so use half the abelian intersection form.
-fn intersection(v: Fixed, w: Fixed, modulus: u64) -> u64 {
+pub(super) fn intersection(v: Fixed, w: Fixed, modulus: u64) -> u64 {
     let mut result = 0;
     for (i, (x, y)) in v.into_iter().zip(w.into_iter().rev()).enumerate() {
         let term = mul_mod(x, y, modulus);

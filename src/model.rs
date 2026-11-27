@@ -48,8 +48,8 @@ use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
 };
 use crate::hyperelliptic_kummer_surface::{clifford, cm_ring, rational_sparse, spinor};
-use crate::jacobian_level::linking;
 use crate::jacobian_level::transfers;
+use crate::jacobian_level::{cm_cycles, linking};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -296,6 +296,7 @@ pub(crate) enum Kind {
     KummerDisc(Rc<str>),
     KummerBrauerFixed(Rc<str>, usize),
     KummerBrauerClass(Rc<str>),
+    KummerCMCycle(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
@@ -518,6 +519,7 @@ pub(crate) enum Value {
     KummerDisc(u8),
     KummerBrauerFixed(linking::Fixed),
     KummerBrauerClass(transfers::Class),
+    KummerCMCycle(cm_cycles::Cycle),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
@@ -743,6 +745,7 @@ pub(crate) struct Model {
     jacobian_power_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     kummer_brauer_pairings: HashMap<String, Rc<linking::Pairing>>,
     kummer_brauer_quotients: HashMap<String, Rc<transfers::Quotient>>,
+    kummer_cm_cycles: HashMap<String, Rc<cm_cycles::Cycles>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
@@ -891,6 +894,7 @@ impl Model {
             jacobian_power_levels: HashMap::new(),
             kummer_brauer_pairings: HashMap::new(),
             kummer_brauer_quotients: HashMap::new(),
+            kummer_cm_cycles: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
@@ -1423,7 +1427,7 @@ impl Model {
             | Kind::K3PencilKummer2(..)
             | Kind::K3PencilCoverPoint(..) => usize::MAX,
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
-            Kind::KummerBrauerFixed(..) => usize::MAX,
+            Kind::KummerBrauerFixed(..) | Kind::KummerCMCycle(..) => usize::MAX,
             Kind::KummerBrauerClass(ref name) => {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
             }
@@ -1721,6 +1725,7 @@ impl Model {
                 | Kind::KummerDisc(..)
                 | Kind::KummerBrauerFixed(..)
                 | Kind::KummerBrauerClass(..)
+                | Kind::KummerCMCycle(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
@@ -4261,6 +4266,33 @@ impl Model {
         self.allocate(1 + name.text.len())?;
         self.jacobian_levels.insert(name.text, Rc::new(basis));
         Ok(())
+    }
+
+    pub(crate) fn define_kummer_cm_cycles(
+        &mut self,
+        name: Label,
+        cycles: cm_cycles::Cycles,
+    ) -> Result<()> {
+        if self.kummer_cm_cycles.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "Kummer CM cycles are already defined",
+            ));
+        }
+        self.kummer_cm_cycles.insert(name.text, Rc::new(cycles));
+        Ok(())
+    }
+
+    pub(crate) fn kummer_cm_cycles(&self, name: &str) -> Result<Rc<cm_cycles::Cycles>> {
+        self.kummer_cm_cycles
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Kummer CM cycles '{name}'")))
+    }
+
+    pub(crate) fn kummer_cm_cycle_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.kummer_cm_cycles(&name.text)?;
+        self.inhabited_type(Kind::KummerCMCycle(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_kummer_brauer_quotient(
@@ -6905,6 +6937,7 @@ impl Model {
             | Kind::KummerDisc(..)
             | Kind::KummerBrauerFixed(..)
             | Kind::KummerBrauerClass(..)
+            | Kind::KummerCMCycle(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
@@ -7463,6 +7496,7 @@ impl Model {
             Kind::K3PencilCoverPoint(name) => out.push(&format!("RVK3PencilCoverPoint({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerBrauerClass(name) => out.push(&format!("RVKummerBrauerClass({name})")),
+            Kind::KummerCMCycle(name) => out.push(&format!("RVKummerCMCycle({name})")),
             Kind::KummerBrauerFixed(name, level) => {
                 out.push(&format!("RVKummerBrauerFixed({name},{level})"))
             }
@@ -7869,6 +7903,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerBrauerFixed(a), Value::KummerBrauerFixed(b)) => Ok(a == b),
             (Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => Ok(a == b),
+            (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -8269,6 +8304,7 @@ impl Model {
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerBrauerFixed(a), Value::KummerBrauerFixed(b)) => Ok(a.cmp(b)),
             (Value::KummerBrauerClass(a), Value::KummerBrauerClass(b)) => Ok(a.cmp(b)),
+            (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -8706,6 +8742,9 @@ impl Model {
                         .into_iter()
                         .map(Value::KummerBrauerClass)
                         .collect()
+                }
+                Kind::KummerCMCycle(..) => {
+                    return Err(Error::plain("cannot enumerate integral Kummer CM cycles"));
                 }
                 Kind::KummerBrauerFixed(..) => {
                     return Err(Error::plain("cannot enumerate Kummer Brauer fixed lifts"));
@@ -10489,6 +10528,10 @@ impl Model {
                     self.write_ec_polynomial(out, direction)?;
                 }
                 out.push("}")
+            }
+            Value::KummerCMCycle(coordinates) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{coordinates:?}}}"))
             }
             Value::KummerBrauerFixed(coordinates) | Value::KummerBrauerClass(coordinates) => {
                 self.write_type(out, ty, 0)?;

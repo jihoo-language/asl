@@ -7,7 +7,7 @@ use crate::hyperelliptic_kummer_surface::k3;
 use crate::model::Model;
 use crate::rv_unram::{add_mod, mul_mod, sub_mod};
 
-const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+pub(super) const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
 pub(super) type Exterior = [[u64; 6]; 6];
 
 pub(crate) fn report(

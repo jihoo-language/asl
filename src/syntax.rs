@@ -150,6 +150,7 @@ pub(crate) enum TypeForm {
     KummerDisc(Label),
     KummerBrauerFixed(Label, usize),
     KummerBrauerClass(Label),
+    KummerCMCycle(Label),
     KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -1044,6 +1045,7 @@ pub(crate) enum ExprForm {
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerBrauerLink(Box<crate::jacobian_level::linking::Expression>),
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Expression>),
+    KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
@@ -1305,6 +1307,7 @@ pub(crate) enum StatementForm {
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerBrauerLink(Box<crate::jacobian_level::linking::Statement>),
     KummerBrauerTransfer(Box<crate::jacobian_level::transfers::Statement>),
+    KummerCMCycle(Box<crate::jacobian_level::cm_cycles::Statement>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
@@ -3096,6 +3099,92 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Jacobian(Box::new(command)))
+    }
+
+    fn kummer_cm_cycle_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_cycles::Statement;
+        self.advance()?;
+        let statement = match name {
+            "rvkummercmcycles" => {
+                let label = self.label()?;
+                self.expect(Token::LBracket)?;
+                let pairing = self.label()?;
+                self.expect(Token::Comma)?;
+                let elliptic = self.label()?;
+                let index = if self.eat(Token::Comma)? {
+                    self.number()?.0
+                } else {
+                    1
+                };
+                self.expect(Token::RBracket)?;
+                Statement::Define(
+                    label,
+                    pairing,
+                    elliptic,
+                    index,
+                    Box::new(self.paren_expr(0)?),
+                )
+            }
+            "rvKummerCMCyclePair" => Statement::Pair(Box::new(self.paren_pair(0)?)),
+            "rvKummerCMCycleHermitian" => Statement::Hermitian(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                let result = if name == "rvKummerCMDefect" {
+                    self.expect(Token::Comma)?;
+                    Statement::Defect(label, self.number()?.0)
+                } else {
+                    Statement::Data(label)
+                };
+                self.expect(Token::RBracket)?;
+                result
+            }
+        };
+        Ok(StatementForm::KummerCMCycle(Box::new(statement)))
+    }
+
+    fn kummer_cm_cycle_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_cycles::Expression;
+        self.expect(Token::LBracket)?;
+        let (value, depth) = match name {
+            "rvKummerCMCycle" => {
+                let label = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let values = self.signed_list(
+                    Token::RBrace,
+                    "a signed cycle coefficient",
+                    "cycle coefficient",
+                )?;
+                let coords = values
+                    .try_into()
+                    .map_err(|_| Error::new(span, "Kummer CM cycle requires four coefficients"))?;
+                (Expression::Cycle(label, coords), 0)
+            }
+            "rvKummerCMCycleLift" => {
+                let level = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Lift(level, Box::new(input)), depth)
+            }
+            _ => {
+                let label = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Project(label, name == "rvKummerCMTranscendental", Box::new(input)),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::KummerCMCycle(Box::new(value)), depth)
     }
 
     fn kummer_brauer_transfer_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -10276,6 +10365,13 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rveccmaction" | "rveccmactionbase" | "rvECCMActionData")) => {
                 self.ec_cm_action_statement(name)?
             }
+            Token::Word(
+                name @ ("rvkummercmcycles"
+                | "rvKummerCMCycleData"
+                | "rvKummerCMCyclePair"
+                | "rvKummerCMCycleHermitian"
+                | "rvKummerCMDefect"),
+            ) => self.kummer_cm_cycle_statement(name)?,
             Token::Word(name @ ("rvkummerbrauerquotient" | "rvKummerBrauerQuotientData")) => {
                 self.kummer_brauer_transfer_statement(name)?
             }
@@ -13975,6 +14071,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if name.text == "RVKummerCMCycle" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KummerCMCycle(name), 0);
+        }
         if name.text == "RVKummerBrauerClass" && self.eat(Token::LParen)? {
             let name = self.label()?;
             self.expect(Token::RParen)?;
@@ -16344,6 +16445,16 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvKummerCMCycle"
+                        | "rvKummerCMCycleLift"
+                        | "rvKummerCMAlgebraic"
+                        | "rvKummerCMTranscendental"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.kummer_cm_cycle_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
