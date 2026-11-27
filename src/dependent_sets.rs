@@ -9,6 +9,8 @@ pub(crate) enum Origin {
     Pullback(Rc<Pullback>),
     Sum(Rc<Sum>),
     Product(Rc<Product>),
+    Lan(Rc<crate::set_kan::Lan>),
+    Ran(Rc<crate::set_kan::Ran>),
 }
 
 #[derive(Clone, Copy)]
@@ -32,6 +34,13 @@ impl Operation {
             "setSumRestrict" => Self::SumRestrict,
             _ => return None,
         })
+    }
+}
+
+pub(crate) fn pullback(model: &Model, name: &str) -> Result<Rc<Pullback>> {
+    match model.set_origin(name) {
+        Some(Origin::Pullback(origin)) => Ok(origin),
+        _ => Err(Error::plain(format!("'{name}' is not a set pullback"))),
     }
 }
 
@@ -74,6 +83,10 @@ impl Pullback {
                 positions,
             },
         ))
+    }
+
+    pub(crate) fn positions(&self) -> &[usize] {
+        &self.positions
     }
 
     fn matches_projection(&self, base: TypeId, elements: &Elements) -> bool {
@@ -207,18 +220,63 @@ impl Sum {
     }
 }
 
-struct Future {
-    points: Vec<usize>,
-    sections: Vec<Vec<usize>>,
+pub(crate) struct Future {
+    pub(crate) points: Vec<usize>,
+    pub(crate) sections: Vec<Vec<usize>>,
 }
 
 impl Future {
-    fn index(&self, model: &mut Model, choices: &[usize]) -> Result<usize> {
+    pub(crate) fn build(model: &mut Model, body: &Diagram, points: Vec<usize>) -> Result<Self> {
+        let sections = body.sections_on(model, &points)?;
+        Ok(Self { points, sections })
+    }
+
+    pub(crate) fn cells(&self) -> usize {
+        self.points.len() + self.sections.len() * (self.points.len() + 1) + 1
+    }
+
+    pub(crate) fn index(&self, model: &mut Model, choices: &[usize]) -> Result<usize> {
         let search_steps = self.sections.len().max(1).ilog2() as usize + 1;
         model.spend((choices.len() + 1) * search_steps)?;
         self.sections
             .binary_search_by(|section| section.as_slice().cmp(choices))
             .map_err(|_| Error::plain("dependent product choices do not form a future section"))
+    }
+
+    pub(crate) fn position(&self, model: &mut Model, point: usize) -> Result<usize> {
+        model.spend(self.points.len().max(1).ilog2() as usize + 1)?;
+        Ok(self.points.binary_search(&point).expect("point in future"))
+    }
+
+    pub(crate) fn restrict(&self, model: &mut Model, target: &Self) -> Result<Vec<usize>> {
+        model.spend(self.points.len() + target.points.len())?;
+        let mut retained = Vec::with_capacity(target.points.len());
+        let mut scan = 0;
+        for point in &target.points {
+            while &self.points[scan] != point {
+                scan += 1;
+            }
+            retained.push(scan);
+        }
+        self.select_into(model, target, &retained)
+    }
+
+    pub(crate) fn select_into(
+        &self,
+        model: &mut Model,
+        target: &Self,
+        coordinates: &[usize],
+    ) -> Result<Vec<usize>> {
+        let mut choices = Vec::with_capacity(coordinates.len());
+        self.sections
+            .iter()
+            .map(|section| {
+                model.spend(coordinates.len() + 1)?;
+                choices.clear();
+                choices.extend(coordinates.iter().map(|&position| section[position]));
+                target.index(model, &choices)
+            })
+            .collect()
     }
 }
 
@@ -252,44 +310,20 @@ impl Product {
                     future.push(point);
                 }
             }
-            let sections = body.sections_on(model, &future)?;
-            count += sections.len();
+            let future = Future::build(model, body, future)?;
+            count += future.sections.len();
             if count > set_family::MAX_OCCURRENCES {
                 return Err(Error::plain(
                     "dependent product exceeds the limit of 4096 section occurrences",
                 ));
             }
-            cells += future.len() + sections.len() * (future.len() + 1) + 1;
+            cells += future.cells();
             set_family::check_cells(cells)?;
-            futures.push(Future {
-                points: future,
-                sections,
-            });
+            futures.push(future);
         }
         let sizes = futures.iter().map(|future| future.sections.len()).collect();
         let diagram = Diagram::generated(model, base.base, sizes, |model, x, y| {
-            let source = &futures[x];
-            let target = &futures[y];
-            let mut retained = Vec::with_capacity(target.points.len());
-            let mut scan = 0;
-            model.spend(source.points.len() + target.points.len())?;
-            for point in &target.points {
-                while &source.points[scan] != point {
-                    scan += 1;
-                }
-                retained.push(scan);
-            }
-            let mut choices = Vec::with_capacity(retained.len());
-            source
-                .sections
-                .iter()
-                .map(|section| {
-                    model.spend(retained.len() + 1)?;
-                    choices.clear();
-                    choices.extend(retained.iter().map(|&position| section[position]));
-                    target.index(model, &choices)
-                })
-                .collect()
+            futures[x].restrict(model, &futures[y])
         })?;
         model.allocate(cells)?;
         Ok((

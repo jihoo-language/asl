@@ -406,6 +406,7 @@ enum TypedForm {
         map: Box<TypedExpr>,
     },
     SetDependent(DependentAction, Option<Box<TypedExpr>>),
+    SetKan(crate::set_kan::Action, Option<Box<TypedExpr>>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
     SetCompose(
@@ -1105,6 +1106,44 @@ impl Engine {
                     diagram,
                     dependent_sets::Origin::Pullback(Rc::new(origin)),
                 )?;
+                return Ok(None);
+            }
+            StatementForm::SetKan(name, family, map, right) => {
+                self.model.check_new_set_family(&name)?;
+                let body = self.model.set_family(&family)?;
+                let map = self.checker().expr(map)?;
+                let operation = if right { "setran" } else { "setlan" };
+                let Kind::Arrow(domain, range) = *self.model.kind(map.ty) else {
+                    return Err(Error::new(
+                        map.span,
+                        format!("{operation} requires a monotone map of named sites"),
+                    ));
+                };
+                if domain != body.base || !matches!(self.model.kind(range), Kind::Space(_)) {
+                    return Err(Error::new(map.span, format!(
+                        "{operation} requires the input family's site as domain and a named codomain"
+                    )));
+                }
+                let Value::Map(rows) = self.eval(&map)? else {
+                    unreachable!()
+                };
+                let along = crate::set_kan::Along::new(
+                    &mut self.model,
+                    family.text.into(),
+                    domain,
+                    range,
+                    &rows,
+                )?;
+                let (diagram, origin) = if right {
+                    let (diagram, origin) =
+                        crate::set_kan::Ran::build(&mut self.model, along, &body)?;
+                    (diagram, dependent_sets::Origin::Ran(Rc::new(origin)))
+                } else {
+                    let (diagram, origin) =
+                        crate::set_kan::Lan::build(&mut self.model, along, &body)?;
+                    (diagram, dependent_sets::Origin::Lan(Rc::new(origin)))
+                };
+                self.model.define_dependent_set(&name, diagram, origin)?;
                 return Ok(None);
             }
             StatementForm::SetDependent(name, total, family, product) => {
@@ -3072,6 +3111,16 @@ impl Engine {
                         *universal,
                     ),
                 }
+            }
+            TypedForm::SetKan(action, input) => {
+                let rows = input.as_ref().map(|input| self.eval(input)).transpose()?;
+                let rows = rows.as_ref().map(|value| {
+                    let Value::SetNat(rows) = value else {
+                        unreachable!()
+                    };
+                    rows.as_ref()
+                });
+                action.evaluate(&mut self.model, rows)
             }
             TypedForm::SetDependent(action, input) => {
                 let rows = if let Some(input) = input {
@@ -6534,13 +6583,6 @@ impl Checker<'_> {
         Ok((ty, TypedForm::SetLogic(action, inputs)))
     }
 
-    fn get_pullback(&self, name: &str) -> Result<Rc<dependent_sets::Pullback>> {
-        match self.model.set_origin(name) {
-            Some(dependent_sets::Origin::Pullback(origin)) => Ok(origin),
-            _ => Err(Error::plain(format!("'{name}' is not a set pullback"))),
-        }
-    }
-
     fn get_set_product(&self, name: &str) -> Result<Rc<dependent_sets::Product>> {
         match self.model.set_origin(name) {
             Some(dependent_sets::Origin::Product(origin)) => Ok(origin),
@@ -6578,8 +6620,8 @@ impl Checker<'_> {
         let (domain, range, action) = match operation {
             SetOperation::PullNatural => {
                 let second = second.expect("parsed target pullback");
-                let a = self.get_pullback(&first)?;
-                let b = self.get_pullback(&second)?;
+                let a = dependent_sets::pullback(self.model, &first)?;
+                let b = dependent_sets::pullback(self.model, &second)?;
                 if a.family != source || b.family != target || !a.same_map(&b) {
                     return Err(Error::plain(
                         "setPullNat requires pullbacks of the two families along the same map",
@@ -6594,7 +6636,7 @@ impl Checker<'_> {
             SetOperation::Evaluation => {
                 let second = second.expect("parsed projection pullback");
                 let product = self.get_set_product(&first)?;
-                let lifted = self.get_pullback(&second)?;
+                let lifted = dependent_sets::pullback(self.model, &second)?;
                 product.projection.check(&lifted)?;
                 if lifted.family != first {
                     return Err(Error::plain(
@@ -6609,7 +6651,7 @@ impl Checker<'_> {
             }
             SetOperation::Transpose => {
                 let product = self.get_set_product(&first)?;
-                let lifted = self.get_pullback(&source)?;
+                let lifted = dependent_sets::pullback(self.model, &source)?;
                 product.projection.check(&lifted)?;
                 if target != product.projection.body {
                     return Err(Error::plain(
@@ -6632,7 +6674,7 @@ impl Checker<'_> {
             }
             SetOperation::Untranspose => {
                 let product = self.get_set_product(&target)?;
-                let lifted = self.get_pullback(&first)?;
+                let lifted = dependent_sets::pullback(self.model, &first)?;
                 product.projection.check(&lifted)?;
                 if lifted.family != source {
                     return Err(Error::plain(
@@ -6655,7 +6697,7 @@ impl Checker<'_> {
             }
             SetOperation::SumLift => {
                 let sum = self.get_set_sum(&first)?;
-                let lifted = self.get_pullback(&target)?;
+                let lifted = dependent_sets::pullback(self.model, &target)?;
                 sum.projection.check(&lifted)?;
                 if source != sum.projection.body {
                     return Err(Error::plain(
@@ -6674,7 +6716,7 @@ impl Checker<'_> {
             }
             SetOperation::SumRestrict => {
                 let sum = self.get_set_sum(&source)?;
-                let lifted = self.get_pullback(&first)?;
+                let lifted = dependent_sets::pullback(self.model, &first)?;
                 sum.projection.check(&lifted)?;
                 if lifted.family != target {
                     return Err(Error::plain(
@@ -6781,6 +6823,23 @@ impl Checker<'_> {
             }
             ExprForm::SetLogic(operation, labels, inputs) => {
                 self.set_logic(operation, labels, inputs)
+            }
+            ExprForm::SetKan(operation, first, second, input) => {
+                let input = input
+                    .map(|expr| self.expr(*expr))
+                    .transpose()?
+                    .map(Box::new);
+                let ends = input
+                    .as_ref()
+                    .map(|arg| self.set_nat_ends(arg.ty))
+                    .transpose()?;
+                let (ty, action) = operation.plan(
+                    self.model,
+                    first.text.into(),
+                    second.map(|label| label.text.into()),
+                    ends,
+                )?;
+                Ok((ty, TypedForm::SetKan(action, input)))
             }
             ExprForm::SetDependent(operation, first, second, input) => {
                 self.set_dependent(operation, first, second, input)

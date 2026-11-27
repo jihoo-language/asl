@@ -143,6 +143,7 @@ mod rv_wz;
 mod rv_wzw;
 mod set_family;
 mod set_j;
+mod set_kan;
 mod set_logic;
 mod set_monodromy;
 mod sheaf;

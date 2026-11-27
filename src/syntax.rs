@@ -35,6 +35,7 @@ use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
+use crate::set_kan::Operation as KanOp;
 use crate::set_logic::Operation as SetLogic;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
 use crate::sheaf_higher::Operation as SheafHigherOp;
@@ -636,6 +637,7 @@ pub(crate) enum ExprForm {
     SetCompose(Box<[ParsedExpr; 2]>),
     SetTotal(Label, Label, Box<ParsedExpr>),
     SetDependent(SetOperation, Label, Option<Label>, Option<Box<ParsedExpr>>),
+    SetKan(KanOp, Label, Option<Label>, Option<Box<ParsedExpr>>),
     Name(Label),
     Point(ParsedType, Label),
     Class(ParsedType, usize, ClassForm),
@@ -952,6 +954,7 @@ pub(crate) enum StatementForm {
     SetNatural(Label, Label, Label, Vec<crate::set_family::Component>),
     SetSections(Label),
     SetPullback(Label, Label, ParsedExpr),
+    SetKan(Label, Label, ParsedExpr, bool),
     SetOmega(Label, Label),
     SetSubobject(Label, ParsedExpr),
     SetSieve(Label, Label, usize, bool),
@@ -1913,13 +1916,18 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::SetSieve(omega, point, index, dense)
             }
-            Token::Word("setpullback") => {
+            Token::Word(op @ ("setpullback" | "setlan" | "setran")) => {
                 self.advance()?;
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
                 let family = self.label()?;
                 self.expect(Token::RBracket)?;
-                StatementForm::SetPullback(name, family, self.paren_expr(0)?)
+                let map = self.paren_expr(0)?;
+                if op == "setpullback" {
+                    StatementForm::SetPullback(name, family, map)
+                } else {
+                    StatementForm::SetKan(name, family, map, op == "setran")
+                }
             }
             Token::Word("setsum" | "setproduct") => {
                 let product = self.token() == Token::Word("setproduct");
@@ -4996,6 +5004,30 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RParen)?;
                 }
                 expr(span, ExprForm::SetLogic(operation, labels, inputs), depth)
+            }
+            Token::Word(name) if KanOp::detect(name).is_some() => {
+                let operation = KanOp::detect(name).unwrap();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let first = self.label()?;
+                let second = if operation.second_label() {
+                    self.expect(Token::Comma)?;
+                    Some(self.label()?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                let input = if operation.takes_input() {
+                    Some(Box::new(self.paren_expr(nest)?))
+                } else {
+                    None
+                };
+                let depth = input.as_ref().map_or(0, |expr| expr.depth + 1);
+                expr(
+                    span,
+                    ExprForm::SetKan(operation, first, second, input),
+                    depth,
+                )
             }
             Token::Word(name) if SetOperation::detect(name).is_some() => {
                 let operation = SetOperation::detect(name).unwrap();
