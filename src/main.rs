@@ -170,6 +170,7 @@ mod sheaf;
 mod sheaf_base_change;
 mod sheaf_bc_comma;
 mod sheaf_cellular;
+mod sheaf_cone;
 mod sheaf_deform;
 mod sheaf_ext;
 mod sheaf_higher;

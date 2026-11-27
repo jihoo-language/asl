@@ -752,6 +752,9 @@ pub(crate) enum ExprForm {
     SheafDefOperation(crate::sheaf_deform::Operation, Box<ParsedExpr>),
     SheafDefAppend(Box<[ParsedExpr; 2]>),
     SheafDefGauge(usize, bool, Box<[ParsedExpr; 2]>),
+    SheafConeApex(Label, usize),
+    SheafConeTail(Label, bool, Box<ParsedExpr>),
+    SheafConeTransfer(Label, bool, Box<ParsedExpr>),
     SheafBCApply(Label, Box<ParsedExpr>),
     SheafCompose(Box<[ParsedExpr; 2]>),
     SheafHigher(SheafHigherOp, Vec<ParsedExpr>, Vec<Witness>),
@@ -1070,6 +1073,8 @@ pub(crate) enum StatementForm {
     MixedMinDimension(Label, i64),
     MixedDimension(MixedSpec),
     Sheaf(Label, Label, usize, sheaf::Presentation),
+    SheafConeGlue(SheafInputForm, [Label; 4], usize, Vec<ParsedExpr>),
+    SheafConeHomotopy([Label; 3], Vec<ParsedExpr>),
     SheafBCSquare(Label, [Label; 4]),
     SheafBCBuild(SheafInputForm, Label, Label, Label),
     SheafBCMap(Label, Label, usize, bool),
@@ -3457,6 +3462,40 @@ impl<'src> Parser<'src> {
                 };
                 self.expect(Token::RBracket)?;
                 StatementForm::SheafImage(operation, name, function, sheaf)
+            }
+            Token::Word(op @ ("shconeglue" | "shconegluecomplex")) => {
+                let form = if op == "shconeglue" {
+                    SheafInputForm::Sheaf
+                } else {
+                    SheafInputForm::Complex
+                };
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let map = self.label()?;
+                self.expect(Token::Comma)?;
+                let apex = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafConeGlue(
+                    form,
+                    [name, map, apex, source],
+                    degree,
+                    self.sheaf_cone_columns()?,
+                )
+            }
+            Token::Word("shconehomotopy") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let from = self.label()?;
+                self.expect(Token::Comma)?;
+                let to = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafConeHomotopy([name, from, to], self.sheaf_cone_columns()?)
             }
             Token::Word("shbcsquare") => {
                 self.advance()?;
@@ -8685,6 +8724,32 @@ impl<'src> Parser<'src> {
                 {
                     return self.sheaf_kuranishi_expression(&name.text, span);
                 }
+                if name.text == "shGlueApex" && self.eat(Token::LBracket)? {
+                    let cone = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::SheafConeApex(cone, index), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "shGlueLift" | "shGlueTail" | "shConeTransfer" | "shConeUntransfer"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let family = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let form = match name.text.as_str() {
+                        "shGlueLift" => ExprForm::SheafConeTail(family, true, Box::new(input)),
+                        "shGlueTail" => ExprForm::SheafConeTail(family, false, Box::new(input)),
+                        "shConeTransfer" => {
+                            ExprForm::SheafConeTransfer(family, false, Box::new(input))
+                        }
+                        _ => ExprForm::SheafConeTransfer(family, true, Box::new(input)),
+                    };
+                    return expr(span, form, depth);
+                }
                 if name.text == "shBCApply" && self.eat(Token::LBracket)? {
                     let comparison = self.label()?;
                     self.expect(Token::RBracket)?;
@@ -10629,6 +10694,19 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, form, depth)
+    }
+
+    fn sheaf_cone_columns(&mut self) -> Result<Vec<ParsedExpr>> {
+        self.expect(Token::LBrace)?;
+        let mut values = Vec::new();
+        while self.token() != Token::RBrace {
+            values.push(self.expr(0)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(values)
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {

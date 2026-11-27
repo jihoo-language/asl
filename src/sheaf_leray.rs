@@ -10,7 +10,7 @@ use crate::sheaf_hyper::{Complex, Map, NamedSheaf};
 use crate::sheaf_image::{Opens, Site};
 use crate::syntax::{Label, MAX_IDENTIFIER_BYTES};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum InputForm {
     Sheaf,
     Complex,
@@ -145,6 +145,10 @@ impl<'a> Local<'a> {
             components,
             height,
         })
+    }
+
+    pub(crate) fn height(&self) -> usize {
+        self.height
     }
 
     pub(crate) fn contains(&self, term: &Generator) -> bool {
@@ -362,7 +366,7 @@ pub(crate) fn local_layers(
     Ok(layers)
 }
 
-fn restriction(model: &mut Model, larger: &Layer, smaller: &Layer) -> Result<Matrix> {
+pub(crate) fn restriction(model: &mut Model, larger: &Layer, smaller: &Layer) -> Result<Matrix> {
     // Both layers order the same original X-chain coordinates. Iterating
     // the smaller one gives increasing source coordinates in the larger.
     sheaf::check_cells(1 + 5 * smaller.size)?;

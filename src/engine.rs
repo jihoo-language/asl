@@ -654,6 +654,8 @@ enum TypedForm {
     MixedHShift(Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
+    SheafConeTail(Rc<crate::sheaf_cone::Cone>, usize, bool, Box<TypedExpr>),
+    SheafConeTransfer(Rc<crate::sheaf_cone::Homotopy>, usize, bool, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
     SheafLocalClass(Rc<Supports>, SupportGrade, Box<TypedExpr>),
     SheafLocalOperation(Rc<Supports>, SupportGrade, SupportOp, Box<TypedExpr>),
@@ -711,6 +713,41 @@ impl Engine {
             values: Vec::new(),
             locals: Vec::new(),
         }
+    }
+
+    fn sheaf_cone_columns(
+        &mut self,
+        source: &LerayInput,
+        degree: Option<usize>,
+        parsed: Vec<ParsedExpr>,
+    ) -> Result<Vec<Rc<[sheaf::Term]>>> {
+        let mut terms = Vec::with_capacity(parsed.len());
+        for item in parsed {
+            let input = self.checker().expr(item)?;
+            let Some(actual) = cone_input_degree(&self.model, source, input.ty) else {
+                return Err(Error::new(
+                    input.span,
+                    format!("cone gluing requires a raw cochain of '{}'", source.name()),
+                ));
+            };
+            let expected = degree.ok_or_else(|| {
+                Error::new(
+                    input.span,
+                    "cone homotopy requires nonnegative correction degree",
+                )
+            })?;
+            if actual != expected {
+                return Err(Error::new(
+                    input.span,
+                    format!("cone gluing requires cochain degree {expected}, found {actual}"),
+                ));
+            }
+            let Value::SheafC(value) = self.eval(&input)? else {
+                unreachable!()
+            };
+            terms.push(value);
+        }
+        Ok(terms)
     }
 
     fn checker(&mut self) -> Checker<'_> {
@@ -1397,6 +1434,45 @@ impl Engine {
                     SheafImageOp::Push(degree) => site.push(&mut self.model, &source, degree)?,
                 };
                 self.model.define_sheaf(name.text, image);
+                return Ok(None);
+            }
+            StatementForm::SheafConeGlue(form, [name, j, apex, source], degree, columns) => {
+                self.model.check_new_sheaf_complex(&name)?;
+                let site = self.sheaf_site(&j, "cone gluing")?;
+                let apex = self.model.point(site.target, &apex)?;
+                let source = LerayInput::resolve(&self.model, &source, form)?;
+                let columns = self.sheaf_cone_columns(&source, Some(degree), columns)?;
+                let (data, ambient) = crate::sheaf_cone::Cone::build(
+                    &mut self.model,
+                    &name,
+                    source,
+                    site,
+                    apex,
+                    degree,
+                    columns,
+                )?;
+                for component in ambient.components().iter().chain(data.fiber.components()) {
+                    self.model
+                        .define_sheaf_shared(component.name.to_string(), component.sheaf.clone());
+                }
+                self.model
+                    .define_sheaf_complex_shared(data.fiber_name.to_string(), data.fiber.clone());
+                self.model.define_sheaf_complex(name.text.clone(), ambient);
+                self.model.define_cone_gluing(name.text, data);
+                return Ok(None);
+            }
+            StatementForm::SheafConeHomotopy([name, from, to], corrections) => {
+                self.model.check_new_cone_homotopy(&name)?;
+                let from = self.model.cone_gluing(&from)?;
+                let to = self.model.cone_gluing(&to)?;
+                let corrections = self.sheaf_cone_columns(
+                    &from.source,
+                    from.degree().checked_sub(1),
+                    corrections,
+                )?;
+                let data =
+                    crate::sheaf_cone::Homotopy::build(&mut self.model, from, to, corrections)?;
+                self.model.define_cone_homotopy(name.text, data);
                 return Ok(None);
             }
             StatementForm::SheafBCSquare(name, [f, u, v, fp]) => {
@@ -7040,6 +7116,27 @@ impl Engine {
                 };
                 data.apply(&mut self.model, *grade, *operation, &coordinates)
             }
+            TypedForm::SheafConeTail(cone, degree, lift, input) => {
+                let Value::SheafC(raw) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if *lift {
+                    cone.lift_tail(&mut self.model, *degree, &raw)
+                } else {
+                    cone.tail(&mut self.model, *degree, &raw)
+                }
+            }
+            TypedForm::SheafConeTransfer(homotopy, degree, reverse, input) => {
+                match self.eval(input)? {
+                    Value::SheafC(raw) => {
+                        homotopy.apply_raw(&mut self.model, *degree, *reverse, &raw)
+                    }
+                    Value::OddClass(raw) => {
+                        homotopy.apply_class(&mut self.model, *degree, *reverse, &raw)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             TypedForm::SheafLerayIncl(leray, degree, input) => {
                 let Value::SheafC(raw) = self.eval(input)? else {
                     unreachable!()
@@ -7474,6 +7571,18 @@ fn check_new_ideal(model: &Model, name: &Label) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn cone_input_degree(model: &Model, source: &LerayInput, ty: TypeId) -> Option<usize> {
+    match (source.form(), model.kind(ty)) {
+        (SheafInputForm::Sheaf, Kind::Sheaf(SheafForm::Cochain, name, degree))
+        | (SheafInputForm::Complex, Kind::SheafComplex(SheafForm::Cochain, name, degree))
+            if name.as_ref() == source.name() =>
+        {
+            Some(*degree)
+        }
+        _ => None,
+    }
 }
 
 struct Checker<'a> {
@@ -9411,6 +9520,118 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::SheafLocalOperation(data, grade, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::SheafConeApex(name, index) => {
+                let cone = self.model.cone_gluing(&name)?;
+                let value = cone.apex_vector(self.model, index)?;
+                let fiber = Label {
+                    text: cone.fiber_name.to_string(),
+                    span: name.span,
+                };
+                let ty =
+                    self.model
+                        .sheaf_complex_type(SheafForm::Cochain, &fiber, cone.degree())?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SheafConeTail(name, lift, input) => {
+                let cone = self.model.cone_gluing(&name)?;
+                let input = self.expr(*input)?;
+                let fiber_name = Label {
+                    text: cone.fiber_name.to_string(),
+                    span: name.span,
+                };
+                let (ty, fiber_degree) = if lift {
+                    let degree = cone_input_degree(self.model, &cone.source, input.ty)
+                        .ok_or_else(|| {
+                            Error::new(
+                                input.span,
+                                format!(
+                                    "shGlueLift requires a raw cochain of '{}'",
+                                    cone.source.name()
+                                ),
+                            )
+                        })?
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            Error::new(input.span, "cone fiber degree is out of range")
+                        })?;
+                    (
+                        self.model
+                            .sheaf_complex_type(SheafForm::Cochain, &fiber_name, degree)?,
+                        degree,
+                    )
+                } else {
+                    let Kind::SheafComplex(SheafForm::Cochain, complex, degree) =
+                        self.model.kind(input.ty)
+                    else {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "shGlueTail",
+                            "a cone fiber ShTot cochain",
+                        ));
+                    };
+                    if complex != &cone.fiber_name {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "shGlueTail",
+                            "a cochain of the selected cone fiber",
+                        ));
+                    }
+                    let degree = *degree;
+                    let original_degree = degree.checked_sub(1).ok_or_else(|| {
+                        Error::new(input.span, "cone fiber degree zero has no tail")
+                    })?;
+                    let source_name = Label {
+                        text: cone.source.name().to_string(),
+                        span: name.span,
+                    };
+                    let ty = match cone.source.form() {
+                        SheafInputForm::Sheaf => self.model.sheaf_type(
+                            SheafForm::Cochain,
+                            &source_name,
+                            original_degree,
+                        )?,
+                        SheafInputForm::Complex => self.model.sheaf_complex_type(
+                            SheafForm::Cochain,
+                            &source_name,
+                            original_degree,
+                        )?,
+                    };
+                    (ty, degree)
+                };
+                Ok((
+                    ty,
+                    TypedForm::SheafConeTail(cone, fiber_degree, lift, Box::new(input)),
+                ))
+            }
+            ExprForm::SheafConeTransfer(name, reverse, input) => {
+                let homotopy = self.model.cone_homotopy(&name)?;
+                let (source, target) = homotopy.endpoints(reverse);
+                let input = self.expr(*input)?;
+                let Kind::SheafComplex(form, complex, degree) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "cone homotopy",
+                        "a cone fiber cochain or class",
+                    ));
+                };
+                if complex != &source.fiber_name {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "cone homotopy",
+                        "a cochain or class of its source fiber",
+                    ));
+                }
+                let (form, degree) = (*form, *degree);
+                let source_name = Label {
+                    text: target.fiber_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.sheaf_complex_type(form, &source_name, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::SheafConeTransfer(homotopy, degree, reverse, Box::new(input)),
                 ))
             }
             ExprForm::SheafLerayIncl(name, input) => {

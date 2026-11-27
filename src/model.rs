@@ -528,6 +528,8 @@ pub(crate) struct Model {
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
     sheaf_maps: HashMap<String, Rc<sheaf_hyper::Map>>,
+    cone_gluings: HashMap<String, Rc<crate::sheaf_cone::Cone>>,
+    cone_homotopies: HashMap<String, Rc<crate::sheaf_cone::Homotopy>>,
     bc_squares: HashMap<String, Rc<crate::sheaf_base_change::Square>>,
     bc_comparisons: HashMap<String, Rc<crate::sheaf_base_change::Comparison>>,
     sheaf_kuranishi: HashMap<Rc<str>, Rc<sheaf_kuranishi::Chart>>,
@@ -608,6 +610,8 @@ impl Model {
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
             sheaf_maps: HashMap::new(),
+            cone_gluings: HashMap::new(),
+            cone_homotopies: HashMap::new(),
             bc_squares: HashMap::new(),
             bc_comparisons: HashMap::new(),
             sheaf_kuranishi: HashMap::new(),
@@ -1554,6 +1558,42 @@ impl Model {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn define_cone_gluing(&mut self, name: String, value: crate::sheaf_cone::Cone) {
+        self.cone_gluings.insert(name, Rc::new(value));
+    }
+
+    pub(crate) fn cone_gluing(&self, name: &Label) -> Result<Rc<crate::sheaf_cone::Cone>> {
+        self.cone_gluings
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown cone gluing '{}'", name.text)))
+    }
+
+    pub(crate) fn check_new_cone_homotopy(&self, name: &Label) -> Result<()> {
+        if self.cone_homotopies.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("cone homotopy '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_cone_homotopy(
+        &mut self,
+        name: String,
+        value: crate::sheaf_cone::Homotopy,
+    ) {
+        self.cone_homotopies.insert(name, Rc::new(value));
+    }
+
+    pub(crate) fn cone_homotopy(&self, name: &Label) -> Result<Rc<crate::sheaf_cone::Homotopy>> {
+        self.cone_homotopies
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown cone homotopy '{}'", name.text)))
     }
 
     pub(crate) fn check_new_bc_square(&self, name: &Label) -> Result<()> {
