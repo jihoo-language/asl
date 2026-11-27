@@ -1,0 +1,16 @@
+rvasodd First[3] {(13,1),(11,2),(10,1),(1,1)};
+rvasodd Second[3] {(13,1),(5,1),(2,1)};
+let a = rvASOddEOType[First];
+let b = rvASOddEOType[Second];
+assert a == eoType{0,0,0,0,1,2,3,4,4,5,5,5};
+assert b == eoType{0,0,0,1,2,2,3,4,4,4,5,5};
+rvASOddLPolynomial[First];
+rvASOddLPolynomial[Second];
+show a;
+show b;
+eoDim(a);
+eoDim(b);
+assert eoClosure(a,b) == S.lo;
+assert eoClosure(b,a) == S.lo;
+eoClosureWitness(a,b);
+eoClosureWitness(b,a);

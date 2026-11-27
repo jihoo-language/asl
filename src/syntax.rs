@@ -791,6 +791,7 @@ pub(crate) enum ExprForm {
     BinaryScalar(usize, usize),
     EOType(Vec<usize>),
     EOCover(Label),
+    EOOddCover(Label),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
     AsOddOmega(Label, usize, usize),
@@ -5002,10 +5003,17 @@ impl<'src> Parser<'src> {
                     let sequence = self.unsigned_list(Token::RBrace)?;
                     return expr(span, ExprForm::EOType(sequence), 0);
                 }
-                if name.text == "rvASEOType" && self.eat(Token::LBracket)? {
+                if matches!(name.text.as_str(), "rvASEOType" | "rvASOddEOType")
+                    && self.eat(Token::LBracket)?
+                {
                     let cover = self.label()?;
                     self.expect(Token::RBracket)?;
-                    return expr(span, ExprForm::EOCover(cover), 0);
+                    let form = if name.text == "rvASEOType" {
+                        ExprForm::EOCover(cover)
+                    } else {
+                        ExprForm::EOOddCover(cover)
+                    };
+                    return expr(span, form, 0);
                 }
                 if name.text == "rvASDeRhamGen" && self.eat(Token::LBracket)? {
                     let cover = self.label()?;

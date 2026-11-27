@@ -8001,6 +8001,13 @@ impl Checker<'_> {
                 let value = eo::persist(self.model, sequence).map_err(|error| error.at(span))?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::EOOddCover(name) => {
+                let cover = self.model.rv_as_odd_cover(&name)?;
+                let sequence = cover.derham(self.model)?.final_type(self.model, &cover)?;
+                let ty = self.model.eo_type(cover.genus())?;
+                let value = eo::persist(self.model, sequence)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
             ExprForm::EOCover(name) => {
                 let cover = self.model.rv_as_cover(&name)?;
                 let sequence = rv_as_derham::final_type(self.model, &cover)?;
