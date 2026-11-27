@@ -169,6 +169,7 @@ pub(crate) enum Kind {
     QExt(Grade),
     RVHom(rv_hom::Grade),
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
+    ASOddDiff(Rc<str>, Prime),
     ASDeRham(Rc<str>, BinaryField),
     BinaryScalar(BinaryField),
     EOType(usize),
@@ -709,6 +710,10 @@ impl Model {
             }
             Kind::BinaryScalar(field) => field.order(),
             Kind::EOType(genus) => support_space_size(genus),
+            Kind::ASOddDiff(ref name, prime) => {
+                let genus = self.rv_as_odd_covers[name.as_ref()].genus();
+                (prime.get() as usize).saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
+            }
             Kind::CurveDiff(family, ref name, field) => {
                 let genus = self.curve_genus(family, name);
                 field
@@ -820,6 +825,7 @@ impl Model {
                 | Kind::QExt(..)
                 | Kind::RVHom(..)
                 | Kind::CurveDiff(..)
+                | Kind::ASOddDiff(..)
                 | Kind::ASDeRham(..)
                 | Kind::BinaryScalar(..)
                 | Kind::EOType(..)
@@ -2030,6 +2036,15 @@ impl Model {
         self.inhabited_type(Kind::CurveDiff(family, name.text.as_str().into(), field), 0)
     }
 
+    pub(crate) fn rv_as_odd_diff_type(&mut self, name: &Label) -> Result<TypeId> {
+        let cover = self.rv_as_odd_cover(name)?;
+        self.inhabited_type(Kind::ASOddDiff(name.text.as_str().into(), cover.prime()), 0)
+    }
+
+    pub(crate) fn rv_as_odd_cover_named(&self, name: &str) -> Option<Rc<RvAsOddCover>> {
+        self.rv_as_odd_covers.get(name).cloned()
+    }
+
     pub(crate) fn rv_as_odd_cover(&self, name: &Label) -> Result<Rc<RvAsOddCover>> {
         self.rv_as_odd_covers
             .get(&name.text)
@@ -2642,6 +2657,7 @@ impl Model {
             | Kind::QExt(..)
             | Kind::RVHom(..)
             | Kind::CurveDiff(..)
+            | Kind::ASOddDiff(..)
             | Kind::ASDeRham(..)
             | Kind::BinaryScalar(..)
             | Kind::EOType(..)
@@ -2961,6 +2977,7 @@ impl Model {
             }
             Kind::BinaryScalar(field) => out.push(&format!("BinaryScalar({})", field.modulus())),
             Kind::EOType(genus) => out.push(&format!("EOType({genus})")),
+            Kind::ASOddDiff(name, _) => out.push(&format!("ASOddDiff({name})")),
             Kind::CurveDiff(family, name, field) => out.push(&format!(
                 "{}({name}, {})",
                 family.type_name(),
@@ -3655,6 +3672,10 @@ impl Model {
                     self.allocate(size)?;
                     (0..size).map(Value::BinaryScalar).collect()
                 }
+                Kind::ASOddDiff(ref name, prime) => {
+                    let genus = self.rv_as_odd_covers[name.as_ref()].genus();
+                    odd_ext::elements(self, prime, genus, MAX_ELEMENTS)?
+                }
                 Kind::CurveDiff(family, ref name, field) => {
                     let genus = self.curve_genus(family, name);
                     binary_linear::elements(self, field, genus, MAX_ELEMENTS, Value::CurveDiff)?
@@ -4309,6 +4330,19 @@ impl Model {
                 } else {
                     None
                 };
+                let chart = if let Kind::ASOddDiff(name, _) = self.kind(ty) {
+                    if support.is_empty() {
+                        None
+                    } else {
+                        let cover = self
+                            .rv_as_odd_cover_named(name)
+                            .expect("registered odd Artin–Schreier cover");
+                        self.spend(support.len())?;
+                        Some(cover.cartier(self)?)
+                    }
+                } else {
+                    None
+                };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
@@ -4328,7 +4362,12 @@ impl Model {
                         }
                         out.push(complex.name(generator))?;
                     } else {
-                        out.push(&format!("g{generator}"))?;
+                        if let Some(chart) = &chart {
+                            let (b, r) = chart.exponent(generator);
+                            out.push(&format!("omega({b},{r})"))?;
+                        } else {
+                            out.push(&format!("g{generator}"))?;
+                        }
                     }
                 }
                 out.push("}")

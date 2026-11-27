@@ -1068,6 +1068,12 @@ Four polynomial Artin–Schreier curves of genus eight have final type $[0,1,1,2
 
 `rvASOddCharacterNewton[C,j];` computes the slopes of one character factor with $v_p(p)=1$ using the uniformizer $1-\zeta_p$. `rvASOddNewton[C];` computes the slopes of the full numerator. In characteristic five, the factors for $x^6$, $x^6+x^3$, and $x^6+x^4$ have first slopes $1/2$, $3/8$, and $1/4$, respectively. The example also checks signed normalization and a constant twist on a typed coefficient and on point counts. [Odd-prime Artin–Schreier example](examples/rank-as-odd.asl)
 
+`ASOddDiff(C)` is the space of holomorphic differentials of an odd-prime cover over its ground field $\mathbb F_p$. Its basis consists of $\omega(b,r)=x^by^r\,dx$ with $0\le r\le p-2$ and $pb+dr\le 2g-2$. Use `rvASOddBasis[C];` for the `(b,r)` pairs ordered by `r` then `b`, and `rvASOddOmega[C,b,r]` for a basis differential. The space supports `zero`, `add`, and `pscale`.
+
+`rvASOddCartier(w)` and `rvASOddCartierIter[k](w)` apply Cartier and its $k$th iterate. The column for $x^by^r\,dx$ comes from $y^r=(y^p-f)^r$ and the terms $x^{pn+p-1}\,dx$ in each coefficient of $y^{pj}$. Over $\mathbb F_p$ the map is linear. `rvASOddCartierRank[C,k];` gives the rank of the iterate by sparse reduction, and `rvASOddaNumber[C];` gives the genus minus the rank of Cartier. `rvASOddTranslate[c](w)` is the pullback under $y\mapsto y+c$, with signed `c` reduced modulo `p`. It commutes with Cartier and its `p`th iterate is the identity.
+
+At $p=5$, the genus-ten curves with $f=x^6+x^3$ and $f=x^6+x^4$ both have $a$-number six. Their Cartier rank sequences are $[10,4,1,0]$ and $[10,4,2,1,0]$. The curve with $f=x^6$ has Cartier rank zero. [Odd-prime Cartier–Manin example](examples/rank-as-odd-cartier.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

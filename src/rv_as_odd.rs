@@ -6,6 +6,7 @@ use crate::binary_linear::check_storage;
 use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
+use crate::rv_as_odd_cartier::Cartier;
 use crate::{rv_cyclotomic as cyclo, rv_newton};
 
 type Character = Rc<[Vec<i128>]>;
@@ -13,6 +14,9 @@ type Character = Rc<[Vec<i128>]>;
 #[derive(Clone, Copy)]
 pub(crate) enum Query {
     Reduced,
+    Basis,
+    CartierRank(usize),
+    ANumber,
     Genus,
     PRank,
     Character(usize),
@@ -26,6 +30,9 @@ impl Query {
     fn name(self) -> &'static str {
         match self {
             Self::Reduced => "rvASOddReduced",
+            Self::Basis => "rvASOddBasis",
+            Self::CartierRank(_) => "rvASOddCartierRank",
+            Self::ANumber => "rvASOddaNumber",
             Self::Genus => "rvASOddGenus",
             Self::PRank => "rvASOddPrank",
             Self::Character(_) => "rvASOddCharacterL",
@@ -42,6 +49,7 @@ pub(crate) struct Cover {
     terms: Vec<(usize, u32)>,
     factor_degree: usize,
     genus: usize,
+    cartier: OnceCell<Rc<Cartier>>,
     character: OnceCell<Character>,
     numerator: OnceCell<Rc<[i128]>>,
 }
@@ -83,9 +91,34 @@ impl Cover {
             terms,
             factor_degree,
             genus,
+            cartier: OnceCell::new(),
             character: OnceCell::new(),
             numerator: OnceCell::new(),
         })
+    }
+
+    pub(crate) fn prime(&self) -> Prime {
+        self.prime
+    }
+
+    pub(crate) fn genus(&self) -> usize {
+        self.genus
+    }
+
+    pub(crate) fn degree(&self) -> usize {
+        self.factor_degree + 1
+    }
+
+    pub(crate) fn terms(&self) -> &[(usize, u32)] {
+        &self.terms
+    }
+
+    pub(crate) fn cartier(&self, model: &mut Model) -> Result<Rc<Cartier>> {
+        if let Some(cartier) = self.cartier.get() {
+            return Ok(cartier.clone());
+        }
+        let cartier = Rc::new(Cartier::build(model, self)?);
+        Ok(self.cartier.get_or_init(|| cartier).clone())
     }
 
     pub(crate) fn order(&self) -> usize {
@@ -134,6 +167,12 @@ impl Cover {
                 model.spend(self.terms.len())?;
                 format!("{:?}", self.terms)
             }
+            Query::Basis => format!("{:?}", self.cartier(model)?.basis(model)?),
+            Query::CartierRank(power) => {
+                let rank = self.cartier(model)?.rank(model, self, power)?;
+                return Ok(format!("{operation}[{name}, {power}] = {rank}"));
+            }
+            Query::ANumber => (self.genus - self.cartier(model)?.rank(model, self, 1)?).to_string(),
             Query::Genus => self.genus.to_string(),
             Query::PRank => "0".to_owned(),
             Query::Character(j) => {

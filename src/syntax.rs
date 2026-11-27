@@ -17,6 +17,7 @@ use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_as_cover::Query as AsQuery;
 use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
 use crate::rv_as_odd::Query as AsOddQuery;
+use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -106,6 +107,7 @@ pub(crate) enum TypeForm {
     RVPathExt(RvBarSpec),
     RVBar(RvBarSpec),
     CurveDiff(DiffFamily, Label, usize),
+    ASOddDiff(Label),
     ASDeRham(Label, usize),
     BinaryScalar(usize),
     EOType(usize),
@@ -734,6 +736,8 @@ pub(crate) enum ExprForm {
     EOCover(Label),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
+    AsOddOmega(Label, usize, usize),
+    AsOddDiffOperation(AsOddDiffOp, Box<ParsedExpr>),
     RvOmega(DiffFamily, Label, usize, usize),
     RvDiffScale(DiffFamily, usize, Box<ParsedExpr>),
     RvCartier(DiffFamily, Box<ParsedExpr>),
@@ -2284,6 +2288,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 "rvASOddReduced"
+                | "rvASOddBasis"
+                | "rvASOddCartierRank"
+                | "rvASOddaNumber"
                 | "rvASOddGenus"
                 | "rvASOddPrank"
                 | "rvASOddCharacterL"
@@ -2298,6 +2305,12 @@ impl<'src> Parser<'src> {
                 let name = self.label()?;
                 let query = match operation {
                     Token::Word("rvASOddReduced") => AsOddQuery::Reduced,
+                    Token::Word("rvASOddBasis") => AsOddQuery::Basis,
+                    Token::Word("rvASOddaNumber") => AsOddQuery::ANumber,
+                    Token::Word("rvASOddCartierRank") => {
+                        self.expect(Token::Comma)?;
+                        AsOddQuery::CartierRank(self.number()?.0)
+                    }
                     Token::Word("rvASOddGenus") => AsOddQuery::Genus,
                     Token::Word("rvASOddPrank") => AsOddQuery::PRank,
                     Token::Word("rvASOddLPolynomial") => AsOddQuery::LPolynomial,
@@ -3481,6 +3494,11 @@ impl<'src> Parser<'src> {
             let modulus = self.number()?.0;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::BinaryScalar(modulus), 0);
+        }
+        if name.text == "ASOddDiff" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASOddDiff(cover), 0);
         }
         if matches!(name.text.as_str(), "ASDiff" | "WittDiff") && self.eat(Token::LParen)? {
             let family = if name.text == "WittDiff" {
@@ -4682,6 +4700,43 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::AsDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASOddOmega" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let (b, r) = self.bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsOddOmega(cover, b, r), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvASOddCartierIter" | "rvASOddTranslate"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let operation = if name.text == "rvASOddTranslate" {
+                        AsOddDiffOp::Translate(
+                            self.signed_wide("a signed translation", "Artin–Schreier translation")?,
+                        )
+                    } else {
+                        AsOddDiffOp::Iterate(self.number()?.0)
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsOddDiffOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASOddCartier" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsOddDiffOperation(AsOddDiffOp::Cartier, Box::new(input)),
                         depth,
                     );
                 }

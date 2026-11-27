@@ -72,6 +72,7 @@ mod rv_as_cartier;
 mod rv_as_cover;
 mod rv_as_derham;
 mod rv_as_odd;
+mod rv_as_odd_cartier;
 mod rv_bar;
 mod rv_bar_dual;
 mod rv_bar_page;

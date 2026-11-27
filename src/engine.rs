@@ -59,6 +59,7 @@ use crate::rv_as_cartier;
 use crate::rv_as_cover::Cover as RvAsCover;
 use crate::rv_as_derham;
 use crate::rv_as_odd::Cover as RvAsOddCover;
+use crate::rv_as_odd_cartier;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -399,6 +400,11 @@ enum TypedForm {
         rv_as_derham::Operation,
         Rc<RvAsCover>,
         BinaryField,
+        Box<TypedExpr>,
+    ),
+    AsOddDiffOperation(
+        rv_as_odd_cartier::Operation,
+        Rc<RvAsOddCover>,
         Box<TypedExpr>,
     ),
     AsCartier(Rc<RvAsCover>, BinaryField, Box<TypedExpr>),
@@ -2348,7 +2354,8 @@ impl Engine {
                             | Kind::PExtAn(p, ..)
                             | Kind::PMay(p, ..)
                             | Kind::PMayAn(p, ..)
-                            | Kind::PCeAn(p, ..) => p,
+                            | Kind::PCeAn(p, ..)
+                            | Kind::ASOddDiff(_, p) => p,
                             Kind::Sheaf(..)
                             | Kind::SheafComplex(..)
                             | Kind::SheafPage(..)
@@ -3843,6 +3850,20 @@ impl Engine {
                 let value = self.eval(input)?;
                 rv_as_derham::apply(&mut self.model, cover, *field, *operation, value)
             }
+            TypedForm::AsOddDiffOperation(operation, cover, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if coordinates.is_empty() {
+                    return Ok(odd_ext::zero());
+                }
+                cover.cartier(&mut self.model)?.apply(
+                    &mut self.model,
+                    cover,
+                    *operation,
+                    coordinates,
+                )
+            }
             TypedForm::AsCartier(cover, field, input) => {
                 let Value::CurveDiff(coordinates) = self.eval(input)? else {
                     unreachable!()
@@ -4713,6 +4734,7 @@ impl Checker<'_> {
                 let field = BinaryField::new(self.model, modulus)?;
                 self.model.binary_scalar_type(field)
             }
+            TypeForm::ASOddDiff(cover) => self.model.rv_as_odd_diff_type(&cover),
             TypeForm::CurveDiff(family, cover, modulus) => {
                 self.model.rv_curve_diff_type(family, &cover, modulus)
             }
@@ -4844,6 +4866,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
+                    Kind::ASOddDiff(..) => odd_ext::zero(),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -5664,7 +5687,8 @@ impl Checker<'_> {
                     | Kind::PExtAn(p, ..)
                     | Kind::PMay(p, ..)
                     | Kind::PMayAn(p, ..)
-                    | Kind::PCeAn(p, ..) => p,
+                    | Kind::PCeAn(p, ..)
+                    | Kind::ASOddDiff(_, p) => p,
                     Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
@@ -7250,6 +7274,30 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::AsDeRhamOperation(operation, cover, field, Box::new(input)),
+                ))
+            }
+            ExprForm::AsOddOmega(name, b, r) => {
+                let cover = self.model.rv_as_odd_cover(&name)?;
+                let ty = self.model.rv_as_odd_diff_type(&name)?;
+                let value = cover.cartier(self.model)?.generator(self.model, b, r)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::AsOddDiffOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::ASOddDiff(name, _) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "an ASOddDiff differential",
+                    ));
+                };
+                let cover = self
+                    .model
+                    .rv_as_odd_cover_named(name)
+                    .expect("registered odd Artin–Schreier cover");
+                Ok((
+                    input.ty,
+                    TypedForm::AsOddDiffOperation(operation, cover, Box::new(input)),
                 ))
             }
             ExprForm::AsOddCoefficient(name, character, index) => {
@@ -9141,6 +9189,7 @@ impl Checker<'_> {
                         | Kind::JetPage(..)
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
+                        | Kind::ASOddDiff(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
