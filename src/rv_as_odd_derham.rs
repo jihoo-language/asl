@@ -217,7 +217,7 @@ impl DeRham {
                     model,
                     self.prime,
                     &mut result,
-                    (x + power as i128, j),
+                    (x + power, j),
                     self.prime.mul(coefficient, scale),
                 )?;
             }

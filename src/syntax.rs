@@ -25,6 +25,7 @@ use crate::rv_as_odd_cartier::Operation as AsOddDiffOp;
 use crate::rv_as_odd_derham::Operation as AsOddDeRhamOp;
 use crate::rv_as_odd_tate::Operation as AsOddTateOp;
 use crate::rv_as_two::Query as AsTwoQuery;
+use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
@@ -128,6 +129,7 @@ pub(crate) enum TypeForm {
     RVBar(RvBarSpec),
     CurveDiff(DiffFamily, Label, usize),
     ASOddDiff(Label),
+    ASTwoDiff(Label),
     ASOddDeRham(Label),
     ASOddTate(Label, i64),
     PrimeScalar(usize),
@@ -839,6 +841,9 @@ pub(crate) enum ExprForm {
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
     AsTwoCoefficient(Label, usize, usize),
+    AsTwoOmega(Label, i128, usize),
+    AsTwoOrdinaryGen(Label, usize),
+    AsTwoDiffOperation(AsTwoDiffOp, Box<ParsedExpr>),
     AsOddOmega(Label, usize, usize),
     AsOddDiffOperation(AsOddDiffOp, Box<ParsedExpr>),
     AsOddDeRhamGen(Label, usize),
@@ -2779,7 +2784,13 @@ impl<'src> Parser<'src> {
                 StatementForm::RvAsTwo(name, prime, terms)
             }
             Token::Word(
-                "rvASTwoReduced"
+                "rvASTwoBasis"
+                | "rvASTwoCartierRank"
+                | "rvASTwoStableRank"
+                | "rvASTwoaNumber"
+                | "rvASTwoOrdinaryRanks"
+                | "rvASTwoHasseWitt"
+                | "rvASTwoReduced"
                 | "rvASTwoGenus"
                 | "rvASTwoPrank"
                 | "rvASTwoCharacterL"
@@ -2793,6 +2804,23 @@ impl<'src> Parser<'src> {
                 self.expect(Token::LBracket)?;
                 let name = self.label()?;
                 let query = match operation {
+                    Token::Word("rvASTwoBasis") => AsTwoQuery::Cartier(AsTwoCartierQuery::Basis),
+                    Token::Word("rvASTwoCartierRank") => {
+                        self.expect(Token::Comma)?;
+                        AsTwoQuery::Cartier(AsTwoCartierQuery::Rank(self.number()?.0))
+                    }
+                    Token::Word("rvASTwoStableRank") => {
+                        AsTwoQuery::Cartier(AsTwoCartierQuery::StableRank)
+                    }
+                    Token::Word("rvASTwoaNumber") => {
+                        AsTwoQuery::Cartier(AsTwoCartierQuery::ANumber)
+                    }
+                    Token::Word("rvASTwoOrdinaryRanks") => {
+                        AsTwoQuery::Cartier(AsTwoCartierQuery::OrdinaryRanks)
+                    }
+                    Token::Word("rvASTwoHasseWitt") => {
+                        AsTwoQuery::Cartier(AsTwoCartierQuery::HasseWitt)
+                    }
                     Token::Word("rvASTwoReduced") => AsTwoQuery::Reduced,
                     Token::Word("rvASTwoGenus") => AsTwoQuery::Genus,
                     Token::Word("rvASTwoPrank") => AsTwoQuery::PRank,
@@ -4145,6 +4173,11 @@ impl<'src> Parser<'src> {
             let p = self.number()?.0;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::PrimeScalar(p), 0);
+        }
+        if name.text == "ASTwoDiff" && self.eat(Token::LParen)? {
+            let cover = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::ASTwoDiff(cover), 0);
         }
         if name.text == "ASOddDiff" && self.eat(Token::LParen)? {
             let cover = self.label()?;
@@ -5635,6 +5668,55 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::AsOddDeRhamOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASTwoOmega" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let i = self.signed_wide(
+                        "a signed Laurent exponent",
+                        "Laurent differential exponent",
+                    )?;
+                    self.expect(Token::Comma)?;
+                    let j = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsTwoOmega(cover, i, j), 0);
+                }
+                if name.text == "rvASTwoOrdinaryGen" && self.eat(Token::LBracket)? {
+                    let cover = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::AsTwoOrdinaryGen(cover, index), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvASTwoCartierIter" | "rvASTwoTranslate"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let operation = if name.text == "rvASTwoTranslate" {
+                        AsTwoDiffOp::Translate(
+                            self.signed_wide("a signed translation", "Artin–Schreier translation")?,
+                        )
+                    } else {
+                        AsTwoDiffOp::Iterate(self.number()?.0)
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsTwoDiffOperation(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvASTwoCartier" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::AsTwoDiffOperation(AsTwoDiffOp::Cartier, Box::new(input)),
                         depth,
                     );
                 }

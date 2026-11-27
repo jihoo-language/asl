@@ -69,6 +69,8 @@ use crate::rv_as_odd::Cover as RvAsOddCover;
 use crate::rv_as_odd_cartier;
 use crate::rv_as_odd_derham;
 use crate::rv_as_odd_tate;
+use crate::rv_as_two::Cover as RvAsTwoCover;
+use crate::rv_as_two_cartier;
 use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
@@ -459,6 +461,11 @@ enum TypedForm {
     AsOddDeRhamOperation(
         rv_as_odd_derham::Operation,
         Rc<RvAsOddCover>,
+        Box<TypedExpr>,
+    ),
+    AsTwoDiffOperation(
+        rv_as_two_cartier::Operation,
+        Rc<RvAsTwoCover>,
         Box<TypedExpr>,
     ),
     AsOddDiffOperation(
@@ -2764,6 +2771,7 @@ impl Engine {
                             | Kind::PMayAn(p, ..)
                             | Kind::PCeAn(p, ..)
                             | Kind::ASOddDiff(_, p)
+                            | Kind::ASTwoDiff(_, p)
                             | Kind::ASOddDeRham(_, p)
                             | Kind::ASOddTate(_, p, _) => p,
                             Kind::Sheaf(..)
@@ -4561,6 +4569,17 @@ impl Engine {
                     coordinates,
                 )
             }
+            TypedForm::AsTwoDiffOperation(operation, cover, input) => {
+                let Value::OddClass(coordinates) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if coordinates.is_empty() {
+                    return Ok(odd_ext::zero());
+                }
+                cover
+                    .cartier(&mut self.model)?
+                    .apply(&mut self.model, *operation, coordinates)
+            }
             TypedForm::AsOddDiffOperation(operation, cover, input) => {
                 let Value::OddClass(coordinates) = self.eval(input)? else {
                     unreachable!()
@@ -5700,6 +5719,7 @@ impl Checker<'_> {
                 self.model.binary_scalar_type(field)
             }
             TypeForm::ASOddDiff(cover) => self.model.rv_as_odd_diff_type(&cover),
+            TypeForm::ASTwoDiff(cover) => self.model.rv_as_two_diff_type(&cover),
             TypeForm::ASOddDeRham(cover) => self.model.rv_as_odd_derham_type(&cover),
             TypeForm::ASOddTate(cover, degree) => self.model.rv_as_odd_tate_type(&cover, degree),
             TypeForm::PrimeScalar(p) => {
@@ -5919,7 +5939,7 @@ impl Checker<'_> {
                     Kind::RVPoly(..) => Value::RVPoly([].into()),
                     Kind::ASDeRham(..) => Value::ASDeRham([].into()),
                     Kind::BinaryScalar(..) => Value::BinaryScalar(0),
-                    Kind::ASOddDiff(..) => odd_ext::zero(),
+                    Kind::ASOddDiff(..) | Kind::ASTwoDiff(..) => odd_ext::zero(),
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
@@ -7072,6 +7092,7 @@ impl Checker<'_> {
                     | Kind::PMayAn(p, ..)
                     | Kind::PCeAn(p, ..)
                     | Kind::ASOddDiff(_, p)
+                    | Kind::ASTwoDiff(_, p)
                     | Kind::ASOddDeRham(_, p)
                     | Kind::ASOddTate(_, p, _) => p,
                     Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
@@ -7955,6 +7976,42 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::AsOddDeRhamOperation(operation, cover, Box::new(input)),
+                ))
+            }
+            ExprForm::AsTwoOmega(name, i, j) => {
+                let cover = self.model.rv_as_two_cover(&name)?;
+                let ty = self.model.rv_as_two_diff_type(&name)?;
+                let value = cover
+                    .cartier(self.model)?
+                    .generator(self.model, i, j)
+                    .map_err(|error| error.at(span))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::AsTwoOrdinaryGen(name, index) => {
+                let cover = self.model.rv_as_two_cover(&name)?;
+                let ty = self.model.rv_as_two_diff_type(&name)?;
+                let value = cover
+                    .cartier(self.model)?
+                    .ordinary_generator(self.model, index)
+                    .map_err(|error| error.at(span))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::AsTwoDiffOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::ASTwoDiff(name, _) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "an ASTwoDiff differential",
+                    ));
+                };
+                let cover = self
+                    .model
+                    .rv_as_two_cover_named(name)
+                    .expect("registered two-pole cover");
+                Ok((
+                    input.ty,
+                    TypedForm::AsTwoDiffOperation(operation, cover, Box::new(input)),
                 ))
             }
             ExprForm::AsOddOmega(name, b, r) => {
@@ -11231,6 +11288,7 @@ impl Checker<'_> {
                         | Kind::RVPoly(..)
                         | Kind::CurveDiff(..)
                         | Kind::ASOddDiff(..)
+                        | Kind::ASTwoDiff(..)
                         | Kind::ASOddDeRham(..)
                         | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)

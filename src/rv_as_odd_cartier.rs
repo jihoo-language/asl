@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{btree_map::Entry, BTreeMap};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::binary_linear::check_storage;
@@ -7,10 +7,10 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::odd_ext;
-use crate::prime_linear::{self, add_scaled, Basis, Coordinate};
+use crate::prime_linear::{add_scaled, Basis, Coordinate};
 use crate::rv_as_odd::Cover;
+use crate::rv_cartier_arithmetic::{retain, Binomial, Polynomial, Powers};
 
-pub(crate) type Polynomial = Rc<[(u128, u32)]>;
 pub(crate) type Column = Rc<[Coordinate]>;
 
 #[derive(Clone, Copy)]
@@ -34,9 +34,8 @@ pub(crate) struct Cartier {
     prime: Prime,
     // Basis positions in each row of fixed y-exponent, including the end.
     offsets: Vec<usize>,
-    factorials: Vec<u32>,
-    inverse_factorials: Vec<u32>,
-    powers: RefCell<Vec<Polynomial>>,
+    binomial: Binomial,
+    powers: Powers,
     columns: RefCell<BTreeMap<usize, Column>>,
     cells: Cell<usize>,
 }
@@ -67,25 +66,14 @@ impl Cartier {
             return Err(basis_error());
         }
         // The Čech overlap basis can have y-exponent p-1.
-        let max_r = (prime.get() - 1) as usize;
-        let mut factorials = vec![1; max_r + 1];
-        let mut inverse_factorials = vec![1; max_r + 1];
-        model.spend(2 * max_r)?;
-        for r in 1..=max_r {
-            factorials[r] = prime.mul(factorials[r - 1], r as u32);
-        }
-        inverse_factorials[max_r] = prime_linear::invert(model, prime, factorials[max_r])?;
-        for r in (1..=max_r).rev() {
-            inverse_factorials[r - 1] = prime.mul(inverse_factorials[r], r as u32);
-        }
-        let cells = 9 + offsets.len() + factorials.len() + inverse_factorials.len();
+        let binomial = Binomial::build(model, prime, (prime.get() - 1) as usize)?;
+        let cells = 9 + offsets.len() + binomial.cells();
         model.allocate(cells)?;
         Ok(Self {
             prime,
             offsets,
-            factorials,
-            inverse_factorials,
-            powers: RefCell::new(vec![Rc::from([(0, 1)])]),
+            binomial,
+            powers: Powers::default(),
             columns: RefCell::new(BTreeMap::new()),
             cells: Cell::new(cells),
         })
@@ -107,19 +95,7 @@ impl Cartier {
     }
 
     pub(crate) fn choose(&self, r: usize, j: usize) -> u32 {
-        self.prime.mul(
-            self.factorials[r],
-            self.prime
-                .mul(self.inverse_factorials[j], self.inverse_factorials[r - j]),
-        )
-    }
-
-    fn retain(&self, model: &mut Model, cells: usize) -> Result<()> {
-        let total = self.cells.get() + cells;
-        check_storage(total)?;
-        model.allocate(cells)?;
-        self.cells.set(total);
-        Ok(())
+        self.binomial.choose(r, j)
     }
 
     pub(crate) fn generator(&self, model: &mut Model, b: usize, r: usize) -> Result<Value> {
@@ -148,36 +124,13 @@ impl Cartier {
         cover: &Cover,
         exponent: usize,
     ) -> Result<Polynomial> {
-        let mut powers = self.powers.borrow_mut();
-        while powers.len() <= exponent {
-            let previous = powers.last().unwrap();
-            let terms = cover.terms();
-            model.spend(1usize.saturating_add(previous.len().saturating_mul(terms.len())))?;
-            let mut next = BTreeMap::new();
-            for &(i, a) in previous.iter() {
-                for &(j, b) in terms {
-                    let value = self.prime.mul(a, b);
-                    model.spend(1 + next.len().max(1).ilog2() as usize)?;
-                    match next.entry(i + j as u128) {
-                        Entry::Occupied(mut entry) => {
-                            let sum = self.prime.add(*entry.get(), value);
-                            if sum == 0 {
-                                entry.remove();
-                            } else {
-                                *entry.get_mut() = sum;
-                            }
-                        }
-                        Entry::Vacant(entry) => {
-                            entry.insert(value);
-                            check_storage(self.cells.get() + 8 * next.len())?;
-                        }
-                    }
-                }
-            }
-            self.retain(model, 3 + 4 * next.len())?;
-            powers.push(next.into_iter().collect());
-        }
-        Ok(powers[exponent].clone())
+        self.powers.get(
+            model,
+            self.prime,
+            cover.terms().iter().map(|&(i, c)| (i as i128, c)),
+            exponent,
+            &self.cells,
+        )
     }
 
     pub(crate) fn column(
@@ -200,7 +153,7 @@ impl Cartier {
                 Ok((destination, coefficient))
             })
             .collect::<Result<Vec<_>>>()?;
-        self.retain(model, 5 + 2 * result.len())?;
+        retain(model, &self.cells, 5 + 2 * result.len())?;
         let result: Column = result.into();
         self.columns.borrow_mut().insert(coordinate, result.clone());
         Ok(result)
@@ -213,31 +166,13 @@ impl Cartier {
         b: i128,
         r: usize,
     ) -> Result<Vec<(i128, usize, u32)>> {
-        let p = i128::from(self.prime.get());
-        let mut result = Vec::new();
-        // Expand y^r = (y^p - f)^r. This formula on Laurent monomials
-        // gives both the regular Cartier matrix and the Čech chart maps.
-        for j in 0..=r {
-            let power = self.power(model, cover, r - j)?;
-            let mut scalar = self.choose(r, j);
-            if !(r - j).is_multiple_of(2) {
-                scalar = self.prime.negate(scalar);
-            }
-            model.spend(1 + power.len())?;
-            for &(e, coefficient) in power.iter() {
-                // d fits in usize and r<p is bounded by the cyclotomic order.
-                let exponent = e as i128 + b;
-                if exponent.rem_euclid(p) == p - 1 {
-                    result.push((
-                        exponent.div_euclid(p),
-                        j,
-                        self.prime.mul(coefficient, scalar),
-                    ));
-                    check_storage(self.cells.get() + 4 * result.len())?;
-                }
-            }
-        }
-        Ok(result)
+        self.binomial.cartier_monomial(
+            model,
+            b,
+            r,
+            |model, k| self.power(model, cover, k),
+            &self.cells,
+        )
     }
 
     fn step(
@@ -292,16 +227,9 @@ impl Cartier {
                 let mut result = Vec::new();
                 for &(index, coefficient) in source.iter() {
                     let (b, r) = self.exponent(index);
-                    let mut power = 1;
-                    let mut column = Vec::with_capacity(r + 1);
-                    for j in (0..=r).rev() {
-                        let index = self.coordinate(b, j).ok_or_else(basis_error)?;
-                        let scalar = self.prime.mul(self.choose(r, j), power);
-                        column.push((index, scalar));
-                        power = self.prime.mul(power, c);
-                    }
-                    model.spend(column.len())?;
-                    column.reverse();
+                    let column = self.binomial.translate(model, r, c, |j| {
+                        self.coordinate(b, j).ok_or_else(basis_error)
+                    })?;
                     result = add_scaled(model, self.prime, &result, &column, coefficient)?;
                 }
                 odd_ext::persist(model, result)

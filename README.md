@@ -1257,6 +1257,18 @@ For the cyclic signed shift $S$ sending $e_g\mapsto f_1$ and $f_g\mapsto-e_1$, s
 
 Over $\mathbb F_5$, $f=x+x^{-1}$ gives the quadratic Kloosterman character factor $1+K_jT+5T^2$ and twelve rational points. The genus-twelve curve with $f=x^4+x^{-2}$ has primitive character slopes $0,1/4,1/2,1/2,3/4,1$ and has 16,172 points over $\mathbb F_{5^6}$. For $f=x^6+x^{-1}$, adding $x^3$ or $x^4$ preserves the pole orders, genus fourteen and $p$-rank four. The first strictly positive primitive slopes of the three curves are $1/2$, $3/8$ and $1/4$. The example also checks exchange of the poles and rescaling of $x$. [Two-pole Artin–Schreier example](examples/rank-as-two-pole.asl)
 
+#### Cartier and the two-pole ordinary deck representation
+
+`ASTwoDiff(C)` is the space of regular differentials of a declared two-pole cover over $\mathbb F_p$. Its basis consists of $x^iy^j\,dx$ with signed $i$, $0\le j\le p-2$, and
+$pi-ej+(p-1)(e+1)\ge0$, $-pi-dj+(p-1)(d+1)-2p\ge0$.
+Use `rvASTwoBasis[C];` for the ordered $(i,j)$ pairs and `rvASTwoOmega[C,i,j]` for a basis vector. The space supports `zero`, `add` and `pscale`.
+
+`rvASTwoCartier(w)` and `rvASTwoCartierIter[k](w)` apply Cartier and its $k$th iterate via $y^j=(y^p-f)^j$. The Laurent terms selected by Cartier have exponent $m\equiv-1\pmod p$ and map to $x^{(m+1)/p-1}\,dx$. `rvASTwoTranslate[c](w)` applies the pullback $y\mapsto y+c$. The operators are $\mathbb F_p$-linear and commute. Inversion of the base coordinate sends $x^iy^j\,dx$ to $-x^{-i-2}y^j\,dx$ and exchanges the pole orders.
+
+`rvASTwoCartierRank[C,k];` reports the rank of $C^k$ and `rvASTwoaNumber[C];` gives $g-\operatorname{rank}(C)$. `rvASTwoStableRank[C];` and `rvASTwoOrdinaryGen[C,k]` give the dimension and zero-based ambient basis vectors of the stable Cartier image. This dimension is $p-1$. The deck difference $T-1$, for $T$ the translation by one, has one block there: $(T-1)^{p-2} C^g(y^{p-2}\,dx/x)=(p-2)!\,dx/x$. Cartier fixes $dx/x$ and commutes with this block, so $C-1$ is nilpotent on the stable image. `rvASTwoOrdinaryRanks[C];` computes the rank ladders of both differences. `rvASTwoHasseWitt[C];` gives the coefficients of $\det(I-zC)$ in ascending degree over $\mathbb F_p$, using the computed nilpotence on the stable image.
+
+Over $\mathbb F_5$, the curves with $f=x+x^{-1}$ and $f=x+x^{-1}+1$ have slopes $0$ and $1$, each with multiplicity four, and a single ordinary deck block of length four. Their ordinary $C-1$ has block lengths $(2,2)$ and $(4)$, respectively. The genus-twelve curve $f=x^4+x^{-2}$ has Cartier ranks $12,6,5,4$ before stabilization and ordinary $C-1$ ranks $4,1,0$. [Two-pole Cartier and ordinary deck example](examples/rank-as-two-cartier.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

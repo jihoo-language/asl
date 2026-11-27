@@ -192,6 +192,7 @@ pub(crate) enum Kind {
     RVHom(rv_hom::Grade),
     CurveDiff(DiffFamily, Rc<str>, BinaryField),
     ASOddDiff(Rc<str>, Prime),
+    ASTwoDiff(Rc<str>, Prime),
     ASOddDeRham(Rc<str>, Prime),
     ASOddTate(Rc<str>, Prime, i64),
     PrimeScalar(Prime),
@@ -791,6 +792,10 @@ impl Model {
                 let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();
                 (prime.get() as usize).saturating_pow(u32::try_from(dimension).unwrap_or(u32::MAX))
             }
+            Kind::ASTwoDiff(ref name, prime) => {
+                let genus = self.rv_as_two_covers[name.as_ref()].genus();
+                (prime.get() as usize).saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
+            }
             Kind::ASOddDiff(ref name, prime) => {
                 let genus = self.rv_as_odd_covers[name.as_ref()].genus();
                 (prime.get() as usize).saturating_pow(u32::try_from(genus).unwrap_or(u32::MAX))
@@ -914,6 +919,7 @@ impl Model {
                 | Kind::RVHom(..)
                 | Kind::CurveDiff(..)
                 | Kind::ASOddDiff(..)
+                | Kind::ASTwoDiff(..)
                 | Kind::ASOddDeRham(..)
                 | Kind::ASOddTate(..)
                 | Kind::PrimeScalar(..)
@@ -2483,16 +2489,22 @@ impl Model {
         self.inhabited_type(Kind::ASOddDiff(name.text.as_str().into(), cover.prime()), 0)
     }
 
+    pub(crate) fn rv_as_two_cover_named(&self, name: &str) -> Option<Rc<RvAsTwoCover>> {
+        self.rv_as_two_covers.get(name).cloned()
+    }
+
+    pub(crate) fn rv_as_two_diff_type(&mut self, name: &Label) -> Result<TypeId> {
+        let cover = self.rv_as_two_cover(name)?;
+        self.inhabited_type(Kind::ASTwoDiff(name.text.as_str().into(), cover.prime()), 0)
+    }
+
     pub(crate) fn rv_as_two_cover(&self, name: &Label) -> Result<Rc<RvAsTwoCover>> {
-        self.rv_as_two_covers
-            .get(&name.text)
-            .cloned()
-            .ok_or_else(|| {
-                Error::new(
-                    name.span,
-                    format!("unknown two-pole Artin–Schreier cover '{}'", name.text),
-                )
-            })
+        self.rv_as_two_cover_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown two-pole Artin–Schreier cover '{}'", name.text),
+            )
+        })
     }
 
     pub(crate) fn register_rv_as_two_cover(
@@ -3164,6 +3176,7 @@ impl Model {
             | Kind::RVHom(..)
             | Kind::CurveDiff(..)
             | Kind::ASOddDiff(..)
+            | Kind::ASTwoDiff(..)
             | Kind::ASOddDeRham(..)
             | Kind::ASOddTate(..)
             | Kind::PrimeScalar(..)
@@ -3524,6 +3537,7 @@ impl Model {
             Kind::BinaryScalar(field) => out.push(&format!("BinaryScalar({})", field.modulus())),
             Kind::EOType(genus) => out.push(&format!("EOType({genus})")),
             Kind::ASOddDiff(name, _) => out.push(&format!("ASOddDiff({name})")),
+            Kind::ASTwoDiff(name, _) => out.push(&format!("ASTwoDiff({name})")),
             Kind::ASOddDeRham(name, _) => out.push(&format!("ASOddDeRham({name})")),
             Kind::ASOddTate(name, _, degree) => out.push(&format!("ASOddTate({name}, {degree})")),
             Kind::PrimeScalar(prime) => out.push(&format!("PrimeScalar({})", prime.get())),
@@ -4319,6 +4333,10 @@ impl Model {
                     let dimension = 2 * self.rv_as_odd_covers[name.as_ref()].genus();
                     odd_ext::elements(self, prime, dimension, MAX_ELEMENTS)?
                 }
+                Kind::ASTwoDiff(ref name, prime) => {
+                    let genus = self.rv_as_two_covers[name.as_ref()].genus();
+                    odd_ext::elements(self, prime, genus, MAX_ELEMENTS)?
+                }
                 Kind::ASOddDiff(ref name, prime) => {
                     let genus = self.rv_as_odd_covers[name.as_ref()].genus();
                     odd_ext::elements(self, prime, genus, MAX_ELEMENTS)?
@@ -5035,6 +5053,16 @@ impl Model {
                 } else {
                     None
                 };
+                let two_chart = match self.kind(ty) {
+                    Kind::ASTwoDiff(name, _) if !support.is_empty() => {
+                        let cover = self
+                            .rv_as_two_cover_named(name)
+                            .expect("registered two-pole cover");
+                        self.spend(support.len())?;
+                        Some(cover.cartier(self)?)
+                    }
+                    _ => None,
+                };
                 let chart = match self.kind(ty) {
                     Kind::ASOddDiff(name, _) | Kind::ASOddDeRham(name, _)
                         if !support.is_empty() =>
@@ -5072,7 +5100,10 @@ impl Model {
                         }
                         out.push(complex.name(generator))?;
                     } else {
-                        if let Some((chart, genus, de_rham)) = &chart {
+                        if let Some(chart) = &two_chart {
+                            let (i, j) = chart.exponent(generator);
+                            out.push(&format!("omega({i},{j})"))?;
+                        } else if let Some((chart, genus, de_rham)) = &chart {
                             let (label, index) = if *de_rham && generator >= *genus {
                                 ("eta", generator - genus)
                             } else if *de_rham {

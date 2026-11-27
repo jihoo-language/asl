@@ -1,4 +1,6 @@
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::complex::MAX_PIVOT_CELLS;
 use crate::error::{Error, Result};
@@ -6,6 +8,7 @@ use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
 use crate::rv_as_characters::{coefficient_error, Characters, Query as CharacterQuery};
+use crate::rv_as_two_cartier::{Cartier, Query as CartierQuery};
 use crate::rv_cyclotomic as cyclo;
 
 #[derive(Clone, Copy)]
@@ -14,6 +17,7 @@ pub(crate) enum Query {
     Genus,
     PRank,
     Character(CharacterQuery),
+    Cartier(CartierQuery),
 }
 
 pub(crate) struct Cover {
@@ -23,6 +27,7 @@ pub(crate) struct Cover {
     head: Side,
     tail: Side,
     characters: Characters,
+    cartier: OnceCell<Rc<Cartier>>,
 }
 
 #[derive(Default)]
@@ -143,7 +148,44 @@ impl Cover {
             head,
             tail,
             characters: Characters::new(prime, degree, genus),
+            cartier: OnceCell::new(),
         })
+    }
+
+    pub(crate) fn prime(&self) -> Prime {
+        self.prime
+    }
+
+    pub(crate) fn genus(&self) -> usize {
+        self.genus
+    }
+
+    pub(crate) fn pole_orders(&self) -> (usize, usize) {
+        (self.head.degree, self.tail.degree)
+    }
+
+    pub(crate) fn cartier(&self, model: &mut Model) -> Result<Rc<Cartier>> {
+        if let Some(cartier) = self.cartier.get() {
+            return Ok(cartier.clone());
+        }
+        let cartier = Rc::new(Cartier::build(model, self)?);
+        Ok(self.cartier.get_or_init(|| cartier).clone())
+    }
+
+    pub(crate) fn laurent_terms(&self, model: &mut Model) -> Result<Vec<(i128, u32)>> {
+        model.spend(1 + self.head.terms.len() + self.tail.terms.len())?;
+        let mut reduced = self
+            .tail
+            .terms
+            .iter()
+            .rev()
+            .map(|&(e, c, _)| (-(e as i128), c))
+            .collect::<Vec<_>>();
+        if self.constant != 0 {
+            reduced.push((0, self.constant));
+        }
+        reduced.extend(self.head.terms.iter().map(|&(e, c, _)| (e as i128, c)));
+        Ok(reduced)
     }
 
     pub(crate) fn order(&self) -> usize {
@@ -158,20 +200,10 @@ impl Cover {
     pub(crate) fn report(&self, model: &mut Model, name: &str, query: Query) -> Result<String> {
         match query {
             Query::Reduced => {
-                model.spend(1 + self.head.terms.len() + self.tail.terms.len())?;
-                let mut reduced = self
-                    .tail
-                    .terms
-                    .iter()
-                    .rev()
-                    .map(|&(e, c, _)| (-(e as i128), c))
-                    .collect::<Vec<_>>();
-                if self.constant != 0 {
-                    reduced.push((0, self.constant));
-                }
-                reduced.extend(self.head.terms.iter().map(|&(e, c, _)| (e as i128, c)));
+                let reduced = self.laurent_terms(model)?;
                 Ok(format!("rvASTwoReduced[{name}] = {reduced:?}"))
             }
+            Query::Cartier(query) => self.cartier(model)?.report(model, name, query),
             Query::Genus => Ok(format!("rvASTwoGenus[{name}] = {}", self.genus)),
             Query::PRank => Ok(format!("rvASTwoPrank[{name}] = {}", self.order() - 1)),
             Query::Character(query) => {
