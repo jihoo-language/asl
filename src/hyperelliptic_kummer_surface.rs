@@ -13,6 +13,7 @@ use crate::syntax::{Label, ParsedExpr};
 pub(crate) mod arithmetic;
 pub(crate) mod hilbert;
 pub(crate) mod k3;
+pub(crate) mod nikulin;
 pub(crate) mod resolution;
 
 pub(crate) enum Expression {

@@ -35,6 +35,19 @@ pub(crate) struct Frobenius {
     pub(crate) characteristic: Vec<u64>,
 }
 
+// The four columns of a genus-two level-2 matrix are the generator images.
+pub(crate) fn binary_mask_image(matrix: &Matrix<u64>, mask: u8) -> u8 {
+    let mut output = 0;
+    for row in 0..4 {
+        let mut bit = 0;
+        for column in 0..4 {
+            bit ^= ((mask >> column) & 1) & (*matrix.entry(row, column) as u8);
+        }
+        output |= bit << row;
+    }
+    output
+}
+
 impl Basis {
     pub(crate) fn new(
         model: &mut Model,

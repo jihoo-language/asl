@@ -2,9 +2,8 @@ use std::rc::Rc;
 
 use crate::ec_poly::Field;
 use crate::error::{Error, Result};
-use crate::hw_algebra::Matrix;
 use crate::hw_closed::Curve;
-use crate::jacobian_level::Basis;
+use crate::jacobian_level::{binary_mask_image, Basis};
 use crate::model::{Model, Value};
 use crate::syntax::Label;
 
@@ -105,7 +104,8 @@ impl Neighbors {
             .map_err(|error| error.at(base.span))?;
         model.spend(16 * 16)?;
         let masks = isotropic_planes();
-        let images: [u8; 16] = std::array::from_fn(|x| apply(&frobenius.matrix, x as u8));
+        let images: [u8; 16] =
+            std::array::from_fn(|x| binary_mask_image(&frobenius.matrix, x as u8));
         let permutation = masks
             .iter()
             .map(|triple| {
@@ -167,18 +167,6 @@ fn isotropic_planes() -> Vec<Masks> {
         }
     }
     planes
-}
-
-fn apply(matrix: &Matrix<u64>, mask: u8) -> u8 {
-    let mut output = 0;
-    for row in 0..4 {
-        let mut bit = 0;
-        for column in 0..4 {
-            bit ^= ((mask >> column) & 1) & (*matrix.entry(row, column) as u8);
-        }
-        output |= bit << row;
-    }
-    output
 }
 
 fn orbit_lengths(permutation: &[usize]) -> Vec<usize> {

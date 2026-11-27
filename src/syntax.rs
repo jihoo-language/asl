@@ -125,6 +125,7 @@ pub(crate) enum TypeForm {
     Jacobian(Label),
     Kummer(Label),
     KummerK3(Label),
+    KummerDisc(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -965,6 +966,7 @@ pub(crate) enum ExprForm {
     JacobianRichelotKernel(Label, Label, usize, usize),
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
+    KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1141,6 +1143,7 @@ pub(crate) enum StatementForm {
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
+    KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -2882,6 +2885,64 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
 
+    fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::nikulin::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let base = self.label()?;
+        self.expect(Token::Comma)?;
+        let power = self.number()?.0;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KummerNodeLattice(Box::new(Command(
+            basis, base, power,
+        ))))
+    }
+
+    fn kummer_disc_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::nikulin::{Expression, ORDER};
+        let (expression, depth) = match name {
+            "rvKummerDisc" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let (mask, at) = self.number()?;
+                if mask >= usize::from(ORDER) {
+                    return Err(Error::new(at, "rvKummerDisc mask must be between 0 and 63"));
+                }
+                self.expect(Token::RBracket)?;
+                (Expression::Element(basis, mask as u8), 0)
+            }
+            "rvKummerDiscPair" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Pair(Box::new(inputs)), depth)
+            }
+            "rvKummerDiscFrob" => {
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let power = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Frobenius(base, power, Box::new(input)), depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Quadratic(Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::KummerDisc(Box::new(expression)), depth)
+    }
+
     fn kummer_k3_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::k3::{Command, Query};
         self.advance()?;
@@ -3814,6 +3875,7 @@ impl<'src> Parser<'src> {
             Token::Word(
                 command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"),
             ) => self.kummer_hilbert_statement(command)?,
+            Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,
@@ -7067,15 +7129,18 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
-        if matches!(name.text.as_str(), "RVJac" | "RVKummer" | "RVKummerK3")
-            && self.eat(Token::LParen)?
+        if matches!(
+            name.text.as_str(),
+            "RVJac" | "RVKummer" | "RVKummerK3" | "RVKummerDisc"
+        ) && self.eat(Token::LParen)?
         {
-            let curve = self.label()?;
+            let endpoint = self.label()?;
             self.expect(Token::RParen)?;
             let form = match name.text.as_str() {
-                "RVJac" => TypeForm::Jacobian(curve),
-                "RVKummer" => TypeForm::Kummer(curve),
-                _ => TypeForm::KummerK3(curve),
+                "RVJac" => TypeForm::Jacobian(endpoint),
+                "RVKummer" => TypeForm::Kummer(endpoint),
+                "RVKummerK3" => TypeForm::KummerK3(endpoint),
+                _ => TypeForm::KummerDisc(endpoint),
             };
             return ty(span, form, 0);
         }
@@ -9022,6 +9087,15 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);
+                }
+                if (matches!(name.text.as_str(), "rvKummerDisc" | "rvKummerDiscFrob")
+                    && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKummerDiscQuadratic" | "rvKummerDiscPair"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.kummer_disc_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

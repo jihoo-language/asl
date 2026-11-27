@@ -1272,6 +1272,14 @@ For the resolution $S$ associated to `C`, `rvKummerHilbPoints[C,n,r];` counts po
 
 The arithmetic Göttsche–Nakajima decomposition uses surface cohomology in degree $b$ for each length $m\ge1$. Its Hilbert-scheme degree is $b+2(m-1)$ and its Frobenius eigenvalues acquire the factor $q^{m-1}$. ASL computes exact Newton recurrences from these data and the resolved Kummer Frobenius traces. Point counts and Betti numbers use the unsigned 128-bit range, traces use the signed 128-bit range, and exact intermediates are checked at 512 bits with the usual work and storage limits. The example gives point counts 327 and 4,480 at lengths two and three over $\mathbb F_3$. [Kummer Hilbert-scheme example](examples/hyperelliptic-kummer-hilbert.asl)
 
+#### Exceptional Kummer lattice and its discriminant
+
+A certified genus-two level-2 basis `B` labels the 16 exceptional curves $E_v$ by $v\in\mathbb F_2^4$ in basis order. Their integral intersection pairing is $E_v\cdot E_w=-2\delta_{vw}$. The primitive exceptional lattice $K$ consists of $(\sum_v a_vE_v)/2$ with $a\bmod2$ in the affine code $\mathrm{RM}(1,4)$. It has rank 16 and determinant $+64$. The full Néron–Severi lattice of the resolution also has classes from the abelian surface.
+
+`RVKummerDisc(B)` is the 64-element additive discriminant group $K^*/K=\mathrm{RM}(2,4)/\mathrm{RM}(1,4)$. `rvKummerDisc[B,mask]` uses the six squarefree monomials $x_ix_j$ for $i<j$, with bit zero on the first lexicographic pair. `rvKummerDiscQuadratic(x)` gives $q(x)=-\operatorname{wt}(x)/2\bmod2$ from its truth table, and `rvKummerDiscPair(x,y)` gives $2b(x,y)\bmod2$ by polarization. Both return `PrimeScalar(2)`. `rvKummerDiscFrob[Base,k](x)` pulls back by the inverse of the certified node permutation for $\mathrm{Frob}_{\mathrm{Base}}^k$ and discards the affine terms.
+
+`rvKummerNodeLattice[B,Base,k];` lists the node orbits $O_i$ of that Frobenius power. The fixed exceptional lattice has rank $m$ equal to the number of orbits. If the invariant affine code has dimension $d$, the orbit sums have index $2^d$ in the fixed lattice. The signed determinant is $(-2)^m\prod_i|O_i|/2^{2d}$. The example compares the split lattice with a nontrivial Frobenius shear. [Exceptional Kummer lattice example](examples/hyperelliptic-kummer-nikulin.asl)
+
 #### Richelot isogeny targets
 
 `rvrichelot D[C]{G1}{G2}{G3};` registers a genus-two Richelot target over the same named odd finite field as `C`. The source curve has precision one and a smooth quintic or sextic equation $y^2=f(x)$. Each brace lists the coefficients of one factor as bracketed signed field coordinates in ascending degree, as in `rvjac`. The product must equal $f$ exactly. Each factor is quadratic, with one linear factor allowed for a quintic. The linear factor accounts for the branch point at infinity.
