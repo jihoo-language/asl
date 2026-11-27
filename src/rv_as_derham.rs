@@ -389,3 +389,132 @@ pub(crate) fn final_type(model: &mut Model, cover: &Cover) -> Result<Vec<usize>>
     }
     Ok(sequence)
 }
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Operator {
+    F,
+    V,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum WordQuery {
+    Rank,
+    CommonKernel,
+    SumImages,
+}
+
+impl WordQuery {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rank => "rvASWordRank",
+            Self::CommonKernel => "rvASCommonKer",
+            Self::SumImages => "rvASSumImages",
+        }
+    }
+}
+
+pub(crate) fn word_report(
+    model: &mut Model,
+    cover: &Cover,
+    name: &str,
+    query: WordQuery,
+    words: &[Vec<Operator>],
+) -> Result<String> {
+    let rank = word_rank(model, cover, query, words)?;
+    let operation = query.name();
+    Ok(if matches!(query, WordQuery::Rank) {
+        format!("{operation}[{name}, {:?}] = {rank}", words[0])
+    } else {
+        format!("{operation}[{name}, {words:?}] = {rank}")
+    })
+}
+
+fn word_rank(
+    model: &mut Model,
+    cover: &Cover,
+    query: WordQuery,
+    words: &[Vec<Operator>],
+) -> Result<usize> {
+    let dimension = cover.genus().checked_mul(2).ok_or_else(dimension_error)?;
+    let common_kernel = matches!(query, WordQuery::CommonKernel);
+    model.spend(1 + words.len())?;
+    let mut powers: BTreeMap<_, usize> = BTreeMap::new();
+    for word in words {
+        model.spend(word.len())?;
+        let Some(&operator) = word.first() else {
+            return Ok(if common_kernel { 0 } else { dimension });
+        };
+        // Every word containing both letters has an adjacent FV or VF.
+        if word.iter().all(|&letter| letter == operator) {
+            // The images stabilize after dimension steps in a finite vector
+            // space. The nilpotent blocks are already zero after that time.
+            let power = word.len().min(dimension);
+            // Kernels increase and images decrease for powers of one map.
+            // Only its smallest requested exponent matters to either query.
+            powers
+                .entry(operator)
+                .and_modify(|old| *old = (*old).min(power))
+                .or_insert(power);
+        }
+    }
+    if powers.is_empty() || dimension == 0 {
+        return Ok(if common_kernel { dimension } else { 0 });
+    }
+    let matrices = Matrices::geometric(model, cover, dimension)?;
+    let mut span = Basis::default();
+    let stack_size = dimension
+        .checked_mul(powers.len())
+        .ok_or_else(dimension_error)?;
+    if common_kernel {
+        // The common kernel is the kernel of the stacked maps on the
+        // constant F2 model. Their separate twists preserve this dimension.
+        for i in 0..dimension {
+            let mut stacked = Vec::new();
+            for (offset, (&operator, &power)) in (0..stack_size).step_by(dimension).zip(&powers) {
+                if let Some(j) = matrices.power_coordinate(model, operator, power, i)? {
+                    stacked.push(offset + j);
+                    check_storage(matrices.cells + span.cells() + stacked.len())?;
+                }
+            }
+            span.insert(model, stacked)?;
+            check_storage(matrices.cells + span.cells())?;
+        }
+        return Ok(dimension - span.rank());
+    }
+    for (operator, power) in powers {
+        for i in 0..dimension {
+            if let Some(j) = matrices.power_coordinate(model, operator, power, i)? {
+                span.insert(model, vec![j])?;
+                check_storage(matrices.cells + span.cells())?;
+            }
+        }
+    }
+    Ok(span.rank())
+}
+
+impl Matrices {
+    fn power_coordinate(
+        &self,
+        model: &mut Model,
+        operator: Operator,
+        power: usize,
+        mut index: usize,
+    ) -> Result<Option<usize>> {
+        let matrix = match operator {
+            Operator::F => &self.frobenius,
+            Operator::V => &self.verschiebung,
+        };
+        // In the chosen ordinary and monomial blocks, each column has at
+        // most one nonzero coordinate. Follow it without multiplying matrices.
+        for _ in 0..power {
+            model.spend(1)?;
+            match matrix[index].as_slice() {
+                [] => return Ok(None),
+                [next] if *next == index => break,
+                [next] => index = *next,
+                _ => return Err(Error::plain("invalid geometric Artin–Schreier word matrix")),
+            }
+        }
+        Ok(Some(index))
+    }
+}

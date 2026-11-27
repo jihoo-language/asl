@@ -974,6 +974,10 @@ Use `zero`, `add`, and `rvASDeRhamScale[c](x)` for vector operations. Frobenius 
 
 The genus-five curves $y^2+y=x^9+x^5+x^{-1}$ and $y^2+y=x^5+x+x^{-1}+x^{-3}+x^{-5}$ have equal zeta numerators, $p$-rank one, and $a$-number two. Their respective geometric pole orders $(1,9)$ and $(5,5)$ give the final types $[1,1,2,2,3]$ and $[1,1,1,2,3]$. [Geometric Ekedahl–Oort example](examples/rank-as-geometric-eo.asl)
 
+`rvASWordRank[C,[F,V,...]];` computes the rank of a composition on the geometric de Rham module, with the rightmost operator acting first. The empty word acts as the identity. `rvASCommonKer[C,[[F,F],[V],...]];` gives the dimension of the intersection of the kernels, and `rvASSumImages[C,[[F,F],[V],...]];` gives the dimension of the sum of the images. An empty family has the whole space as its common kernel and zero as its image sum. The block matrices have coefficients in $\mathbb F_2$, so the twists by Frobenius and its inverse preserve these kernel and image dimensions after extending scalars.
+
+The stable ranks of powers of either operator give the $p$-rank, and $\dim(\ker F\cap\ker V)$ is the $a$-number. For the two genus-five covers with the same zeta numerator, the ranks of $F^3$ are two and one and the dimensions of $\ker F^2\cap\ker V$ are three and four. [Geometric Frobenius and Verschiebung example](examples/rank-as-words.asl)
+
 #### Cyclic quartic Artin–Schreier–Witt covers
 
 `rvwittcover W[[x_idx]] { f,g };` defines the smooth projective curve of $y^2+y=f(x)$ and $z^2+z=g(x)+f(x)y$. Use unary `RVPoly` monomials or binary homogeneous forms containing `x_idx`. Setting the other variable to one gives an ordinary polynomial in $x$. The degree $m$ of $f$ must be positive and odd. The second polynomial is zero, constant, or of odd positive degree $n$, with $n=0$ for zero or constant $g$.

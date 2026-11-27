@@ -14,6 +14,7 @@ use crate::rho_bock;
 use crate::rho_localized;
 use crate::rv_arithmetic::Series as RankSeries;
 use crate::rv_as_cover::Query as AsQuery;
+use crate::rv_as_derham::{Operator as AsOperator, WordQuery as AsWordQuery};
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
@@ -796,6 +797,7 @@ pub(crate) enum StatementForm {
     RvCurve(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvAsQuery(AsQuery, Label),
+    RvAsWordQuery(AsWordQuery, Label, Vec<Vec<AsOperator>>),
     RvWittCover(Label, Vec<usize>, Vec<ParsedExpr>),
     RvWittQuery(WittQuery, Label),
     RvWittTower(Label, Vec<usize>, Vec<ParsedExpr>),
@@ -1977,6 +1979,25 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvAsCover(name, variables, self.rv_generators()?)
             }
+            Token::Word("rvASWordRank" | "rvASCommonKer" | "rvASSumImages") => {
+                let query = match self.token() {
+                    Token::Word("rvASWordRank") => AsWordQuery::Rank,
+                    Token::Word("rvASCommonKer") => AsWordQuery::CommonKernel,
+                    Token::Word("rvASSumImages") => AsWordQuery::SumImages,
+                    _ => unreachable!(),
+                };
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let words = if matches!(query, AsWordQuery::Rank) {
+                    vec![self.as_operator_word()?]
+                } else {
+                    self.as_operator_words()?
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::RvAsWordQuery(query, name, words)
+            }
             Token::Word(
                 "rvASGenus" | "rvASPrank" | "rvASPoints" | "rvASLPolynomial" | "rvASNewton"
                 | "rvASCartierRank" | "rvASaNumber" | "rvASEO" | "rvASPoleOrders",
@@ -2672,6 +2693,43 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (n, r, s, t, f) = self.profile_page_degree()?;
         Ok((prime, n, r, s, t, f))
+    }
+
+    fn as_operator_word(&mut self) -> Result<Vec<AsOperator>> {
+        self.expect(Token::LBracket)?;
+        let mut word = Vec::new();
+        while self.token() != Token::RBracket {
+            let operator = match self.token() {
+                Token::Word("F") => AsOperator::F,
+                Token::Word("V") => AsOperator::V,
+                _ => {
+                    return Err(Error::new(
+                        self.span(),
+                        "expected F or V in an Artin–Schreier word",
+                    ))
+                }
+            };
+            word.push(operator);
+            self.advance()?;
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(word)
+    }
+
+    fn as_operator_words(&mut self) -> Result<Vec<Vec<AsOperator>>> {
+        self.expect(Token::LBracket)?;
+        let mut words = Vec::new();
+        while self.token() != Token::RBracket {
+            words.push(self.as_operator_word()?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBracket)?;
+        Ok(words)
     }
 
     fn bp_vpage_spec(&mut self) -> Result<BpVPageSpec> {

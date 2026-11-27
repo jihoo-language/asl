@@ -1200,6 +1200,10 @@ impl Engine {
                 self.model.define_rv_as_cover(name.text, cover);
                 return Ok(None);
             }
+            StatementForm::RvAsWordQuery(query, name, words) => {
+                let cover = self.model.rv_as_cover(&name)?;
+                rv_as_derham::word_report(&mut self.model, &cover, &name.text, query, &words)?
+            }
             StatementForm::RvAsQuery(query, name) => {
                 let cover = self.model.rv_as_cover(&name)?;
                 cover.report(&mut self.model, &name.text, query)?
