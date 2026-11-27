@@ -41,7 +41,7 @@ impl Grade {
         self.ambient - self.rank
     }
 
-    fn shape(self, model: &mut Model, mut parts: Vec<usize>) -> Result<Shape> {
+    pub(crate) fn shape(self, model: &mut Model, mut parts: Vec<usize>) -> Result<Shape> {
         if parts.len() > self.rank || parts.iter().any(|&part| part > self.width()) {
             return Err(Error::plain(
                 "Schubert partition lies outside the Grassmannian rectangle",
@@ -197,7 +197,7 @@ pub(crate) fn classical(model: &mut Model, a: &Support) -> Result<Value> {
     persist(model, a[..length].to_vec())
 }
 
-fn transpose_shape(model: &mut Model, shape: &[usize], kept: usize) -> Result<Shape> {
+pub(crate) fn transpose_shape(model: &mut Model, shape: &[usize], kept: usize) -> Result<Shape> {
     let rows = shape.first().copied().unwrap_or(0);
     if rows > MAX_CELLS {
         return Err(Error::plain(

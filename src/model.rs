@@ -64,6 +64,7 @@ use crate::rv_koszul::{self, Grade as RvGrade, Tor};
 use crate::rv_laurent;
 use crate::rv_negative;
 use crate::rv_ore;
+use crate::rv_pcurv;
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
 use crate::rv_satake;
@@ -184,6 +185,7 @@ pub(crate) enum Kind {
     RVSatake(usize),
     RVHive(HiveBoundary),
     RVQGr(rv_qgr::Grade),
+    RVQGrP(rv_pcurv::ModGrade),
     RVOre,
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
@@ -317,6 +319,7 @@ pub(crate) enum Value {
     RVSatake(rv_satake::Support),
     RVHive(rv_hive::Interior),
     RVQGr(rv_qgr::Support),
+    RVQGrP(rv_pcurv::Support),
     RVOre(rv_ore::Support),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
@@ -686,7 +689,7 @@ impl Model {
             | Kind::RVSatake(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..) => usize::MAX,
-            Kind::RVQGr(..) | Kind::RVOre => usize::MAX,
+            Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
                     usize::MAX
@@ -856,6 +859,7 @@ impl Model {
                 | Kind::RVSatake(..)
                 | Kind::RVHive(..)
                 | Kind::RVQGr(..)
+                | Kind::RVQGrP(..)
                 | Kind::RVOre
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
@@ -1914,6 +1918,10 @@ impl Model {
         self.inhabited_type(Kind::RVOre, 0)
     }
 
+    pub(crate) fn quantum_mod_type(&mut self, grade: rv_pcurv::ModGrade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVQGrP(grade), 0)
+    }
+
     pub(crate) fn quantum_grassmannian_type(&mut self, grade: rv_qgr::Grade) -> Result<TypeId> {
         self.inhabited_type(Kind::RVQGr(grade), 0)
     }
@@ -2798,6 +2806,7 @@ impl Model {
             | Kind::RVSatake(..)
             | Kind::RVHive(..)
             | Kind::RVQGr(..)
+            | Kind::RVQGrP(..)
             | Kind::RVOre
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
@@ -3176,6 +3185,12 @@ impl Model {
             }
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVOre => out.push("RVOre"),
+            Kind::RVQGrP(grade) => out.push(&format!(
+                "RVQGrP({}, {}, {})",
+                grade.prime.get(),
+                grade.grassmannian.rank,
+                grade.grassmannian.ambient
+            )),
             Kind::RVQGr(grade) => out.push(&format!("RVQGr({}, {})", grade.rank, grade.ambient)),
             Kind::RVHive(HiveBoundary([lambda, mu, nu])) => {
                 out.push(&format!("RVHive({lambda:?}, {mu:?}, {nu:?})"))
@@ -3356,6 +3371,9 @@ impl Model {
             }
             (Value::RVOre(left), Value::RVOre(right)) => {
                 Ok(rv_ore::compare(self, left, right)?.is_eq())
+            }
+            (Value::RVQGrP(left), Value::RVQGrP(right)) => {
+                Ok(rv_pcurv::compare(self, left, right)?.is_eq())
             }
             (Value::RVQGr(left), Value::RVQGr(right)) => {
                 Ok(rv_qgr::compare(self, left, right)?.is_eq())
@@ -3575,6 +3593,7 @@ impl Model {
                 rv_cyclotomic::compare(self, left, right)
             }
             (Value::RVOre(left), Value::RVOre(right)) => rv_ore::compare(self, left, right),
+            (Value::RVQGrP(left), Value::RVQGrP(right)) => rv_pcurv::compare(self, left, right),
             (Value::RVQGr(left), Value::RVQGr(right)) => rv_qgr::compare(self, left, right),
             (Value::RVSatake(left), Value::RVSatake(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -3764,6 +3783,11 @@ impl Model {
                     return Err(Error::plain("cannot enumerate a Verlinde fusion ring"));
                 }
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
+                Kind::RVQGrP(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a polynomial Schubert module",
+                    ))
+                }
                 Kind::RVQGr(..) => {
                     return Err(Error::plain("cannot enumerate a quantum Grassmannian ring"))
                 }
@@ -4412,6 +4436,27 @@ impl Model {
         out.push("}")
     }
 
+    fn write_schubert<C: std::fmt::Display>(
+        &mut self,
+        out: &mut Text,
+        ty: TypeId,
+        terms: &[(rv_qgr::Schubert, C)],
+    ) -> Result<()> {
+        self.write_type(out, ty, 0)?;
+        out.push("{")?;
+        for (index, (term, coefficient)) in terms.iter().enumerate() {
+            self.spend(1 + term.shape.len())?;
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!(
+                "({}, {:?}): {coefficient}",
+                term.quantum, term.shape
+            ))?;
+        }
+        out.push("}")
+    }
+
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
             Value::Bar(support) => {
@@ -4878,21 +4923,8 @@ impl Model {
                 }
                 out.push("}")
             }
-            Value::RVQGr(terms) => {
-                self.write_type(out, ty, 0)?;
-                out.push("{")?;
-                for (index, (term, coefficient)) in terms.iter().enumerate() {
-                    self.spend(1 + term.shape.len())?;
-                    if index != 0 {
-                        out.push(", ")?;
-                    }
-                    out.push(&format!(
-                        "({}, {:?}): {coefficient}",
-                        term.quantum, term.shape
-                    ))?;
-                }
-                out.push("}")
-            }
+            Value::RVQGr(terms) => self.write_schubert(out, ty, terms),
+            Value::RVQGrP(terms) => self.write_schubert(out, ty, terms),
             Value::RVHive(interior) => {
                 self.spend(interior.len())?;
                 self.write_type(out, ty, 0)?;

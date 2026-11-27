@@ -90,6 +90,7 @@ use crate::rv_laurent;
 use crate::rv_negative;
 use crate::rv_newton;
 use crate::rv_ore;
+use crate::rv_pcurv;
 use crate::rv_poly;
 use crate::rv_qconnection;
 use crate::rv_qgr;
@@ -347,6 +348,10 @@ enum TypedForm {
     SatakeTransform(Box<TypedExpr>),
     QuantumProduct(rv_qgr::Grade, Box<[TypedExpr; 2]>),
     QuantumNabla(rv_qgr::Grade, Box<TypedExpr>),
+    QuantumPNabla(rv_pcurv::ModGrade, Box<TypedExpr>),
+    QuantumPUnary(rv_pcurv::ModGrade, QuantumOp, Box<TypedExpr>),
+    QuantumReduce(rv_pcurv::ModGrade, Box<TypedExpr>),
+    QuantumCurvature(rv_pcurv::ModGrade, bool, Box<TypedExpr>),
     OreProduct(Box<[TypedExpr; 2]>),
     OreApply(rv_qgr::Grade, Box<[TypedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<TypedExpr>),
@@ -862,19 +867,33 @@ impl Engine {
                 let period = rv_qconnection::period(&mut self.model, grade, degree)?;
                 format!("rvQGrPeriod = {period}")
             }
+            StatementForm::QuantumCurvature(report, prime, rank, ambient) => {
+                let grade = rv_pcurv::ModGrade::checked(&mut self.model, prime, rank, ambient)?;
+                rv_pcurv::report(&mut self.model, grade, report)?
+            }
             StatementForm::QuantumCoefficient(degree, shape, input) => {
                 let input = self.checker().expr(input)?;
-                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
-                    return Err(Error::new(
-                        input.span,
-                        "rvQGrCoeff requires a quantum Grassmannian element",
-                    ));
+                let kind = self.model.kind(input.ty).clone();
+                let coefficient = match kind {
+                    Kind::RVQGr(grade) => {
+                        let Value::RVQGr(terms) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        rv_qgr::coefficient(&mut self.model, grade, &terms, degree, shape)?
+                    }
+                    Kind::RVQGrP(grade) => {
+                        let Value::RVQGrP(terms) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        rv_pcurv::coefficient(&mut self.model, grade, &terms, degree, shape)?.into()
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            input.span,
+                            "rvQGrCoeff requires a quantum Grassmannian element",
+                        ))
+                    }
                 };
-                let Value::RVQGr(terms) = self.eval(&input)? else {
-                    unreachable!()
-                };
-                let coefficient =
-                    rv_qgr::coefficient(&mut self.model, grade, &terms, degree, shape)?;
                 format!("rvQGrCoeff = {coefficient}")
             }
             StatementForm::GromovWitten(rank, ambient, degree, shapes) => {
@@ -2462,6 +2481,12 @@ impl Engine {
                     (BinaryOp::Add, Value::RVOre(a), Value::RVOre(b)) => {
                         rv_ore::add(&mut self.model, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVQGrP(a), Value::RVQGrP(b)) => {
+                        let Kind::RVQGrP(grade) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        rv_pcurv::add(&mut self.model, grade.prime, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVQGr(a), Value::RVQGr(b)) => {
                         rv_qgr::add(&mut self.model, &a, &b)
                     }
@@ -3317,6 +3342,39 @@ impl Engine {
                     unreachable!()
                 };
                 rv_qconnection::apply(&mut self.model, *grade, &a, &b)
+            }
+            TypedForm::QuantumReduce(grade, input) => {
+                let Value::RVQGr(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_pcurv::reduction(&mut self.model, *grade, &terms)
+            }
+            TypedForm::QuantumPNabla(grade, input) => {
+                let Value::RVQGrP(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_pcurv::nabla(&mut self.model, *grade, &terms)
+            }
+            TypedForm::QuantumPUnary(grade, operation, input) => {
+                let Value::RVQGrP(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match *operation {
+                    QuantumOp::Scale(factor) => {
+                        rv_pcurv::scale(&mut self.model, grade.prime, &terms, factor)
+                    }
+                    QuantumOp::Shift(power) => rv_pcurv::shift(&mut self.model, &terms, power),
+                    QuantumOp::Transpose => {
+                        rv_pcurv::transpose(&mut self.model, grade.prime, &terms)
+                    }
+                    QuantumOp::Classical => rv_pcurv::classical(&mut self.model, &terms),
+                }
+            }
+            TypedForm::QuantumCurvature(grade, satake, input) => {
+                let Value::RVQGrP(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_pcurv::apply(&mut self.model, *grade, &terms, *satake)
             }
             TypedForm::QuantumNabla(grade, input) => {
                 let Value::RVQGr(v) = self.eval(input)? else {
@@ -4738,6 +4796,10 @@ impl Checker<'_> {
                 .model
                 .fusion_type(rv_fusion::Grade::checked(rank, level)?),
             TypeForm::RVOre => self.model.ore_type(),
+            TypeForm::RVQGrP(prime, rank, ambient) => {
+                let grade = rv_pcurv::ModGrade::checked(self.model, prime, rank, ambient)?;
+                self.model.quantum_mod_type(grade)
+            }
             TypeForm::RVQGr(rank, ambient) => self
                 .model
                 .quantum_grassmannian_type(rv_qgr::Grade::checked(rank, ambient)?),
@@ -5022,6 +5084,7 @@ impl Checker<'_> {
                     Kind::RVSphHecke(..) => rv_sphhecke::zero(),
                     Kind::RVSatake(..) => rv_satake::zero(),
                     Kind::RVQGr(..) => rv_qgr::zero(),
+                    Kind::RVQGrP(..) => rv_pcurv::zero(),
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
@@ -6262,6 +6325,12 @@ impl Checker<'_> {
                 if matches!(self.model.kind(input.ty), Kind::RVOre) {
                     return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
                 }
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::QuantumPUnary(grade, QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVQGr(..)) {
                     return Ok((
                         input.ty,
@@ -6416,8 +6485,57 @@ impl Checker<'_> {
                 };
                 Ok((b.ty, TypedForm::OreApply(grade, Box::new([a, b]))))
             }
+            ExprForm::QuantumReduce(p, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGr(grassmannian) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvQGrMod",
+                        "an integral quantum Grassmannian element",
+                    ));
+                };
+                let prime = rv_pcurv::checked_prime(self.model, p)?;
+                let grade = rv_pcurv::ModGrade {
+                    prime,
+                    grassmannian,
+                };
+                let ty = self.model.quantum_mod_type(grade)?;
+                Ok((ty, TypedForm::QuantumReduce(grade, Box::new(input))))
+            }
+            ExprForm::QuantumPSection(p, k, n, shape, column) => {
+                let grade = rv_pcurv::ModGrade::checked(self.model, p, k, n)?;
+                let ty = self.model.quantum_mod_type(grade)?;
+                let value = if column {
+                    rv_pcurv::column(self.model, grade, shape)?
+                } else {
+                    rv_pcurv::basis(self.model, grade, shape)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QuantumCurvature(satake, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGrP(grade) = *self.model.kind(input.ty) else {
+                    let op = if satake {
+                        "rvQGrCurvatureSatake"
+                    } else {
+                        "rvQGrCurvature"
+                    };
+                    return Err(self.invalid_operand(
+                        &input,
+                        op,
+                        "a finite-field Schubert section",
+                    ));
+                };
+                Ok((
+                    input.ty,
+                    TypedForm::QuantumCurvature(grade, satake, Box::new(input)),
+                ))
+            }
             ExprForm::QuantumNabla(input) => {
                 let input = self.expr(*input)?;
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    return Ok((input.ty, TypedForm::QuantumPNabla(grade, Box::new(input))));
+                }
                 let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
                     return Err(self.invalid_operand(
                         &input,
@@ -6452,6 +6570,21 @@ impl Checker<'_> {
             }
             ExprForm::QuantumUnary(operation, input) => {
                 let input = self.expr(*input)?;
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    let ty = if matches!(operation, QuantumOp::Transpose) {
+                        let grassmannian = grade.grassmannian.complement();
+                        self.model.quantum_mod_type(rv_pcurv::ModGrade {
+                            grassmannian,
+                            ..grade
+                        })?
+                    } else {
+                        input.ty
+                    };
+                    return Ok((
+                        ty,
+                        TypedForm::QuantumPUnary(grade, operation, Box::new(input)),
+                    ));
+                }
                 let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
                     return Err(self.invalid_operand(
                         &input,
@@ -9521,6 +9654,7 @@ impl Checker<'_> {
                         | Kind::RVSphHecke(..)
                         | Kind::RVSatake(..)
                         | Kind::RVQGr(..)
+                        | Kind::RVQGrP(..)
                         | Kind::RVOre
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)

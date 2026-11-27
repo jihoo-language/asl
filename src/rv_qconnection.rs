@@ -93,6 +93,33 @@ pub(crate) fn apply(
     rv_qgr::persist(model, sum.terms.into_iter().collect())
 }
 
+pub(crate) fn schubert_basis(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec<Shape>> {
+    let mut rank = 1u128;
+    for index in 1..=grade.rank {
+        rank = rank * (grade.width() as u128 + index as u128) / index as u128;
+        if rank > limit as u128 {
+            return Err(Error::plain(format!(
+                "quantum connection Schubert rank exceeds the limit of {limit}"
+            )));
+        }
+    }
+    model.spend(rank as usize * grade.rank)?;
+    let mut shapes: Vec<Shape> = Vec::with_capacity(rank as usize);
+    let mut beta: Vec<_> = (0..grade.rank).collect();
+    loop {
+        let descending: Vec<_> = beta.iter().rev().copied().collect();
+        shapes.push(rv_qgr::beta_shape(&descending));
+        let Some(index) = (0..grade.rank).rev().find(|&i| beta[i] < grade.width() + i) else {
+            break;
+        };
+        beta[index] += 1;
+        for next in index + 1..grade.rank {
+            beta[next] = beta[next - 1] + 1;
+        }
+    }
+    Ok(shapes)
+}
+
 struct Connection {
     arrows: Vec<Vec<(usize, usize)>>,
     high_to_low: Vec<usize>,
@@ -103,29 +130,7 @@ impl Connection {
         if grade.rank > grade.width() {
             grade = grade.complement();
         }
-        let mut rank = 1u128;
-        for index in 1..=grade.rank {
-            rank = rank * (grade.width() as u128 + index as u128) / index as u128;
-            if rank > MAX_RANK as u128 {
-                return Err(Error::plain(
-                    "quantum connection Schubert rank exceeds the limit of 64",
-                ));
-            }
-        }
-        model.spend(rank as usize * grade.rank)?;
-        let mut shapes: Vec<Shape> = Vec::with_capacity(rank as usize);
-        let mut beta: Vec<_> = (0..grade.rank).collect();
-        loop {
-            let descending: Vec<_> = beta.iter().rev().copied().collect();
-            shapes.push(rv_qgr::beta_shape(&descending));
-            let Some(index) = (0..grade.rank).rev().find(|&i| beta[i] < grade.width() + i) else {
-                break;
-            };
-            beta[index] += 1;
-            for next in index + 1..grade.rank {
-                beta[next] = beta[next - 1] + 1;
-            }
-        }
+        let shapes = schubert_basis(model, grade, MAX_RANK)?;
         let positions: HashMap<_, _> = shapes
             .iter()
             .enumerate()

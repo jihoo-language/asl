@@ -91,6 +91,7 @@ pub(crate) enum TypeForm {
     RVSatake(usize),
     RVHive(HiveSpec),
     RVQGr(usize, usize),
+    RVQGrP(usize, usize, usize),
     RVOre,
     RVFusion(usize, usize),
     RVCyclo(usize),
@@ -622,6 +623,9 @@ pub(crate) enum ExprForm {
     QuantumBasis(usize, usize, Vec<usize>),
     QuantumProduct(Box<[ParsedExpr; 2]>),
     QuantumNabla(Box<ParsedExpr>),
+    QuantumReduce(usize, Box<ParsedExpr>),
+    QuantumPSection(usize, usize, usize, Vec<usize>, bool),
+    QuantumCurvature(bool, Box<ParsedExpr>),
     QuantumAnnihilator(usize, usize),
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
@@ -842,6 +846,7 @@ pub(crate) enum StatementForm {
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
+    QuantumCurvature(crate::rv_pcurv::Report, usize, usize, usize),
     FusionCoefficient(Vec<i128>, ParsedExpr),
     CycloCoefficient(usize, ParsedExpr),
     ConformalDimension(usize, usize, usize, Vec<Vec<i128>>),
@@ -1936,6 +1941,25 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBracket)?;
                     StatementForm::OreCoefficient(a, b, self.paren_expr(0)?)
                 }
+            }
+            Token::Word(
+                "rvQGrCurvatureChar" | "rvQGrCurvatureCoeff" | "rvQGrCurvatureHorizontal",
+            ) => {
+                use crate::rv_pcurv::Report;
+                let kind = self.token();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (prime, rank, ambient) = self.quantum_mod_grade()?;
+                let report = match kind {
+                    Token::Word("rvQGrCurvatureCoeff") => {
+                        self.expect(Token::Comma)?;
+                        Report::Coefficient(self.number()?.0)
+                    }
+                    Token::Word("rvQGrCurvatureHorizontal") => Report::Horizontal,
+                    _ => Report::Characteristic,
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::QuantumCurvature(report, prime, rank, ambient)
             }
             Token::Word("rvQGrCoeff") => {
                 self.advance()?;
@@ -3667,6 +3691,11 @@ impl<'src> Parser<'src> {
         }
         if name.text == "RVOre" {
             return ty(span, TypeForm::RVOre, 0);
+        }
+        if name.text == "RVQGrP" && self.eat(Token::LParen)? {
+            let (prime, rank, ambient) = self.quantum_mod_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVQGrP(prime, rank, ambient), 0);
         }
         if name.text == "RVQGr" && self.eat(Token::LParen)? {
             let (rank, ambient) = self.quantum_grade()?;
@@ -6041,6 +6070,41 @@ impl<'src> Parser<'src> {
                     };
                     return expr(span, form, depth);
                 }
+                if name.text == "rvQGrMod" && self.eat(Token::LBracket)? {
+                    let (prime, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::QuantumReduce(prime, Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "rvQGrPBasis" | "rvQGrCurvatureCol")
+                    && self.eat(Token::LBracket)?
+                {
+                    let (prime, rank, ambient) = self.quantum_mod_grade()?;
+                    self.expect(Token::Comma)?;
+                    let shape = self.exponents()?;
+                    self.expect(Token::RBracket)?;
+                    let column = name.text == "rvQGrCurvatureCol";
+                    return expr(
+                        span,
+                        ExprForm::QuantumPSection(prime, rank, ambient, shape, column),
+                        0,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvQGrCurvature" | "rvQGrCurvatureSatake"
+                ) && self.token() == Token::LParen
+                {
+                    let satake = name.text == "rvQGrCurvatureSatake";
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::QuantumCurvature(satake, Box::new(input)),
+                        depth,
+                    );
+                }
                 if name.text == "rvQGrNabla" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
@@ -6484,6 +6548,13 @@ impl<'src> Parser<'src> {
 
     fn affine_window(&mut self) -> Result<Vec<i128>> {
         self.signed_tuple("a signed affine window entry", "affine window entry")
+    }
+
+    fn quantum_mod_grade(&mut self) -> Result<(usize, usize, usize)> {
+        let (prime, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (rank, ambient) = self.quantum_grade()?;
+        Ok((prime, rank, ambient))
     }
 
     fn quantum_grade(&mut self) -> Result<(usize, usize)> {

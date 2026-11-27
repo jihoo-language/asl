@@ -103,6 +103,7 @@ mod rv_laurent;
 mod rv_negative;
 mod rv_newton;
 mod rv_ore;
+mod rv_pcurv;
 mod rv_poly;
 mod rv_qconnection;
 mod rv_qgr;
@@ -162,7 +163,7 @@ Usage: asl <PATH>
        asl --help
 
 Pass a UTF-8 ASL source file or use - to read standard input.
-The show, card, betti, shdim, shhyperdim, shExtDim, shedim, shserreshift, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, mextdim, rmextdim, rhoorder, rmTripleDim, rmTripleContains, rmbars, rmbarRank, rhobockdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvIwKL, rvIwSchubertKL, rvHeckeCoeff, rvHeckeAt, rvSphCoeff, rvSphAt, rvHiveCount, rvHiveAt, rvHorn, rvQGrCoeff, rvQGrGW, rvOreCoeff, rvQGrPeriod, rvFusionCoeff, rvCycloCoeff, rvConformalDim, rvSatakeCoeff, rvSatakeAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvWittBreaks, rvWittGenus, rvWittPoints, rvWittLPolynomial, rvWittNewton, rvWittCharacterL, rvWittGaps, rvWittBasis, rvWittCartierRank, rvWittaNumber, rvWittTowerBreaks, rvWittTowerGenus, rvWittTowerPoints, rvWittTowerCharacterL, rvWittTowerLPolynomial, rvWittTowerNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvpathextdim, rvHHdim, rvNCdim, rvHNdim, rvHPdim, rvHCdim, mixdim, mixmindim, mixbars, mixbardim, mixbarrank, mixbarperiodicdim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
+The show, card, betti, shdim, shhyperdim, shExtDim, shedim, shserreshift, bpext, bprelext, bpHeightPage, bpHeightImage, bporder, extdim, mextdim, rmextdim, rhoorder, rmTripleDim, rmTripleContains, rmbars, rmbarRank, rhobockdim, pextdim, extandim, pextandim, xextdim, mapextdim, qextdim, rvdim, rvInvariantFactors, rvNewton, rvHodge, rvPosition, rvMuAt, rvIw, rvIwLength, rvIwPosition, rvIwAt, rvIwKL, rvIwSchubertKL, rvHeckeCoeff, rvHeckeAt, rvSphCoeff, rvSphAt, rvHiveCount, rvHiveAt, rvHorn, rvQGrCoeff, rvQGrGW, rvOreCoeff, rvQGrPeriod, rvQGrCurvatureChar, rvQGrCurvatureCoeff, rvQGrCurvatureHorizontal, rvFusionCoeff, rvCycloCoeff, rvConformalDim, rvSatakeCoeff, rvSatakeAt, rvTreeShell, rvTreeBall, rvTreeCount, rvTreeClosureCount, rvspectrum, rvorbit, rvclosed, rvzeta, rvjet, rvminors, rvorders, rvFrobOrders, rvOrdAt, rvASGenus, rvASPrank, rvASPoints, rvASLPolynomial, rvASNewton, rvASCartierRank, rvASaNumber, rvWittBreaks, rvWittGenus, rvWittPoints, rvWittLPolynomial, rvWittNewton, rvWittCharacterL, rvWittGaps, rvWittBasis, rvWittCartierRank, rvWittaNumber, rvWittTowerBreaks, rvWittTowerGenus, rvWittTowerPoints, rvWittTowerCharacterL, rvWittTowerLPolynomial, rvWittTowerNewton, rvbetti, rvmbetti, rvhochster, rvbardim, rvbaredim, rvpathextdim, rvHHdim, rvNCdim, rvHNdim, rvHPdim, rvHCdim, mixdim, mixmindim, mixbars, mixbardim, mixbarrank, mixbarperiodicdim, rvgroebner, rvhilbert, vextdim, vbars, vbardim, vbockdim, maydim, pmaydim, mayandim, pmayandim, mapmaydim, ceandim, pceandim, and homotopy statements print to standard output.
 A syntax error, invalid program, or failed assertion exits unsuccessfully.
 ";
 
