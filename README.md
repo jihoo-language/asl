@@ -1294,6 +1294,12 @@ For the resolution $S$ associated to `C`, `rvKummerHilbPoints[C,n,r];` counts po
 
 The arithmetic Göttsche–Nakajima decomposition uses surface cohomology in degree $b$ for each length $m\ge1$. Its Hilbert-scheme degree is $b+2(m-1)$ and its Frobenius eigenvalues acquire the factor $q^{m-1}$. ASL computes exact Newton recurrences from these data and the resolved Kummer Frobenius traces. Point counts and Betti numbers use the unsigned 128-bit range, traces use the signed 128-bit range, and exact intermediates are checked at 512 bits with the usual work and storage limits. The example gives point counts 327 and 4,480 at lengths two and three over $\mathbb F_3$. [Kummer Hilbert-scheme example](examples/hyperelliptic-kummer-hilbert.asl)
 
+#### K3 elliptic genera and the Igusa cusp form
+
+`rvK3EllipticGenus[n,d,r];` gives the coefficient of $P^n q^d y^r$ in the DMVV product for Hilbert schemes of a complex K3 surface. These coefficients are universal over complex K3 surfaces. The Frobenius reports above use a specified surface and finite field. Here $n,d\ge0$ and $r$ is signed. ASL computes the primitive $c(d,r)$ from $8\sum_{j=2}^4(\theta_j(z)/\theta_j(0))^2$ and expands $\prod_{m\ge1,d\ge0,r}(1-P^m q^d y^r)^{-c(md,r)}$. The length-zero term is one. [Dijkgraaf–Moore–Verlinde–Verlinde](https://arxiv.org/abs/hep-th/9608096)
+
+`rvIgusaPhi10[m,n,r];` gives the coefficient of $P^m q^n y^r$ in the genus-two weight-10 cusp form. The normalization uses the Weyl factor $Pq(y-2+y^{-1})$ and multiplies it by $(1-P^a q^b y^s)^{c(ab,s)}$ over $a,b\ge0$ with $a+b>0$, including both coordinate axes. Multiplying by the DMVV series cancels the factors with $a>0$, leaving only the $P^1$ Fourier–Jacobi term. Both reports use exact integers with a 512-bit intermediate limit and retain both signs of the Laurent exponents at each truncated $P,q$ degree. [Gritsenko–Nikulin, equation (0.2) squared](https://arxiv.org/abs/alg-geom/9603010) · [Runnable example](examples/k3-elliptic-genus.asl)
+
 #### Hilbert schemes of Jacobians and generalized Kummer fibers
 
 For a genus-two Jacobian $A=J(C)$, `rvJacHilbPoints[C,n,r];` counts $\operatorname{Hilb}^n(A)$ over $\mathbb F_{q^r}$, including the single length-zero point. The generating function over $\mathbb F_Q$ is $\prod_{j\ge1}Z(A,Q^{j-1}t^j)$. The interpreter evaluates $\#A(\mathbb F_{Q^s})=\det(1-F^s)$ from the base Weil polynomial and uses the logarithmic derivative recurrence to recover the requested coefficient, with checked 128-bit arithmetic and exact division.

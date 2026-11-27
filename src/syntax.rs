@@ -3431,7 +3431,7 @@ impl<'src> Parser<'src> {
     }
 
     fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
-        use crate::hyperelliptic_kummer_surface::hilbert::Command;
+        use crate::hyperelliptic_kummer_surface::hilbert::{elliptic_genus::Query, Command};
         self.advance()?;
         if name == "rvKummerHilbChar" {
             let query = self.kummer_hilbert_characteristic()?;
@@ -3440,7 +3440,19 @@ impl<'src> Parser<'src> {
             )));
         }
         self.expect(Token::LBracket)?;
-        let command = if name == "rvKummerHilbBetti" {
+        let command = if matches!(name, "rvK3EllipticGenus" | "rvIgusaPhi10") {
+            let p = self.wide_unsigned("P exponent")?;
+            self.expect(Token::Comma)?;
+            let q = self.wide_unsigned("q exponent")?;
+            self.expect(Token::Comma)?;
+            let r = self.signed_wide("a signed Laurent exponent", "y exponent")?;
+            let query = if name == "rvK3EllipticGenus" {
+                Query::EllipticGenus(p, q, r)
+            } else {
+                Query::Igusa(p, q, r)
+            };
+            Command::EllipticGenus(query)
+        } else if name == "rvKummerHilbBetti" {
             let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
             self.expect(Token::Comma)?;
             let degree = self.wide_unsigned("cohomological degree")?;
@@ -4566,7 +4578,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"
-                | "rvKummerHilbChar"),
+                | "rvKummerHilbChar" | "rvK3EllipticGenus" | "rvIgusaPhi10"),
             ) => self.kummer_hilbert_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(name @ ("rvMukaiPair" | "rvMukaiHilbFujiki")) => {

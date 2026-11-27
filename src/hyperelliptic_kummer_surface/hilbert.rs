@@ -11,6 +11,7 @@ use crate::wide_integer::Natural;
 use super::k3::{exterior_power_sum, fixed_nodes, h1_power_sums, node_orbits};
 
 pub(crate) mod characteristic;
+pub(crate) mod elliptic_genus;
 
 const LIMBS: usize = 16;
 pub(crate) type Integer = Wide<LIMBS>;
@@ -37,12 +38,14 @@ pub(crate) enum Command {
     Trace(Label, u128, u128, u128),
     Betti(u128, u128),
     Characteristic(characteristic::Query),
+    EllipticGenus(elliptic_genus::Query),
 }
 
 impl Command {
     pub(crate) fn execute(self, model: &mut Model) -> Result<String> {
         match self {
             Self::Characteristic(query) => query.report(model),
+            Self::EllipticGenus(query) => query.report(model),
             Self::Points(name, n, r) => {
                 let curve = model
                     .kummer_curve(&name.text)
