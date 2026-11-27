@@ -211,23 +211,41 @@ impl Intervals {
     }
 
     fn obstruction(&self, model: &mut Model, start: usize, end: usize) -> Result<Cochain> {
-        let mut sum = Vec::new();
-        for middle in start + 1..end {
-            model.spend(1)?;
-            let left = self.lift(start, middle);
-            let right = self.lift(middle, end);
-            if left.is_empty() || right.is_empty() {
-                continue;
-            }
-            let term = cobar::concat_temporary(model, left, right)?;
-            sum = if sum.is_empty() {
-                term
-            } else {
-                cobar::add_support(model, &sum, &term)?
-            };
-        }
-        Ok(sum)
+        sum_splits(
+            model,
+            &self.lifts,
+            start,
+            end,
+            cobar::concat_temporary,
+            cobar::add_support,
+        )
     }
+}
+
+pub(crate) fn sum_splits<T>(
+    model: &mut Model,
+    lifts: &[Vec<Vec<T>>],
+    start: usize,
+    end: usize,
+    product: impl Fn(&mut Model, &[T], &[T]) -> Result<Vec<T>>,
+    add: impl Fn(&mut Model, &[T], &[T]) -> Result<Vec<T>>,
+) -> Result<Vec<T>> {
+    let mut sum = Vec::new();
+    for middle in start + 1..end {
+        model.spend(1)?;
+        let left = &lifts[middle - start - 1][start];
+        let right = &lifts[end - middle - 1][middle];
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        let term = product(model, left, right)?;
+        sum = if sum.is_empty() {
+            term
+        } else {
+            add(model, &sum, &term)?
+        };
+    }
+    Ok(sum)
 }
 
 fn check_lifts(cells: usize) -> Result<()> {

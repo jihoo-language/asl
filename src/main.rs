@@ -65,6 +65,7 @@ mod real_bars;
 mod real_ext;
 mod real_massey;
 mod real_motivic;
+mod real_transfer;
 mod restriction_transfer;
 mod rho_bock;
 mod rho_localized;

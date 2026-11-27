@@ -52,6 +52,7 @@ use crate::rank_variety;
 use crate::real_ext;
 use crate::real_massey;
 use crate::real_motivic;
+use crate::real_transfer;
 use crate::restriction_transfer;
 use crate::rho_bock;
 use crate::rho_localized;
@@ -461,6 +462,7 @@ enum TypedForm {
     JetOperation(JetOp, Box<TypedExpr>),
     Bracket(Vec<TypedExpr>),
     Transfer(ScalarField, transfer::Operation, Vec<TypedExpr>),
+    RealTransfer(transfer::Operation, Vec<TypedExpr>),
     HigherRestriction(ScalarField, Profile, Vec<TypedExpr>),
     MapTransfer(map_transfer::Operation, Vec<TypedExpr>),
     RvTTransfer(rv_t_transfer::Operation, Vec<TypedExpr>),
@@ -4330,6 +4332,18 @@ impl Engine {
                 let inputs = self.odd_arguments(inputs)?;
                 odd_transfer::evaluate(&mut self.model, *prime, *profile, &inputs, *operation)
             }
+            TypedForm::RealTransfer(operation, inputs) => {
+                let inputs = inputs
+                    .iter()
+                    .map(|term| {
+                        let Value::Class(coordinates) = self.eval(term)? else {
+                            unreachable!()
+                        };
+                        Ok((term.ty, coordinates))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                real_transfer::evaluate(&mut self.model, *operation, expr.ty, &inputs)
+            }
             TypedForm::HigherRestriction(ScalarField::ModTwo(source), target, inputs) => {
                 let inputs = self.scalar_arguments(inputs)?;
                 restriction_transfer::evaluate(&mut self.model, *source, *target, &inputs)
@@ -8075,8 +8089,23 @@ impl Checker<'_> {
         inputs: Vec<ParsedExpr>,
     ) -> Result<(TypeId, TypedForm)> {
         let arity = inputs.len();
+        let terms = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        if terms
+            .iter()
+            .any(|term| matches!(self.model.kind(term.ty), Kind::RMExt(..)))
+        {
+            let ty = real_transfer::result_type(
+                self.model,
+                operation,
+                terms.iter().map(|term| term.ty),
+            )?;
+            return Ok((ty, TypedForm::RealTransfer(operation, terms)));
+        }
         operation.require_arity(arity)?;
-        let (field, terms, degrees) = self.scalar_inputs(operation.name(), inputs)?;
+        let (field, degrees) = self.scalar_degrees(operation.name(), &terms)?;
         let (s, t) = operation.bidegree(degrees, arity)?;
         let ty = match (field, operation) {
             (ScalarField::ModTwo(profile), transfer::Operation::Product) => {
@@ -8102,7 +8131,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<(TypeId, TypedForm)> {
         let arity = inputs.len();
-        let (field, terms, degrees) = self.scalar_inputs("resHigher", inputs)?;
+        let terms = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let (field, degrees) = self.scalar_degrees("resHigher", &terms)?;
         let source = match field {
             ScalarField::ModTwo(profile) | ScalarField::Odd(_, profile) => profile,
         };
@@ -8121,17 +8154,14 @@ impl Checker<'_> {
         Ok((ty, TypedForm::HigherRestriction(field, target, terms)))
     }
 
-    fn scalar_inputs(
-        &mut self,
+    fn scalar_degrees(
+        &self,
         operation: &str,
-        inputs: Vec<ParsedExpr>,
-    ) -> Result<(ScalarField, Vec<TypedExpr>, Vec<transfer::Bidegree>)> {
-        let arity = inputs.len();
-        let mut terms = Vec::with_capacity(arity);
-        let mut degrees = Vec::with_capacity(arity);
+        terms: &[TypedExpr],
+    ) -> Result<(ScalarField, Vec<transfer::Bidegree>)> {
+        let mut degrees = Vec::with_capacity(terms.len());
         let mut source = None;
-        for input in inputs {
-            let term = self.expr(input)?;
+        for term in terms {
             let kind = self.model.kind(term.ty);
             let (field, s, t) = if let Some((prime, profile, s, t)) = kind.pext_grade() {
                 (ScalarField::Odd(prime, profile), s, t)
@@ -8143,7 +8173,7 @@ impl Checker<'_> {
                 };
                 let (profile, s, t) = kind
                     .ext_grade()
-                    .ok_or_else(|| self.invalid_operand(&term, operation, expected))?;
+                    .ok_or_else(|| self.invalid_operand(term, operation, expected))?;
                 (ScalarField::ModTwo(profile), s, t)
             };
             if let Some(previous) = source {
@@ -8161,20 +8191,19 @@ impl Checker<'_> {
                         require_profile(profile, other, operation, term.span)?;
                     }
                     (ScalarField::Odd(..), ScalarField::ModTwo(_)) => {
-                        return Err(self.invalid_operand(&term, operation, "a PExt class"));
+                        return Err(self.invalid_operand(term, operation, "a PExt class"));
                     }
                     (ScalarField::ModTwo(_), ScalarField::Odd(..)) => {
-                        return Err(self.invalid_operand(&term, operation, "an Ext class"));
+                        return Err(self.invalid_operand(term, operation, "an Ext class"));
                     }
                 }
             }
             source = Some(field);
             degrees.push((s, t));
-            terms.push(term);
         }
         let field = source
             .ok_or_else(|| Error::plain(format!("{operation} requires at least one Ext class")))?;
-        Ok((field, terms, degrees))
+        Ok((field, degrees))
     }
 
     fn map_transfer(

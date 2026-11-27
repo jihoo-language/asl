@@ -329,6 +329,14 @@ The `RMTriple(s,t,w)` value has indeterminacy $aH^{s_b+s_c-1}+H^{s_a+s_b-1}c$ in
 
 For example $\langle\rho,[\tau_0],[\xi_1]\rangle$ contains $[\tau_0^2]$ and $[\tau_0^2]+\rho^2[\xi_1^2]$. For $N$ a power of two the defining cocycle for $\langle[\tau_0^N],\rho^N,[\tau_0^N]\rangle$ is $\rho^N[\tau_0^{2N}]$, with both primitives equal to $\tau^N$. The scalar indeterminacy vanishes and the class has exact $\rho$ exponent $N$. The example computes the full coset at $N=4$ and checks the sparse defining cocycle and its minimal null at $N=32$. [Real-motivic Massey product example](examples/real-motivic-massey.asl)
 
+### Higher operations on real-motivic Ext
+
+On homogeneous `RMExt` classes, `ainfty(a1,...,an)` computes the transferred operation $m_n$, and `alift(a1,...,an)` computes the comparison map $I_n$ into the real cobar. Their lengths are $\sum s_i+2-n$ and $\sum s_i+1-n$, respectively. Both add the topological degrees and the weights. The real overload accepts one input, giving $m_1=0$ and $I_1=\texttt{extRep}$. The binary operation is Yoneda multiplication. The unit is strict, and scalar classes such as $\rho$ are ordinary inputs. Negative intermediate lengths contribute zero. A requested value in negative length is outside the supported types.
+
+The transfer uses a trigraded contraction over $\mathbb F_2$. For the linear section $q$ of the differential on boundaries, choose the first linearly independent columns in the ordered real cobar basis. Projection first replaces $x$ by the cycle $x+q(dx)$ and then takes its `RMExt` coordinates. The homotopy applies $q$ to this cycle plus the representative of its class. The higher operations sum the ordered binary trees using the balanced cobar product. The contraction has $dh+hd=1+ip$ and $h^2=hi=ph=0$. A section linear over $\mathbb F_2[\rho]$ would send the nonzero $\rho$-torsion class $h_0$ into a torsion-free cochain group, so the transfer is taken over $\mathbb F_2$.
+
+When the two adjacent products vanish, the chosen $m_3$ lies in the coset computed by `rmTriple`. The example checks both the coset with positive indeterminacy and the singleton $\langle[\tau_0^4],\rho^4,[\tau_0^4]\rangle$. With the stated contraction, $m_4(\rho,h_0,\rho,h_0^2)$ and $m_5(\rho,h_0,h_0,h_1,h_0^2)$ are nonzero. These values depend on the contraction. [Real-motivic transfer example](examples/real-motivic-transfer.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

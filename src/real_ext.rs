@@ -204,6 +204,23 @@ pub(crate) fn primitive(model: &mut Model, grade: Grade, terms: &[Term]) -> Resu
     real_motivic::persist(model, witness)
 }
 
+// Restrict d to the span of the first linearly independent basis columns.
+// Its inverse on the image is a linear section, independent of the order
+// in which the sparse target rows are discovered.
+pub(crate) fn linear_primitive(
+    model: &mut Model,
+    grade: Grade,
+    terms: &[Term],
+) -> Result<Option<Vec<Term>>> {
+    if terms.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(previous) = grade.previous() else {
+        return Ok(None);
+    };
+    ordered_real_preimage(model, previous, terms, true)
+}
+
 // Check the actual incoming differential. Stopping once the target
 // reduces to zero avoids reducing unrelated later boundary columns.
 fn preimage<T: Clone + Eq + Hash>(
@@ -285,6 +302,15 @@ pub(crate) fn real_preimage(
         }
     }
 
+    ordered_real_preimage(model, previous, terms, witness)
+}
+
+fn ordered_real_preimage(
+    model: &mut Model,
+    previous: Grade,
+    terms: &[Term],
+    witness: bool,
+) -> Result<Option<Vec<Term>>> {
     let source = real_motivic::basis(model, previous, MAX_BASIS)?;
     preimage(
         model,
