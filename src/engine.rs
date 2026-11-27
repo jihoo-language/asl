@@ -2660,6 +2660,15 @@ impl Engine {
                 }
             },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
+            StatementForm::DworkK3(query) => query.run(&mut self.model)?,
+            StatementForm::DworkK3ClosedUnit(input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, "rvDworkK3ClosedUnit")?;
+                let Value::RVUnram(psi) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::closed_unit(&mut self.model, &ring, &psi)?
+            }
             StatementForm::UnramRing(name, p, precision, polynomial) => {
                 self.model
                     .register_rv_unram(name, p, precision, polynomial)?;

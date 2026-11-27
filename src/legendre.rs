@@ -285,7 +285,7 @@ fn modular_power(model: &mut Model, mut a: u64, mut exponent: u64, modulus: u64)
     Ok(power)
 }
 
-fn inverse(model: &mut Model, value: u64, modulus: u64) -> Result<u64> {
+pub(crate) fn inverse(model: &mut Model, value: u64, modulus: u64) -> Result<u64> {
     let (mut old, mut next) = (modulus, value % modulus);
     let (mut a, mut b) = (0, 1);
     while next != 0 {
@@ -376,7 +376,7 @@ impl Binomial {
     }
 }
 
-fn split_prime(mut value: u64, prime: u64) -> (u64, usize) {
+pub(crate) fn split_prime(mut value: u64, prime: u64) -> (u64, usize) {
     let mut count = 0;
     while value.is_multiple_of(prime) {
         value /= prime;

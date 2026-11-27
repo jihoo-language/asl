@@ -26,6 +26,7 @@ mod comodule;
 mod complex;
 mod cyclic;
 mod dependent_sets;
+mod dwork_k3;
 mod ec_morphism;
 mod ec_poly;
 mod elliptic;

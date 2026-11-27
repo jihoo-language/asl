@@ -1363,6 +1363,8 @@ pub(crate) enum StatementForm {
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
+    DworkK3(crate::dwork_k3::Query),
+    DworkK3ClosedUnit(ParsedExpr),
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
     LegendreClosedReport(crate::legendre_closed::Query, ParsedExpr),
@@ -10272,6 +10274,38 @@ impl<'src> Parser<'src> {
             ) => {
                 self.advance()?;
                 StatementForm::Legendre(self.legendre_query(command)?)
+            }
+            Token::Word(
+                command @ ("rvDworkK3Log" | "rvDworkK3Group" | "rvDworkK3Inverse"
+                | "rvDworkK3PSeries" | "rvDworkK3Unit"),
+            ) => {
+                use crate::dwork_k3::{Operation, Query};
+                let operation = match command {
+                    "rvDworkK3Log" => Operation::Log,
+                    "rvDworkK3Group" => Operation::Group,
+                    "rvDworkK3Inverse" => Operation::Inverse,
+                    "rvDworkK3PSeries" => Operation::PSeries,
+                    _ => Operation::Unit,
+                };
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let prime = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let psi =
+                    self.signed_wide("a signed quartic parameter lift", "Dwork quartic parameter")?;
+                self.expect(Token::Comma)?;
+                let cutoff = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkK3(Query {
+                    operation,
+                    prime,
+                    psi,
+                    cutoff,
+                })
+            }
+            Token::Word("rvDworkK3ClosedUnit") => {
+                self.advance()?;
+                StatementForm::DworkK3ClosedUnit(self.paren_expr(0)?)
             }
             Token::Word("rvunram") => {
                 self.advance()?;

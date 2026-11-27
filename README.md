@@ -1122,6 +1122,22 @@ awk -v m=97 -f examples/flash-bockstein.awk | nix run path:. -- -
 
 The output is `VBock(One, Flash, [0, 1], 97, 1, 2, 97){g0}`. The generator checks the interpreter's source-size limit before emitting the program.
 
+## Formal Brauer groups of Dwork quartic K3 surfaces
+
+The queries use the quartic $F=\sum_{i=0}^3 X_i^4-4\psi X_0X_1X_2X_3$ at an odd prime $p$. The signed integer $\psi$ specifies the lift and its residue must satisfy $\psi^4\ne1$. The quartic is flat over $\mathbb Z$ since its equation is monic in $X_0$. The formal Brauer group describes the formal completion of the Brauer functor at its identity. Stienstra's hypersurface formula gives its exact logarithm
+
+$$
+\ell(T)=\sum_{m\ge1}\frac{b_m}{m}T^m,\qquad
+b_m=\sum_{0\le j\le(m-1)/4}
+\frac{(m-1)!}{(j!)^4(m-1-4j)!}(-4\psi)^{m-1-4j}.
+$$
+
+`rvDworkK3Log[p,psi,n];` prints the nonzero rational coefficients through degree $n$. `rvDworkK3Group[p,psi,n];` prints the integral coefficients of $\ell^{-1}(\ell(x)+\ell(y))$ through total degree $n$, indexed by the exponent pair $(i,j)$. `rvDworkK3Inverse[p,psi,n];` and `rvDworkK3PSeries[p,psi,n];` apply the same exact computation to $-\ell(T)$ and $p\ell(T)$. The computation clears denominators in $\ell$, solves each degree by exact division, and checks coefficient range. It supports $1\le n\le32$. [Stienstra, *Formal Group Laws Arising from Algebraic Varieties*, Theorem 1](https://www.sas.rochester.edu/mth/sites/doug-ravenel/otherpapers/stienstra1.pdf)
+
+The $p$-series report also gives its reduction modulo $p$. A first nonzero term of degree $p^h$ certifies height $h$. A vanishing truncation generally gives a lower bound. The Fermat reduction when $p\equiv3\pmod4$ independently has infinite height. At $p=5$ and $\psi=0$, the term $24T^5/5$ in the logarithm gives the coefficient $-48$ of $x^2y^3$ in the group law and the coefficient $-14976\equiv4\pmod5$ of $T^5$ in $[5](T)$. [Huybrechts, *Lectures on K3 Surfaces*, §18, Example 3.4](https://www.math.uni-bonn.de/people/huybrech/K3Global.pdf)
+
+`rvDworkK3Unit[p,psi,s];` uses the rank-one higher Hasse–Witt ratio $b_{p^s}/b_{p^{s-1}}\pmod{p^s}$. The Witt Frobenius on $\mathbb Z_p$ is the identity, so the integer lift in the query is used in both periods. For ordinary reduction the ratio gives the crystalline Frobenius unit eigenvalue to precision $s$. A zero Hasse–Witt coefficient reports nonordinarity. `rvDworkK3ClosedUnit(psi);` takes an `RVUnram` value with residue field $\mathbb F_{p^a}$ and precision $s$. It uses the Teichmüller parameter and returns the $\sigma$-semilinear factor $b_{p^s}/\sigma(b_{p^{s-1}})$ and the $a$-fold Frobenius norm, which is the $p^a$-Frobenius unit eigenvalue. The modular recurrence retains unit parts of multinomial coefficients through terms that vanish at the selected precision. It uses the checked modulus $p^s$ and the statement computation budget. [Beukers and Vlasenko, *Dwork Crystals I*, Theorem 5.3](https://doi.org/10.1093/imrn/rnaa119) · [Runnable Dwork quartic example](examples/dwork-k3-formal-brauer.asl)
+
 ## Dwork unit roots of Legendre elliptic curves
 
 For an odd prime $p$ and $\lambda\in\mathbb F_p\setminus\{0,1\}$, `legendreTrace[p,lambda];` counts points of $y^2=x(x-1)(x-\lambda)$ over $\mathbb F_p$ using the quadratic character and includes the point at infinity. It reports the trace $a_p=p+1-\#E$ of Frobenius on $H^1(E)$. The parameter uses its representative in $0,\ldots,p-1$.
