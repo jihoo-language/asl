@@ -1618,6 +1618,9 @@ impl Engine {
                 self.model.define_enriques(*declaration)?;
                 return Ok(None);
             }
+            StatementForm::CrystallineNewton(command) => {
+                return command.execute(&mut self.model).map(Some)
+            }
             StatementForm::KummerEnriques(command) => {
                 return command.execute(&mut self.model).map(Some)
             }

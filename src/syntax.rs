@@ -1162,6 +1162,7 @@ pub(crate) enum StatementForm {
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
+    CrystallineNewton(crate::hyperelliptic_kummer_surface::newton::Command),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
@@ -3486,6 +3487,29 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::KummerK3(Box::new(Command(curve, query))))
     }
 
+    fn crystalline_newton_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::newton::{Command, Kind};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let curve = self.label()?;
+        let command = if name == "rvKummerK3Height" {
+            Command::Height(curve)
+        } else {
+            self.expect(Token::Comma)?;
+            let kind = match name {
+                "rvKummerHilbNewton" => Kind::K3Hilbert,
+                "rvJacHilbNewton" => Kind::JacobianHilbert,
+                _ => Kind::Generalized,
+            };
+            let length = self.wide_unsigned("Hilbert-scheme length")?;
+            self.expect(Token::Comma)?;
+            let i = self.wide_unsigned("cohomological degree")?;
+            Command::Polygon(curve, kind, length, i)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::CrystallineNewton(command))
+    }
+
     fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hilbert::{elliptic_genus::Query, Command};
         self.advance()?;
@@ -4636,6 +4660,10 @@ impl<'src> Parser<'src> {
                 command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"
                 | "rvKummerHilbChar" | "rvK3EllipticGenus" | "rvIgusaPhi10"),
             ) => self.kummer_hilbert_statement(command)?,
+            Token::Word(
+                command @ ("rvKummerK3Height" | "rvKummerHilbNewton" | "rvJacHilbNewton"
+                | "rvGenKummerNewton"),
+            ) => self.crystalline_newton_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(name @ ("rvMukaiPair" | "rvMukaiHilbFujiki")) => {
                 self.mukai_statement(name)?

@@ -66,26 +66,7 @@ pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
     if n <= degree {
         let n = n as usize; // The coefficient table already bounds this length.
         let top = degree as usize;
-        let mut orders = vec![(1, 1u128)];
-        for d in 2..=n {
-            model.spend(1)?;
-            if !n.is_multiple_of(d) {
-                continue;
-            }
-            let k = n / d;
-            let shift = 2 * (n - k);
-            if shift > top {
-                break;
-            }
-            // All proper divisors of d occur earlier. Subtraction leaves
-            // the number of geometric torsion points of exact order d.
-            let mut exact = (d as u128).pow(4);
-            for &(e, count) in &orders {
-                if d.is_multiple_of(e) {
-                    exact -= count;
-                }
-            }
-            orders.push((d, exact));
+        for (k, shift, exact) in geometric_torsion_terms(model, n, top)? {
             for (coefficient, &source) in numerator[shift..].iter_mut().zip(&rows[k]) {
                 let term = checked_product(model, nonnegative(exact), source)?;
                 *coefficient = coefficient.add(term).map_err(|_| intermediate_overflow())?;
@@ -94,6 +75,40 @@ pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
     }
     let value = quotient(model, numerator, &rows[1])?;
     betti_value(value, degree)
+}
+
+// Length, cohomological shift, and exact-order torsion count for the
+// nontrivial divisor terms of the smooth generalized Kummer identity.
+pub(crate) fn geometric_torsion_terms(
+    model: &mut Model,
+    n: usize,
+    top: usize,
+) -> Result<Vec<(usize, usize, u128)>> {
+    let mut orders = vec![(1, 1u128)];
+    let mut terms = Vec::new();
+    for d in 2..=n {
+        model.spend(1)?;
+        if !n.is_multiple_of(d) {
+            continue;
+        }
+        let k = n / d;
+        let shift = 2 * (n - k);
+        if shift > top {
+            break;
+        }
+        // All proper divisors of d occur earlier, so this is Möbius inversion.
+        let mut exact = (d as u128)
+            .checked_pow(4)
+            .ok_or_else(intermediate_overflow)?;
+        for &(e, count) in &orders {
+            if d.is_multiple_of(e) {
+                exact -= count;
+            }
+        }
+        orders.push((d, exact));
+        terms.push((k, shift, exact));
+    }
+    Ok(terms)
 }
 
 pub(crate) fn trace(
@@ -137,7 +152,7 @@ pub(crate) fn trace(
 
 // The space has dimension 2*length. Mirror high degrees by duality while
 // keeping the range check safe even if 4*length is wider than u128.
-fn dual_degree(length: u128, i: u128) -> Option<(u128, u128)> {
+pub(crate) fn dual_degree(length: u128, i: u128) -> Option<(u128, u128)> {
     if i.div_ceil(4) > length {
         return None;
     }

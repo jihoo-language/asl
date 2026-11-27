@@ -18,6 +18,7 @@ pub(crate) mod hilbert_square;
 pub(crate) mod k3;
 pub(crate) mod mukai;
 pub(crate) mod nakajima;
+pub(crate) mod newton;
 pub(crate) mod nikulin;
 pub(crate) mod polarized;
 pub(crate) mod resolution;

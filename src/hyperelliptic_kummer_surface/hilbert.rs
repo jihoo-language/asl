@@ -76,20 +76,22 @@ impl Command {
                 ))
             }
             Self::Betti(n, i) => {
-                let value = match graded_index(n, i) {
-                    None => 0,
-                    Some((_, 0, _)) => 1,
-                    Some((length, degree, _)) => {
-                        let value = coefficient(model, length, Some(degree), None)?;
-                        unsigned(value).ok_or_else(|| {
-                            Error::plain(
-                                "K3 Hilbert-scheme Betti number exceeds unsigned 128-bit range",
-                            )
-                        })?
-                    }
-                };
+                let value = betti(model, n, i)?;
                 Ok(format!("rvKummerHilbBetti[{n}, {i}] = {value}"))
             }
+        }
+    }
+}
+
+pub(crate) fn betti(model: &mut Model, n: u128, i: u128) -> Result<u128> {
+    match graded_index(n, i) {
+        None => Ok(0),
+        Some((_, 0, _)) => Ok(1),
+        Some((length, degree, _)) => {
+            let value = coefficient(model, length, Some(degree), None)?;
+            unsigned(value).ok_or_else(|| {
+                Error::plain("K3 Hilbert-scheme Betti number exceeds unsigned 128-bit range")
+            })
         }
     }
 }
