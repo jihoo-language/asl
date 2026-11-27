@@ -145,6 +145,7 @@ pub(crate) enum TypeForm {
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
+    HodgeTensor(Label, i128, i128),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
@@ -1019,6 +1020,7 @@ pub(crate) enum ExprForm {
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
+    HodgeTensor(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     OG6Clifford(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression>,
@@ -1264,6 +1266,7 @@ pub(crate) enum StatementForm {
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     NakajimaPair(Box<[ParsedExpr; 2]>),
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
+    HodgeWick(Box<crate::hyperelliptic_kummer_surface::hodge_wick::Command>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
     KSExterior(
@@ -5737,6 +5740,105 @@ impl<'src> Parser<'src> {
         )
     }
 
+    fn hodge_wick_entries(
+        &mut self,
+    ) -> Result<Vec<crate::hyperelliptic_kummer_surface::hodge_wick::Entry>> {
+        self.set_named_rows(|parser| {
+            parser.rational_entry("Hodge Wick numerator", "Hodge Wick denominator")
+        })
+    }
+
+    fn hodge_wick_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::Command;
+        self.advance()?;
+        let command = match name {
+            "rvhodgewick" => {
+                let marking = self.label()?;
+                self.expect(Token::LBracket)?;
+                let multiplicity = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let polynomial = self.set_named_rows(|parser| {
+                    parser.signed_wide(
+                        "an integer polynomial coefficient",
+                        "Hodge Wick étale polynomial coefficient",
+                    )
+                })?;
+                let gram = self.set_named_rows(|parser| {
+                    parser.expect(Token::LBracket)?;
+                    let mut row = Vec::new();
+                    while parser.token() != Token::RBracket {
+                        row.push(parser.rational_entry(
+                            "Hodge Wick Gram numerator",
+                            "Hodge Wick Gram denominator",
+                        )?);
+                        if !parser.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    parser.expect(Token::RBracket)?;
+                    Ok(row)
+                })?;
+                Command::Declare(marking, multiplicity, polynomial, gram)
+            }
+            "rvHodgeTrace" => {
+                self.expect(Token::LBracket)?;
+                let marking = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Trace(marking, self.hodge_wick_entries()?)
+            }
+            "rvHodgePair" => Command::Pair(Box::new(self.paren_pair(0)?)),
+            _ => Command::Integral(Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::HodgeWick(Box::new(command)))
+    }
+
+    fn hodge_tensor_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::Expression;
+        let (operation, depth) = if name == "rvHodgeCup" {
+            let pair = self.paren_pair(nest)?;
+            let depth = 1 + pair[0].depth.max(pair[1].depth);
+            (Expression::Cup(Box::new(pair)), depth)
+        } else if name == "rvHodgeScale" {
+            self.expect(Token::LBracket)?;
+            let numerator = self.signed_wide("an integer numerator", "Hodge Wick numerator")?;
+            self.expect(Token::Comma)?;
+            let denominator =
+                self.signed_wide("a positive denominator", "Hodge Wick denominator")?;
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (
+                Expression::Scale((numerator, denominator), Box::new(input)),
+                depth,
+            )
+        } else {
+            self.expect(Token::LBracket)?;
+            let marking = self.label()?;
+            self.expect(Token::Comma)?;
+            let n = self.wide_unsigned("Hodge Wick Hilbert length")?;
+            let divisor = if name == "rvHodgeD" {
+                self.expect(Token::Comma)?;
+                Some(self.number()?.0)
+            } else {
+                None
+            };
+            self.expect(Token::RBracket)?;
+            let operation = match name {
+                "rvHodgeD" => Expression::Divisor(marking, n, divisor.unwrap()),
+                "rvHodgeQ" => Expression::Quadratic(marking, n, self.hodge_wick_entries()?),
+                "rvHodgeInverseBB" => Expression::Inverse(marking, n),
+                _ => Expression::Unit(marking, n),
+            };
+            (operation, 0)
+        };
+        expr(span, ExprForm::HodgeTensor(Box::new(operation)), depth)
+    }
+
     fn hilbert_tautological_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::nakajima::tautological::Command;
         self.advance()?;
@@ -8379,6 +8481,9 @@ impl<'src> Parser<'src> {
                 | "rvKummerK3Picard"
                 | "rvKummerK3ArtinTate"),
             ) => self.kummer_k3_statement(command)?,
+            Token::Word(
+                command @ ("rvhodgewick" | "rvHodgeTrace" | "rvHodgePair" | "rvHodgeIntegral"),
+            ) => self.hodge_wick_statement(command)?,
             Token::Word(command @ ("rvKummerDivPair" | "rvKummerFujiki")) => {
                 self.kummer_divisor_statement(command)?
             }
@@ -12227,13 +12332,17 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
-        if matches!(name.text.as_str(), "RVNakajima" | "RVHilbCoh") && self.eat(Token::LParen)? {
+        if matches!(
+            name.text.as_str(),
+            "RVNakajima" | "RVHilbCoh" | "RVHodgeTensor"
+        ) && self.eat(Token::LParen)?
+        {
             let (basis, length, degree) = self.nakajima_grade_args()?;
             self.expect(Token::RParen)?;
-            let form = if name.text == "RVNakajima" {
-                TypeForm::Nakajima(basis, length, degree)
-            } else {
-                TypeForm::HilbertCohomology(basis, length, degree)
+            let form = match name.text.as_str() {
+                "RVNakajima" => TypeForm::Nakajima(basis, length, degree),
+                "RVHodgeTensor" => TypeForm::HodgeTensor(basis, length, degree),
+                _ => TypeForm::HilbertCohomology(basis, length, degree),
             };
             return ty(span, form, 0);
         }
@@ -14043,6 +14152,14 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvHodgeUnit" | "rvHodgeD" | "rvHodgeQ" | "rvHodgeInverseBB" | "rvHodgeScale"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvHodgeCup" && self.token() == Token::LParen)
+                {
+                    return self.hodge_tensor_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

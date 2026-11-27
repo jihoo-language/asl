@@ -283,6 +283,7 @@ pub(crate) enum Kind {
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
+    HodgeTensor(nakajima::Grade),
     K3Clifford(Rc<str>, u8),
     OG6Clifford(Rc<str>, u8),
     KSExterior(Rc<str>, i128),
@@ -484,6 +485,7 @@ pub(crate) enum Value {
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
+    HodgeTensor(Rc<hyperelliptic_kummer_surface::hodge_wick::Tensor>),
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
     KSExterior(Rc<ks_exterior::Form>),
@@ -722,6 +724,7 @@ pub(crate) struct Model {
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    hodge_wick_forms: HashMap<String, Rc<hyperelliptic_kummer_surface::hodge_wick::Form>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
     minor_bases: HashMap<MinorsKey, Rc<Minors>>,
@@ -852,6 +855,7 @@ impl Model {
             siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
             rv_unram_rings: HashMap::new(),
+            hodge_wick_forms: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
             minor_bases: HashMap::new(),
@@ -1154,7 +1158,9 @@ impl Model {
             | Kind::HeckeEigen(..)
             | Kind::HeckeSymbol(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
-            Kind::Nakajima(ref grade) | Kind::HilbertCohomology(ref grade) => {
+            Kind::Nakajima(ref grade)
+            | Kind::HilbertCohomology(ref grade)
+            | Kind::HodgeTensor(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
                 } else {
@@ -1407,6 +1413,7 @@ impl Model {
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
+                | Kind::HodgeTensor(..)
                 | Kind::K3Clifford(..)
                 | Kind::OG6Clifford(..)
                 | Kind::KSExterior(..)
@@ -4767,6 +4774,45 @@ impl Model {
         self.inhabited_type(Kind::HilbertCohomology(grade), 0)
     }
 
+    pub(crate) fn register_hodge_wick(
+        &mut self,
+        name: Label,
+        multiplicity: usize,
+        polynomial: Vec<i128>,
+        gram: Vec<Vec<hyperelliptic_kummer_surface::hodge_wick::Entry>>,
+    ) -> Result<()> {
+        if self.hodge_wick_forms.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Hodge Wick marking '{}' is already defined", name.text),
+            ));
+        }
+        let form = hyperelliptic_kummer_surface::hodge_wick::Form::new(
+            self,
+            multiplicity,
+            polynomial,
+            gram,
+        )
+        .map_err(|error| error.at(name.span))?;
+        self.hodge_wick_forms.insert(name.text, Rc::new(form));
+        Ok(())
+    }
+
+    pub(crate) fn hodge_wick(
+        &self,
+        name: &str,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::hodge_wick::Form>> {
+        self.hodge_wick_forms
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
+    }
+
+    pub(crate) fn hodge_tensor_type(&mut self, grade: nakajima::Grade) -> Result<TypeId> {
+        self.hodge_wick(&grade.basis)?.validate_grade(&grade)?;
+        self.inhabited_type(Kind::HodgeTensor(grade), 0)
+    }
+
     pub(crate) fn nakajima_gram(&mut self) -> Result<Rc<nakajima::Gram>> {
         if let Some(gram) = &self.nakajima_gram {
             return Ok(gram.clone());
@@ -6229,6 +6275,7 @@ impl Model {
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
+            | Kind::HodgeTensor(..)
             | Kind::K3Clifford(..)
             | Kind::OG6Clifford(..)
             | Kind::KSExterior(..)
@@ -6761,6 +6808,10 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::HodgeTensor(grade) => out.push(&format!(
+                "RVHodgeTensor({},{},{})",
+                grade.basis, grade.length, grade.degree
+            )),
             Kind::HilbertCohomology(grade) => out.push(&format!(
                 "RVHilbCoh({},{},{})",
                 grade.basis, grade.length, grade.degree
@@ -7114,6 +7165,7 @@ impl Model {
                 Ok(a.compare(self, b)?.is_eq())
             }
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::HodgeTensor(a), Value::HodgeTensor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7477,6 +7529,7 @@ impl Model {
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
+            (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => a.compare(self, b),
             (Value::KSExterior(a), Value::KSExterior(b)) => a.compare(self, b),
@@ -7860,6 +7913,15 @@ impl Model {
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
+                Kind::HodgeTensor(ref grade) => {
+                    if grade.supports_states() {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Hodge Wick component",
+                        ));
+                    }
+                    vec![hyperelliptic_kummer_surface::hodge_wick::Tensor::default()
+                        .persist(self)?]
                 }
                 Kind::HilbertCohomology(ref grade) => {
                     if grade.supports_states() {
@@ -9608,6 +9670,14 @@ impl Model {
             Value::Nakajima(state) => {
                 self.write_type(out, ty, 0)?;
                 self.write_nakajima_terms(out, state, 1)
+            }
+            Value::HodgeTensor(tensor) => {
+                let Kind::HodgeTensor(grade) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let form = self.hodge_wick(&grade.basis)?;
+                self.write_type(out, ty, 0)?;
+                out.push(&tensor.text(self, &form)?)
             }
             Value::HilbertCohomology(class) => {
                 self.write_type(out, ty, 0)?;

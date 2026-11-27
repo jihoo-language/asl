@@ -49,6 +49,7 @@ use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
     eigenpacket, hecke, period_polynomial as period, quadratic_hecke, residual_hecke,
 };
+use crate::hyperelliptic_kummer_surface::hodge_wick;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::alexander;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking;
@@ -829,6 +830,8 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    HodgeTensorCup(Box<[TypedExpr; 2]>),
+    HodgeTensorScale(hodge_wick::Entry, Box<TypedExpr>),
     HilbertCohomologyLlvLower(Box<[TypedExpr; 2]>),
     HilbertCohomologyRotate(Box<[TypedExpr; 3]>),
     HilbertCohomologyLefschetz(
@@ -2213,6 +2216,7 @@ impl Engine {
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
+            StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
             StatementForm::HilbertCohomology(report) => {
                 return self.hilbert_cohomology_report(*report).map(Some)
             }
@@ -5807,6 +5811,61 @@ impl Engine {
         }
     }
 
+    fn hodge_wick_command(&mut self, command: hodge_wick::Command) -> Result<Option<String>> {
+        use hodge_wick::Command;
+        let result = match command {
+            Command::Declare(name, m, polynomial, gram) => {
+                self.model.register_hodge_wick(name, m, polynomial, gram)?;
+                return Ok(None);
+            }
+            Command::Trace(name, coefficients) => {
+                let form = self.model.hodge_wick(&name.text)?;
+                let trace = form.trace(&mut self.model, &coefficients)?;
+                format!("rvHodgeTrace[{}] = {trace}", name.text)
+            }
+            Command::Pair(pair) => {
+                let [left, right] = *pair;
+                let mut checker = self.checker();
+                let left = checker.expr(left)?;
+                let right = checker.expr(right)?;
+                let grade = checker.hodge_tensor_grade(&left, "rvHodgePair")?.clone();
+                let right_grade = checker.hodge_tensor_grade(&right, "rvHodgePair")?;
+                if grade.basis != right_grade.basis || !grade.complementary(right_grade) {
+                    return Err(Error::new(right.span, "rvHodgePair requires complementary degrees at the same marking and Hilbert length"));
+                }
+                let (Value::HodgeTensor(left), Value::HodgeTensor(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let product = left.cup(&mut self.model, &right)?;
+                let value = form.integral(&mut self.model, &product)?;
+                format!("rvHodgePair = {value}")
+            }
+            Command::Integral(tensor) => {
+                let input = self.checker().expr(*tensor)?;
+                let grade = self
+                    .checker()
+                    .hodge_tensor_grade(&input, "rvHodgeIntegral")?
+                    .clone();
+                if grade.length.checked_mul(4) != Some(grade.degree) {
+                    return Err(Error::new(
+                        input.span,
+                        "rvHodgeIntegral requires the top cohomological degree",
+                    ));
+                }
+                let Value::HodgeTensor(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let value = form.integral(&mut self.model, &value)?;
+                format!("rvHodgeIntegral = {value}")
+            }
+        };
+        Ok(Some(result))
+    }
+
     fn hilbert_cohomology_report(
         &mut self,
         report: nakajima::cohomology::Report,
@@ -8911,6 +8970,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::HodgeTensor(a), Value::HodgeTensor(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -10879,6 +10941,28 @@ impl Engine {
                 };
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HodgeTensorCup(inputs) => {
+                let Kind::HodgeTensor(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                if !grade.supports_states() {
+                    return hodge_wick::Tensor::default().persist(&mut self.model);
+                }
+                let (Value::HodgeTensor(left), Value::HodgeTensor(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                left.cup(&mut self.model, &right)?.persist(&mut self.model)
+            }
+            TypedForm::HodgeTensorScale(amount, input) => {
+                let Value::HodgeTensor(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value
+                    .scale(&mut self.model, *amount)?
                     .persist(&mut self.model)
             }
             TypedForm::HilbertCohomologyCup(inputs) => {
@@ -13575,6 +13659,13 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::HodgeTensor(name, length, degree) => {
+                self.model.hodge_tensor_type(nakajima::Grade {
+                    basis: name.text.into(),
+                    length,
+                    degree,
+                })
+            }
             TypeForm::HilbertCohomology(name, length, degree) => {
                 self.model.hilbert_cohomology_type(&name, length, degree)
             }
@@ -14647,6 +14738,7 @@ impl Checker<'_> {
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
+                    Kind::HodgeTensor(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
@@ -16843,6 +16935,7 @@ impl Checker<'_> {
             ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
             ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
+            ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
             ExprForm::HilbertCohomology(expression) => {
                 self.hilbert_cohomology_expression(*expression)
             }
@@ -17792,6 +17885,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::Mukai(MukaiAction::Negate(Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::HodgeTensor(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::HodgeTensorScale((-1, 1), Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::HilbertCohomology(..)) {
@@ -21627,6 +21726,7 @@ impl Checker<'_> {
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
                         | Kind::HilbertCohomology(..)
+                        | Kind::HodgeTensor(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
@@ -23317,6 +23417,75 @@ impl Checker<'_> {
                 ))
             }
         }
+    }
+
+    fn hodge_tensor_grade(&self, input: &TypedExpr, operation: &str) -> Result<&nakajima::Grade> {
+        if let Kind::HodgeTensor(grade) = self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVHodgeTensor polynomial"))
+        }
+    }
+
+    fn hodge_tensor_expression(
+        &mut self,
+        expression: hodge_wick::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use hodge_wick::Expression;
+        let (name, length, degree, tensor) = match expression {
+            Expression::Unit(name, n) => (name, n, 0, hodge_wick::Tensor::unit()),
+            Expression::Divisor(name, n, index) => {
+                let form = self.model.hodge_wick(&name.text)?;
+                (name, n, 2, form.divisor(index)?)
+            }
+            Expression::Quadratic(name, n, entries) => {
+                let form = self.model.hodge_wick(&name.text)?;
+                (name, n, 4, form.quadratic(self.model, &entries)?)
+            }
+            Expression::Inverse(name, n) => {
+                let form = self.model.hodge_wick(&name.text)?;
+                (name, n, 4, form.inverse(self.model)?)
+            }
+            Expression::Scale(amount, input) => {
+                if amount.1 <= 0 {
+                    return Err(Error::plain(
+                        "Hodge Wick rational denominator must be positive",
+                    ));
+                }
+                let input = self.expr(*input)?;
+                self.hodge_tensor_grade(&input, "rvHodgeScale")?;
+                return Ok((
+                    input.ty,
+                    TypedForm::HodgeTensorScale(amount, Box::new(input)),
+                ));
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let mut grade = self.hodge_tensor_grade(&left, "rvHodgeCup")?.clone();
+                let other = self.hodge_tensor_grade(&right, "rvHodgeCup")?;
+                if grade.basis != other.basis || grade.length != other.length {
+                    return Err(Error::new(
+                        right.span,
+                        "rvHodgeCup requires the same marking and Hilbert length",
+                    ));
+                }
+                grade.degree = grade
+                    .degree
+                    .checked_add(other.degree)
+                    .ok_or_else(nakajima::grade_range)?;
+                let ty = self.model.hodge_tensor_type(grade)?;
+                return Ok((ty, TypedForm::HodgeTensorCup(Box::new([left, right]))));
+            }
+        };
+        let grade = nakajima::Grade {
+            basis: name.text.into(),
+            length: i128::try_from(length).map_err(|_| nakajima::grade_range())?,
+            degree,
+        };
+        let ty = self.model.hodge_tensor_type(grade)?;
+        Ok((ty, TypedForm::Constant(tensor.persist(self.model)?)))
     }
 
     fn hilbert_cohomology_grade(
