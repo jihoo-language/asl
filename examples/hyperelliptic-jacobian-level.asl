@@ -1,0 +1,50 @@
+// Full geometric 2-torsion of y^2=x^5-x over F9, with nontrivial F3 Frobenius.
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase D[C,W];
+let zero = rvUnramElem[W]{};
+let one = rvUnramElem[W]{1};
+let two = rvUnramElem[W]{2};
+let i = rvUnramElem[W]{0,1};
+let t0 = rvJacPoint[D](zero,zero);
+let t1 = rvJacPoint[D](one,zero);
+let t2 = rvJacPoint[D](two,zero);
+let ti = rvJacPoint[D](i,zero);
+let e1 = t0;
+let e2 = add(add(t0,t1),t2);
+let f1 = t1;
+let f2 = add(add(t0,t1),ti);
+rvjactorsionbasis B2[D,2](two){e1,e2,f1,f2};
+let image = rvJacFrob[C,1](f2);
+assert image == add(f2,e2);
+assert rvJacTorsionCoord[B2,1](image) == rvPrimeElt[2,1];
+assert rvJacTorsionCoord[B2,3](image) == rvPrimeElt[2,1];
+rvJacTorsionFrob[B2,C,0];
+rvJacTorsionFrob[B2,C,1];
+
+// Full geometric 3-torsion of y^2=x^3+1 over F25 with a^2=2.
+rvunram K[5,1]{0,1};
+rvunram L[5,1]{3,0,1};
+let zK = rvUnramElem[K]{};
+let oK = rvUnramElem[K]{1};
+rvhyperelliptic E[K]{oK,zK,zK,oK};
+rvjacbase H[E,L];
+let zL = rvUnramElem[L]{};
+let oL = rvUnramElem[L]{1};
+let a = rvUnramElem[L]{0,1};
+let p = rvJacPoint[H](zL,oL);
+let q = rvJacPoint[H](oL,a);
+// e_3(p,q) = 2 + 2a.
+let zeta = rvUnramElem[L]{2,2};
+rvjactorsionbasis B3[H,3](zeta){p,q};
+let secondP = rvJacTorsionCoord[B3,1](p);
+let secondQ = rvJacTorsionCoord[B3,1](q);
+assert secondQ == rvPrimeElt[3,1];
+assert rvJacTorsionCoord[B3,1](add(q,q)) == rvPrimeElt[3,2];
+assert add(secondP,secondQ) == rvJacTorsionCoord[B3,1](add(p,q));
+assert rvJacFrob[E,1](p) == p;
+assert rvJacFrob[E,1](q) == neg(q);
+rvJacTorsionFrob[B3,E,1];

@@ -586,6 +586,7 @@ pub(crate) struct Model {
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
     jacobian_charts: HashMap<String, Rc<Chart>>,
+    jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -678,6 +679,7 @@ impl Model {
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
             jacobian_charts: HashMap::new(),
+            jacobian_levels: HashMap::new(),
             richelot_isogenies: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -3491,6 +3493,64 @@ impl Model {
             .get(&name.text)
             .cloned()
             .ok_or_else(|| Error::new(name.span, format!("unknown Jacobian chart '{}'", name.text)))
+    }
+
+    pub(crate) fn check_new_jacobian_level(&self, name: &Label) -> Result<()> {
+        if self.jacobian_levels.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Jacobian torsion basis '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_jacobian_level(
+        &mut self,
+        name: Label,
+        basis: crate::jacobian_level::Basis,
+    ) -> Result<()> {
+        self.check_new_jacobian_level(&name)?;
+        self.allocate(1 + name.text.len())?;
+        self.jacobian_levels.insert(name.text, Rc::new(basis));
+        Ok(())
+    }
+
+    pub(crate) fn jacobian_level(&self, name: &Label) -> Result<Rc<crate::jacobian_level::Basis>> {
+        self.jacobian_levels
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Jacobian torsion basis '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn show_jacobian_level_frobenius(
+        &mut self,
+        basis: &str,
+        base: &str,
+        power: usize,
+        result: &crate::jacobian_level::Frobenius,
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        let multiplier = result.multiplier;
+        out.push(&format!(
+            "rvJacTorsionFrob[{basis}, {base}, {power}] = multiplier={multiplier}, matrix=["
+        ))?;
+        let matrix = &result.matrix;
+        for (index, row) in matrix.entries().chunks(matrix.size().max(1)).enumerate() {
+            self.spend(1 + row.len())?;
+            if index != 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!("{row:?}"))?;
+        }
+        self.spend(result.characteristic.len())?;
+        out.push(&format!("], characteristic={:?}", result.characteristic))?;
+        Ok(out.string)
     }
 
     pub(crate) fn define_richelot(

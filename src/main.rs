@@ -40,6 +40,7 @@ mod hyperelliptic_graph;
 mod hyperelliptic_jacobian;
 mod hyperelliptic_kummer;
 mod integer_smith;
+mod jacobian_level;
 mod jet_hom;
 mod jet_page;
 mod khovanov;

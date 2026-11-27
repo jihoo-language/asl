@@ -31,6 +31,7 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::jacobian_level;
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -532,6 +533,7 @@ enum TypedForm {
     ECUnary(elliptic::Unary, Box<TypedExpr>),
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
     Jacobian(JacobianAction),
+    JacobianLevelCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1495,6 +1497,7 @@ impl Engine {
                 }
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
+            StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
             StatementForm::EllipticCM(command) => {
@@ -4622,6 +4625,81 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn jacobian_level_command(
+        &mut self,
+        command: jacobian_level::Command,
+    ) -> Result<Option<String>> {
+        use jacobian_level::Command;
+        match command {
+            Command::Define(name, curve_name, level, root, generators) => {
+                self.model.check_new_jacobian_level(&name)?;
+                let curve = self
+                    .model
+                    .jacobian_curve(&curve_name.text)
+                    .map_err(|error| error.at(curve_name.span))?;
+                if level != 2 && (level < 2 || level.is_multiple_of(2)) {
+                    return Err(Error::new(
+                        name.span,
+                        "Jacobian torsion level must be prime",
+                    ));
+                }
+                let prime = self
+                    .checker()
+                    .scalar_prime(level)
+                    .map_err(|error| error.at(name.span))?;
+                let root_type = self.model.rv_unram_type(&Label {
+                    text: curve.grade.ring.to_string(),
+                    span: root.span,
+                })?;
+                let torsion_type = self.model.jacobian_type(curve_name.text.as_str().into())?;
+                let root = self.checker().expr(*root)?;
+                self.checker()
+                    .require_type(root_type, &root, "Jacobian torsion root of unity")?;
+                let Value::RVUnram(root) = self.eval(&root)? else {
+                    unreachable!()
+                };
+                self.model.spend(generators.len())?;
+                let generators = generators
+                    .into_iter()
+                    .map(|term| {
+                        let generator = self.checker().expr(term)?;
+                        self.checker().require_type(
+                            torsion_type,
+                            &generator,
+                            "Jacobian torsion basis generator",
+                        )?;
+                        let Value::Jacobian(value) = self.eval(&generator)? else {
+                            unreachable!()
+                        };
+                        Ok(value)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let basis = jacobian_level::Basis::new(
+                    &mut self.model,
+                    curve_name.text.into(),
+                    curve,
+                    prime,
+                    &root,
+                    generators,
+                )
+                .map_err(|error| error.at(name.span))?;
+                self.model.define_jacobian_level(name, basis)?;
+                Ok(None)
+            }
+            Command::Frobenius(name, base, power) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = self
+                    .model
+                    .jacobian_curve(&base.text)
+                    .map_err(|error| error.at(base.span))?;
+                let result = basis.frobenius(&mut self.model, &curve, power)?;
+                Ok(Some(self.model.show_jacobian_level_frobenius(
+                    &name.text, &base.text, power, &result,
+                )?))
+            }
+        }
+    }
+
     fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
         match action {
             JacobianAction::Point(curve, xy, root) => {
@@ -6609,6 +6687,13 @@ impl Engine {
                 hyperelliptic::persist_matrix(&mut self.model, m)
             }
             TypedForm::Jacobian(action) => self.eval_jacobian(action),
+            TypedForm::JacobianLevelCoordinate(basis, index, input) => {
+                let Value::Jacobian(divisor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = basis.coordinate(&mut self.model, &divisor, *index)?;
+                Ok(Value::PrimeScalar(value))
+            }
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -12072,6 +12157,23 @@ impl Checker<'_> {
             ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::Jacobian(expression) => self.jacobian_expression(*expression),
+            ExprForm::JacobianLevelCoordinate(name, index, input) => {
+                let basis = self.model.jacobian_level(&name)?;
+                if index >= basis.len() {
+                    return Err(Error::new(
+                        name.span,
+                        "Jacobian torsion basis coordinate index is out of range",
+                    ));
+                }
+                let expected = self.model.jacobian_type(basis.curve_name.clone())?;
+                let input = self.expr(*input)?;
+                self.require_type(expected, &input, "rvJacTorsionCoord input")?;
+                let ty = self.model.prime_scalar_type(basis.prime)?;
+                Ok((
+                    ty,
+                    TypedForm::JacobianLevelCoordinate(basis, index, Box::new(input)),
+                ))
+            }
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;

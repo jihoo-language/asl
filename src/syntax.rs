@@ -960,6 +960,7 @@ pub(crate) enum ExprForm {
     EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Expression>),
+    JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1133,6 +1134,7 @@ pub(crate) enum StatementForm {
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
+    JacobianLevel(Box<crate::jacobian_level::Command>),
     Richelot(Box<crate::richelot::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
@@ -2841,6 +2843,32 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::Jacobian(Box::new(command)))
     }
 
+    fn jacobian_level_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::Command;
+        self.advance()?;
+        let command = if name == "rvjactorsionbasis" {
+            let basis = self.label()?;
+            self.expect(Token::LBracket)?;
+            let curve = self.label()?;
+            self.expect(Token::Comma)?;
+            let level = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let root = self.paren_expr(0)?;
+            let generators = self.set_named_rows(|parser| parser.expr(0))?;
+            Command::Define(basis, curve, level, Box::new(root), generators)
+        } else {
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let base = self.label()?;
+            self.expect(Token::Comma)?;
+            let power = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Command::Frobenius(basis, base, power)
+        };
+        Ok(StatementForm::JacobianLevel(Box::new(command)))
+    }
+
     fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::richelot::Command;
         self.advance()?;
@@ -3465,6 +3493,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
+            Token::Word(command @ ("rvjactorsionbasis" | "rvJacTorsionFrob")) => {
+                self.jacobian_level_statement(command)?
+            }
             Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
                 self.richelot_statement(command)?
             }
@@ -8607,6 +8638,19 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.jacobian_expression(&name.text, name.span, nest);
+                }
+                if name.text == "rvJacTorsionCoord" && self.eat(Token::LBracket)? {
+                    let basis = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::JacobianLevelCoordinate(basis, index, Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;
