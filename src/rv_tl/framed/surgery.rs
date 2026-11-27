@@ -58,20 +58,22 @@ fn schur(
     let mut content = 0;
     model.spend(remaining * (remaining + 1))?;
     for i in next..n {
-        let left = divide_positive(matrix[start][i], g);
+        let (through, following) = matrix.split_at_mut(i + 1);
+        let (row, pivots) = through.split_last_mut().unwrap();
+        let left = divide_positive(pivots[start][i], g);
         let right = if width == 2 {
-            divide_positive(matrix[start + 1][i], g)
+            divide_positive(pivots[start + 1][i], g)
         } else {
             0
         };
-        for j in i..n {
+        for (j, entry) in row.iter_mut().enumerate().skip(i) {
             let (main, other) = if width == 1 {
-                (matrix[start][j], 0)
+                (pivots[start][j], 0)
             } else {
-                (matrix[start + 1][j], matrix[start][j])
+                (pivots[start + 1][j], pivots[start][j])
             };
             let value = scale
-                .checked_mul(matrix[i][j])
+                .checked_mul(*entry)
                 .and_then(|v| left.checked_mul(main).and_then(|term| v.checked_sub(term)))
                 .and_then(|v| {
                     right
@@ -81,8 +83,10 @@ fn schur(
                 .and_then(|v| if pivot > 0 { Some(v) } else { v.checked_neg() })
                 .ok_or_else(linking_arithmetic)?;
             content = rv_lens::gcd(content, value.unsigned_abs());
-            matrix[i][j] = value;
-            matrix[j][i] = value;
+            *entry = value;
+            if j > i {
+                following[j - i - 1][i] = value;
+            }
         }
     }
     if content > 1 {
@@ -356,8 +360,9 @@ mod tests {
                     continue;
                 }
                 let mut transform = base.clone();
-                for column in 0..transform.len() {
-                    transform[i][column] += 5 * transform[j][column];
+                let source = transform[j].clone();
+                for (target, value) in transform[i].iter_mut().zip(source) {
+                    *target += 5 * value;
                 }
                 for row in &mut transform {
                     row[i] += 5 * row[j];
