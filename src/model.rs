@@ -628,7 +628,7 @@ pub(crate) enum Value {
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
     CMTheta(cm_hom::fourier::theta::Point),
     CMQuotientCoordinates(cm_hom::fourier::theta::quotient::Vector),
-    CMQuotientEnd(cm_hom::fourier::theta::quotient::order::Endomorphism),
+    CMQuotientEnd(Rc<cm_hom::fourier::theta::quotient::order::Endomorphism>),
     CMMetaLift(cm_hom::fourier::theta::metaplectic::Lift),
     CMMetaAuto(cm_hom::fourier::theta::metaplectic::Auto),
     CMMetaMat(cm_hom::fourier::theta::metaplectic::Matrix),

@@ -4,7 +4,8 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::integer_smith::{self, Track};
-use crate::model::Model;
+use crate::model::{Model, Value};
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct Endomorphism(pub(crate) Matrix);
@@ -199,6 +200,11 @@ fn reduce_row(
 }
 
 impl Endomorphism {
+    pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
+        model.allocate(32)?;
+        Ok(Value::CMQuotientEnd(Rc::new(self)))
+    }
+
     pub(crate) const fn identity() -> Self {
         Self([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
     }

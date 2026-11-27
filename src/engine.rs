@@ -8426,7 +8426,7 @@ impl Engine {
                 let Value::CMQuotientEnd(map) = self.eval(&input)? else {
                     unreachable!()
                 };
-                quotient.rosati_report(map)?
+                quotient.rosati_report(*map)?
             }
             Statement::Frobenius(named) => self
                 .model
@@ -9080,20 +9080,20 @@ impl Engine {
         };
         let x = match operation {
             Op::EndomorphismBasis(quotient, index) => {
-                return Ok(Value::CMQuotientEnd(
-                    quotient.endomorphism_basis(&mut self.model, *index)?,
-                ));
+                return quotient
+                    .endomorphism_basis(&mut self.model, *index)?
+                    .persist(&mut self.model);
             }
             Op::EndomorphismFrobenius(quotient) => {
-                return Ok(Value::CMQuotientEnd(
-                    quotient.frobenius_endomorphism(&mut self.model)?,
-                ));
+                return quotient
+                    .frobenius_endomorphism(&mut self.model)?
+                    .persist(&mut self.model);
             }
             Op::EndomorphismRosati(quotient, input) => {
                 let Value::CMQuotientEnd(map) = self.eval(input)? else {
                     unreachable!()
                 };
-                return Ok(Value::CMQuotientEnd(quotient.rosati_integral(map)?));
+                return quotient.rosati_integral(*map)?.persist(&mut self.model);
             }
             Op::EndomorphismBinary(quotient, apply, inputs) => {
                 let [left, right] = inputs.as_ref();
@@ -9103,9 +9103,9 @@ impl Engine {
                 match self.eval(right)? {
                     Value::CMQuotientCoordinates(vector) if *apply => left.apply(vector)?,
                     Value::CMQuotientEnd(right) if !apply => {
-                        return Ok(Value::CMQuotientEnd(
-                            quotient.compose_endomorphism(left, right)?,
-                        ));
+                        return quotient
+                            .compose_endomorphism(*left, *right)?
+                            .persist(&mut self.model);
                     }
                     _ => unreachable!(),
                 }
@@ -37937,16 +37937,16 @@ impl Checker<'_> {
                 let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
                 return Ok((
                     ty,
-                    TypedForm::Constant(Value::CMQuotientEnd(quotient.endomorphism(matrix)?)),
+                    TypedForm::Constant(quotient.endomorphism(matrix)?.persist(self.model)?),
                 ));
             }
             Expression::EndomorphismIdentity(name) => {
                 let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
                 return Ok((
                     ty,
-                    TypedForm::Constant(Value::CMQuotientEnd(
-                        cm_quotient::order::Endomorphism::identity(),
-                    )),
+                    TypedForm::Constant(
+                        cm_quotient::order::Endomorphism::identity().persist(self.model)?,
+                    ),
                 ));
             }
             Expression::EndomorphismBasis(name, index) => {
