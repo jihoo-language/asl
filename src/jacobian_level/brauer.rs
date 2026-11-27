@@ -180,12 +180,9 @@ mod tests {
         diagonally_equivalent[4][2] = 3;
         diagonally_equivalent[1][0] = 18;
         let add = crate::rv_unram::add_mod;
-        for col in 0..6 {
-            diagonally_equivalent[4][col] = add(
-                diagonally_equivalent[4][col],
-                diagonally_equivalent[5][col],
-                n,
-            );
+        let source = diagonally_equivalent[5];
+        for (entry, addend) in diagonally_equivalent[4].iter_mut().zip(source) {
+            *entry = add(*entry, addend, n);
         }
         for row in &mut diagonally_equivalent {
             row[1] = add(row[1], row[2], n);
