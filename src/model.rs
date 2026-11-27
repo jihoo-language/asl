@@ -27,6 +27,7 @@ use crate::milnor::MilnorBasis;
 use crate::mixed_bars;
 use crate::mixed_cone;
 use crate::mixed_hom;
+use crate::mixed_homology;
 use crate::mixed_minimal;
 use crate::mixed_tensor;
 use crate::motivic;
@@ -149,6 +150,7 @@ pub(crate) enum Kind {
     Space(String),
     SetNat(Rc<str>, Rc<str>),
     QModule(String),
+    MixedHomology(mixed::Grade),
     MixedChain(mixed::Grade, bool),
     MixedMinimum(mixed_minimal::Grade, bool),
     MixedPage(mixed_page::Grade),
@@ -447,6 +449,7 @@ pub(crate) struct Model {
     mixed_minimals: Vec<(String, Rc<mixed_minimal::Minimal>)>,
     mixed_minimal_ids: HashMap<String, mixed_minimal::Id>,
     mixed_bars: HashMap<mixed::Id, Rc<mixed_bars::Bars>>,
+    mixed_homology: HashMap<mixed::Grade, Rc<mixed_homology::Slice>>,
     mixed_pages: HashMap<TypeId, Rc<mixed_page::Page>>,
     sheaves: HashMap<String, Rc<Sheaf>>,
     sheaf_sites: HashMap<TypeId, Rc<sheaf::PosetData>>,
@@ -503,6 +506,7 @@ impl Model {
             mixed_minimals: Vec::new(),
             mixed_minimal_ids: HashMap::new(),
             mixed_bars: HashMap::new(),
+            mixed_homology: HashMap::new(),
             mixed_pages: HashMap::new(),
             sheaves: HashMap::new(),
             sheaf_sites: HashMap::new(),
@@ -602,7 +606,7 @@ impl Model {
                 }
             }
             Kind::MixedMinimum(..) => usize::MAX,
-            Kind::MixedChain(..) | Kind::MixedPage(..) => usize::MAX,
+            Kind::MixedChain(..) | Kind::MixedPage(..) | Kind::MixedHomology(..) => usize::MAX,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
             Kind::SheafComplex(_, ref name, k)
                 if k >= self.sheaf_complexes[name.as_ref()].height() =>
@@ -876,6 +880,7 @@ impl Model {
             Kind::Cohomology(..)
                 | Kind::SetNat(..)
                 | Kind::MixedChain(..)
+                | Kind::MixedHomology(..)
                 | Kind::MixedMinimum(..)
                 | Kind::MixedPage(..)
                 | Kind::Sheaf(..)
@@ -1091,6 +1096,22 @@ impl Model {
 
     pub(crate) fn mixed_chain_type(&mut self, grade: mixed::Grade, total: bool) -> Result<TypeId> {
         self.inhabited_type(Kind::MixedChain(grade, total), 0)
+    }
+
+    pub(crate) fn mixed_homology_type(&mut self, grade: mixed::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::MixedHomology(grade), 0)
+    }
+
+    pub(crate) fn mixed_homology(
+        &mut self,
+        grade: mixed::Grade,
+    ) -> Result<Rc<mixed_homology::Slice>> {
+        if let Some(slice) = self.mixed_homology.get(&grade) {
+            return Ok(slice.clone());
+        }
+        let slice = Rc::new(mixed_homology::Slice::new(self, grade)?);
+        self.mixed_homology.insert(grade, slice.clone());
+        Ok(slice)
     }
 
     pub(crate) fn mixed_bars(&mut self, id: mixed::Id) -> Result<Rc<mixed_bars::Bars>> {
@@ -3133,6 +3154,7 @@ impl Model {
             Kind::Suspension(base) => self.height(base, exact)?.saturating_add(1),
             Kind::Cohomology(..)
             | Kind::MixedChain(..)
+            | Kind::MixedHomology(..)
             | Kind::MixedMinimum(..)
             | Kind::MixedPage(..)
             | Kind::Sheaf(..)
@@ -3324,6 +3346,11 @@ impl Model {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
             Kind::SetNat(source, target) => out.push(&format!("SetNat({source}, {target})")),
+            Kind::MixedHomology(grade) => out.push(&format!(
+                "MixedH({}, {})",
+                self.mixed_name(grade.complex),
+                grade.b
+            )),
             Kind::MixedChain(grade, total) => {
                 let name = if *total { "MixedU" } else { "MixedChain" };
                 out.push(&format!(
@@ -4535,6 +4562,11 @@ impl Model {
                     total,
                     MAX_ELEMENTS,
                 )?,
+                Kind::MixedHomology(grade) => {
+                    let rank = self.mixed_homology(grade)?.rank();
+                    let prime = self.mixed_complex(grade.complex).prime;
+                    odd_ext::elements(self, prime, rank, MAX_ELEMENTS)?
+                }
                 Kind::MixedPage(grade) => {
                     let rank = self.mixed_page(ty)?.rank();
                     odd_ext::elements(

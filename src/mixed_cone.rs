@@ -11,6 +11,7 @@ pub(crate) enum Operation {
     Include,
     Lift,
     Project,
+    Connect,
 }
 
 pub(crate) struct Cone {
@@ -18,6 +19,7 @@ pub(crate) struct Cone {
     target: Id,
     target_len: usize,
     map: Rc<[Coordinate]>,
+    map_id: Id,
 }
 
 impl Cone {
@@ -79,6 +81,7 @@ impl Cone {
             target: hom.target,
             target_len: target.len(),
             map,
+            map_id,
         };
         Ok((cone, complex))
     }
@@ -88,6 +91,7 @@ impl Cone {
             Operation::Include => (self.target, cone, 0),
             Operation::Lift => (self.source, cone, 1),
             Operation::Project => (cone, self.source, -1),
+            Operation::Connect => (self.source, self.target, 0),
         };
         if argument.complex != source {
             return Err(Error::plain(
@@ -114,6 +118,11 @@ impl Cone {
                 .iter()
                 .map(|&(i, c)| (self.target_len + i, c))
                 .collect(),
+            Operation::Connect => {
+                return model
+                    .mixed_hom(self.map_id)?
+                    .evaluate(model, &self.map, input);
+            }
             Operation::Project => {
                 let start = input.partition_point(|&(i, _)| i < self.target_len);
                 input[start..]

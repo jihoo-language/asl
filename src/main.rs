@@ -42,6 +42,7 @@ mod mixed;
 mod mixed_bars;
 mod mixed_cone;
 mod mixed_hom;
+mod mixed_homology;
 mod mixed_minimal;
 mod mixed_page;
 mod mixed_tensor;

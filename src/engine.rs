@@ -32,6 +32,7 @@ use crate::may_lift;
 use crate::milnor;
 use crate::mixed_cone;
 use crate::mixed_hom;
+use crate::mixed_homology;
 use crate::mixed_minimal;
 use crate::mixed_tensor;
 use crate::model::{DiffFamily, Kind, Model, Poset, SuspensionPoint, TypeId, Value};
@@ -198,6 +199,9 @@ enum CobarOp {
     MixUp,
     MixD,
     RvMixedToHH,
+    MixHClass,
+    MixHRep,
+    MixHPrimitive,
     MixMinI,
     MixClass,
     MixRep,
@@ -269,6 +273,9 @@ impl CobarOp {
             "rvMixedToHH" => Some(Self::RvMixedToHH),
             "mixb" => Some(Self::MixDown),
             "mixB" => Some(Self::MixUp),
+            "mixHClass" => Some(Self::MixHClass),
+            "mixHRep" => Some(Self::MixHRep),
+            "mixHPrimitive" => Some(Self::MixHPrimitive),
             "mixMinI" => Some(Self::MixMinI),
             "mixD" => Some(Self::MixD),
             "mixPageRep" => Some(Self::MixRep),
@@ -525,6 +532,7 @@ enum TypedForm {
         Box<TypedExpr>,
     ),
     MixedDelta(Rc<mixed_minimal::Minimal>, usize, Box<TypedExpr>),
+    MixedHShift(Box<TypedExpr>),
     MixedEmbed(Box<TypedExpr>),
     SheafOperation(SheafOp, SheafComputation, usize, Box<TypedExpr>),
     SheafLerayIncl(Rc<Leray>, usize, Box<TypedExpr>),
@@ -660,6 +668,14 @@ impl Engine {
                 let (origin, complex) = rv_hh_mixed::Origin::build(&mut self.model, grade)?;
                 self.model.define_hh_mixed(name.text, complex, origin);
                 return Ok(None);
+            }
+            StatementForm::MixedHDimension(name, b) => {
+                let complex = self.model.mixed_id(&name)?;
+                let rank = self
+                    .model
+                    .mixed_bars(complex)?
+                    .rank(&mut self.model, b, b)?;
+                format!("mixHdim[{}, {b}] = {rank}", name.text)
             }
             StatementForm::MixedBars(name) => {
                 let id = self.model.mixed_id(&name)?;
@@ -2517,6 +2533,112 @@ impl Engine {
         Ok(())
     }
 
+    fn eval_mixed_induce(
+        &mut self,
+        types: [TypeId; 3],
+        map: &[crate::prime_linear::Coordinate],
+        class: &[crate::prime_linear::Coordinate],
+    ) -> Result<Value> {
+        let Kind::MixedChain(map_grade, true) = *self.model.kind(types[0]) else {
+            unreachable!()
+        };
+        let Kind::MixedHomology(source) = *self.model.kind(types[1]) else {
+            unreachable!()
+        };
+        let Kind::MixedHomology(target) = *self.model.kind(types[2]) else {
+            unreachable!()
+        };
+        let image = mixed_homology::induce(
+            &mut self.model,
+            map_grade.complex,
+            map,
+            source,
+            target,
+            class,
+        )?;
+        odd_ext::persist(&mut self.model, image)
+    }
+
+    fn eval_mixed_h_unary(
+        &mut self,
+        op: &CobarOp,
+        ty: TypeId,
+        terms: Rc<[crate::prime_linear::Coordinate]>,
+    ) -> Result<Value> {
+        match op {
+            CobarOp::MixHClass | CobarOp::MixHPrimitive => {
+                if terms.is_empty() {
+                    return Ok(Value::OddClass(terms));
+                }
+                let Kind::MixedChain(grade, true) = *self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let support = if matches!(op, CobarOp::MixHClass) {
+                    self.model
+                        .mixed_homology(grade)?
+                        .project(&mut self.model, &terms)?
+                } else {
+                    mixed_homology::primitive(&mut self.model, grade, &terms)?
+                };
+                odd_ext::persist(&mut self.model, support)
+            }
+            CobarOp::MixHRep => {
+                if terms.is_empty() {
+                    return Ok(Value::OddClass(terms));
+                }
+                let Kind::MixedHomology(grade) = *self.model.kind(ty) else {
+                    unreachable!()
+                };
+                let support = self
+                    .model
+                    .mixed_homology(grade)?
+                    .representative(&mut self.model, &terms)?;
+                odd_ext::persist(&mut self.model, support)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn eval_mixed_cone_map(
+        &mut self,
+        cone: &mixed_cone::Cone,
+        operation: &mixed_cone::Operation,
+        input: &TypedExpr,
+        output: TypeId,
+    ) -> Result<Value> {
+        let Value::OddClass(support) = self.eval(input)? else {
+            unreachable!()
+        };
+        let image = match (self.model.kind(input.ty), self.model.kind(output)) {
+            (&Kind::MixedHomology(source), &Kind::MixedHomology(target)) => {
+                mixed_homology::map(&mut self.model, source, target, &support, |model, chain| {
+                    cone.apply(model, *operation, chain)
+                })?
+            }
+            _ => cone.apply(&mut self.model, *operation, &support)?,
+        };
+        odd_ext::persist(&mut self.model, image)
+    }
+
+    fn eval_mixed_h_shift(&mut self, input: &TypedExpr, output: TypeId) -> Result<Value> {
+        let Value::OddClass(class) = self.eval(input)? else {
+            unreachable!()
+        };
+        if class.is_empty() {
+            return Ok(Value::OddClass(class));
+        }
+        let Kind::MixedHomology(source) = *self.model.kind(input.ty) else {
+            unreachable!()
+        };
+        let Kind::MixedHomology(target) = *self.model.kind(output) else {
+            unreachable!()
+        };
+        let source = self.model.mixed_homology(source)?;
+        let target = self.model.mixed_homology(target)?;
+        let support = source.shift(&mut self.model, &target, &class)?;
+        odd_ext::persist(&mut self.model, support)
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -2636,6 +2758,9 @@ impl Engine {
                     (BinaryOp::Add, Value::RVBarCobar(a), Value::RVBarCobar(b)) => Ok(
                         Value::RVBarCobar(rv_barcobar::add(&mut self.model, &a, &b)?),
                     ),
+                    (BinaryOp::MixInduce, Value::OddClass(map), Value::OddClass(class)) => {
+                        self.eval_mixed_induce([left.ty, right.ty, expr.ty], &map, &class)
+                    }
                     (BinaryOp::MixEval, Value::OddClass(map), Value::OddClass(argument)) => {
                         let Kind::MixedChain(grade, _) = *self.model.kind(left.ty) else {
                             unreachable!()
@@ -2779,7 +2904,7 @@ impl Engine {
                             | Kind::SheafPage(..)
                             | Kind::SheafLocal(..)
                             | Kind::SheafHom(..) => self.sheaf_prime(expr.ty),
-                            Kind::MixedChain(grade, _) => {
+                            Kind::MixedChain(grade, _) | Kind::MixedHomology(grade) => {
                                 self.model.mixed_complex(grade.complex).prime
                             }
                             Kind::MixedMinimum(grade, _) => {
@@ -3401,6 +3526,10 @@ impl Engine {
                         _ => unreachable!(),
                     }
                 }
+                (
+                    CobarOp::MixHClass | CobarOp::MixHPrimitive | CobarOp::MixHRep,
+                    Value::OddClass(terms),
+                ) => self.eval_mixed_h_unary(op, input.ty, terms),
                 (CobarOp::MixMinI, Value::OddClass(terms)) => {
                     let Kind::MixedMinimum(grade, total) = *self.model.kind(input.ty) else {
                         unreachable!()
@@ -4820,11 +4949,7 @@ impl Engine {
                 _ => unreachable!(),
             },
             TypedForm::MixedConeMap(cone, operation, input) => {
-                let Value::OddClass(support) = self.eval(input)? else {
-                    unreachable!()
-                };
-                let image = cone.apply(&mut self.model, *operation, &support)?;
-                odd_ext::persist(&mut self.model, image)
+                self.eval_mixed_cone_map(cone, operation, input, expr.ty)
             }
             TypedForm::MixedConeShear(target, source, map, homotopy, input) => {
                 let Value::OddClass(homotopy) = self.eval(homotopy)? else {
@@ -4886,6 +5011,7 @@ impl Engine {
                 let image = data.delta(&mut self.model, *order, &support)?;
                 odd_ext::persist(&mut self.model, image)
             }
+            TypedForm::MixedHShift(input) => self.eval_mixed_h_shift(input, expr.ty),
             TypedForm::MixedEmbed(input) => self.eval(input),
             TypedForm::SheafOperation(operation, data, degree, input) => {
                 let value = self.eval(input)?;
@@ -5507,6 +5633,10 @@ impl Checker<'_> {
             TypeForm::SheafComplex(form, name, degree) => {
                 self.model.sheaf_complex_type(form, &name, degree)
             }
+            TypeForm::MixedHomology(name, b) => {
+                let complex = self.model.mixed_id(&name)?;
+                self.model.mixed_homology_type(mixed::Grade { complex, b })
+            }
             TypeForm::MixedChain(name, b, total) => {
                 let complex = self.model.mixed_id(&name)?;
                 self.model
@@ -5912,7 +6042,7 @@ impl Checker<'_> {
                         Value::SheafC([].into()),
                     Kind::SheafPage(..) | Kind::SheafLocal(..) => odd_ext::zero(),
                     Kind::MixedMinimum(..) => odd_ext::zero(),
-                    Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
+                    Kind::MixedChain(..) | Kind::MixedPage(..) | Kind::MixedHomology(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
                         odd_ext::zero(),
                     Kind::RhoBock(..) | Kind::RMExt(..) | Kind::RMBar(..) | Kind::RMRhoExt(..) => cohomology::zero(),
@@ -6348,17 +6478,7 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::MixedConeMap(name, operation, input) => {
-                let input = self.expr(*input)?;
-                let (grade, total) = self.mixed_chain(&input, "mixed mapping cone operation")?;
-                let id = self.model.mixed_id(&name)?;
-                let cone = self.model.mixed_cone(id)?;
-                let ty = self
-                    .model
-                    .mixed_chain_type(cone.map_grade(id, grade, operation)?, total)?;
-                Ok((
-                    ty,
-                    TypedForm::MixedConeMap(cone, operation, Box::new(input)),
-                ))
+                self.check_mixed_cone_map(name, operation, *input)
             }
             ExprForm::MixedConeShear(name, homotopy, input) => {
                 let homotopy = self.expr(*homotopy)?;
@@ -6513,6 +6633,9 @@ impl Checker<'_> {
                 let value = odd_ext::persist(self.model, terms)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MixedHGenerator(name, b, index, at) => {
+                self.check_mixed_h_generator(name, b, index, at)
+            }
             ExprForm::MixedBarTerm(name, index, null) => {
                 let complex = self.model.mixed_id(&name)?;
                 let bars = self.model.mixed_bars(complex)?;
@@ -6606,6 +6729,10 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 let offset = -2 * power as i128;
                 let ty = match *self.model.kind(input.ty) {
+                    Kind::MixedHomology(grade) => {
+                        let ty = self.model.mixed_homology_type(grade.shift(offset)?)?;
+                        return Ok((ty, TypedForm::MixedHShift(Box::new(input))));
+                    }
                     Kind::MixedChain(grade, _) => {
                         self.model.mixed_chain_type(grade.shift(offset)?, true)?
                     }
@@ -6616,7 +6743,7 @@ impl Checker<'_> {
                         return Err(self.invalid_operand(
                             &input,
                             "mixU",
-                            "a MixedChain, MixedU, MixedMin, or MixedMinU value",
+                            "a MixedChain, MixedU, MixedH, MixedMin, or MixedMinU value",
                         ))
                     }
                 };
@@ -7095,7 +7222,7 @@ impl Checker<'_> {
                     | Kind::ASTwoDiff(_, p)
                     | Kind::ASOddDeRham(_, p)
                     | Kind::ASOddTate(_, p, _) => p,
-                    Kind::MixedChain(grade,_) => self.model.mixed_complex(grade.complex).prime,
+                    Kind::MixedChain(grade, _) | Kind::MixedHomology(grade) => self.model.mixed_complex(grade.complex).prime,
                     Kind::MixedMinimum(grade,_) => self.model.mixed_minimal(grade.minimal).prime(),
                     Kind::MixedPage(grade) => self.model.mixed_complex(grade.chain.complex).prime,
                     Kind::BPPage(grade) => Prime::validated(grade.shape.prime),
@@ -10314,6 +10441,104 @@ impl Checker<'_> {
         rv_negative::Grade::new(self.rv_hh_grade((ideal, b, weight))?, length)
     }
 
+    fn check_mixed_cone_map(
+        &mut self,
+        name: Label,
+        operation: mixed_cone::Operation,
+        input: ParsedExpr,
+    ) -> Result<(TypeId, TypedForm)> {
+        use mixed_cone::Operation;
+        let input = self.expr(input)?;
+        let id = self.model.mixed_id(&name)?;
+        let cone = self.model.mixed_cone(id)?;
+        let ty = match *self.model.kind(input.ty) {
+            Kind::MixedHomology(grade) if !matches!(operation, Operation::Lift) => self
+                .model
+                .mixed_homology_type(cone.map_grade(id, grade, operation)?)?,
+            Kind::MixedChain(grade, total) if !matches!(operation, Operation::Connect) => self
+                .model
+                .mixed_chain_type(cone.map_grade(id, grade, operation)?, total)?,
+            _ => {
+                let (name, expected) = match operation {
+                    Operation::Connect => ("mixConeConnect", "a MixedH class"),
+                    Operation::Lift => ("mixConeLift", "a MixedChain or MixedU chain"),
+                    _ => (
+                        "mixed mapping cone operation",
+                        "a MixedChain, MixedU, or MixedH value",
+                    ),
+                };
+                return Err(self.invalid_operand(&input, name, expected));
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::MixedConeMap(cone, operation, Box::new(input)),
+        ))
+    }
+
+    fn check_mixed_h_generator(
+        &mut self,
+        name: Label,
+        b: i64,
+        index: usize,
+        at: Span,
+    ) -> Result<(TypeId, TypedForm)> {
+        let complex = self.model.mixed_id(&name)?;
+        let grade = mixed::Grade { complex, b };
+        let ty = self.model.mixed_homology_type(grade)?;
+        let rank = self.model.mixed_homology(grade)?.rank();
+        let value = self.prime_generator(ty, rank, index, at)?;
+        Ok((ty, TypedForm::Constant(value)))
+    }
+
+    fn check_mixed_h_unary(
+        &mut self,
+        op: &CobarOp,
+        argument: &TypedExpr,
+        name: &str,
+    ) -> Result<TypeId> {
+        match op {
+            CobarOp::MixHClass | CobarOp::MixHPrimitive => {
+                let Kind::MixedChain(grade, true) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a MixedU chain"));
+                };
+                if matches!(op, CobarOp::MixHClass) {
+                    self.model.mixed_homology_type(grade)
+                } else {
+                    self.model.mixed_chain_type(grade.shift(1)?, true)
+                }
+            }
+            CobarOp::MixHRep => {
+                let Kind::MixedHomology(grade) = *self.model.kind(argument.ty) else {
+                    return Err(self.invalid_operand(argument, name, "a MixedH class"));
+                };
+                self.model.mixed_chain_type(grade, true)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn check_mixed_induce(&mut self, left: &TypedExpr, right: &TypedExpr) -> Result<TypeId> {
+        let Kind::MixedChain(map, true) = *self.model.kind(left.ty) else {
+            return Err(self.invalid_operand(left, "mixInduce", "a total Hom map"));
+        };
+        let Kind::MixedHomology(source) = *self.model.kind(right.ty) else {
+            return Err(self.invalid_operand(right, "mixInduce", "a MixedH class"));
+        };
+        let hom = self.model.mixed_hom(map.complex)?;
+        if source.complex != hom.source {
+            return Err(Error::plain(
+                "mixInduce class belongs to the wrong source complex",
+            ));
+        }
+        let grade = mixed::Grade {
+            complex: hom.target,
+            b: source.b,
+        }
+        .shift(map.b.into())?;
+        self.model.mixed_homology_type(grade)
+    }
+
     fn mixed_chain(&self, value: &TypedExpr, name: &str) -> Result<(mixed::Grade, bool)> {
         match *self.model.kind(value.ty) {
             Kind::MixedChain(grade, total) => Ok((grade, total)),
@@ -10843,6 +11068,9 @@ impl Checker<'_> {
                     )),
                 };
             }
+            CobarOp::MixHClass | CobarOp::MixHPrimitive | CobarOp::MixHRep => {
+                return self.check_mixed_h_unary(op, argument, name);
+            }
             CobarOp::MixMinI => {
                 let Kind::MixedMinimum(grade, total) = *self.model.kind(argument.ty) else {
                     return Err(self.invalid_operand(
@@ -11247,6 +11475,7 @@ impl Checker<'_> {
                         | Kind::RhoMin(..)
                         | Kind::MExt(..)
                         | Kind::MixedChain(..)
+                        | Kind::MixedHomology(..)
                         | Kind::MixedMinimum(..)
                         | Kind::MixedPage(..)
                         | Kind::Sheaf(..)
@@ -11572,6 +11801,7 @@ impl Checker<'_> {
                 self.model
                     .rv_barcobar_type(rv_barcobar::product_grade(a, b)?)
             }
+            BinaryOp::MixInduce => self.check_mixed_induce(left, right),
             BinaryOp::MixEval => {
                 let (map, total) = self.mixed_chain(left, "mixEval")?;
                 let (argument, argument_total) = self.mixed_chain(right, "mixEval")?;

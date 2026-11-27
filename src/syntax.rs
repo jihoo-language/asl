@@ -63,6 +63,7 @@ pub(crate) enum TypeForm {
     SetNat(Label, Label),
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
+    MixedHomology(Label, i64),
     MixedChain(Label, i64, bool),
     MixedMinimal(Label, i64, bool),
     MixedPage(MixedSpec),
@@ -482,6 +483,7 @@ pub(crate) enum BinaryOp {
     MilnorPair,
     RvMultiply,
     RvBCMul,
+    MixInduce,
     MixEval,
     RvBarPair,
     AsOddDeRhamPair,
@@ -515,6 +517,7 @@ impl BinaryOp {
             "milnorPair" => Some(Self::MilnorPair),
             "rvMul" => Some(Self::RvMultiply),
             "rvBCMul" => Some(Self::RvBCMul),
+            "mixInduce" => Some(Self::MixInduce),
             "mixEval" => Some(Self::MixEval),
             "rvBarPair" => Some(Self::RvBarPair),
             "rvASOddDeRhamPair" => Some(Self::AsOddDeRhamPair),
@@ -641,6 +644,7 @@ pub(crate) enum ExprForm {
     MixedComposition(Label, Box<ParsedExpr>, Box<ParsedExpr>),
     MixedEmbed(usize, Box<ParsedExpr>),
     RvHHToMixed(Label, Option<usize>, Box<ParsedExpr>),
+    MixedHGenerator(Label, i64, usize, Span),
     MixedBarTerm(Label, usize, bool),
     MixedMinGenerator(Label, i64, usize, Span),
     MixedMinMap(Label, crate::mixed_minimal::Operation, Box<ParsedExpr>),
@@ -912,6 +916,7 @@ pub(crate) enum StatementForm {
         crate::mixed::Rules,
     ),
     RvHHMixed(Label, Label, Vec<usize>),
+    MixedHDimension(Label, i64),
     MixedBars(Label),
     MixedBarRank(Label, i64, Option<i64>),
     MixedPeriodicRank(Label, i64),
@@ -1919,6 +1924,15 @@ impl<'src> Parser<'src> {
                     let big_b = self.mixed_rules()?;
                     StatementForm::MixedComplex(complex, prime, generators, b, big_b)
                 }
+            }
+            Token::Word("mixHdim") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let b = self.signed_degree()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::MixedHDimension(name, b)
             }
             Token::Word("mixbars") => {
                 self.advance()?;
@@ -4038,14 +4052,20 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::MixedMinimal(name, b, total), 0);
         }
-        if matches!(name.text.as_str(), "MixedChain" | "MixedU") && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "MixedChain" | "MixedU" | "MixedH")
+            && self.eat(Token::LParen)?
+        {
             let complex = self.label()?;
             self.expect(Token::Comma)?;
             let degree = self.signed_degree()?;
             self.expect(Token::RParen)?;
             return ty(
                 span,
-                TypeForm::MixedChain(complex, degree, name.text == "MixedU"),
+                if name.text == "MixedH" {
+                    TypeForm::MixedHomology(complex, degree)
+                } else {
+                    TypeForm::MixedChain(complex, degree, name.text == "MixedU")
+                },
                 0,
             );
         }
@@ -4841,14 +4861,17 @@ impl<'src> Parser<'src> {
                     };
                     return expr(span, form, depth);
                 }
-                if matches!(name.text.as_str(), "mixConeI" | "mixConeLift" | "mixConeP")
-                    && self.eat(Token::LBracket)?
+                if matches!(
+                    name.text.as_str(),
+                    "mixConeI" | "mixConeLift" | "mixConeP" | "mixConeConnect"
+                ) && self.eat(Token::LBracket)?
                 {
                     use crate::mixed_cone::Operation;
                     let operation = match name.text.as_str() {
                         "mixConeI" => Operation::Include,
                         "mixConeLift" => Operation::Lift,
-                        _ => Operation::Project,
+                        "mixConeP" => Operation::Project,
+                        _ => Operation::Connect,
                     };
                     let cone = self.label()?;
                     self.expect(Token::RBracket)?;
@@ -4930,6 +4953,9 @@ impl<'src> Parser<'src> {
                         ExprForm::MixedBarTerm(complex, i, name.text == "mixBarNull"),
                         0,
                     );
+                }
+                if name.text == "mixHgen" && self.eat(Token::LBracket)? {
+                    return self.mixed_h_generator(span);
                 }
                 if name.text == "mixMinGen" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
@@ -7827,6 +7853,16 @@ impl<'src> Parser<'src> {
             .try_into()
             .map_err(|_| Error::new(span, format!("{name} requires two RMExt classes")))?;
         Ok(Box::new(pair))
+    }
+
+    fn mixed_h_generator(&mut self, span: Span) -> Result<ParsedExpr> {
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let b = self.signed_degree()?;
+        self.expect(Token::Comma)?;
+        let (index, at) = self.number()?;
+        self.expect(Token::RBracket)?;
+        expr(span, ExprForm::MixedHGenerator(name, b, index, at), 0)
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {

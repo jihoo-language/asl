@@ -1556,6 +1556,18 @@ The maps `mixConeI[K]`, `mixConeLift[K]` and `mixConeP[K]` send $y$ to $(y,0)$, 
 
 The cone of $x\mapsto u^{1000000000}y$ on two generators verifies a nonzero $d_{1000000000}$ and gives the torsion bar $(2000000000,1000000000)$ over $\mathbb F_3$. The zero map gives two free bars in degrees $1$ and $2000000000$. A second test uses a three-term coherent map whose cone has $\delta_1^2\ne0$, with its contribution to $D^2$ canceled by $\delta_0\delta_2$. [Two-generator cone example](examples/mixed-cone.asl)
 
+#### Graded negative cyclic homology and the cone triangle
+
+`MixedH(C,b)` is the actual homology of `MixedU(C,b)` with differential `mixD`. It applies to strict mixed complexes and sparse higher complexes. In a fixed signed degree the polynomial and completed complexes have the same finite basis. `mixHdim[C,b];` gives the dimension. The coordinate `mixHgen[C,b,i]` uses the subsequence of bars alive in degree $b$, in the order of `mixbars`. Each bar with birth $a$ and representative $z$ contributes $[u^{(a-b)/2}z]$ when the exponent exists and lies below its torsion length. A free bar has no upper cutoff.
+
+`mixHClass` takes a total cycle to its coordinates and rejects a noncycle. `mixHRep` returns the corresponding sum of shifted bar representatives. `mixHPrimitive` gives a deterministic preimage of an exact total chain under $D$ and rejects chains outside the image. It reduces the requested degree against the incoming columns in raw generator order. The operations `add` and `pscale` are linear on these coordinates. `mixU[k]` sends a living coordinate to its further shift if the bar still lives, with zero for a killed coordinate.
+
+`mixInduce(f,x)` takes a homogeneous closed total Hom map and a source homology class. It evaluates the map on the representative and reduces the image into target coordinates. The output degree is the sum of the map and class degrees. On homology `mixConeI[K]` and `mixConeP[K]` induce inclusion and projection, and `mixConeConnect[K]` is the connecting map given by the map of the cone. They give
+$H_b(X)\xrightarrow{f_*}H_b(Y)\xrightarrow{I_*}H_b(K)\xrightarrow{P_*}H_{b-1}(X)\xrightarrow{f_*}H_{b-1}(Y)$.
+Projection has degree $-1$. The two-generator and rank-one examples test the maps on actual cycles and boundary witnesses.
+
+A map can induce zero on homology while its cone records a nonsplit extension of the two homology modules. In the four-generator example $f$ sends $s_0$ to $u^j y$ and kills $x_0$. Its class in degree zero of the Hom complex has exact $u$-order $\min(l,m)-j$. The cone relations are $u^j y+u^l x$ and $u^m y$, with $x=s x_0$. For $0\le j<\min(l,m)$ the cone has a short bar of length $j$ at birth $2j$, when $j>0$, and a long bar of length $l+m-j$ at birth $2l$. With $l=m=100000000$ and $j=17$, the example verifies the primitive for the long bar and the survival of its preceding power. The zero map gives separate bars of length $100000000$. [Cone triangle example](examples/mixed-triangle.asl)
+
 ### Rank-two localized torsion bars
 
 For $I=[i,n]$ let $w=v_i/v_n$ and $L=D_n-D_i$. Multiplication by $v_n^{-s}$ identifies the slice at filtration $s$ with filtration zero and gives normalized grade $g=t-sD_n$. Multiplication by $w$ lowers this grade by $L$. The filtration-zero complex is a free graded $\mathbb F_2[w]$ module on the coefficient matrices between the endpoints. Its differential $v_n^{-1}qD$ sums the two endpoint actions for $Q_n$ and $wQ_i$.

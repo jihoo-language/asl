@@ -18,6 +18,18 @@ pub(crate) struct Bar {
     pub(crate) torsion: Option<Torsion>,
 }
 
+impl Bar {
+    pub(crate) fn lives_at(&self, b: i64) -> bool {
+        let shift = i128::from(self.birth) - i128::from(b);
+        shift >= 0
+            && shift % 2 == 0
+            && self
+                .torsion
+                .as_ref()
+                .is_none_or(|t| shift / 2 < i128::from(t.length))
+    }
+}
+
 pub(crate) struct Bars {
     bars: Vec<Bar>,
 }
@@ -133,9 +145,7 @@ impl Bars {
     }
 
     pub(crate) fn rank(&self, model: &mut Model, source: i64, target: i64) -> Result<usize> {
-        let source = i128::from(source);
-        let target = i128::from(target);
-        if target > source || (source - target) % 2 != 0 {
+        if target > source || (i128::from(source) - i128::from(target)) % 2 != 0 {
             return Err(Error::plain(
                 "mixed bar rank requires a nonnegative power of u",
             ));
@@ -144,15 +154,7 @@ impl Bars {
         Ok(self
             .bars
             .iter()
-            .filter(|bar| {
-                let birth = i128::from(bar.birth);
-                birth >= source
-                    && (birth - source) % 2 == 0
-                    && bar
-                        .torsion
-                        .as_ref()
-                        .is_none_or(|t| (birth - target) / 2 < i128::from(t.length))
-            })
+            .filter(|bar| bar.lives_at(source) && bar.lives_at(target))
             .count())
     }
 
