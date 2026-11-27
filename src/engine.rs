@@ -11,6 +11,8 @@ use verbitsky_cyclic::eulerian;
 use verbitsky_resolution::deformation;
 use verbitsky_tate::matrix_factorization as mf;
 
+use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient as partition_quiver;
+
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
 use crate::binary_linear;
@@ -1139,6 +1141,9 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionQuiverBlock(Box<[TypedExpr; 2]>, Vec<Vec<u128>>),
+    PartitionQuiverCharacter(u128, Box<TypedExpr>),
+    PartitionQuiverFourier(Label, Label, Rc<[usize]>, u128),
     PartitionDGUnary(
         crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Unary,
         Box<TypedExpr>,
@@ -2618,6 +2623,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionQuiverReport(report) => {
+                return self.partition_quiver_report(report)
             }
             StatementForm::PartitionDGReport(report) => return self.partition_dg_report(report),
             StatementForm::PartitionFormalReport(report) => {
@@ -12634,6 +12642,48 @@ impl Engine {
         }
     }
 
+    fn partition_quiver_report(
+        &mut self,
+        report: partition_quiver::Report,
+    ) -> Result<Option<String>> {
+        use partition_quiver::Report;
+        match report {
+            report @ (Report::Trace(_) | Report::Critical(_)) => {
+                let critical = matches!(report, Report::Critical(_));
+                let (Report::Trace(input) | Report::Critical(input)) = report else {
+                    unreachable!()
+                };
+                let input = self.checker().expr(*input)?;
+                let (name, _) = self.checker().partition_quiver_operand(&input)?;
+                let rep = self.eval_partition_quiver(&input)?;
+                self.model
+                    .partition_dg(&name)?
+                    .ambient_report(&mut self.model, &rep, critical)
+                    .map(Some)
+            }
+            report @ (Report::Distribution(_) | Report::Inversion(_)) => {
+                let inversion = matches!(report, Report::Inversion(_));
+                let (Report::Distribution(request) | Report::Inversion(request)) = report else {
+                    unreachable!()
+                };
+                let spec = self.model.partition_dg(&request.frame.text)?;
+                let dims = spec.ambient_dimensions(request.dimensions)?;
+                spec.ambient_distribution_report(&mut self.model, dims, &request.method, inversion)
+                    .map(Some)
+            }
+        }
+    }
+
+    fn eval_partition_quiver(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<partition_quiver::Representation>> {
+        let Value::RVPartitionQuiver(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_dg_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Report,
@@ -18278,6 +18328,26 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionQuiverBlock(inputs, blocks) => {
+                let x = self.eval_partition_quiver(&inputs[0])?;
+                let y = self.eval_partition_quiver(&inputs[1])?;
+                self.model
+                    .partition_dg(&x.frame)?
+                    .ambient_triangular(&mut self.model, &x, &y, blocks.clone())?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionQuiverCharacter(lambda, input) => {
+                let rep = self.eval_partition_quiver(input)?;
+                self.model.partition_dg(&rep.frame)?.ambient_character(
+                    &mut self.model,
+                    &rep,
+                    *lambda,
+                )
+            }
+            TypedForm::PartitionQuiverFourier(frame, method, dims, lambda) => self
+                .model
+                .partition_dg(&frame.text)?
+                .ambient_fourier(&mut self.model, dims.clone(), method, *lambda),
             TypedForm::PartitionDGUnary(op, input) => {
                 use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Unary;
                 let value = self.eval_partition_dg(input)?;
@@ -21072,6 +21142,13 @@ impl Checker<'_> {
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
+            TypeForm::RVPartitionQuiver(frame, dimensions) => {
+                let dims = self
+                    .model
+                    .partition_dg(&frame.text)?
+                    .ambient_dimensions(dimensions)?;
+                self.model.partition_quiver_type(&frame.text, dims)
+            }
             TypeForm::RVPartitionDG(name, degree) => {
                 self.model.partition_dg_type(&name.text, degree)
             }
@@ -24451,6 +24528,7 @@ impl Checker<'_> {
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
             ExprForm::PartitionHall(expression) => self.partition_hall_expression(*expression),
+            ExprForm::PartitionQuiver(expression) => self.partition_quiver_expression(*expression),
             ExprForm::PartitionDG(expression) => self.partition_dg_expression(*expression),
             ExprForm::PartitionFormal(expression) => self.partition_formal_expression(*expression),
             ExprForm::PartitionExtension(expression) => {
@@ -32701,6 +32779,77 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_quiver_expression(
+        &mut self,
+        expression: partition_quiver::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use partition_quiver::Expression;
+        match expression {
+            Expression::Literal(frame, dimensions, arrows) => {
+                let spec = self.model.partition_dg(&frame.text)?;
+                let dims = spec.ambient_dimensions(dimensions)?;
+                let ty = self
+                    .model
+                    .partition_quiver_type(&frame.text, dims.clone())?;
+                let value = spec
+                    .ambient_literal(self.model, dims, arrows)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Triangular(inputs, blocks) => {
+                let [x, y] = *inputs;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                let (name, left) = self.partition_quiver_operand(&x)?;
+                let (other, right) = self.partition_quiver_operand(&y)?;
+                if name != other {
+                    return Err(Error::new(y.span,"partition quiver triangular block requires the same nominal Ginzburg quiver"));
+                }
+                let spec = self.model.partition_dg(&name)?;
+                let dimensions = left
+                    .iter()
+                    .zip(right.iter())
+                    .map(|(r, s)| (r + s) as u128)
+                    .collect();
+                let dims = spec.ambient_dimensions(dimensions)?;
+                let ty = self.model.partition_quiver_type(&name, dims)?;
+                Ok((
+                    ty,
+                    TypedForm::PartitionQuiverBlock(Box::new([x, y]), blocks),
+                ))
+            }
+            Expression::Character(lambda, input) => {
+                let input = self.expr(*input)?;
+                let (name, _) = self.partition_quiver_operand(&input)?;
+                let spec = self.model.partition_dg(&name)?;
+                let ty = self.model.cyclotomic_type(spec.ambient_characteristic())?;
+                Ok((
+                    ty,
+                    TypedForm::PartitionQuiverCharacter(lambda, Box::new(input)),
+                ))
+            }
+            Expression::Fourier(request, lambda) => {
+                let spec = self.model.partition_dg(&request.frame.text)?;
+                let ty = self.model.cyclotomic_type(spec.ambient_characteristic())?;
+                let dims = spec.ambient_dimensions(request.dimensions)?;
+                Ok((
+                    ty,
+                    TypedForm::PartitionQuiverFourier(request.frame, request.method, dims, lambda),
+                ))
+            }
+        }
+    }
+
+    fn partition_quiver_operand(&self, input: &TypedExpr) -> Result<(Rc<str>, Rc<[usize]>)> {
+        match self.model.kind(input.ty) {
+            Kind::RVPartitionQuiver(name, dims) => Ok((name.clone(), dims.clone())),
+            _ => Err(Error::new(
+                input.span,
+                "partition quiver operation requires an RVPartitionQuiver representation",
+            )),
         }
     }
 

@@ -2,40 +2,21 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 
 use super::super::{require_hall_length, Matrix, Representation, Setup, Span};
-use super::{Field, Record, Spec, TangentQuery, Word};
+use super::{matrix_trace, Field, Record, Spec, TangentQuery, Word};
 
 impl Spec {
     pub(crate) fn potential_trace(&self, model: &mut Model, module: &Record) -> Result<String> {
-        let potential = self.potential.as_ref().ok_or_else(super::no_potential)?;
         require_hall_length(module.module().length())?;
         let representation = Representation::new(&self.hall, module.module());
-        let field = &self.hall.field;
-        let mut answer = 0;
-        for (word, &coefficient) in potential {
-            let path = self.evaluate(model, &representation, word)?;
-            answer = field.add(answer, field.mul(coefficient, matrix_trace(field, &path)));
-        }
+        let answer = self.representation_trace(model, &representation.dims, |letter| {
+            representation.arrows[self.symbols[letter].source]
+                .as_ref()
+                .unwrap()
+        })?;
         Ok(format!(
             "rvPartitionDGPotentialTrace[{}] = {answer}",
             self.name
         ))
-    }
-
-    fn evaluate(
-        &self,
-        model: &mut Model,
-        representation: &Representation,
-        word: &Word,
-    ) -> Result<Matrix> {
-        let mut product = Matrix::identity(representation.dims[word.start]);
-        for &letter in &word.letters {
-            let arrow = self.symbols[usize::from(letter)];
-            product = representation.arrows[arrow.source]
-                .as_ref()
-                .unwrap()
-                .compose(model, &self.hall.field, &product)?;
-        }
-        Ok(product)
     }
 
     fn relation_derivative(
@@ -47,7 +28,9 @@ impl Spec {
         let middle = setup.middle(&unit(setup.variables, coordinate));
         let mut values = Vec::with_capacity(setup.variables);
         for (a, relation) in self.symbols[..self.arrows].iter().zip(&self.gradients) {
-            let relation_value = self.evaluate(model, &middle, relation)?;
+            let relation_value = self.path_matrix(model, &middle.dims, relation, |letter| {
+                middle.arrows[self.symbols[letter].source].as_ref().unwrap()
+            })?;
             // C² is dual to C¹ via Tr(B_a X_a), so store reversed-arrow entries transposed.
             for row in 0..setup.m.dims[a.target] {
                 for col in 0..setup.m.dims[a.source] {
@@ -274,10 +257,6 @@ fn is_transpose(a: &Matrix, b: &Matrix) -> bool {
     a.rows == b.cols
         && a.cols == b.rows
         && (0..a.rows).all(|i| (0..a.cols).all(|j| a.get(i, j) == b.get(j, i)))
-}
-
-fn matrix_trace(field: &Field, m: &Matrix) -> u32 {
-    (0..m.rows).fold(0, |sum, i| field.add(sum, m.get(i, i)))
 }
 
 fn cohomology(

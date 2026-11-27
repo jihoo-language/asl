@@ -6,7 +6,9 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
 use super::super::{Field, Hall, Key, KeySpec, Record};
+use super::Matrix;
 
+pub(crate) mod ambient;
 mod path;
 mod tangent;
 pub(crate) use path::degree_bound;
@@ -388,6 +390,35 @@ impl Spec {
         Ok(self.chain(0, answer))
     }
 
+    fn path_matrix<'a>(
+        &self,
+        model: &mut Model,
+        dims: &[usize],
+        word: &Word,
+        arrow: impl Fn(usize) -> &'a Matrix,
+    ) -> Result<Matrix> {
+        let mut product = Matrix::identity(dims[word.start]);
+        for &letter in &word.letters {
+            product = arrow(usize::from(letter)).compose(model, &self.hall.field, &product)?;
+        }
+        Ok(product)
+    }
+
+    fn representation_trace<'a>(
+        &self,
+        model: &mut Model,
+        dims: &[usize],
+        arrow: impl Fn(usize) -> &'a Matrix,
+    ) -> Result<u32> {
+        let field = &self.hall.field;
+        let mut trace = 0;
+        for (word, &coefficient) in self.potential.as_ref().ok_or_else(no_potential)? {
+            let matrix = self.path_matrix(model, dims, word, &arrow)?;
+            trace = field.add(trace, field.mul(coefficient, matrix_trace(field, &matrix)));
+        }
+        Ok(trace)
+    }
+
     pub(crate) fn info(&self) -> String {
         let symbols: Vec<_> = self
             .symbols
@@ -401,4 +432,8 @@ impl Spec {
 
 fn no_potential() -> Error {
     Error::plain("partition Ginzburg declaration has integral differentiated data only")
+}
+
+fn matrix_trace(field: &Field, m: &Matrix) -> u32 {
+    (0..m.rows).fold(0, |sum, i| field.add(sum, m.get(i, i)))
 }

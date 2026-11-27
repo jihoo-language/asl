@@ -29,6 +29,10 @@ impl Matrix {
         self.entries[i * self.cols + j]
     }
 
+    pub(super) fn entries(&self) -> &[u32] {
+        &self.entries
+    }
+
     fn set(&mut self, i: usize, j: usize, a: u32) {
         self.entries[i * self.cols + j] = a;
     }

@@ -304,6 +304,7 @@ pub(crate) enum Kind {
     ),
     RVPartitionFormal(Rc<str>),
     RVPartitionDG(Rc<str>, i128),
+    RVPartitionQuiver(Rc<str>, Rc<[usize]>),
     RVPartitionExtension(Rc<str>),
     RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade),
     RVPartitionTau(
@@ -588,6 +589,7 @@ pub(crate) enum Value {
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
     RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
+    RVPartitionQuiver(Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Representation>),
     RVPartitionDG(
         Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Chain>,
     ),
@@ -1991,6 +1993,7 @@ impl Model {
             | Kind::RVPartitionHall(..)
             | Kind::RVPartitionFormal(..)
             | Kind::RVPartitionDG(..)
+            | Kind::RVPartitionQuiver(..)
             | Kind::RVKaroubiMap(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -2196,6 +2199,7 @@ impl Model {
                 | Kind::RVPartitionExtension(..)
                 | Kind::RVPartitionFormal(..)
                 | Kind::RVPartitionDG(..)
+                | Kind::RVPartitionQuiver(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -4302,6 +4306,15 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown partition Ginzburg frame '{name}'")))
+    }
+
+    pub(crate) fn partition_quiver_type(
+        &mut self,
+        name: &str,
+        dimensions: Rc<[usize]>,
+    ) -> Result<TypeId> {
+        self.partition_dg(name)?;
+        self.inhabited_type(Kind::RVPartitionQuiver(name.into(), dimensions), 0)
     }
 
     pub(crate) fn partition_dg_type(&mut self, name: &str, degree: i128) -> Result<TypeId> {
@@ -8493,6 +8506,7 @@ impl Model {
             | Kind::RVPartitionExtension(..)
             | Kind::RVPartitionFormal(..)
             | Kind::RVPartitionDG(..)
+            | Kind::RVPartitionQuiver(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -9364,6 +9378,9 @@ impl Model {
             Kind::RVPartitionTau(grade, _) => out.push(&grade.render()),
             Kind::RVPartitionHall(grade) => out.push(&grade.render()),
             Kind::RVPartitionExtension(name) => out.push(&format!("RVPartitionExtension({name})")),
+            Kind::RVPartitionQuiver(name, dimensions) => {
+                out.push(&format!("RVPartitionQuiver({name},{dimensions:?})"))
+            }
             Kind::RVPartitionDG(name, degree) => {
                 out.push(&format!("RVPartitionDG({name},{degree})"))
             }
@@ -10239,6 +10256,7 @@ impl Model {
             (Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => a.compare(self, b),
             (Value::RVPartitionExtension(a), Value::RVPartitionExtension(b)) => a.compare(self, b),
             (Value::RVPartitionDG(a), Value::RVPartitionDG(b)) => a.compare(self, b),
+            (Value::RVPartitionQuiver(a), Value::RVPartitionQuiver(b)) => a.compare(self, b),
             (Value::RVPartitionFormal(a), Value::RVPartitionFormal(b)) => a.compare(self, b),
             (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
@@ -11100,6 +11118,9 @@ impl Model {
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
+                }
+                Kind::RVPartitionQuiver(..) => {
+                    return Err(Error::plain("use the partition quiver distribution query for ambient matrix enumeration"));
                 }
                 Kind::RVPartitionDG(..) => {
                     return Err(Error::plain(
@@ -13266,6 +13287,7 @@ impl Model {
             Value::RVPartitionHall(value) => out.push(&value.render()),
             Value::RVPartitionExtension(value) => out.push(&value.render()),
             Value::RVPartitionDG(value) => out.push(&value.render()),
+            Value::RVPartitionQuiver(value) => out.push(&value.render()),
             Value::RVPartitionFormal(value) => out.push(&value.render()),
             Value::RVPartitionHom(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),

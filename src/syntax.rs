@@ -148,6 +148,7 @@ pub(crate) enum TypeForm {
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
     RVPartitionFormal(Label),
     RVPartitionDG(Label, i128),
+    RVPartitionQuiver(Label, Vec<u128>),
     RVPartitionExtension(Label),
     RVPartitionHall(
         crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec,
@@ -963,6 +964,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionQuiver(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Expression>),
     PartitionDG(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Expression>),
     PartitionFormal(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Expression>),
     PartitionExtension(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression>),
@@ -1593,6 +1595,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionQuiverReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Report),
     PartitionDGReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::Report),
     PartitionFormalReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::formal::Report),
     PartitionExtensionReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report),
@@ -11595,6 +11598,88 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_quiver_entries(&mut self) -> Result<Vec<Vec<u128>>> {
+        self.expect(Token::LBrace)?;
+        let mut entries = Vec::new();
+        while self.token() != Token::RBrace {
+            entries.push(self.partition_labels(true)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(entries)
+    }
+
+    fn partition_quiver_request(&mut self, fourier: bool) -> Result<(crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Request, u128)>{
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Request;
+        self.expect(Token::LBracket)?;
+        let frame = self.label()?;
+        self.expect(Token::Comma)?;
+        let method = self.label()?;
+        self.expect(Token::Comma)?;
+        let lambda = if fourier {
+            let lambda = self.wide_unsigned("quiver additive character multiplier")?;
+            self.expect(Token::Comma)?;
+            lambda
+        } else {
+            0
+        };
+        let dimensions = self.partition_labels(true)?;
+        self.expect(Token::RBracket)?;
+        Ok((
+            Request {
+                frame,
+                method,
+                dimensions,
+            },
+            lambda,
+        ))
+    }
+
+    fn partition_quiver_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Expression;
+        let (op, depth) = match name {
+            "rvPartitionQuiverRep" => {
+                self.expect(Token::LBracket)?;
+                let frame = self.label()?;
+                self.expect(Token::Comma)?;
+                let dimensions = self.partition_labels(true)?;
+                self.expect(Token::RBracket)?;
+                (
+                    Expression::Literal(frame, dimensions, self.partition_quiver_entries()?),
+                    0,
+                )
+            }
+            "rvPartitionQuiverTriangular" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (
+                    Expression::Triangular(Box::new(inputs), self.partition_quiver_entries()?),
+                    depth,
+                )
+            }
+            "rvPartitionQuiverCharacter" => {
+                self.expect(Token::LBracket)?;
+                let lambda = self.wide_unsigned("quiver additive character multiplier")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Character(lambda, Box::new(input)), depth)
+            }
+            _ => {
+                let (request, lambda) = self.partition_quiver_request(true)?;
+                (Expression::Fourier(request, lambda), 0)
+            }
+        };
+        expr(span, ExprForm::PartitionQuiver(Box::new(op)), depth)
+    }
+
     fn partition_dg_expression(
         &mut self,
         name: &str,
@@ -16591,6 +16676,28 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvPartitionQuiverTrace"
+                | "rvPartitionQuiverCritical"
+                | "rvPartitionQuiverDistribution"
+                | "rvPartitionQuiverFourierCheck"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::ginzburg::ambient::Report;
+                self.advance()?;
+                let report = match name {
+                    "rvPartitionQuiverTrace" => Report::Trace(Box::new(self.paren_expr(0)?)),
+                    "rvPartitionQuiverCritical" => Report::Critical(Box::new(self.paren_expr(0)?)),
+                    _ => {
+                        let (request, _) = self.partition_quiver_request(false)?;
+                        if name == "rvPartitionQuiverDistribution" {
+                            Report::Distribution(request)
+                        } else {
+                            Report::Inversion(request)
+                        }
+                    }
+                };
+                StatementForm::PartitionQuiverReport(report)
+            }
+            Token::Word(
                 name @ ("rvpartitionginzburg"
                 | "rvpartitionginzburggradient"
                 | "rvPartitionDGInfo"
@@ -20041,6 +20148,13 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionQuiver" && self.eat(Token::LParen)? {
+            let frame = self.label()?;
+            self.expect(Token::Comma)?;
+            let dimensions = self.partition_labels(true)?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionQuiver(frame, dimensions), 0);
         }
         if name.text == "RVPartitionDG" && self.eat(Token::LParen)? {
             let frame = self.label()?;
@@ -25457,6 +25571,15 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionQuiverRep"
+                        | "rvPartitionQuiverTriangular"
+                        | "rvPartitionQuiverCharacter"
+                        | "rvPartitionQuiverFourier"
+                ) {
+                    return self.partition_quiver_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
