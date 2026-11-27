@@ -148,20 +148,9 @@ impl Realization {
         &self.witness.certificate_name
     }
 
-    pub(super) fn frobenius(&self) -> Element {
-        self.witness.certificate.frobenius
-    }
-
-    pub(super) fn frobenius_point(&self, model: &mut Model, point: &Point) -> Result<Point> {
-        let Point::Affine(x, y) = point else {
-            return Ok(Point::Infinity);
-        };
-        let p_power = self.witness.base_curve.ring.degree();
-        let ring = &self.curve.ring;
-        Ok(Point::Affine(
-            ring.frobenius(model, x, p_power)?,
-            ring.frobenius(model, y, p_power)?,
-        ))
+    fn frobenius_point(&self, model: &mut Model, point: &Point) -> Result<Point> {
+        self.curve
+            .frobenius_point(model, point, self.witness.base_curve.ring.degree())
     }
 
     pub(crate) fn generator(&self) -> Element {

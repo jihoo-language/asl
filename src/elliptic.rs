@@ -255,6 +255,21 @@ impl Curve {
         Ok((Point::Affine(target_x, target_y), Some(slope)))
     }
 
+    pub(crate) fn frobenius_point(
+        &self,
+        model: &mut Model,
+        point: &Point,
+        p_power: usize,
+    ) -> Result<Point> {
+        let Point::Affine(x, y) = point else {
+            return Ok(Point::Infinity);
+        };
+        Ok(Point::Affine(
+            self.ring.frobenius(model, x, p_power)?,
+            self.ring.frobenius(model, y, p_power)?,
+        ))
+    }
+
     pub(crate) fn multiple(&self, model: &mut Model, point: &Point, n: i128) -> Result<Point> {
         let mut power = point.clone();
         if n < 0 {

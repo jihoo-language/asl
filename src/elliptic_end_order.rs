@@ -8,6 +8,7 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod canonical;
+pub(crate) mod conductor;
 pub(crate) mod cycle;
 pub(crate) mod horizontal;
 pub(crate) mod level;
@@ -58,13 +59,7 @@ impl Evidence {
         // p dividing the discriminant, including p dividing the conductor.
         let split =
             residue != 0 && elliptic::integer_power_mod(model, residue, (p - 1) / 2, p)? == 1;
-        let index = if delta < 0 && delta % discriminant == 0 {
-            let ratio = (delta / discriminant) as u128;
-            let root = ratio.isqrt();
-            (root > 0 && root * root == ratio).then_some(root as i128)
-        } else {
-            None
-        };
+        let index = order_index(delta, discriminant);
         Ok(Self {
             discriminant,
             p,
@@ -107,17 +102,47 @@ impl Evidence {
                 "elliptic j-invariant is not a root of the candidate CM class polynomial",
             ));
         }
-        let index = self.index.ok_or_else(|| {
-            Error::plain("Frobenius discriminant divided by the candidate CM discriminant must be a positive square")
-        })?;
+        if self.index.is_none() {
+            return Err(Error::plain("Frobenius discriminant divided by the candidate CM discriminant must be a positive square"));
+        }
         if !self.split {
             return Err(Error::plain(
                 "elliptic characteristic must split and be prime to the candidate CM discriminant",
             ));
         }
-        let parity = self.discriminant.rem_euclid(2);
-        let generator_norm = -((self.discriminant - parity) / 4);
-        let numerator = self.trace - parity * index;
+        Certificate::from_discriminant(model, curve, self.q, self.trace, self.discriminant, self.j)
+    }
+}
+
+pub(crate) struct Certificate {
+    curve: String,
+    discriminant: i128,
+    q: u64,
+    trace: i128,
+    frobenius_discriminant: i128,
+    j: Vec<u64>,
+    generator_trace: i128,
+    generator_norm: i128,
+    pub(crate) frobenius: Element,
+    index: i128,
+}
+
+impl Certificate {
+    fn from_discriminant(
+        model: &mut Model,
+        curve: String,
+        q: u64,
+        trace: i128,
+        discriminant: i128,
+        j: Vec<u64>,
+    ) -> Result<Self> {
+        let delta = trace * trace - 4 * i128::from(q);
+        let index = order_index(delta, discriminant).ok_or_else(|| {
+            Error::plain("Frobenius discriminant divided by the certified CM discriminant must be a positive square")
+        })?;
+        let parity = discriminant.rem_euclid(2);
+        let generator_norm = -((discriminant - parity) / 4);
+        let numerator = trace - parity * index;
         if numerator % 2 != 0 {
             return Err(Error::plain(
                 "certified Frobenius coordinates must be integral",
@@ -126,11 +151,11 @@ impl Evidence {
         let frobenius = Element::new(numerator / 2, index);
         let certificate = Certificate {
             curve,
-            discriminant: self.discriminant,
-            q: self.q,
-            trace: self.trace,
-            frobenius_discriminant: self.delta,
-            j: self.j,
+            discriminant,
+            q,
+            trace,
+            frobenius_discriminant: delta,
+            j,
             generator_trace: parity,
             generator_norm,
             frobenius,
@@ -152,22 +177,7 @@ impl Evidence {
         model.allocate(16 + certificate.curve.len() + certificate.j.len())?;
         Ok(certificate)
     }
-}
 
-pub(crate) struct Certificate {
-    curve: String,
-    discriminant: i128,
-    q: u64,
-    trace: i128,
-    frobenius_discriminant: i128,
-    j: Vec<u64>,
-    generator_trace: i128,
-    generator_norm: i128,
-    pub(crate) frobenius: Element,
-    index: i128,
-}
-
-impl Certificate {
     pub(crate) fn curve_name(&self) -> &str {
         &self.curve
     }
@@ -228,6 +238,15 @@ impl Certificate {
 pub(crate) fn persist(model: &mut Model, value: Element) -> Result<Value> {
     model.allocate(4)?;
     Ok(Value::ECEndOrder(value))
+}
+
+fn order_index(delta: i128, discriminant: i128) -> Option<i128> {
+    if delta >= 0 || discriminant >= 0 || delta % discriminant != 0 {
+        return None;
+    }
+    let ratio = (delta / discriminant) as u128;
+    let root = ratio.isqrt();
+    (root > 0 && root * root == ratio).then_some(root as i128)
 }
 
 fn arithmetic() -> Error {

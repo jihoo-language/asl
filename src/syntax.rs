@@ -1284,6 +1284,7 @@ pub(crate) enum StatementForm {
     ECCMCycle(Box<crate::elliptic_end_order::cycle::Statement>),
     ECCMAction(Box<crate::elliptic_end_order::realization::Statement>),
     ECLevel(Box<crate::elliptic_end_order::level::Statement>),
+    ECTorsionOrder(Box<crate::elliptic_end_order::conductor::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3988,17 +3989,30 @@ impl<'src> Parser<'src> {
     }
 
     fn ec_level_statement(&mut self, name: &str) -> Result<StatementForm> {
+        let name_is_plain = name == "rvecplainlevel";
         use crate::elliptic_end_order::level::Statement;
         self.advance()?;
         let command = match name {
-            "rveclevel" => {
+            "rveclevel" | "rvecplainlevel" => {
                 let name = self.label()?;
                 self.expect(Token::LBracket)?;
-                let action = self.label()?;
+                let source = self.label()?;
                 self.expect(Token::Comma)?;
+                let curve = if name_is_plain {
+                    let curve = self.label()?;
+                    self.expect(Token::Comma)?;
+                    Some(curve)
+                } else {
+                    None
+                };
                 let level = self.number()?.0;
                 self.expect(Token::RBracket)?;
-                Statement::Define(name, action, level, Box::new(self.paren_pair(0)?))
+                let points = Box::new(self.paren_pair(0)?);
+                if let Some(curve) = curve {
+                    Statement::Plain(name, source, curve, level, points)
+                } else {
+                    Statement::Define(name, source, level, points)
+                }
             }
             "rvECLevelData" => {
                 let name = self.ec_level_label()?;
@@ -4007,6 +4021,34 @@ impl<'src> Parser<'src> {
             _ => Statement::Invariants(Box::new(self.paren_expr(0)?)),
         };
         Ok(StatementForm::ECLevel(Box::new(command)))
+    }
+
+    fn ec_torsion_order_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::conductor::Statement;
+        self.advance()?;
+        let name_label = if name == "rvecendtorsion" {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        self.expect(Token::LBracket)?;
+        let first = self.label()?;
+        let statement = if name == "rvECPlainLevelScalar" {
+            self.expect(Token::Comma)?;
+            Statement::Scalar(first, self.number()?.0)
+        } else {
+            let mut levels = Vec::new();
+            while self.eat(Token::Comma)? {
+                levels.push(self.label()?);
+            }
+            if let Some(name) = name_label {
+                Statement::Define(name, first, levels)
+            } else {
+                Statement::Check(first, levels)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::ECTorsionOrder(Box::new(statement)))
     }
 
     fn ec_level_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
@@ -8172,9 +8214,12 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rveccmaction" | "rveccmactionbase" | "rvECCMActionData")) => {
                 self.ec_cm_action_statement(name)?
             }
-            Token::Word(name @ ("rveclevel" | "rvECLevelData" | "rvECLevelInvariants")) => {
-                self.ec_level_statement(name)?
-            }
+            Token::Word(
+                name @ ("rveclevel" | "rvecplainlevel" | "rvECLevelData" | "rvECLevelInvariants"),
+            ) => self.ec_level_statement(name)?,
+            Token::Word(
+                name @ ("rvecendtorsion" | "rvECEndTorsionCheck" | "rvECPlainLevelScalar"),
+            ) => self.ec_torsion_order_statement(name)?,
             Token::Word(
                 name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
             ) => self.cm_artin_statement(name)?,

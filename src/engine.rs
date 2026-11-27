@@ -25,6 +25,7 @@ use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_end_order;
 use crate::elliptic_end_order::canonical as ec_canonical;
+use crate::elliptic_end_order::conductor as ec_conductor;
 use crate::elliptic_end_order::cycle as ec_cm_cycle;
 use crate::elliptic_end_order::horizontal as ec_horizontal;
 use crate::elliptic_end_order::level as ec_level;
@@ -2154,6 +2155,9 @@ impl Engine {
             StatementForm::ECCMCycle(command) => return self.ec_cm_cycle_statement(*command),
             StatementForm::ECCMAction(command) => return self.ec_cm_action_statement(*command),
             StatementForm::ECLevel(command) => return self.ec_level_statement(*command),
+            StatementForm::ECTorsionOrder(command) => {
+                return self.ec_torsion_order_statement(*command)
+            }
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5294,27 +5298,63 @@ impl Engine {
         }
     }
 
+    fn ec_level_generators(
+        &mut self,
+        curve: Rc<str>,
+        [first, second]: [ParsedExpr; 2],
+    ) -> Result<[Rc<elliptic::Point>; 2]> {
+        let ty = self.model.ec_curve_type(curve, true)?;
+        let mut point = |input| {
+            let expr = self.checker().expr(input)?;
+            self.checker()
+                .require_type(ty, &expr, "elliptic level generator")?;
+            let Value::ECPoint(value) = self.eval(&expr)? else {
+                unreachable!()
+            };
+            Ok::<_, Error>(value)
+        };
+        Ok([point(first)?, point(second)?])
+    }
+
+    fn ec_torsion_order_statement(
+        &mut self,
+        statement: ec_conductor::Statement,
+    ) -> Result<Option<String>> {
+        use ec_conductor::{Bounds, Statement};
+        match statement {
+            Statement::Check(base, levels) => {
+                let bounds = Bounds::read(&mut self.model, &base, &levels)?;
+                Ok(Some(bounds.report(&base.text)))
+            }
+            Statement::Define(name, base, levels) => {
+                let bounds = Bounds::read(&mut self.model, &base, &levels)?;
+                let certificate = bounds.certify(&mut self.model, base)?;
+                self.model.define_ec_end_order(name, certificate)?;
+                Ok(None)
+            }
+            Statement::Scalar(name, prime) => {
+                let level = self.model.ec_torsion_level(&name.text)?;
+                ec_conductor::scalar_report(&mut self.model, &level, &name, prime).map(Some)
+            }
+        }
+    }
+
     fn ec_level_statement(&mut self, statement: ec_level::Statement) -> Result<Option<String>> {
         use ec_level::Statement;
         match statement {
             Statement::Define(name, action, modulus, input) => {
                 let action = self.model.ec_cm_action(&action)?;
-                let ty = self
-                    .model
-                    .ec_curve_type(Rc::clone(&action.curve_name), true)?;
-                let mut point = |input| {
-                    let expr = self.checker().expr(input)?;
-                    self.checker()
-                        .require_type(ty, &expr, "elliptic level generator")?;
-                    let Value::ECPoint(value) = self.eval(&expr)? else {
-                        unreachable!()
-                    };
-                    Ok::<_, Error>(value)
-                };
-                let [first, second] = *input;
-                let generators = [point(first)?, point(second)?];
+                let generators = self.ec_level_generators(Rc::clone(&action.curve_name), *input)?;
                 self.model.define_ec_torsion_level(name, |model| {
                     ec_level::Level::new(model, action, modulus, generators)
+                })?;
+                Ok(None)
+            }
+            Statement::Plain(name, base, curve, modulus, input) => {
+                let target: Rc<str> = curve.text.into();
+                let generators = self.ec_level_generators(Rc::clone(&target), *input)?;
+                self.model.define_ec_torsion_level(name, |model| {
+                    ec_level::Level::plain(model, base.text.into(), target, modulus, generators)
                 })?;
                 Ok(None)
             }
@@ -23420,7 +23460,7 @@ impl Checker<'_> {
                 let level = self.model.ec_torsion_level(&name.text)?;
                 let expected = self
                     .model
-                    .ec_end_order_type(level.action.certificate_name())?;
+                    .ec_end_order_type(level.action()?.certificate_name())?;
                 self.require_type(expected, &input, "elliptic level endomorphism")?;
                 let ty = self.model.ec_level_type(&name, true)?;
                 (ty, level, ECLevelAction::Matrix(Box::new(input)))
@@ -23429,7 +23469,7 @@ impl Checker<'_> {
                 let level = self.model.ec_torsion_level(&name.text)?;
                 let expected = self
                     .model
-                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                    .ec_curve_type(Rc::clone(&level.curve_name), true)?;
                 self.require_type(expected, &input, "elliptic level point")?;
                 let ty = self.model.ec_level_type(&name, false)?;
                 (ty, level, ECLevelAction::Coordinates(Box::new(input)))
@@ -23439,14 +23479,14 @@ impl Checker<'_> {
                 let level = self.model.ec_torsion_level(&name)?;
                 let ty = self
                     .model
-                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                    .ec_curve_type(Rc::clone(&level.curve_name), true)?;
                 (ty, level, ECLevelAction::Point(Box::new(input)))
             }
             Unary::Project(name) => {
                 let source_name = self.ec_level_operand(&input, false, "rvECLevelProject")?;
                 let source = self.model.ec_torsion_level(&source_name)?;
                 let level = self.model.ec_torsion_level(&name.text)?;
-                if source.action.curve_name != level.action.curve_name
+                if source.curve_name != level.curve_name
                     || !source.modulus.is_multiple_of(level.modulus)
                 {
                     return Err(Error::new(name.span, "elliptic level projection requires the same named curve and a dividing level"));
@@ -23471,7 +23511,7 @@ impl Checker<'_> {
                 let level = self.model.ec_torsion_level(&name.text)?;
                 let expected = self
                     .model
-                    .ec_curve_type(Rc::clone(&level.action.curve_name), true)?;
+                    .ec_curve_type(Rc::clone(&level.curve_name), true)?;
                 self.require_type(expected, &left, "elliptic Weil pairing argument")?;
                 self.require_type(expected, &right, "elliptic Weil pairing argument")?;
                 let ty = self.ec_level_scalar_type(&name, &level)?;

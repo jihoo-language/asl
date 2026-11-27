@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use super::{realization::Realization, Certificate, Integer};
+use super::{realization::Realization, Integer};
 use crate::ec_poly::Scalar;
 use crate::elliptic::{Curve, Point};
 use crate::error::{Error, Result};
@@ -20,6 +20,7 @@ pub(crate) struct Matrix(pub(crate) [Vector; 2]);
 
 pub(crate) enum Statement {
     Define(Label, Label, usize, Box<[ParsedExpr; 2]>),
+    Plain(Label, Label, Label, usize, Box<[ParsedExpr; 2]>),
     Data(Label),
     Invariants(Box<ParsedExpr>),
 }
@@ -48,9 +49,10 @@ pub(crate) enum Binary {
 
 pub(crate) struct Level {
     pub(crate) modulus: u64,
-    pub(crate) action: Rc<Realization>,
+    action: Option<Rc<Realization>>,
+    pub(crate) base_name: Rc<str>,
+    pub(crate) curve_name: Rc<str>,
     pub(crate) curve: Rc<Curve>,
-    certificate: Rc<Certificate>,
     generators: [Rc<Point>; 2],
     coordinates: BTreeMap<Point, Vector>,
     pub(crate) frobenius: Matrix,
@@ -64,8 +66,50 @@ impl Level {
         modulus: usize,
         generators: [Rc<Point>; 2],
     ) -> Result<Self> {
+        let certificate = model.ec_end_order(&action.certificate_name().text)?;
+        Self::from_basis(
+            model,
+            certificate.curve_name().into(),
+            Rc::clone(&action.curve_name),
+            modulus,
+            generators,
+            Some(action),
+        )
+    }
+
+    pub(crate) fn plain(
+        model: &mut Model,
+        base_name: Rc<str>,
+        curve_name: Rc<str>,
+        modulus: usize,
+        generators: [Rc<Point>; 2],
+    ) -> Result<Self> {
+        let base = model.ec_curve(&base_name)?;
+        let target = model.ec_curve(&curve_name)?;
+        let coefficients = base.ring.embed_residue_coefficients(
+            model,
+            &target.ring,
+            &[base.a.clone(), base.b.clone()],
+        )?;
+        if coefficients != [target.a.clone(), target.b.clone()] {
+            return Err(Error::plain(
+                "target elliptic equation is not the declared torsion base extension",
+            ));
+        }
+        Self::from_basis(model, base_name, curve_name, modulus, generators, None)
+    }
+
+    fn from_basis(
+        model: &mut Model,
+        base_name: Rc<str>,
+        curve_name: Rc<str>,
+        modulus: usize,
+        generators: [Rc<Point>; 2],
+        action: Option<Rc<Realization>>,
+    ) -> Result<Self> {
         let modulus = u64::try_from(modulus).map_err(|_| limit())?;
-        let curve = model.ec_curve(&action.curve_name)?;
+        let curve = model.ec_curve(&curve_name)?;
+        let base = model.ec_curve(&base_name)?;
         if modulus < 2 || modulus.is_multiple_of(curve.ring.prime()) {
             return Err(Error::plain(
                 "elliptic torsion level must be at least two and prime to the characteristic",
@@ -93,24 +137,40 @@ impl Level {
         let coordinates = basis_table(model, &curve, modulus, &generators)?;
         let pairing = weil::pairing(model, &curve, modulus, &generators[0], &generators[1])?;
         exact_order(model, &curve, modulus, &pairing)?;
-        let certificate = model.ec_end_order(&action.certificate_name().text)?;
         let mut level = Self {
             modulus,
             action,
+            base_name,
+            curve_name,
             curve,
-            certificate,
             generators,
             coordinates,
             frobenius: Matrix([[0; 2]; 2]),
             pairing,
         };
         let [a, b] = &level.generators;
-        let [p, q] = [
-            level.action.frobenius_point(model, a)?,
-            level.action.frobenius_point(model, b)?,
-        ];
-        level.frobenius = level.certify_matrix(model, level.action.frobenius(), &p, &q)?;
+        let power = base.ring.degree();
+        let p = level.curve.frobenius_point(model, a, power)?;
+        let q = level.curve.frobenius_point(model, b, power)?;
+        let (order, trace) = base.trace(model)?;
+        level.frobenius = level.certify_matrix(
+            model,
+            &p,
+            &q,
+            Integer::from_i128(i128::from(trace)),
+            Integer::from_i128(i128::from(order)),
+        )?;
         Ok(level)
+    }
+
+    pub(crate) fn action(&self) -> Result<&Realization> {
+        self.action.as_deref().ok_or_else(|| {
+            Error::plain("elliptic CM matrix requires a level attached to a witnessed CM action")
+        })
+    }
+
+    pub(super) fn is_plain(&self) -> bool {
+        self.action.is_none()
     }
 
     pub(crate) fn point(&self, model: &mut Model, [a, b]: Vector) -> Result<Point> {
@@ -144,26 +204,29 @@ impl Level {
     }
 
     pub(crate) fn matrix(&self, model: &mut Model, element: Element) -> Result<Matrix> {
-        let p = self.action.apply(model, element, &self.generators[0])?;
-        let q = self.action.apply(model, element, &self.generators[1])?;
-        self.certify_matrix(model, element, &p, &q)
+        let action = self.action()?;
+        let p = action.apply(model, element, &self.generators[0])?;
+        let q = action.apply(model, element, &self.generators[1])?;
+        let certificate = model.ec_end_order(&action.certificate_name().text)?;
+        let trace = certificate.trace_value(model, element)?;
+        let norm = certificate.norm_value(model, element)?;
+        self.certify_matrix(model, &p, &q, trace, norm)
     }
 
     fn certify_matrix(
         &self,
         model: &mut Model,
-        element: Element,
         p: &Point,
         q: &Point,
+        trace: Integer,
+        norm: Integer,
     ) -> Result<Matrix> {
         let matrix = Matrix([self.coord(model, p)?, self.coord(model, q)?]);
-        let norm = self.certificate.norm_value(model, element)?;
-        let trace = self.certificate.trace_value(model, element)?;
         if matrix.det(self.modulus) != residue(model, self.modulus, norm)?
             || matrix.trace(self.modulus) != residue(model, self.modulus, trace)?
         {
             return Err(Error::plain(
-                "elliptic level matrix failed the CM trace or norm check",
+                "elliptic level matrix failed its trace or norm check",
             ));
         }
         let actual = weil::pairing(model, &self.curve, self.modulus, p, q)?;
@@ -194,7 +257,7 @@ impl Level {
     pub(crate) fn report(&self, name: &str) -> String {
         format!(
             "rvECLevelData[{name}] = curve={}, level={}, basis_pairing={:?}, frobenius_columns={:?}",
-            self.action.curve_name, self.modulus, self.pairing, self.frobenius.0,
+            self.curve_name, self.modulus, self.pairing, self.frobenius.0,
         )
     }
 }
