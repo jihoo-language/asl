@@ -82,6 +82,7 @@ use crate::jacobian_level::cm_hom;
 use crate::jacobian_level::cm_hom::composition as cm_composition;
 use crate::jacobian_level::cm_hom::fourier as cm_abelian;
 use crate::jacobian_level::cm_hom::fourier::period as cm_period;
+use crate::jacobian_level::cm_hom::fourier::theta as cm_theta;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -709,6 +710,20 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+struct TypedCMTheta {
+    kernel: Rc<cm_theta::Kernel>,
+    operation: CMThetaOperation,
+}
+
+enum CMThetaOperation {
+    Operator(u64, Box<TypedExpr>),
+    Multiply(Box<[TypedExpr; 2]>),
+    Subgroup(Vec<TypedExpr>),
+    Perpendicular(Box<TypedExpr>),
+    Lagrangian(usize),
+    Negate(Box<TypedExpr>),
+}
+
 struct TypedCMPeriod {
     surface: Rc<cm_abelian::Abelian>,
     operation: CMPeriodOperation,
@@ -999,6 +1014,7 @@ enum TypedForm {
     CMHomCoordinate(TypedCMHomCoordinate),
     CMAbelian(Box<TypedCMAbelian>),
     CMPeriod(Box<TypedCMPeriod>),
+    CMTheta(Box<TypedCMTheta>),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
@@ -8017,6 +8033,87 @@ impl Engine {
         }
     }
 
+    fn cm_theta_statement(&mut self, statement: cm_theta::Statement) -> Result<Option<String>> {
+        use cm_theta::{ElementReport, NamedReport, Statement};
+        let result = match statement {
+            Statement::Define(name, input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, surface) = self.checker().cm_abelian_operand(&input)?;
+                let Value::CMAbelianDiv(divisor) = self.eval(&input)? else {
+                    return Err(Error::new(
+                        input.span,
+                        "CM theta kernel expects a marked abelian divisor",
+                    ));
+                };
+                self.model.define_cm_theta(name, |model| {
+                    cm_theta::Kernel::new(model, surface, *divisor)
+                })?;
+                return Ok(None);
+            }
+            Statement::Torsion(name, levels) => self
+                .model
+                .cm_theta(&name.text)?
+                .torsion_report(&mut self.model, levels)?,
+            Statement::Named(report, name) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                match report {
+                    NamedReport::Data => kernel.report(),
+                    NamedReport::Lagrangians => kernel.lagrangian_report(&mut self.model)?,
+                    NamedReport::Elements => format!(
+                        "rvCMThetaElements = {:?}",
+                        kernel.elements(&mut self.model)?
+                    ),
+                }
+            }
+            Statement::Element(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, kernel) = self.checker().cm_theta_operand(&input, Kind::CMTheta)?;
+                let Value::CMTheta(point) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                match report {
+                    ElementReport::Lift => format!("rvCMThetaLift = {:?}", kernel.lift(point)?),
+                    ElementReport::Order => format!("rvCMThetaOrder = {}", kernel.order(point)),
+                }
+            }
+            Statement::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let (_, kernel) = self.checker().cm_theta_operand(&left, Kind::CMTheta)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "CM theta pairing argument")?;
+                let (Value::CMTheta(x), Value::CMTheta(y)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                format!("rvCMThetaPair = {}", kernel.pair(x, y))
+            }
+            Statement::Action(position, operator) => {
+                let operator = self.checker().expr(*operator)?;
+                let (_, kernel) = self
+                    .checker()
+                    .cm_theta_operand(&operator, Kind::CMThetaOp)?;
+                let Value::CMThetaOp(operator) = self.eval(&operator)? else {
+                    unreachable!()
+                };
+                kernel.action(operator, position)?
+            }
+            Statement::Subgroup(input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, kernel) = self
+                    .checker()
+                    .cm_theta_operand(&input, Kind::CMThetaSubgroup)?;
+                let Value::CMThetaSubgroup(subgroup) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                kernel.subgroup_report(&mut self.model, &subgroup)?
+            }
+        };
+        Ok(Some(result))
+    }
+
     fn cm_period_statement(&mut self, statement: cm_period::Statement) -> Result<Option<String>> {
         use cm_period::Statement;
         let result = match statement {
@@ -8068,6 +8165,7 @@ impl Engine {
         use cm_abelian::{Report, Statement};
         match statement {
             Statement::Period(statement) => self.cm_period_statement(*statement),
+            Statement::Theta(statement) => self.cm_theta_statement(*statement),
             Statement::Define(name, [h, hd, r, s]) => {
                 self.model.define_cm_abelian(name, |model| {
                     let frames = [
@@ -8416,6 +8514,51 @@ impl Engine {
                 pairing.form(&mut self.model, &name.text).map(Some)
             }
         }
+    }
+
+    fn eval_cm_theta(&mut self, plan: &TypedCMTheta) -> Result<Value> {
+        use CMThetaOperation as Op;
+        let kernel = &plan.kernel;
+        let value = match &plan.operation {
+            Op::Operator(phase, input) => {
+                let Value::CMTheta(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Value::CMThetaOp(kernel.operator(point, *phase))
+            }
+            Op::Multiply(inputs) => {
+                let [a, b] = inputs.as_ref();
+                let (Value::CMThetaOp(a), Value::CMThetaOp(b)) = (self.eval(a)?, self.eval(b)?)
+                else {
+                    unreachable!()
+                };
+                Value::CMThetaOp(kernel.multiply(a, b))
+            }
+            Op::Subgroup(inputs) => {
+                let mut points = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let Value::CMTheta(point) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    points.push(point);
+                }
+                Value::CMThetaSubgroup(Rc::new(kernel.subgroup(&mut self.model, &points)?))
+            }
+            Op::Perpendicular(input) => {
+                let Value::CMThetaSubgroup(subgroup) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Value::CMThetaSubgroup(Rc::new(kernel.perpendicular(&mut self.model, &subgroup)?))
+            }
+            Op::Lagrangian(i) => Value::CMThetaSubgroup(kernel.lagrangian(&mut self.model, *i)?),
+            Op::Negate(input) => {
+                let Value::CMTheta(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Value::CMTheta(kernel.negate(point))
+            }
+        };
+        Ok(value)
     }
 
     fn eval_cm_period(&mut self, plan: &TypedCMPeriod) -> Result<Value> {
@@ -12477,6 +12620,12 @@ impl Engine {
                     (BinaryOp::Add, Value::CMHomCycle(a), Value::CMHomCycle(b)) => {
                         Ok(Value::CMHomCycle(kummer_cm::cycle_add(a, b)?))
                     }
+                    (BinaryOp::Add, Value::CMTheta(a), Value::CMTheta(b)) => {
+                        let Kind::CMTheta(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        Ok(Value::CMTheta(self.model.cm_theta(name)?.add(a, b)))
+                    }
                     (BinaryOp::Add, Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => {
                         let Kind::CMAbelianDiv(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -14363,6 +14512,7 @@ impl Engine {
                 _ => unreachable!(),
             },
             TypedForm::CMPeriod(plan) => self.eval_cm_period(plan),
+            TypedForm::CMTheta(plan) => self.eval_cm_theta(plan),
             TypedForm::CMAbelian(plan) => self.eval_cm_abelian(plan),
             TypedForm::CMHomCoordinate(action) => {
                 use TypedCMHomCoordinate as Action;
@@ -18953,6 +19103,11 @@ impl Checker<'_> {
                 self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)
             }
             TypeForm::CMAbelianMap(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianMap),
+            TypeForm::CMTheta(name) => self.model.cm_theta_type(&name, Kind::CMTheta),
+            TypeForm::CMThetaOp(name) => self.model.cm_theta_type(&name, Kind::CMThetaOp),
+            TypeForm::CMThetaSubgroup(name) => {
+                self.model.cm_theta_type(&name, Kind::CMThetaSubgroup)
+            }
             TypeForm::CMPeriod(name) => self.model.cm_abelian_type(&name, Kind::CMPeriod),
             TypeForm::CMCharge(name) => self.model.cm_abelian_type(&name, Kind::CMCharge),
             TypeForm::CMPeriodWall(name) => self.model.cm_abelian_type(&name, Kind::CMPeriodWall),
@@ -20184,6 +20339,7 @@ impl Checker<'_> {
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
+                    Kind::CMTheta(..) => Value::CMTheta([0; 4]),
                     Kind::CMCharge(..) => Value::CMCharge(cm_period::Charge::ZERO),
                     Kind::CMAbelianDiv(..) => Value::CMAbelianDiv(Rc::new(cm_abelian::Divisor::ZERO)),
                     Kind::CMAbelianMukai(..) => Value::CMAbelianMukai(Rc::new(cm_abelian::Mukai::ZERO)),
@@ -23697,6 +23853,16 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
+                }
+                if let Kind::CMTheta(name) = self.model.kind(input.ty) {
+                    let kernel = self.model.cm_theta(name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMTheta(Box::new(TypedCMTheta {
+                            kernel,
+                            operation: CMThetaOperation::Negate(Box::new(input)),
+                        })),
                     ));
                 }
                 if let Kind::CMAbelianDiv(name) | Kind::CMAbelianMukai(name) =
@@ -27687,6 +27853,7 @@ impl Checker<'_> {
                         | Kind::CMHomCycle(..)
                         | Kind::CMHomWedge(..)
                         | Kind::CMHomCoordinate(..)
+                        | Kind::CMTheta(..)
                         | Kind::CMAbelianDiv(..)
                         | Kind::CMAbelianMukai(..)
                         | Kind::ECLevel(..)
@@ -34601,6 +34768,91 @@ impl Checker<'_> {
         ))
     }
 
+    fn cm_theta_operand(
+        &self,
+        input: &TypedExpr,
+        expected: fn(Rc<str>) -> Kind,
+    ) -> Result<(Label, Rc<cm_theta::Kernel>)> {
+        let kind = self.model.kind(input.ty);
+        let (Kind::CMTheta(name) | Kind::CMThetaOp(name) | Kind::CMThetaSubgroup(name)) = kind
+        else {
+            return Err(Error::new(input.span, "expected a nominal CM theta value"));
+        };
+        if *kind != expected(name.clone()) {
+            return Err(Error::new(input.span, "unexpected CM theta operand kind"));
+        }
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            self.model.cm_theta(name)?,
+        ))
+    }
+
+    fn cm_theta_expression(
+        &mut self,
+        expression: cm_theta::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_theta::Expression;
+        use CMThetaOperation as Op;
+        let (ty, kernel, operation) = match expression {
+            Expression::Element(name, coordinates, lattice) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                let ty = self.model.cm_theta_type(&name, Kind::CMTheta)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMTheta(kernel.point(coordinates, lattice))),
+                ));
+            }
+            Expression::Operator(phase, input) => {
+                let input = self.expr(*input)?;
+                let (name, kernel) = self.cm_theta_operand(&input, Kind::CMTheta)?;
+                (
+                    self.model.cm_theta_type(&name, Kind::CMThetaOp)?,
+                    kernel,
+                    Op::Operator(phase, Box::new(input)),
+                )
+            }
+            Expression::Multiply(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let (_, kernel) = self.cm_theta_operand(&left, Kind::CMThetaOp)?;
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "CM theta operator argument")?;
+                (left.ty, kernel, Op::Multiply(Box::new([left, right])))
+            }
+            Expression::Subgroup(name, inputs) => {
+                let point = self.model.cm_theta_type(&name, Kind::CMTheta)?;
+                let mut generators = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let generator = self.expr(input)?;
+                    self.require_type(point, &generator, "CM theta subgroup generator")?;
+                    generators.push(generator);
+                }
+                (
+                    self.model.cm_theta_type(&name, Kind::CMThetaSubgroup)?,
+                    self.model.cm_theta(&name.text)?,
+                    Op::Subgroup(generators),
+                )
+            }
+            Expression::Perpendicular(input) => {
+                let input = self.expr(*input)?;
+                let (_, kernel) = self.cm_theta_operand(&input, Kind::CMThetaSubgroup)?;
+                (input.ty, kernel, Op::Perpendicular(Box::new(input)))
+            }
+            Expression::Lagrangian(name, i) => (
+                self.model.cm_theta_type(&name, Kind::CMThetaSubgroup)?,
+                self.model.cm_theta(&name.text)?,
+                Op::Lagrangian(i),
+            ),
+        };
+        Ok((
+            ty,
+            TypedForm::CMTheta(Box::new(TypedCMTheta { kernel, operation })),
+        ))
+    }
+
     fn cm_period_operand(&self, input: &TypedExpr) -> Result<(Label, Rc<cm_abelian::Abelian>)> {
         if let Kind::CMPeriod(name) | Kind::CMCharge(name) | Kind::CMPeriodWall(name) =
             self.model.kind(input.ty)
@@ -34735,6 +34987,7 @@ impl Checker<'_> {
         use CMAbelianOperation as Op;
         let (ty, atlas, operation) = match expression {
             Expression::Period(expression) => return self.cm_period_expression(*expression),
+            Expression::Theta(expression) => return self.cm_theta_expression(*expression),
             Expression::Divisor(name, diagonal, input) => {
                 let atlas = self.model.cm_abelian(&name.text)?;
                 let input = self.expr(*input)?;

@@ -346,7 +346,7 @@ fn sides(gluing: &Gluing) -> [&Factor; 2] {
     [gluing.factor(Side::Left), gluing.factor(Side::Right)]
 }
 
-fn short_model(model: &mut Model, factor: &Factor) -> Result<Curve> {
+pub(super) fn short_model(model: &mut Model, factor: &Factor) -> Result<Curve> {
     let f = factor.curve.polynomial();
     if f.len() != 4 || f[2] != factor.curve.ring.scalar(0) || f[3] != factor.curve.ring.scalar(1) {
         return Err(inconsistent());
@@ -382,7 +382,7 @@ fn require_gluing_extension(model: &mut Model, base: &Gluing, extension: &Gluing
     Ok(())
 }
 
-fn apply(
+pub(super) fn apply(
     model: &mut Model,
     map: &Morphism,
     [source, target]: [&Curve; 2],

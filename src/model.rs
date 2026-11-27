@@ -331,6 +331,9 @@ pub(crate) enum Kind {
     CMAbelianDiv(Rc<str>),
     CMAbelianMukai(Rc<str>),
     CMAbelianMap(Rc<str>),
+    CMTheta(Rc<str>),
+    CMThetaOp(Rc<str>),
+    CMThetaSubgroup(Rc<str>),
     CMPeriod(Rc<str>),
     CMCharge(Rc<str>),
     CMPeriodWall(Rc<str>),
@@ -589,6 +592,9 @@ pub(crate) enum Value {
     CMAbelianDiv(Rc<cm_hom::fourier::Divisor>),
     CMAbelianMukai(Rc<cm_hom::fourier::Mukai>),
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
+    CMTheta(cm_hom::fourier::theta::Point),
+    CMThetaOp(cm_hom::fourier::theta::Operator),
+    CMThetaSubgroup(Rc<cm_hom::fourier::theta::Subgroup>),
     CMPeriod(Rc<cm_hom::fourier::period::Period>),
     CMCharge(cm_hom::fourier::period::Charge),
     CMPeriodWall(Rc<cm_hom::fourier::period::Wall>),
@@ -840,6 +846,7 @@ pub(crate) struct Model {
     cm_hom: HashMap<String, Rc<cm_hom::Hom>>,
     cm_hom_markings: HashMap<String, Rc<cm_hom::marked::Marking>>,
     cm_hom_products: HashMap<String, Rc<cm_hom::composition::Product>>,
+    cm_theta: HashMap<String, Rc<cm_hom::fourier::theta::Kernel>>,
     cm_abelian: HashMap<String, Rc<cm_hom::fourier::Abelian>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
@@ -1017,6 +1024,7 @@ impl Model {
             cm_hom: HashMap::new(),
             cm_hom_markings: HashMap::new(),
             cm_hom_products: HashMap::new(),
+            cm_theta: HashMap::new(),
             cm_abelian: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
@@ -1670,6 +1678,8 @@ impl Model {
             Kind::KummerBrauerClass(ref name) => {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
             }
+            Kind::CMTheta(ref name) => self.cm_theta[name.as_ref()].cardinality_bound(),
+            Kind::CMThetaOp(..) | Kind::CMThetaSubgroup(..) => usize::MAX,
             Kind::CMHomCoordinate(..)
             | Kind::CMAbelianDiv(..)
             | Kind::CMAbelianMukai(..)
@@ -2033,6 +2043,8 @@ impl Model {
                 | Kind::CMAbelianDiv(..)
                 | Kind::CMAbelianMukai(..)
                 | Kind::CMAbelianMap(..)
+                | Kind::CMThetaOp(..)
+                | Kind::CMThetaSubgroup(..)
                 | Kind::CMPeriod(..)
                 | Kind::CMCharge(..)
                 | Kind::CMPeriodWall(..)
@@ -4754,6 +4766,36 @@ impl Model {
         self.allocate(name.text.len())?;
         self.cm_hom.insert(name.text, Rc::new(entry));
         Ok(())
+    }
+
+    pub(crate) fn define_cm_theta(
+        &mut self,
+        name: Label,
+        make: impl FnOnce(&mut Self) -> Result<cm_hom::fourier::theta::Kernel>,
+    ) -> Result<()> {
+        if self.cm_theta.contains_key(&name.text) {
+            return Err(Error::new(name.span, "CM theta kernel is already defined"));
+        }
+        let kernel = make(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_theta.insert(name.text, Rc::new(kernel));
+        Ok(())
+    }
+
+    pub(crate) fn cm_theta(&self, name: &str) -> Result<Rc<cm_hom::fourier::theta::Kernel>> {
+        self.cm_theta
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM theta kernel '{name}'")))
+    }
+
+    pub(crate) fn cm_theta_type(
+        &mut self,
+        name: &Label,
+        kind: fn(Rc<str>) -> Kind,
+    ) -> Result<TypeId> {
+        self.cm_theta(&name.text)?;
+        self.inhabited_type(kind(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_cm_abelian(
@@ -7962,6 +8004,9 @@ impl Model {
             | Kind::CMAbelianDiv(..)
             | Kind::CMAbelianMukai(..)
             | Kind::CMAbelianMap(..)
+            | Kind::CMTheta(..)
+            | Kind::CMThetaOp(..)
+            | Kind::CMThetaSubgroup(..)
             | Kind::CMPeriod(..)
             | Kind::CMCharge(..)
             | Kind::CMPeriodWall(..)
@@ -8554,6 +8599,9 @@ impl Model {
             Kind::CMAbelianDiv(name) => out.push(&format!("RVCMAbelianDiv({name})")),
             Kind::CMAbelianMukai(name) => out.push(&format!("RVCMAbelianMukai({name})")),
             Kind::CMAbelianMap(name) => out.push(&format!("RVCMAbelianMap({name})")),
+            Kind::CMTheta(name) => out.push(&format!("RVCMTheta({name})")),
+            Kind::CMThetaOp(name) => out.push(&format!("RVCMThetaOp({name})")),
+            Kind::CMThetaSubgroup(name) => out.push(&format!("RVCMThetaSubgroup({name})")),
             Kind::CMPeriod(name) => out.push(&format!("RVCMPeriod({name})")),
             Kind::CMCharge(name) => out.push(&format!("RVCMCharge({name})")),
             Kind::CMPeriodWall(name) => out.push(&format!("RVCMPeriodWall({name})")),
@@ -9038,6 +9086,9 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a == b),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a == b),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a == b),
+            (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a == b),
+            (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a == b),
+            (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a == b),
             (Value::CMPeriod(a), Value::CMPeriod(b)) => Ok(a == b),
             (Value::CMCharge(a), Value::CMCharge(b)) => Ok(a == b),
             (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a == b),
@@ -9490,6 +9541,9 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a.cmp(b)),
+            (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a.cmp(b)),
+            (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a.cmp(b)),
+            (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a.cmp(b)),
             (Value::CMPeriod(a), Value::CMPeriod(b)) => Ok(a.cmp(b)),
             (Value::CMCharge(a), Value::CMCharge(b)) => Ok(a.cmp(b)),
             (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a.cmp(b)),
@@ -9981,6 +10035,17 @@ impl Model {
                 Kind::CMAbelianDiv(..) | Kind::CMAbelianMukai(..) | Kind::CMAbelianMap(..) => {
                     return Err(Error::plain(
                         "cannot enumerate exact CM abelian correspondences",
+                    ));
+                }
+                Kind::CMTheta(ref name) => self
+                    .cm_theta(name)?
+                    .elements(self)?
+                    .into_iter()
+                    .map(Value::CMTheta)
+                    .collect(),
+                Kind::CMThetaOp(..) | Kind::CMThetaSubgroup(..) => {
+                    return Err(Error::plain(
+                        "enumerate the kernel or its maximal isotropic subgroups instead",
                     ));
                 }
                 Kind::CMPeriod(..) | Kind::CMCharge(..) | Kind::CMPeriodWall(..) => {
@@ -11947,6 +12012,26 @@ impl Model {
             Value::CMAbelianMap(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMTheta(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{value:?}}}"))
+            }
+            Value::CMThetaOp(value) => {
+                self.write_type(out, ty, 0)?;
+                let (point, phase) = value.coordinates();
+                out.push(&format!("{{point={point:?}, phase={phase}}}"))
+            }
+            Value::CMThetaSubgroup(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, point) in value.members().iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{point:?}"))?;
+                }
+                out.push("}")
             }
             Value::CMPeriodWall(value) => {
                 self.write_type(out, ty, 0)?;

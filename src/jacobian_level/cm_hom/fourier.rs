@@ -10,9 +10,11 @@ use crate::rv_qp_quad::{self, Element};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod period;
+pub(crate) mod theta;
 
 pub(crate) enum Statement {
     Period(Box<period::Statement>),
+    Theta(Box<theta::Statement>),
     Define(Label, [Label; 4]),
     Report(Report, Box<ParsedExpr>),
     Pair(Box<[ParsedExpr; 2]>),
@@ -27,6 +29,7 @@ pub(crate) enum Report {
 
 pub(crate) enum Expression {
     Period(Box<period::Expression>),
+    Theta(Box<theta::Expression>),
     Divisor(Label, [i128; 2], Box<ParsedExpr>),
     Mukai([i128; 2], Box<ParsedExpr>),
     Map(Label, Box<[ParsedExpr; 4]>),
