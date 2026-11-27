@@ -1073,6 +1073,79 @@ impl Engine {
                 let count = diagram.section_count(&mut self.model)?;
                 format!("setsections[{}] = {count}", family.text)
             }
+            StatementForm::SetMonodromy(name, source, target, point) => {
+                self.model.check_new_set_monodromy(&name)?;
+                let action = crate::set_monodromy::Monodromy::build(
+                    &mut self.model,
+                    &source,
+                    &target,
+                    &point,
+                )?;
+                self.model.define_set_monodromy(&name, action)?;
+                return Ok(None);
+            }
+            StatementForm::SetMonoQuery(name, query) => {
+                use crate::set_monodromy::Query;
+                let action = self.model.set_monodromy(&name)?;
+                match query {
+                    Query::Size => format!("setmonosize[{}] = {}", name.text, action.size()),
+                    Query::Characters => {
+                        let histogram = action.characters(&mut self.model)?;
+                        format!("setmonochars[{}] = {histogram:?}", name.text)
+                    }
+                    Query::Element(index) => {
+                        let (source, target) = action.element(index)?;
+                        self.model.spend(source.len() + target.len())?;
+                        format!(
+                            "setmonoat[{}, {index}] = {source:?} / {target:?}",
+                            name.text
+                        )
+                    }
+                    Query::Stabilizer(index) => {
+                        let (size, source, target) = action.stabilizer(&mut self.model, index)?;
+                        format!(
+                            "setmonostabilizer[{}, {index}] = [{size}, {source}, {target}]",
+                            name.text
+                        )
+                    }
+                    Query::Maps => {
+                        let count = action.natural_count(&mut self.model)?;
+                        format!("setmonomaps[{}] = {count}", name.text)
+                    }
+                    Query::Orbitals => {
+                        let sizes = action.orbital_sizes();
+                        self.model.spend(sizes.len())?;
+                        format!("setmonoorbitals[{}] = {sizes:?}", name.text)
+                    }
+                }
+            }
+            StatementForm::SetLinearize(name, family, prime) => {
+                self.model.check_new_sheaf(&name)?;
+                let diagram = self.model.set_family(&family)?;
+                let prime = crate::sheaf::field(&mut self.model, prime)?;
+                let sheaf = crate::set_monodromy::linearize(&mut self.model, &diagram, prime)?;
+                self.model.define_set_linearization(name, &family, sheaf)?;
+                return Ok(None);
+            }
+            StatementForm::SetOrbitalMap(name, action, source, target, coefficients) => {
+                self.model.check_new_sheaf_map(&name)?;
+                let action = self.model.set_monodromy(&action)?;
+                self.model
+                    .require_set_linearization(&source, &action.source)?;
+                self.model
+                    .require_set_linearization(&target, &action.target)?;
+                let source = NamedSheaf::resolve(&self.model, &source)?;
+                let target = NamedSheaf::resolve(&self.model, &target)?;
+                let map = action.orbital_map(&mut self.model, source, target, coefficients)?;
+                self.model.define_sheaf_map(name.text, map);
+                return Ok(None);
+            }
+            StatementForm::SheafMapRank(name, point) => {
+                let map = self.model.sheaf_map(&name)?;
+                let index = self.model.point(map.source.sheaf.base(), &point)?;
+                let rank = crate::set_monodromy::map_rank(&mut self.model, &map, index)?;
+                format!("shmaprank[{}, {}] = {rank}", name.text, point.text)
+            }
             StatementForm::Space(name, chains) => {
                 self.model.define_space(&name, &chains)?;
                 return Ok(None);

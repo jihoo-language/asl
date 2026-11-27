@@ -446,6 +446,8 @@ pub(crate) struct Model {
     types: Vec<TypeInfo>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
+    set_monodromies: HashMap<Rc<str>, Rc<crate::set_monodromy::Monodromy>>,
+    set_linearizations: HashMap<Rc<str>, Rc<str>>,
     set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
@@ -505,6 +507,8 @@ impl Model {
             types: Vec::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
+            set_monodromies: HashMap::new(),
+            set_linearizations: HashMap::new(),
             set_elements: HashMap::new(),
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
@@ -1588,6 +1592,67 @@ impl Model {
 
     pub(crate) fn set_family_named(&self, name: &str) -> Option<Rc<set_family::Diagram>> {
         self.set_families.get(name).cloned()
+    }
+
+    pub(crate) fn check_new_set_monodromy(&self, name: &Label) -> Result<()> {
+        if self.set_monodromies.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("set monodromy '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_set_monodromy(
+        &mut self,
+        name: &Label,
+        action: crate::set_monodromy::Monodromy,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.set_monodromies
+            .insert(Rc::from(name.text.as_str()), Rc::new(action));
+        Ok(())
+    }
+
+    pub(crate) fn set_monodromy(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::set_monodromy::Monodromy>> {
+        self.set_monodromies
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown set monodromy '{}'", name.text)))
+    }
+
+    pub(crate) fn define_set_linearization(
+        &mut self,
+        name: Label,
+        family: &Label,
+        sheaf: Sheaf,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.set_linearizations
+            .insert(Rc::from(name.text.as_str()), Rc::from(family.text.as_str()));
+        self.define_sheaf(name.text, sheaf);
+        Ok(())
+    }
+
+    pub(crate) fn require_set_linearization(&self, name: &Label, family: &str) -> Result<()> {
+        if self
+            .set_linearizations
+            .get(name.text.as_str())
+            .is_none_or(|f| f.as_ref() != family)
+        {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "'{}' must be a linearization of set family '{family}'",
+                    name.text
+                ),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn set_elements(&self, name: &Label) -> Result<(TypeId, Rc<set_family::Elements>)> {

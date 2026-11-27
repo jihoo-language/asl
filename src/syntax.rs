@@ -942,6 +942,17 @@ pub(crate) enum StatementForm {
     SetSections(Label),
     SetPullback(Label, Label, ParsedExpr),
     SetDependent(Label, Label, Label, bool),
+    SetMonodromy(Label, Label, Label, Label),
+    SetMonoQuery(Label, crate::set_monodromy::Query),
+    SetLinearize(Label, Label, usize),
+    SetOrbitalMap(
+        Label,
+        Label,
+        Label,
+        Label,
+        crate::set_monodromy::Coefficients,
+    ),
+    SheafMapRank(Label, Label),
     MixedComplex(
         Label,
         usize,
@@ -1914,6 +1925,86 @@ impl<'src> Parser<'src> {
                 let family = self.label()?;
                 self.expect(Token::RBracket)?;
                 StatementForm::SetSections(family)
+            }
+            Token::Word("setmonodromy") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::Comma)?;
+                let point = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetMonodromy(name, source, target, point)
+            }
+            Token::Word(
+                op @ ("setmonosize" | "setmonochars" | "setmonoat" | "setmonostabilizer"
+                | "setmonomaps" | "setmonoorbitals"),
+            ) => {
+                use crate::set_monodromy::Query;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let query = match op {
+                    "setmonosize" => Query::Size,
+                    "setmonochars" => Query::Characters,
+                    "setmonoat" => {
+                        self.expect(Token::Comma)?;
+                        Query::Element(self.number()?.0)
+                    }
+                    "setmonostabilizer" => {
+                        self.expect(Token::Comma)?;
+                        Query::Stabilizer(self.number()?.0)
+                    }
+                    "setmonomaps" => Query::Maps,
+                    _ => Query::Orbitals,
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::SetMonoQuery(name, query)
+            }
+            Token::Word("shlinearize") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetLinearize(name, family, prime)
+            }
+            Token::Word(op @ ("shorbital" | "shorbitals")) => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let monodromy = self.label()?;
+                self.expect(Token::Comma)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                let weights = if op == "shorbital" {
+                    self.expect(Token::Comma)?;
+                    let basis = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    vec![(basis, 1)]
+                } else {
+                    self.expect(Token::RBracket)?;
+                    self.set_named_rows(|parser| {
+                        let basis = parser.number()?.0;
+                        parser.expect(Token::Colon)?;
+                        Ok((basis, parser.signed_number("orbital coefficient")?))
+                    })?
+                };
+                StatementForm::SetOrbitalMap(name, monodromy, source, target, weights)
+            }
+            Token::Word("shmaprank") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let point = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SheafMapRank(name, point)
             }
             Token::Word("qmodule") => {
                 self.advance()?;

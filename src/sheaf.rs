@@ -898,6 +898,10 @@ pub(crate) struct PosetData {
 }
 
 impl PosetData {
+    pub(crate) fn covers(&self) -> &[Vec<usize>] {
+        &self.covers
+    }
+
     pub(crate) fn build(model: &mut Model, poset: &Poset) -> Result<Self> {
         let n = poset.names.len();
         let words = n.div_ceil(u64::BITS as usize);
