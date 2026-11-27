@@ -29,6 +29,7 @@ use crate::hyperelliptic::{self, Residues};
 use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{self, Point as KummerPoint};
 use crate::jet_hom;
 use crate::jet_page;
@@ -252,6 +253,7 @@ pub(crate) enum Kind {
     ECCurve(Rc<str>),
     Jacobian(Rc<str>),
     Kummer(Rc<str>),
+    KummerK3(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -416,6 +418,7 @@ pub(crate) enum Value {
     ECCurve(Rc<str>),
     Jacobian(Rc<Divisor>),
     Kummer(Rc<KummerPoint>),
+    KummerK3(Rc<KummerK3Point>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -969,7 +972,7 @@ impl Model {
                     usize::MAX
                 }
             }
-            Kind::ECMap(..) | Kind::Kummer(..) => usize::MAX,
+            Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1182,6 +1185,7 @@ impl Model {
                 | Kind::ECCurve(..)
                 | Kind::Jacobian(..)
                 | Kind::Kummer(..)
+                | Kind::KummerK3(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3754,6 +3758,11 @@ impl Model {
         self.inhabited_type(Kind::Kummer(name), 0)
     }
 
+    pub(crate) fn kummer_k3_type(&mut self, name: Rc<str>) -> Result<TypeId> {
+        self.kummer_curve(&name)?;
+        self.inhabited_type(Kind::KummerK3(name), 0)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -4873,6 +4882,7 @@ impl Model {
             | Kind::ECCurve(..)
             | Kind::Jacobian(..)
             | Kind::Kummer(..)
+            | Kind::KummerK3(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5372,6 +5382,7 @@ impl Model {
             Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
             Kind::Jacobian(name) => out.push(&format!("RVJac({name})")),
             Kind::Kummer(name) => out.push(&format!("RVKummer({name})")),
+            Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5650,6 +5661,7 @@ impl Model {
             }
             (Value::Jacobian(a), Value::Jacobian(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Kummer(a), Value::Kummer(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -5974,6 +5986,7 @@ impl Model {
             }
             (Value::Jacobian(a), Value::Jacobian(b)) => a.compare(self, b),
             (Value::Kummer(a), Value::Kummer(b)) => a.compare(self, b),
+            (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6275,6 +6288,10 @@ impl Model {
                 Kind::Kummer(ref name) => {
                     let curve = self.kummer_curve(name)?;
                     hyperelliptic_kummer_surface::elements(self, &curve, MAX_ELEMENTS)?
+                }
+                Kind::KummerK3(ref name) => {
+                    let curve = self.kummer_curve(name)?;
+                    hyperelliptic_kummer_surface::resolution::elements(self, &curve, MAX_ELEMENTS)?
                 }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
@@ -7684,6 +7701,16 @@ impl Model {
             Value::Kummer(point) => {
                 self.write_type(out, ty, 0)?;
                 self.write_ec_polynomial(out, point.coordinates())
+            }
+            Value::KummerK3(point) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{base=")?;
+                self.write_ec_polynomial(out, point.base().coordinates())?;
+                if let Some(direction) = point.direction() {
+                    out.push(", direction=")?;
+                    self.write_ec_polynomial(out, direction)?;
+                }
+                out.push("}")
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

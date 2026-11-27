@@ -12,9 +12,11 @@ use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod arithmetic;
 pub(crate) mod k3;
+pub(crate) mod resolution;
 
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
+    Exceptional(Box<ParsedExpr>, Box<[ParsedExpr; 4]>),
     DifferentialAdd(Box<[ParsedExpr; 3]>),
     Richelot(Label, Box<ParsedExpr>),
     RichelotDescend(Label, Box<ParsedExpr>),
@@ -46,6 +48,10 @@ pub(crate) enum Operation {
     Liftable,
     Lift,
     Scale(i128),
+    Smooth,
+    Blowdown,
+    IsExceptional,
+    Direction(usize),
 }
 
 impl Operation {
@@ -56,6 +62,10 @@ impl Operation {
             Self::Liftable => "rvKummerLiftable",
             Self::Lift => "rvKummerLift",
             Self::Scale(_) => "rvKummerScale",
+            Self::Smooth => "rvKummerSmooth",
+            Self::Blowdown => "rvKummerBlowdown",
+            Self::IsExceptional => "rvKummerIsExceptional",
+            Self::Direction(_) => "rvKummerDirection",
         }
     }
 }
@@ -176,6 +186,16 @@ impl Point {
         let data = QuadraticData::new(model, curve, k1, k2)?;
         let SquareMatrix { a, b, c } = data.matrix(model, field, k2, k3)?;
         Ok(Recovery::Quadratic { u: data.u, a, b, c })
+    }
+
+    pub(crate) fn is_node(&self, model: &mut Model, curve: &Curve) -> Result<bool> {
+        Ok(match self.recover(model, curve)? {
+            Recovery::Identity => true,
+            Recovery::Linear { y_squared, .. } => poly::zero(&y_squared),
+            Recovery::Quadratic { a, b, c, .. } => {
+                poly::zero(&a) && poly::zero(&b) && poly::zero(&c)
+            }
+        })
     }
 
     pub(crate) fn liftable(&self, model: &mut Model, curve: &Curve) -> Result<bool> {

@@ -124,6 +124,7 @@ pub(crate) enum TypeForm {
     RVCyclo(usize),
     Jacobian(Label),
     Kummer(Label),
+    KummerK3(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -2925,6 +2926,23 @@ impl<'src> Parser<'src> {
             let inputs = [k0, k1, k2, k3];
             let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
             (Expression::Coordinates(curve, Box::new(inputs)), depth)
+        } else if name == "rvKummerExceptional" {
+            self.expect(Token::LParen)?;
+            let base = self.expr(nest + 1)?;
+            let mut inputs = Vec::with_capacity(4);
+            for _ in 0..4 {
+                self.expect(Token::Comma)?;
+                inputs.push(self.expr(nest + 1)?);
+            }
+            self.expect(Token::RParen)?;
+            let depth = 1 + inputs
+                .iter()
+                .fold(base.depth, |depth, input| depth.max(input.depth));
+            let inputs = inputs.try_into().ok().expect("four tangent coordinates");
+            (
+                Expression::Exceptional(Box::new(base), Box::new(inputs)),
+                depth,
+            )
         } else if matches!(name, "rvKummerRichelot" | "rvKummerRichelotDesc") {
             self.expect(Token::LBracket)?;
             let target = self.label()?;
@@ -2968,17 +2986,21 @@ impl<'src> Parser<'src> {
         } else {
             let operation = match name {
                 "rvJacKummerPoint" => Operation::Project,
-                "rvKummerCoord" => {
+                "rvKummerCoord" | "rvKummerDirection" => {
                     self.expect(Token::LBracket)?;
                     let (coordinate, span) = self.number()?;
                     if coordinate >= 4 {
                         return Err(Error::new(
                             span,
-                            "rvKummerCoord index must be between 0 and 3",
+                            format!("{name} index must be between 0 and 3"),
                         ));
                     }
                     self.expect(Token::RBracket)?;
-                    Operation::Coordinate(coordinate)
+                    if name == "rvKummerCoord" {
+                        Operation::Coordinate(coordinate)
+                    } else {
+                        Operation::Direction(coordinate)
+                    }
                 }
                 "rvKummerScale" => {
                     self.expect(Token::LBracket)?;
@@ -2987,6 +3009,9 @@ impl<'src> Parser<'src> {
                     Operation::Scale(n)
                 }
                 "rvKummerLiftable" => Operation::Liftable,
+                "rvKummerSmooth" => Operation::Smooth,
+                "rvKummerBlowdown" => Operation::Blowdown,
+                "rvKummerIsExceptional" => Operation::IsExceptional,
                 _ => Operation::Lift,
             };
             let input = self.paren_expr(nest)?;
@@ -7004,13 +7029,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
-        if matches!(name.text.as_str(), "RVJac" | "RVKummer") && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "RVJac" | "RVKummer" | "RVKummerK3")
+            && self.eat(Token::LParen)?
+        {
             let curve = self.label()?;
             self.expect(Token::RParen)?;
-            let form = if name.text == "RVJac" {
-                TypeForm::Jacobian(curve)
-            } else {
-                TypeForm::Kummer(curve)
+            let form = match name.text.as_str() {
+                "RVJac" => TypeForm::Jacobian(curve),
+                "RVKummer" => TypeForm::Kummer(curve),
+                _ => TypeForm::KummerK3(curve),
             };
             return ty(span, form, 0);
         }
@@ -8942,6 +8969,7 @@ impl<'src> Parser<'src> {
                         | "rvKummerExtend"
                         | "rvKummerDescend"
                         | "rvKummerFrob"
+                        | "rvKummerDirection"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
@@ -8949,6 +8977,10 @@ impl<'src> Parser<'src> {
                             | "rvKummerLiftable"
                             | "rvKummerLift"
                             | "rvKummerDiffAdd"
+                            | "rvKummerSmooth"
+                            | "rvKummerExceptional"
+                            | "rvKummerBlowdown"
+                            | "rvKummerIsExceptional"
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);

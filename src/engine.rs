@@ -487,6 +487,7 @@ enum JacobianAction {
 
 enum KummerAction {
     Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
+    Exceptional(Rc<hw_closed::Curve>, Box<TypedExpr>, Box<[TypedExpr; 4]>),
     DifferentialAdd(Rc<hw_closed::Curve>, Box<[TypedExpr; 3]>),
     Richelot(
         Box<crate::richelot::correspondence::Correspondence>,
@@ -5022,6 +5023,25 @@ impl Engine {
                 }
                 KummerPoint::new(&mut self.model, curve, coordinates)?.persist(&mut self.model)
             }
+            KummerAction::Exceptional(curve, base, inputs) => {
+                let Value::Kummer(base) = self.eval(base)? else {
+                    unreachable!()
+                };
+                let mut direction = std::array::from_fn(|_| Vec::new());
+                for (coordinate, input) in direction.iter_mut().zip(inputs.iter()) {
+                    let Value::RVUnram(value) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    *coordinate = value.to_vec();
+                }
+                kummer_surface::resolution::ResolvedPoint::exceptional(
+                    &mut self.model,
+                    curve,
+                    base,
+                    direction,
+                )?
+                .persist(&mut self.model)
+            }
             KummerAction::DifferentialAdd(curve, inputs) => {
                 let [left, right, difference] = inputs.as_ref();
                 let (Value::Kummer(left), Value::Kummer(right), Value::Kummer(difference)) =
@@ -5085,6 +5105,26 @@ impl Engine {
                     (Operation::Scale(n), Value::Kummer(point)) => {
                         kummer_surface::arithmetic::scale(&mut self.model, curve, *n, &point)?
                             .persist(&mut self.model)
+                    }
+                    (Operation::Smooth, Value::Kummer(point)) => {
+                        kummer_surface::resolution::ResolvedPoint::smooth(
+                            &mut self.model,
+                            curve,
+                            point,
+                        )?
+                        .persist(&mut self.model)
+                    }
+                    (Operation::Blowdown, Value::KummerK3(point)) => {
+                        Ok(Value::Kummer(point.base().clone()))
+                    }
+                    (Operation::IsExceptional, Value::KummerK3(point)) => {
+                        Ok(Value::Point(usize::from(point.direction().is_some())))
+                    }
+                    (Operation::Direction(index), Value::KummerK3(point)) => {
+                        let direction = point.direction().ok_or_else(|| {
+                            Error::plain("rvKummerDirection requires an exceptional point")
+                        })?;
+                        rv_unram::persist(&mut self.model, direction[*index].clone())
                     }
                     _ => unreachable!(),
                 }
@@ -9299,6 +9339,7 @@ impl Checker<'_> {
             }
             TypeForm::Jacobian(name) => self.model.jacobian_type(name.text.into()),
             TypeForm::Kummer(name) => self.model.kummer_type(name.text.into()),
+            TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -18324,6 +18365,41 @@ impl Checker<'_> {
                 let ty = self.model.kummer_type(name.text.into())?;
                 (ty, KummerAction::Coordinates(curve, Box::new(inputs)))
             }
+            Expression::Exceptional(base, inputs) => {
+                let base = self.expr(*base)?;
+                let Kind::Kummer(name) = self.model.kind(base.ty) else {
+                    return Err(self.invalid_operand(
+                        &base,
+                        "rvKummerExceptional",
+                        "an RVKummer point",
+                    ));
+                };
+                let name = name.clone();
+                let curve = self.model.kummer_curve(&name)?;
+                let coefficient = self.model.rv_unram_type(&Label {
+                    text: curve.grade.ring.to_string(),
+                    span: base.span,
+                })?;
+                let [h0, h1, h2, h3] = *inputs;
+                let inputs = [
+                    self.expr(h0)?,
+                    self.expr(h1)?,
+                    self.expr(h2)?,
+                    self.expr(h3)?,
+                ];
+                for input in &inputs {
+                    self.require_type(
+                        coefficient,
+                        input,
+                        "rvKummerExceptional tangent coordinate",
+                    )?;
+                }
+                let ty = self.model.kummer_k3_type(name)?;
+                (
+                    ty,
+                    KummerAction::Exceptional(curve, Box::new(base), Box::new(inputs)),
+                )
+            }
             Expression::Richelot(name, input) => {
                 let correspondence =
                     crate::richelot::correspondence::Correspondence::resolve(self.model, &name)?;
@@ -18396,12 +18472,19 @@ impl Checker<'_> {
             Expression::Apply(operation, input) => {
                 let input = self.expr(*input)?;
                 let project = matches!(operation, Operation::Project);
+                let resolved = matches!(
+                    operation,
+                    Operation::Blowdown | Operation::IsExceptional | Operation::Direction(_)
+                );
                 let name = match self.model.kind(input.ty) {
                     Kind::Jacobian(name) if project => name.clone(),
-                    Kind::Kummer(name) if !project => name.clone(),
+                    Kind::Kummer(name) if !project && !resolved => name.clone(),
+                    Kind::KummerK3(name) if resolved => name.clone(),
                     _ => {
                         let expected = if project {
                             "an RVJac divisor class"
+                        } else if resolved {
+                            "an RVKummerK3 point"
                         } else {
                             "an RVKummer point"
                         };
@@ -18410,13 +18493,18 @@ impl Checker<'_> {
                 };
                 let curve = self.model.kummer_curve(&name)?;
                 let ty = match operation {
-                    Operation::Project => self.model.kummer_type(name)?,
-                    Operation::Coordinate(_) => self.model.rv_unram_type(&Label {
-                        text: curve.grade.ring.to_string(),
-                        span: input.span,
-                    })?,
-                    Operation::Liftable => self.model.named("S").unwrap(),
+                    Operation::Project | Operation::Blowdown => self.model.kummer_type(name)?,
+                    Operation::Coordinate(_) | Operation::Direction(_) => {
+                        self.model.rv_unram_type(&Label {
+                            text: curve.grade.ring.to_string(),
+                            span: input.span,
+                        })?
+                    }
+                    Operation::Liftable | Operation::IsExceptional => {
+                        self.model.named("S").unwrap()
+                    }
                     Operation::Lift => self.model.jacobian_type(name)?,
+                    Operation::Smooth => self.model.kummer_k3_type(name)?,
                     Operation::Scale(_) => input.ty,
                 };
                 (ty, KummerAction::Apply(curve, operation, Box::new(input)))
