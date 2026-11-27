@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::finite_field_factor::{factor_squarefree, quadratic_sign};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
-use crate::hyperelliptic_jacobian::Divisor;
+use crate::hyperelliptic_jacobian::{relative_frobenius_power, require_extension, Divisor};
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
@@ -17,7 +17,26 @@ pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),
     DifferentialAdd(Box<[ParsedExpr; 3]>),
     Richelot(Label, Box<ParsedExpr>),
+    RichelotDescend(Label, Box<ParsedExpr>),
+    Base(BaseOperation, Label, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum BaseOperation {
+    Extend,
+    Descend,
+    Frobenius(usize),
+}
+
+impl BaseOperation {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Extend => "rvKummerExtend",
+            Self::Descend => "rvKummerDescend",
+            Self::Frobenius(_) => "rvKummerFrob",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -203,6 +222,45 @@ impl Point {
 
     pub(crate) fn coordinates(&self) -> &[Scalar; 4] {
         &self.0
+    }
+
+    pub(crate) fn extend(&self, model: &mut Model, base: &Curve, target: &Curve) -> Result<Self> {
+        require_extension(model, base, target)?;
+        let coordinates = base
+            .ring
+            .embed_residue_coefficients(model, &target.ring, &self.0)?;
+        // The embedding preserves the quartic and the first nonzero coordinate 1.
+        Ok(Self(
+            coordinates.try_into().expect("four embedded coordinates"),
+        ))
+    }
+
+    pub(crate) fn descend(&self, model: &mut Model, source: &Curve, base: &Curve) -> Result<Self> {
+        require_extension(model, base, source)?;
+        let preimage = base.ring.residue_preimage(model, &source.ring)?;
+        let coordinates = preimage
+            .coefficients(model, &self.0)?
+            .ok_or_else(|| Error::plain("Kummer coordinate lies outside the requested subfield"))?;
+        Ok(Self(
+            coordinates.try_into().expect("four descended coordinates"),
+        ))
+    }
+
+    pub(crate) fn frobenius(
+        &self,
+        model: &mut Model,
+        base: &Curve,
+        target: &Curve,
+        power: usize,
+    ) -> Result<Self> {
+        let p_power = relative_frobenius_power(model, base, target, power)?;
+        let [k0, k1, k2, k3] = &self.0;
+        Ok(Self([
+            target.ring.frobenius(model, k0, p_power)?,
+            target.ring.frobenius(model, k1, p_power)?,
+            target.ring.frobenius(model, k2, p_power)?,
+            target.ring.frobenius(model, k3, p_power)?,
+        ]))
     }
 
     pub(crate) fn compare(&self, model: &mut Model, other: &Self) -> Result<Ordering> {

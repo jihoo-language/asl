@@ -1252,6 +1252,8 @@ The example gives $P(T)=T^4-2T^2+9$ and independently counts eight classes over 
 
 `rvKummerScale[n](K)` computes the image of multiplication by the signed integer `n` on any rational Kummer point. `rvKummerDiffAdd(A,B,D)` returns $\kappa(P+Q)$ from $A=\kappa(P)$, $B=\kappa(Q)$ and $D=\kappa(P-Q)$, where $\kappa$ is the quotient map. All three inputs must have the same named Kummer type. The interpreter uses Cantor arithmetic on a common monic model of the curve or its quadratic twist. It checks `D` against the two addition candidates. The identity and nodes work with either twist class. Two inputs away from the nodes with different twist classes have no rational difference on the quartic. [Kummer arithmetic example](examples/hyperelliptic-kummer-arithmetic.asl)
 
+`rvKummerExtend[D](K)` embeds the normalized coordinates of `K` into the field of the coefficient extension `D`. `rvKummerDescend[C](K)` recovers those coordinates over `C` when they all lie in its field. This also works for twist-only points whose extension divisor lifts change sign under Frobenius. `rvKummerFrob[C,k](K)` applies the $k$th power of the relative Frobenius on the extension of `C` that contains `K`. The equation checks and residue embeddings are the same as for `RVJac`.
+
 #### Arithmetic of the resolved Kummer K3
 
 `rvKummerK3Zeta[C];`, `rvKummerK3Points[C,r];`, and `rvKummerK3Picard[C,r];` use the same monic quintic, with $r\ge1$. The zeta function of the resolution has denominator $(1-T)(1-q^2T)\det(1-TF\mid\wedge^2H^1(J))\prod_d(1-(qT)^d)$ over $\mathbb F_q$. The displayed orbit lengths $d$ come from the zero class and the unordered pairs of branch points, including infinity. The two factors from eigenvalue $q$ in the abelian part are displayed separately from its cross quartic. Over $\mathbb F_{q^r}$ the point report gives the singular quartic count, the rational node count and the resolved count. Each rational node adds $q^r$ points on resolution. The calculation uses the base Weil polynomial and branch factor degrees.
@@ -1287,6 +1289,8 @@ The correspondence cyclically orders the splitting with the linear $G_3$ last an
 #### Richelot matrices on torsion
 
 `rvJacRichelotMatrix[B,H];` computes the matrix $M$ of the Richelot push on the certified torsion bases `B` and `H` of the same prime level $\ell$. The curve of `H` determines the direct or charted Richelot target, and the curve of `B` must be its named source. The output writes matrices by rows with generator images in columns. Let $c=\log_{\zeta_H}\zeta_B$ and $J=\begin{pmatrix}0&I\\-I&0\end{pmatrix}$. The interpreter reconstructs each pushed class, verifies $M^tJM=2cJ$, and computes the polarized adjoint $A=c^{-1}J^{-1}M^tJ$. It checks $AM=MA=2I$ and that $M$ has rank two at level two and rank four at odd levels. The example uses two primitive-root choices at level three and exhibits the level-two kernel. [Richelot torsion matrix example](examples/hyperelliptic-richelot-matrix.asl)
+
+`rvKummerRichelotDesc[D](K)` uses a Richelot descent registered on monic quintics. It extends the source point to the field of the stored correspondence, applies the Kummer map there, and descends the normalized image. The example starts with a twist-only point over $\mathbb F_3$ whose lift changes sign over $\mathbb F_9$. Its image is also twist-only over $\mathbb F_3$. [Kummer base change and descended Richelot example](examples/hyperelliptic-kummer-base-descent.asl)
 
 #### Bielliptic quotients in a split chart
 

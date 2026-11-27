@@ -492,6 +492,16 @@ enum KummerAction {
         Box<crate::richelot::correspondence::Correspondence>,
         Box<TypedExpr>,
     ),
+    RichelotDescend(
+        Box<crate::richelot::descent::DescendedCorrespondence>,
+        Box<TypedExpr>,
+    ),
+    Base(
+        kummer_surface::BaseOperation,
+        Rc<hw_closed::Curve>,
+        Rc<hw_closed::Curve>,
+        Box<TypedExpr>,
+    ),
     Apply(
         Rc<hw_closed::Curve>,
         kummer_surface::Operation,
@@ -5000,7 +5010,7 @@ impl Engine {
     }
 
     fn eval_kummer(&mut self, action: &KummerAction) -> Result<Value> {
-        use kummer_surface::Operation;
+        use kummer_surface::{BaseOperation, Operation};
         match action {
             KummerAction::Coordinates(curve, inputs) => {
                 let mut coordinates = std::array::from_fn(|_| Vec::new());
@@ -5034,6 +5044,27 @@ impl Engine {
                 };
                 kummer_surface::arithmetic::richelot(&mut self.model, correspondence, &point)?
                     .persist(&mut self.model)
+            }
+            KummerAction::RichelotDescend(correspondence, input) => {
+                let Value::Kummer(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                correspondence
+                    .push_kummer(&mut self.model, &point)?
+                    .persist(&mut self.model)
+            }
+            KummerAction::Base(operation, source, named, input) => {
+                let Value::Kummer(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let output = match operation {
+                    BaseOperation::Extend => point.extend(&mut self.model, source, named)?,
+                    BaseOperation::Descend => point.descend(&mut self.model, source, named)?,
+                    BaseOperation::Frobenius(k) => {
+                        point.frobenius(&mut self.model, named, source, *k)?
+                    }
+                };
+                output.persist(&mut self.model)
             }
             KummerAction::Apply(curve, operation, input) => {
                 let input = self.eval(input)?;
@@ -18271,7 +18302,7 @@ impl Checker<'_> {
         &mut self,
         expression: kummer_surface::Expression,
     ) -> Result<(TypeId, TypedForm)> {
-        use kummer_surface::{Expression, Operation};
+        use kummer_surface::{BaseOperation, Expression, Operation};
         let (ty, action) = match expression {
             Expression::Coordinates(name, inputs) => {
                 let curve = self.model.kummer_curve(&name.text)?;
@@ -18305,6 +18336,41 @@ impl Checker<'_> {
                 (
                     ty,
                     KummerAction::Richelot(Box::new(correspondence), Box::new(input)),
+                )
+            }
+            Expression::RichelotDescend(name, input) => {
+                let correspondence =
+                    crate::richelot::descent::DescendedCorrespondence::resolve(self.model, &name)?;
+                let source = self
+                    .model
+                    .kummer_type(correspondence.source_name().into())?;
+                let ty = self.model.kummer_type(name.text.into())?;
+                let input = self.expr(*input)?;
+                self.require_type(source, &input, "rvKummerRichelotDesc source point")?;
+                (
+                    ty,
+                    KummerAction::RichelotDescend(Box::new(correspondence), Box::new(input)),
+                )
+            }
+            Expression::Base(operation, named, input) => {
+                let input = self.expr(*input)?;
+                let Kind::Kummer(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "an RVKummer point",
+                    ));
+                };
+                let source = self.model.kummer_curve(name)?;
+                let curve = self.model.kummer_curve(&named.text)?;
+                let ty = if matches!(operation, BaseOperation::Frobenius(_)) {
+                    input.ty
+                } else {
+                    self.model.kummer_type(named.text.into())?
+                };
+                (
+                    ty,
+                    KummerAction::Base(operation, source, curve, Box::new(input)),
                 )
             }
             Expression::DifferentialAdd(inputs) => {

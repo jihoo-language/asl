@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::hyperelliptic_jacobian::{self, Divisor};
+use crate::hyperelliptic_kummer_surface::{arithmetic, Point};
 use crate::model::Model;
 use crate::syntax::Label;
 
@@ -173,6 +174,12 @@ impl DescendedCorrespondence {
     pub(crate) fn push(&self, model: &mut Model, input: &Divisor) -> Result<Divisor> {
         let input = input.extend(model, &self.source, &self.extended.source)?;
         let output = self.extended.push(model, &input)?;
+        output.descend(model, &self.extended.target, &self.target)
+    }
+
+    pub(crate) fn push_kummer(&self, model: &mut Model, input: &Point) -> Result<Point> {
+        let input = input.extend(model, &self.source, &self.extended.source)?;
+        let output = arithmetic::richelot(model, &self.extended, &input)?;
         output.descend(model, &self.extended.target, &self.target)
     }
 }

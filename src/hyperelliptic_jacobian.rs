@@ -388,10 +388,8 @@ impl Divisor {
         target: &Curve,
         power: usize,
     ) -> Result<Self> {
-        require_extension(model, base, target)?;
-        let base_degree = base.ring.degree();
-        let extension_degree = target.ring.degree() / base_degree;
-        self.frobenius_coefficients(model, target, (power % extension_degree) * base_degree)
+        let p_power = relative_frobenius_power(model, base, target, power)?;
+        self.frobenius_coefficients(model, target, p_power)
     }
 
     pub(crate) fn weil(&self, model: &mut Model, base: &Curve, target: &Curve) -> Result<Self> {
@@ -493,7 +491,7 @@ pub(crate) fn coefficients_over(
         .embed_residue_coefficients(model, target, base.polynomial())
 }
 
-fn require_extension(model: &mut Model, base: &Curve, target: &Curve) -> Result<()> {
+pub(crate) fn require_extension(model: &mut Model, base: &Curve, target: &Curve) -> Result<()> {
     require_curve(target)?;
     let polynomial = coefficients_over(model, base, &target.ring)?;
     if polynomial != target.polynomial() {
@@ -502,6 +500,18 @@ fn require_extension(model: &mut Model, base: &Curve, target: &Curve) -> Result<
         ));
     }
     Ok(())
+}
+
+pub(crate) fn relative_frobenius_power(
+    model: &mut Model,
+    base: &Curve,
+    target: &Curve,
+    power: usize,
+) -> Result<usize> {
+    require_extension(model, base, target)?;
+    let base_degree = base.ring.degree();
+    let extension_degree = target.ring.degree() / base_degree;
+    Ok((power % extension_degree) * base_degree)
 }
 
 fn norm(model: &mut Model, curve: &Curve, v: &[Scalar]) -> Result<Polynomial> {

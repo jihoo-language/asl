@@ -2908,7 +2908,7 @@ impl<'src> Parser<'src> {
     }
 
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
-        use crate::hyperelliptic_kummer_surface::{Expression, Operation};
+        use crate::hyperelliptic_kummer_surface::{BaseOperation, Expression, Operation};
         let (expression, depth) = if name == "rvKummer" {
             self.expect(Token::LBracket)?;
             let curve = self.label()?;
@@ -2925,13 +2925,33 @@ impl<'src> Parser<'src> {
             let inputs = [k0, k1, k2, k3];
             let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
             (Expression::Coordinates(curve, Box::new(inputs)), depth)
-        } else if name == "rvKummerRichelot" {
+        } else if matches!(name, "rvKummerRichelot" | "rvKummerRichelotDesc") {
             self.expect(Token::LBracket)?;
             let target = self.label()?;
             self.expect(Token::RBracket)?;
             let input = self.paren_expr(nest)?;
             let depth = 1 + input.depth;
-            (Expression::Richelot(target, Box::new(input)), depth)
+            let expression = if name == "rvKummerRichelot" {
+                Expression::Richelot(target, Box::new(input))
+            } else {
+                Expression::RichelotDescend(target, Box::new(input))
+            };
+            (expression, depth)
+        } else if matches!(name, "rvKummerExtend" | "rvKummerDescend" | "rvKummerFrob") {
+            self.expect(Token::LBracket)?;
+            let curve = self.label()?;
+            let operation = match name {
+                "rvKummerExtend" => BaseOperation::Extend,
+                "rvKummerDescend" => BaseOperation::Descend,
+                _ => {
+                    self.expect(Token::Comma)?;
+                    BaseOperation::Frobenius(self.number()?.0)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Base(operation, curve, Box::new(input)), depth)
         } else if name == "rvKummerDiffAdd" {
             self.expect(Token::LParen)?;
             let left = self.expr(nest + 1)?;
@@ -8914,7 +8934,14 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvKummer" | "rvKummerCoord" | "rvKummerScale" | "rvKummerRichelot"
+                    "rvKummer"
+                        | "rvKummerCoord"
+                        | "rvKummerScale"
+                        | "rvKummerRichelot"
+                        | "rvKummerRichelotDesc"
+                        | "rvKummerExtend"
+                        | "rvKummerDescend"
+                        | "rvKummerFrob"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
