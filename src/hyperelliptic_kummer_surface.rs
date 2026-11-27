@@ -23,6 +23,7 @@ pub(crate) mod polarized;
 pub(crate) mod resolution;
 pub(crate) mod theta;
 pub(crate) mod unimodular;
+pub(crate) mod weil;
 
 pub(crate) enum Expression {
     Coordinates(Label, Box<[ParsedExpr; 4]>),

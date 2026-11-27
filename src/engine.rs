@@ -34,6 +34,7 @@ use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Diviso
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai;
+use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
     self as kummer_surface, hilbert_square, nakajima, nikulin, polarized as kummer_div, unimodular,
     Point as KummerPoint,
@@ -556,6 +557,12 @@ enum EnriquesAction {
     Read(Rc<enriques::Quotient>, enriques::Read, Box<TypedExpr>),
 }
 
+enum KummerWeilAction {
+    Basis(Box<TypedExpr>),
+    Apply(kummer_weil::Operation, Box<TypedExpr>),
+    Frobenius(nikulin::Action, Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -632,6 +639,7 @@ enum TypedForm {
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
+    KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
     K3LatticeReflect(Box<[TypedExpr; 2]>),
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
@@ -1618,6 +1626,9 @@ impl Engine {
             }
             StatementForm::KummerNodeLattice(command) => {
                 return command.execute(&mut self.model).map(Some)
+            }
+            StatementForm::KummerWeilCoefficient(command) => {
+                return self.kummer_weil_coefficient(command).map(Some)
             }
             StatementForm::GeneralizedKummer(command) => {
                 return self.generalized_kummer_command(*command).map(Some);
@@ -5375,6 +5386,56 @@ impl Engine {
         }
     }
 
+    fn kummer_weil_coefficient(&mut self, command: kummer_weil::Coefficient) -> Result<String> {
+        let [vector, index] = *command.0;
+        let mut checker = self.checker();
+        let vector = checker.expr(vector)?;
+        let marking = checker.kummer_weil_operand(&vector, "rvKummerWeilCoeff")?;
+        let marking = Label {
+            text: marking.to_string(),
+            span: vector.span,
+        };
+        let ty = checker.model.kummer_disc_type(&marking)?;
+        let index = checker.expr(index)?;
+        checker.require_type(ty, &index, "rvKummerWeilCoeff index")?;
+        let (Value::KummerWeil(vector), Value::KummerDisc(index)) =
+            (self.eval(&vector)?, self.eval(&index)?)
+        else {
+            unreachable!()
+        };
+        let coefficient = vector.coefficient(&mut self.model, index)?;
+        let numerator = coefficient.numerator.first().copied().unwrap_or(0);
+        if coefficient.denominator == 1 {
+            Ok(format!("rvKummerWeilCoeff = {numerator}"))
+        } else {
+            Ok(format!(
+                "rvKummerWeilCoeff = {numerator}/{}",
+                coefficient.denominator
+            ))
+        }
+    }
+
+    fn eval_kummer_weil(&mut self, action: &KummerWeilAction) -> Result<Value> {
+        let input = match action {
+            KummerWeilAction::Basis(input)
+            | KummerWeilAction::Apply(_, input)
+            | KummerWeilAction::Frobenius(_, input) => self.eval(input)?,
+        };
+        match (action, input) {
+            (KummerWeilAction::Basis(_), Value::KummerDisc(index)) => {
+                kummer_weil::Vector::basis(&mut self.model, index)?
+            }
+            (KummerWeilAction::Apply(operation, _), Value::KummerWeil(vector)) => {
+                vector.apply(&mut self.model, *operation)?
+            }
+            (KummerWeilAction::Frobenius(permutation, _), Value::KummerWeil(vector)) => {
+                vector.frobenius(&mut self.model, permutation)?
+            }
+            _ => unreachable!(),
+        }
+        .persist(&mut self.model)
+    }
+
     fn eval_kummer_divisor(&mut self, action: &KummerDivAction) -> Result<Value> {
         let input = match action {
             KummerDivAction::Scale(_, input) | KummerDivAction::Frobenius(_, _, _, input) => input,
@@ -6058,6 +6119,9 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::KummerDisc(a), Value::KummerDisc(b)) => {
                         Ok(Value::KummerDisc(a ^ b))
+                    }
+                    (BinaryOp::Add, Value::KummerWeil(a), Value::KummerWeil(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Lattice(a), Value::K3Lattice(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
@@ -7511,6 +7575,7 @@ impl Engine {
                 };
                 Ok(Value::PrimeScalar(nikulin::quadratic(mask)))
             }
+            TypedForm::KummerWeil(action) => self.eval_kummer_weil(action),
             TypedForm::KummerDiscPair(inputs) => {
                 let (Value::KummerDisc(left), Value::KummerDisc(right)) =
                     (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
@@ -9927,6 +9992,7 @@ impl Checker<'_> {
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::Enriques(name) => self.model.enriques_type(name.text.into()),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
+            TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::Nakajima(name, length, degree) => {
@@ -10972,6 +11038,7 @@ impl Checker<'_> {
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
+                    Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -13107,6 +13174,7 @@ impl Checker<'_> {
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::Enriques(expression) => self.enriques_expression(*expression),
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
+            ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
@@ -13827,6 +13895,15 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
                     return Ok((input.ty, input.kind));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KummerWeil(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KummerWeil(KummerWeilAction::Apply(
+                            kummer_weil::Operation::Scale(-1, 1),
+                            Box::new(input),
+                        )),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::CMOrder(..)) {
                     return Ok((
@@ -17544,6 +17621,7 @@ impl Checker<'_> {
                         | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
+                        | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
                         | Kind::Mukai(..)
@@ -19174,6 +19252,13 @@ impl Checker<'_> {
         Ok(name)
     }
 
+    fn kummer_weil_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {
+        let Kind::KummerWeil(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVKummerWeil vector"));
+        };
+        Ok(name)
+    }
+
     fn mukai_expression(&mut self, expression: mukai::Expression) -> Result<(TypeId, TypedForm)> {
         use mukai::Expression;
         let label = |name: &str, span| Label {
@@ -19255,6 +19340,59 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Mukai(action)))
+    }
+
+    fn kummer_weil_expression(
+        &mut self,
+        expression: kummer_weil::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use kummer_weil::Expression;
+        let (ty, action) = match expression {
+            Expression::Basis(input) => {
+                let input = self.expr(*input)?;
+                let marking = self.kummer_disc_operand(&input, "rvKummerWeilBasis")?;
+                let label = Label {
+                    text: marking.to_string(),
+                    span: input.span,
+                };
+                (
+                    self.model.kummer_weil_type(&label)?,
+                    KummerWeilAction::Basis(Box::new(input)),
+                )
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                self.kummer_weil_operand(&input, operation.name())?;
+                (
+                    input.ty,
+                    KummerWeilAction::Apply(operation, Box::new(input)),
+                )
+            }
+            Expression::Frobenius(base, power, input) => {
+                let input = self.expr(*input)?;
+                let marking = self.kummer_weil_operand(&input, "rvKummerWeilFrob")?;
+                let basis = self.model.jacobian_level(&Label {
+                    text: marking.to_string(),
+                    span: input.span,
+                })?;
+                let curve = self
+                    .model
+                    .jacobian_curve(&base.text)
+                    .map_err(|error| error.at(base.span))?;
+                let action = nikulin::Action::new(self.model, &basis, &curve, power)
+                    .map_err(|error| error.at(base.span))?;
+                (
+                    input.ty,
+                    KummerWeilAction::Frobenius(action, Box::new(input)),
+                )
+            }
+            Expression::Shell(marking, norm) => {
+                let ty = self.model.kummer_weil_type(&marking)?;
+                let vector = kummer_weil::theta_shell(self.model, norm)?;
+                return Ok((ty, TypedForm::Constant(vector.persist(self.model)?)));
+            }
+        };
+        Ok((ty, TypedForm::KummerWeil(action)))
     }
 
     fn kummer_disc_expression(

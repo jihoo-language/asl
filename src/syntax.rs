@@ -127,6 +127,7 @@ pub(crate) enum TypeForm {
     KummerK3(Label),
     Enriques(Label),
     KummerDisc(Label),
+    KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
@@ -974,6 +975,7 @@ pub(crate) enum ExprForm {
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
+    KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
@@ -1164,6 +1166,7 @@ pub(crate) enum StatementForm {
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
+    KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     NakajimaPair(Box<[ParsedExpr; 2]>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
@@ -3209,6 +3212,59 @@ impl<'src> Parser<'src> {
         ))))
     }
 
+    fn kummer_weil_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::weil::{Expression, Operation};
+        let (expression, depth) = match name {
+            "rvKummerThetaShell" => {
+                self.expect(Token::LBracket)?;
+                let marking = self.label()?;
+                self.expect(Token::Comma)?;
+                let norm = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Shell(marking, norm), 0)
+            }
+            "rvKummerWeilFrob" => {
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let power = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Frobenius(base, power, Box::new(input)), depth)
+            }
+            "rvKummerWeilBasis" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Basis(Box::new(input)), depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvKummerWeilScale" => {
+                        self.expect(Token::LBracket)?;
+                        let numerator =
+                            self.signed_wide("a signed numerator", "Kummer Weil scalar numerator")?;
+                        self.expect(Token::Comma)?;
+                        let denominator = self.wide_unsigned("Kummer Weil scalar denominator")?;
+                        self.expect(Token::RBracket)?;
+                        Operation::Scale(numerator, denominator)
+                    }
+                    "rvKummerWeilS" => Operation::S,
+                    _ => Operation::T,
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Apply(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::KummerWeil(Box::new(expression)), depth)
+    }
+
     fn kummer_disc_expression(
         &mut self,
         name: &str,
@@ -4587,6 +4643,14 @@ impl<'src> Parser<'src> {
             Token::Word("rvHilbSquareIntegral") => {
                 self.advance()?;
                 StatementForm::HilbertSquareIntegral(Box::new(self.paren_expr(0)?))
+            }
+            Token::Word("rvKummerWeilCoeff") => {
+                self.advance()?;
+                StatementForm::KummerWeilCoefficient(
+                    crate::hyperelliptic_kummer_surface::weil::Coefficient(Box::new(
+                        self.paren_pair(0)?,
+                    )),
+                )
             }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
@@ -7866,6 +7930,7 @@ impl<'src> Parser<'src> {
                 | "RVKummerDiv"
                 | "RVK3Lattice"
                 | "RVMukai"
+                | "RVKummerWeil"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -7878,6 +7943,7 @@ impl<'src> Parser<'src> {
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
+                "RVKummerWeil" => TypeForm::KummerWeil(endpoint),
                 _ => TypeForm::K3Lattice(endpoint),
             };
             return ty(span, form, 0);
@@ -9865,6 +9931,17 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.kummer_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKummerWeilScale" | "rvKummerWeilFrob" | "rvKummerThetaShell"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKummerWeilBasis" | "rvKummerWeilS" | "rvKummerWeilT"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.kummer_weil_expression(&name.text, span, nest);
                 }
                 if (matches!(name.text.as_str(), "rvKummerDisc" | "rvKummerDiscFrob")
                     && self.token() == Token::LBracket)

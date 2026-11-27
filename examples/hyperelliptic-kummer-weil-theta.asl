@@ -1,0 +1,34 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zw = rvUnramElem[W]{};
+let ow = rvUnramElem[W]{1};
+let i = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zw,zw);
+let r1 = rvJacPoint[L](ow,zw);
+let r2 = rvJacPoint[L](neg(ow),zw);
+let ri = rvJacPoint[L](i,zw);
+let e2 = add(add(r0,r1),r2);
+let f2 = add(add(r0,r1),ri);
+rvjactorsionbasis B[L,2](neg(ow)){r0,e2,r1,f2};
+
+// Weil representation and theta coefficients below.
+let origin = rvKummerDisc[B,0];
+let isotropic = rvKummerDisc[B,1];
+let anisotropic = rvKummerDisc[B,33];
+let e = rvKummerWeilBasis(isotropic);
+let f = rvKummerWeilBasis(anisotropic);
+assert rvKummerWeilS(rvKummerWeilS(e)) == e;
+assert rvKummerWeilT(f) == neg(f);
+assert rvKummerWeilFrob[C,1](e) == rvKummerWeilBasis(rvKummerDisc[B,5]);
+assert rvKummerWeilFrob[C,1](rvKummerThetaShell[B,3]) == rvKummerThetaShell[B,3];
+rvKummerWeilCoeff(rvKummerWeilS(e),origin);
+rvKummerWeilCoeff(rvKummerWeilS(e),rvKummerDisc[B,32]);
+rvKummerWeilCoeff(rvKummerThetaShell[B,0],origin);
+rvKummerWeilCoeff(rvKummerThetaShell[B,2],origin);
+rvKummerWeilCoeff(rvKummerThetaShell[B,2],isotropic);
+rvKummerWeilCoeff(rvKummerThetaShell[B,3],anisotropic);
+rvKummerWeilCoeff(rvKummerThetaShell[B,4],origin);

@@ -259,6 +259,7 @@ pub(crate) enum Kind {
     KummerK3(Rc<str>),
     Enriques(Rc<str>),
     KummerDisc(Rc<str>),
+    KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
@@ -431,6 +432,7 @@ pub(crate) enum Value {
     KummerK3(Rc<KummerK3Point>),
     Enriques(Rc<enriques::Orbit>),
     KummerDisc(u8),
+    KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
@@ -1002,6 +1004,7 @@ impl Model {
             }
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
+            Kind::KummerWeil(..) => usize::MAX,
             Kind::K3Lattice(..) | Kind::Mukai(..) => usize::MAX,
             Kind::Nakajima(ref grade) => {
                 if grade.supports_states() {
@@ -1227,6 +1230,7 @@ impl Model {
                 | Kind::KummerK3(..)
                 | Kind::Enriques(..)
                 | Kind::KummerDisc(..)
+                | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
@@ -3876,6 +3880,15 @@ impl Model {
         self.inhabited_type(Kind::KummerDisc(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn kummer_weil_type(&mut self, name: &Label) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "Kummer Weil vectors require a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::KummerWeil(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn k3_lattice_type(&mut self, name: &Label) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -5062,6 +5075,7 @@ impl Model {
             | Kind::KummerK3(..)
             | Kind::Enriques(..)
             | Kind::KummerDisc(..)
+            | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
@@ -5569,6 +5583,7 @@ impl Model {
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::Enriques(name) => out.push(&format!("RVEnriques({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
+            Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::Nakajima(grade) => out.push(&format!(
@@ -5860,6 +5875,7 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Enriques(a), Value::Enriques(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
+            (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6192,6 +6208,7 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::Enriques(a), Value::Enriques(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
+            (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
@@ -6511,6 +6528,11 @@ impl Model {
                     self.spend(count)?;
                     self.allocate(count)?;
                     (0..nikulin::ORDER).map(Value::KummerDisc).collect()
+                }
+                Kind::KummerWeil(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational Kummer Weil representation",
+                    ))
                 }
                 Kind::KummerDiv(..) => {
                     return Err(Error::plain(
@@ -7973,6 +7995,15 @@ impl Model {
             Value::KummerDisc(mask) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{mask}}}"))
+            }
+            Value::KummerWeil(vector) => {
+                self.write_type(out, ty, 0)?;
+                let fraction = vector.fraction();
+                self.spend(fraction.numerator.len())?;
+                out.push(&format!(
+                    "{{{:?} / {}}}",
+                    fraction.numerator, fraction.denominator
+                ))
             }
             Value::KummerDiv(divisor) => {
                 self.write_type(out, ty, 0)?;
