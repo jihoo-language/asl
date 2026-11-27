@@ -27,6 +27,7 @@ pub(crate) mod newton;
 pub(crate) mod nikulin;
 pub(crate) mod period;
 pub(crate) mod polarized;
+pub(crate) mod qz;
 pub(crate) mod rational_sparse;
 pub(crate) mod resolution;
 pub(crate) use resolution::pencil;

@@ -37,6 +37,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::residual_hecke
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
+use crate::hyperelliptic_kummer_surface::qz;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
@@ -282,6 +283,7 @@ pub(crate) enum Kind {
     OG6Clifford(Rc<str>, u8),
     KSExterior(Rc<str>, i128),
     KSEnd(Rc<str>),
+    QZ,
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
     OG10(Rc<str>),
@@ -477,6 +479,7 @@ pub(crate) enum Value {
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
     KSExterior(Rc<ks_exterior::Form>),
     KSEnd(Rc<ks_projector::End>),
+    QZ(qz::Scalar),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     OG10(Rc<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Class>),
@@ -1142,6 +1145,7 @@ impl Model {
             Kind::KSExterior(_, 0..=64) => usize::MAX,
             Kind::KSExterior(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
+            Kind::QZ => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1376,6 +1380,7 @@ impl Model {
                 | Kind::OG6Clifford(..)
                 | Kind::KSExterior(..)
                 | Kind::KSEnd(..)
+                | Kind::QZ
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
@@ -4397,6 +4402,10 @@ impl Model {
         self.inhabited_type(Kind::KSEnd(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn qz_type(&mut self) -> Result<TypeId> {
+        self.inhabited_type(Kind::QZ, 0)
+    }
+
     pub(crate) fn k3_clifford_type(&mut self, basis: &Label, parity: u8) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -6031,6 +6040,7 @@ impl Model {
             | Kind::OG6Clifford(..)
             | Kind::KSExterior(..)
             | Kind::KSEnd(..)
+            | Kind::QZ
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -6567,6 +6577,7 @@ impl Model {
             Kind::OG6Clifford(name, parity) => out.push(&format!("RVOG6Clifford({name},{parity})")),
             Kind::KSExterior(name, degree) => out.push(&format!("RVKSExterior({name},{degree})")),
             Kind::KSEnd(name) => out.push(&format!("RVKSEnd({name})")),
+            Kind::QZ => out.push("RVQZ"),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::OG10(name) => out.push(&format!("RVOG10({name})")),
@@ -6892,6 +6903,7 @@ impl Model {
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KSExterior(a), Value::KSExterior(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KSEnd(a), Value::KSEnd(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::QZ(a), Value::QZ(b)) => Ok(a.compare(self, *b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::AbMukai(a), Value::AbMukai(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -7247,6 +7259,7 @@ impl Model {
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => a.compare(self, b),
             (Value::KSExterior(a), Value::KSExterior(b)) => a.compare(self, b),
             (Value::KSEnd(a), Value::KSEnd(b)) => a.compare(self, b),
+            (Value::QZ(a), Value::QZ(b)) => a.compare(self, *b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
             (Value::AbMukai(a), Value::AbMukai(b)) => a.compare(self, b),
@@ -7684,6 +7697,7 @@ impl Model {
                         "cannot enumerate a rational Kuga–Satake endomorphism space",
                     ));
                 }
+                Kind::QZ => return Err(Error::plain("cannot enumerate the Q/Z scalar group")),
                 Kind::K3Clifford(..) => {
                     return Err(Error::plain(
                         "cannot enumerate the rational K3 Clifford algebra",
@@ -9280,6 +9294,7 @@ impl Model {
             Value::OG6Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::KSExterior(form) => self.write_sparse_rational(out, ty, form.as_ref()),
             Value::KSEnd(end) => self.write_sparse_rational(out, ty, end.as_ref()),
+            Value::QZ(scalar) => out.push(&format!("RVQZ({})", scalar.text())),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::AbMukai(vector) => {
                 let (r, wedge, s) = vector.coordinates();

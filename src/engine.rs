@@ -48,6 +48,7 @@ use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{
     eigenpacket, hecke, period_polynomial as period, quadratic_hecke, residual_hecke,
 };
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking;
 use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector as ks_projector;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
@@ -55,6 +56,7 @@ use crate::hyperelliptic_kummer_surface::mukai::{
     moduli::og10,
 };
 use crate::hyperelliptic_kummer_surface::period as k3_period;
+use crate::hyperelliptic_kummer_surface::qz;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
@@ -608,6 +610,14 @@ enum KSEndAction {
     Project(Rc<og6::cusp::Cusp>, Box<TypedExpr>),
 }
 
+struct KSLinkAction {
+    limit: Rc<og6::cusp::nilpotent::Limit>,
+    cover: i128,
+    bounds: [u128; 2],
+    degree: usize,
+    inputs: Box<[TypedExpr; 4]>,
+}
+
 enum KSExteriorAction {
     Embed(Box<TypedExpr>),
     ToSpin(Box<TypedExpr>),
@@ -753,6 +763,8 @@ enum TypedForm {
     OG6Clifford(OG6CliffordAction),
     KSExterior(KSExteriorAction),
     KSEnd(KSEndAction),
+    KSLink(Box<KSLinkAction>),
+    QZScale(i128, Box<TypedExpr>),
     WittBridge(Box<crate::rv_witt_spectrum::Bridge>),
     WittHilbertBridge(Box<crate::rv_witt_spectrum::HilbertBridge>),
     WittTensor(Box<[TypedExpr; 2]>),
@@ -2079,6 +2091,23 @@ impl Engine {
                 return self.ks_exterior_command(*command).map(Some)
             }
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
+            StatementForm::KSLinkCertificate(specification) => {
+                let span = specification.name.span;
+                let checked = self
+                    .checker()
+                    .ks_link_action(*specification, "rvKSLinkCertificate")?;
+                let value = self.eval_ks_link(&checked, span)?;
+                return Ok(Some(linking::certificate(value, checked.bounds)));
+            }
+            StatementForm::QZOrder(input) => {
+                let input = self.checker().expr(*input)?;
+                let expected = self.model.qz_type()?;
+                self.checker().require_type(expected, &input, "rvQZOrder")?;
+                let Value::QZ(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(Some(format!("rvQZOrder = {}", value.order())));
+            }
             StatementForm::OG6Nilpotent(command) => return self.og6_nilpotent_command(*command),
             StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
             StatementForm::OG6(command) => return self.og6_command(*command),
@@ -6669,6 +6698,37 @@ impl Engine {
         value.persist(&mut self.model)
     }
 
+    fn eval_ks_link(&mut self, action: &KSLinkAction, span: Span) -> Result<qz::Scalar> {
+        let [u, w, v, z] = action.inputs.as_ref();
+        let (
+            Value::KSExterior(u),
+            Value::KSExterior(w),
+            Value::KSExterior(v),
+            Value::KSExterior(z),
+        ) = (self.eval(u)?, self.eval(w)?, self.eval(v)?, self.eval(z)?)
+        else {
+            unreachable!()
+        };
+        let lattice = self.og6_spin_lattice(&action.limit.cusp, span)?;
+        let left = linking::Witness {
+            class: &u,
+            preimage: &w,
+            bound: action.bounds[0],
+            degree: action.degree,
+        };
+        let right = linking::Witness {
+            class: &v,
+            preimage: &z,
+            bound: action.bounds[1],
+            degree: linking::FIBER_DEGREE - action.degree,
+        };
+        action
+            .limit
+            .cusp
+            .spin_algebra(&mut self.model, &lattice)?
+            .torsion_link(&mut self.model, &action.limit, action.cover, left, right)
+    }
+
     fn ks_exterior_command(&mut self, command: ks_exterior::Command) -> Result<String> {
         match command {
             ks_exterior::Command::Data(name, degree) => {
@@ -8281,6 +8341,9 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::KSEnd(a), Value::KSEnd(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::QZ(a), Value::QZ(b)) => {
+                        a.add(&mut self.model, b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Clifford(a), Value::K3Clifford(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
@@ -10103,6 +10166,20 @@ impl Engine {
             TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
             TypedForm::KSExterior(action) => self.eval_ks_exterior(action, expr.span),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
+            TypedForm::KSLink(action) => self
+                .eval_ks_link(action, expr.span)?
+                .persist(&mut self.model),
+            TypedForm::QZScale(scalar, input) => {
+                let Value::QZ(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = if *scalar == -1 {
+                    value.negate()
+                } else {
+                    value.scale(&mut self.model, *scalar)?
+                };
+                value.persist(&mut self.model)
+            }
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
@@ -12867,6 +12944,7 @@ impl Checker<'_> {
             TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
             TypeForm::KSExterior(name, degree) => self.model.ks_exterior_type(&name, degree),
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
+            TypeForm::QZ => self.model.qz_type(),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
@@ -13926,6 +14004,7 @@ impl Checker<'_> {
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
+                    Kind::QZ => qz::Scalar::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -16115,6 +16194,22 @@ impl Checker<'_> {
             ExprForm::OG6Clifford(expression) => self.og6_clifford_expression(*expression),
             ExprForm::KSExterior(expression) => self.ks_exterior_expression(*expression),
             ExprForm::KSEnd(expression) => self.ks_end_expression(*expression),
+            ExprForm::KSLink(specification) => {
+                let action = self.ks_link_action(*specification, "rvKSLink")?;
+                Ok((self.model.qz_type()?, TypedForm::KSLink(Box::new(action))))
+            }
+            ExprForm::QZ(numerator, denominator) => {
+                let ty = self.model.qz_type()?;
+                let value =
+                    qz::Scalar::literal(self.model, numerator, denominator)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QZScale(scalar, input) => {
+                let input = self.expr(*input)?;
+                let ty = self.model.qz_type()?;
+                self.require_type(ty, &input, "rvQZScale")?;
+                Ok((ty, TypedForm::QZScale(scalar, Box::new(input))))
+            }
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
@@ -16992,6 +17087,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::KSEnd(KSEndAction::Scale(-1, 1, Box::new(input))),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::QZ) {
+                    return Ok((input.ty, TypedForm::QZScale(-1, Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::K3Clifford(..)) {
                     return Ok((
@@ -20837,6 +20935,7 @@ impl Checker<'_> {
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
                         | Kind::KSEnd(..)
+                        | Kind::QZ
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
@@ -23313,6 +23412,48 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Spinor(action)))
+    }
+
+    fn ks_link_action(
+        &mut self,
+        spec: linking::Specification,
+        operation: &str,
+    ) -> Result<KSLinkAction> {
+        let limit = self.model.og6_nilpotent(&spec.name)?;
+        let [u, w, v, z] = *spec.inputs;
+        let u = self.expr(u)?;
+        let (_, degree) = self.ks_exterior_operand(&u, operation)?;
+        let degree = usize::try_from(degree)
+            .ok()
+            .filter(|&degree| degree <= linking::FIBER_DEGREE)
+            .ok_or_else(|| {
+                Error::new(
+                    u.span,
+                    "Kuga–Satake linking fiber degree must be between 0 and 64",
+                )
+            })?;
+        let cusp = Label {
+            text: limit.cusp.name.to_string(),
+            span: spec.name.span,
+        };
+        let left = self.model.ks_exterior_type(&cusp, degree as i128)?;
+        self.require_type(left, &u, operation)?;
+        let w = self.expr(w)?;
+        self.require_type(left, &w, operation)?;
+        let right = self
+            .model
+            .ks_exterior_type(&cusp, (linking::FIBER_DEGREE - degree) as i128)?;
+        let v = self.expr(v)?;
+        self.require_type(right, &v, operation)?;
+        let z = self.expr(z)?;
+        self.require_type(right, &z, operation)?;
+        Ok(KSLinkAction {
+            limit,
+            cover: spec.cover,
+            bounds: spec.bounds,
+            degree,
+            inputs: Box::new([u, w, v, z]),
+        })
     }
 
     fn ks_end_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {

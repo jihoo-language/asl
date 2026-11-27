@@ -147,6 +147,7 @@ pub(crate) enum TypeForm {
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
     KSEnd(Label),
+    QZ,
     K3Spinor(Label, u8),
     Mukai(Label),
     MukaiQuotient(Label),
@@ -1022,6 +1023,9 @@ pub(crate) enum ExprForm {
     KSEnd(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Expression>,
     ),
+    KSLink(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification>),
+    QZ(i128, u128),
+    QZScale(i128, Box<ParsedExpr>),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
@@ -1260,6 +1264,8 @@ pub(crate) enum StatementForm {
     KSEnd(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::projector::Command>,
     ),
+    KSLinkCertificate(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification>),
+    QZOrder(Box<ParsedExpr>),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
@@ -3181,6 +3187,34 @@ impl<'src> Parser<'src> {
                 span,
                 "Kuga–Satake exterior mask must be an unsigned 64-bit integer",
             )
+        })
+    }
+
+    fn ks_link_specification(
+        &mut self, operation: &str, span: Span, nest: usize,
+    ) -> Result<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification>{
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::linking::Specification;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let cover = self.signed_wide("a signed integer", "Kuga–Satake monodromy exponent")?;
+        self.expect(Token::Comma)?;
+        let d = self.wide_unsigned("Kuga–Satake left linking witness bound")?;
+        self.expect(Token::Comma)?;
+        let e = self.wide_unsigned("Kuga–Satake right linking witness bound")?;
+        self.expect(Token::RBracket)?;
+        self.expect(Token::LParen)?;
+        let inputs = self.exact_arguments(
+            nest,
+            span,
+            operation,
+            "two exterior class and preimage pairs",
+        )?;
+        Ok(Specification {
+            name,
+            cover,
+            bounds: [d, e],
+            inputs,
         })
     }
 
@@ -7826,6 +7860,18 @@ impl<'src> Parser<'src> {
             Token::Word(operation @ ("rvOG6SpinData" | "rvOG6CliffordCoeff")) => {
                 self.og6_spin_statement(operation, span)?
             }
+            Token::Word("rvKSLinkCertificate") => {
+                self.advance()?;
+                StatementForm::KSLinkCertificate(Box::new(self.ks_link_specification(
+                    "rvKSLinkCertificate",
+                    span,
+                    0,
+                )?))
+            }
+            Token::Word("rvQZOrder") => {
+                self.advance()?;
+                StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
+            }
             Token::Word(
                 operation @ ("rvKSExteriorData"
                 | "rvKSExteriorSmith"
@@ -11394,6 +11440,9 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVQZ" {
+            return ty(span, TypeForm::QZ, 0);
+        }
         if name.text == "RVKSEnd" && self.eat(Token::LParen)? {
             let cusp = self.label()?;
             self.expect(Token::RParen)?;
@@ -13767,6 +13816,32 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvOG6CliffordMul" && self.token() == Token::LParen)
                 {
                     return self.og6_clifford_expression(&name.text, span, nest);
+                }
+                if name.text == "rvKSLink" && self.token() == Token::LBracket {
+                    let spec = self.ks_link_specification("rvKSLink", span, nest)?;
+                    let depth = 1 + spec
+                        .inputs
+                        .iter()
+                        .map(|input| input.depth)
+                        .max()
+                        .unwrap_or(0);
+                    return expr(span, ExprForm::KSLink(Box::new(spec)), depth);
+                }
+                if matches!(name.text.as_str(), "rvQZ" | "rvQZScale")
+                    && self.eat(Token::LBracket)?
+                {
+                    let numerator =
+                        self.signed_wide("a signed integer", "Q/Z numerator or scalar")?;
+                    if name.text == "rvQZ" {
+                        self.expect(Token::Comma)?;
+                        let denominator = self.wide_unsigned("Q/Z denominator")?;
+                        self.expect(Token::RBracket)?;
+                        return expr(span, ExprForm::QZ(numerator, denominator), 0);
+                    }
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    return expr(span, ExprForm::QZScale(numerator, Box::new(input)), depth);
                 }
                 if (matches!(
                     name.text.as_str(),

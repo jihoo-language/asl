@@ -10,6 +10,7 @@ use crate::hyperelliptic_kummer_surface::rational_sparse::{
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod linking;
 mod mapping_torus;
 mod smith;
 
@@ -332,11 +333,7 @@ impl Action {
         bound: usize,
     ) -> Result<Form> {
         if order == 1 {
-            let mut terms = self.exponential_terms(model, m, input, dual)?;
-            model.spend(input.terms().len() * WORK_LIMBS)?;
-            for &(key, coefficient) in input.terms() {
-                Form::accumulate(&mut terms, key, coefficient.resize()?.negate())?;
-            }
+            let terms = self.first_difference(model, m, input, dual)?;
             return Form::integral(model, &terms);
         }
         // The jth forward difference of t^l at zero counts surjections
@@ -356,6 +353,21 @@ impl Action {
         }
         let linear = self.exterior_columns(model, m, dual)?;
         exterior_polynomial(model, input, dual, &linear, order, &weights)
+    }
+
+    fn first_difference(
+        &self,
+        model: &mut Model,
+        m: i128,
+        input: &Form,
+        dual: bool,
+    ) -> Result<Terms> {
+        let mut terms = self.exponential_terms(model, m, input, dual)?;
+        model.spend(input.terms().len() * WORK_LIMBS)?;
+        for &(key, coefficient) in input.terms() {
+            Form::accumulate(&mut terms, key, coefficient.resize()?.negate())?;
+        }
+        Ok(terms)
     }
 }
 
