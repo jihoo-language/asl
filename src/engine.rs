@@ -701,6 +701,7 @@ enum TypedForm {
     AbMukaiNegate(Box<TypedExpr>),
     OG6(Rc<og6::Lattice>, i128, Box<TypedExpr>),
     OG6Negate(Box<TypedExpr>),
+    OG6Reflect(Rc<og6::Lattice>, Box<[TypedExpr; 2]>),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
     OG10Wall(
         og10::WallOperation,
@@ -5867,7 +5868,12 @@ impl Engine {
 
     fn og6_command(&mut self, command: og6::Command) -> Result<Option<String>> {
         use og6::Command;
-        let divisibility = matches!(&command, Command::Divisibility(_));
+        let unary_operation = match &command {
+            Command::Divisibility(_) => "rvOG6Div",
+            Command::Orbit(_) => "rvOG6Orbit",
+            Command::Wall(_) => "rvOG6Wall",
+            _ => "rvOG6RR",
+        };
         let result = match command {
             Command::Define(name, vector) => {
                 let vector = self.checker().expr(*vector)?;
@@ -5885,9 +5891,10 @@ impl Engine {
                 self.model.og6_lattice(&name)?;
                 og6::report(&name.text)
             }
-            Command::Pair(_) | Command::Fujiki(..) => {
+            Command::Pair(_) | Command::Fujiki(..) | Command::SameOrbit(_) => {
                 let (inputs, exponent, operation) = match command {
                     Command::Pair(inputs) => (inputs, None, "rvOG6Pair"),
+                    Command::SameOrbit(inputs) => (inputs, None, "rvOG6SameOrbit"),
                     Command::Fujiki(j, inputs) => (inputs, Some(j), "rvOG6Fujiki"),
                     _ => unreachable!(),
                 };
@@ -5895,7 +5902,7 @@ impl Engine {
                 let checker = &mut self.checker();
                 let left = checker.expr(left)?;
                 let right = checker.expr(right)?;
-                checker.og6_operand(&left, operation)?;
+                let name = checker.og6_operand(&left, operation)?;
                 checker.require_type(left.ty, &right, operation)?;
                 let (Value::OG6(left), Value::OG6(right)) = (self.eval(&left)?, self.eval(&right)?)
                 else {
@@ -5904,25 +5911,35 @@ impl Engine {
                 if let Some(j) = exponent {
                     let value = left.fujiki(&mut self.model, &right, j)?;
                     format!("{operation}[{j}] = {value}")
+                } else if operation == "rvOG6SameOrbit" {
+                    let lattice = self.model.og6_lattice(&name)?;
+                    og6::monodromy::compare_orbits(&mut self.model, &lattice, &left, &right)?
                 } else {
                     let value = left.pair(&mut self.model, &right)?;
                     format!("{operation} = {value}")
                 }
             }
-            Command::Divisibility(input) | Command::RiemannRoch(input) => {
-                let operation = if divisibility { "rvOG6Div" } else { "rvOG6RR" };
+            Command::Divisibility(input)
+            | Command::RiemannRoch(input)
+            | Command::Orbit(input)
+            | Command::Wall(input) => {
                 let input = self.checker().expr(*input)?;
-                let name = self.checker().og6_operand(&input, operation)?;
+                let name = self.checker().og6_operand(&input, unary_operation)?;
                 let Value::OG6(input) = self.eval(&input)? else {
                     unreachable!()
                 };
-                let value = if divisibility {
-                    let lattice = self.model.og6_lattice(&name)?;
-                    input.divisibility(&mut self.model, &lattice)?
-                } else {
-                    input.riemann_roch(&mut self.model)?
-                };
-                format!("{operation} = {value}")
+                let lattice = self.model.og6_lattice(&name)?;
+                match unary_operation {
+                    "rvOG6Div" => format!(
+                        "rvOG6Div = {}",
+                        input.divisibility(&mut self.model, &lattice)?
+                    ),
+                    "rvOG6RR" => format!("rvOG6RR = {}", input.riemann_roch(&mut self.model)?),
+                    "rvOG6Orbit" => {
+                        og6::monodromy::orbit_report(&mut self.model, &lattice, &input)?
+                    }
+                    _ => og6::monodromy::wall_report(&mut self.model, &lattice, &input)?,
+                }
             }
         };
         Ok(Some(result))
@@ -8603,6 +8620,15 @@ impl Engine {
                     unreachable!()
                 };
                 og6::Class::new(&mut self.model, lattice, vector, *exceptional)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG6Reflect(lattice, inputs) => {
+                let (Value::OG6(ray), Value::OG6(class)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                og6::monodromy::reflect(&mut self.model, lattice, &ray, &class)?
                     .persist(&mut self.model)
             }
             TypedForm::OG6Negate(input) => {
@@ -21189,6 +21215,18 @@ impl Checker<'_> {
     fn og6_expression(&mut self, expression: og6::Expression) -> Result<(TypeId, TypedForm)> {
         use og6::Expression;
         let (name, value) = match expression {
+            Expression::Reflect(inputs) => {
+                let [ray, class] = *inputs;
+                let ray = self.expr(ray)?;
+                let class = self.expr(class)?;
+                let name = self.og6_operand(&ray, "rvOG6Reflect")?;
+                self.require_type(ray.ty, &class, "rvOG6Reflect")?;
+                let lattice = self.model.og6_lattice(&name)?;
+                return Ok((
+                    ray.ty,
+                    TypedForm::OG6Reflect(lattice, Box::new([ray, class])),
+                ));
+            }
             Expression::Basis(name, index) => {
                 let lattice = self.model.og6_lattice(&name)?;
                 (name, og6::Class::basis(self.model, &lattice, index)?)

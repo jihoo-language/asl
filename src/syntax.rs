@@ -3017,6 +3017,9 @@ impl<'src> Parser<'src> {
                 Command::Lattice(name)
             }
             "rvOG6Pair" => Command::Pair(Box::new(self.paren_pair(0)?)),
+            "rvOG6SameOrbit" => Command::SameOrbit(Box::new(self.paren_pair(0)?)),
+            "rvOG6Orbit" => Command::Orbit(Box::new(self.paren_expr(0)?)),
+            "rvOG6Wall" => Command::Wall(Box::new(self.paren_expr(0)?)),
             "rvOG6Fujiki" => {
                 self.expect(Token::LBracket)?;
                 let exponent = self.number()?.0;
@@ -3031,6 +3034,15 @@ impl<'src> Parser<'src> {
 
     fn og6_expression(&mut self, operation: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Expression;
+        if operation == "rvOG6Reflect" {
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            return expr(
+                span,
+                ExprForm::OG6(Box::new(Expression::Reflect(Box::new(inputs)))),
+                depth,
+            );
+        }
         self.expect(Token::LBracket)?;
         let name = self.label()?;
         let (expression, depth) = match operation {
@@ -6016,7 +6028,7 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 operation @ ("rvog6" | "rvOG6Lattice" | "rvOG6Pair" | "rvOG6Div" | "rvOG6Fujiki"
-                | "rvOG6RR"),
+                | "rvOG6RR" | "rvOG6Orbit" | "rvOG6SameOrbit" | "rvOG6Wall"),
             ) => self.og6_statement(operation)?,
             Token::Word(
                 operation @ ("rvOG10Lattice" | "rvOG10Pair" | "rvOG10Div" | "rvOG10Fujiki"
@@ -11585,10 +11597,11 @@ impl<'src> Parser<'src> {
                 {
                     return self.abelian_mukai_expression(&name.text, span, nest);
                 }
-                if matches!(
+                if (matches!(
                     name.text.as_str(),
                     "rvOG6" | "rvOG6Basis" | "rvOG6Exc" | "rvOG6ExcHalf"
-                ) && self.token() == Token::LBracket
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvOG6Reflect" && self.token() == Token::LParen)
                 {
                     return self.og6_expression(&name.text, span, nest);
                 }

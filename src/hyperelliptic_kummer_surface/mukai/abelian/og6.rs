@@ -10,6 +10,8 @@ use crate::hyperelliptic_kummer_surface::polarized;
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod monodromy;
+
 const N: usize = 3;
 type Column = [ColumnInteger; RANK];
 
@@ -17,6 +19,7 @@ pub(crate) enum Expression {
     Build(Label, i128, Box<ParsedExpr>),
     Exceptional(Label, bool),
     Basis(Label, usize),
+    Reflect(Box<[ParsedExpr; 2]>),
 }
 
 pub(crate) enum Command {
@@ -26,6 +29,9 @@ pub(crate) enum Command {
     Divisibility(Box<ParsedExpr>),
     Fujiki(usize, Box<[ParsedExpr; 2]>),
     RiemannRoch(Box<ParsedExpr>),
+    Orbit(Box<ParsedExpr>),
+    SameOrbit(Box<[ParsedExpr; 2]>),
+    Wall(Box<ParsedExpr>),
 }
 
 pub(crate) struct Lattice {
