@@ -1,6 +1,6 @@
 use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
-use crate::finite_field_factor::factor_squarefree;
+use crate::finite_field_factor::{factor_with_multiplicity as closed_places, remove_factor};
 use crate::hw_algebra::CoefficientRing;
 use crate::model::Model;
 
@@ -8,6 +8,7 @@ use super::super::{Parameter, Pencil};
 use super::{binary_quartic, cube, field, plane_quadratics, quartic, FiberRing, Jacobian};
 
 mod arithmetic;
+pub(crate) mod sections;
 
 const DISCRIMINANT_DEGREE: usize = 24;
 
@@ -302,62 +303,6 @@ fn tame_reduction(
         "scale={scales}, minimal orders (c4, c6, discriminant)=[{}, {}, {delta}], j order={j}, geometric Kodaira={kodaira}",
         display_order(c4), display_order(c6)
     ))
-}
-
-type Place = (usize, usize, Polynomial);
-
-fn closed_places(model: &mut Model, field: Field<'_>, p: &[Scalar]) -> Result<Vec<Place>> {
-    let mut remaining = poly::monic(model, field, p.to_vec())?;
-    let mut places = Vec::new();
-    let mut scale = 1usize;
-    while remaining.len() > 1 {
-        let derivative = poly::derivative(model, field, &remaining)?;
-        if derivative.is_empty() {
-            // Over a finite (perfect) field, an inseparable polynomial is
-            // a pth power. Recover its pth root even in extension fields.
-            let characteristic = field.ring.prime() as usize;
-            remaining = remaining
-                .iter()
-                .step_by(characteristic)
-                .map(|c| field.ring.frobenius(model, c, field.ring.degree() - 1))
-                .collect::<Result<_>>()?;
-            scale *= characteristic;
-            continue;
-        }
-        let common = poly::monic_gcd(model, field, remaining.clone(), derivative)?;
-        // f/gcd(f,f') contains precisely the irreducibles whose orders
-        // are nonzero mod p, each once. Strip their entire multiplicity.
-        let squarefree = poly::exact_divide(model, field, &remaining, &common)?;
-        for factor in factor_squarefree(model, field, squarefree)? {
-            let multiplicity = remove_factor(model, field, &mut remaining, &factor)?;
-            if multiplicity == 0 {
-                return Err(Error::plain(
-                    "K3 pencil discriminant factor failed exact division",
-                ));
-            }
-            places.push((factor.len() - 1, multiplicity * scale, factor));
-        }
-    }
-    places.sort_unstable_by(|(d, _, p), (e, _, q)| d.cmp(e).then_with(|| p.cmp(q)));
-    Ok(places)
-}
-
-fn remove_factor(
-    model: &mut Model,
-    field: Field<'_>,
-    p: &mut Polynomial,
-    factor: &[Scalar],
-) -> Result<usize> {
-    let mut multiplicity = 0;
-    while p.len() >= factor.len() {
-        let (quotient, remainder) = poly::divide(model, field, p.clone(), factor)?;
-        if !remainder.is_empty() {
-            break;
-        }
-        *p = quotient;
-        multiplicity += 1;
-    }
-    Ok(multiplicity)
 }
 
 fn constant(field: Field<'_>, value: &Scalar) -> Polynomial {

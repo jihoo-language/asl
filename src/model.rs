@@ -263,6 +263,8 @@ pub(crate) enum Kind {
     KummerK3(Rc<str>),
     Enriques(Rc<str>),
     K3PencilBase(Rc<str>),
+    K3PencilSection(Rc<str>),
+    K3PencilKummer2(Rc<str>),
     KummerDisc(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
@@ -450,6 +452,8 @@ pub(crate) enum Value {
     KummerK3(Rc<KummerK3Point>),
     Enriques(Rc<enriques::Orbit>),
     K3PencilBase(Rc<pencil::Parameter>),
+    K3PencilSection(Rc<pencil::sections::Section>),
+    K3PencilKummer2(Rc<pencil::sections::Descent>),
     KummerDisc(u8),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
@@ -1075,6 +1079,7 @@ impl Model {
             }
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()].count(),
+            Kind::K3PencilSection(..) | Kind::K3PencilKummer2(..) => usize::MAX,
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
@@ -1312,6 +1317,8 @@ impl Model {
                 | Kind::KummerK3(..)
                 | Kind::Enriques(..)
                 | Kind::K3PencilBase(..)
+                | Kind::K3PencilSection(..)
+                | Kind::K3PencilKummer2(..)
                 | Kind::KummerDisc(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
@@ -4094,6 +4101,16 @@ impl Model {
         self.inhabited_type(Kind::K3PencilBase(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn k3_pencil_section_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.k3_pencil(name)?;
+        self.inhabited_type(Kind::K3PencilSection(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn k3_pencil_kummer2_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.k3_pencil(name)?;
+        self.inhabited_type(Kind::K3PencilKummer2(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn define_k3_mordell(
         &mut self,
         name: Label,
@@ -5695,6 +5712,8 @@ impl Model {
             | Kind::KummerK3(..)
             | Kind::Enriques(..)
             | Kind::K3PencilBase(..)
+            | Kind::K3PencilSection(..)
+            | Kind::K3PencilKummer2(..)
             | Kind::KummerDisc(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
@@ -6218,6 +6237,8 @@ impl Model {
             Kind::KummerK3(name) => out.push(&format!("RVKummerK3({name})")),
             Kind::Enriques(name) => out.push(&format!("RVEnriques({name})")),
             Kind::K3PencilBase(name) => out.push(&format!("RVK3PencilBase({name})")),
+            Kind::K3PencilSection(name) => out.push(&format!("RVK3PencilSection({name})")),
+            Kind::K3PencilKummer2(name) => out.push(&format!("RVK3PencilKummer2({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
@@ -6527,6 +6548,12 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Enriques(a), Value::Enriques(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3PencilBase(a), Value::K3PencilBase(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3PencilSection(a), Value::K3PencilSection(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
+            (Value::K3PencilKummer2(a), Value::K3PencilKummer2(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6876,6 +6903,8 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => a.compare(self, b),
             (Value::Enriques(a), Value::Enriques(b)) => a.compare(self, b),
             (Value::K3PencilBase(a), Value::K3PencilBase(b)) => a.compare(self, b),
+            (Value::K3PencilSection(a), Value::K3PencilSection(b)) => a.compare(self, b),
+            (Value::K3PencilKummer2(a), Value::K3PencilKummer2(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
@@ -7212,6 +7241,11 @@ impl Model {
                 }
                 Kind::Enriques(ref name) => {
                     self.enriques_quotient(name)?.elements(self, MAX_ELEMENTS)?
+                }
+                Kind::K3PencilSection(..) | Kind::K3PencilKummer2(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a generic K3 pencil section or square-class type",
+                    ));
                 }
                 Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()]
                     .clone()
@@ -8762,6 +8796,45 @@ impl Model {
                     self.write_ec_polynomial(out, direction)?;
                 }
                 out.push("}")
+            }
+            Value::K3PencilSection(section) => {
+                self.write_type(out, ty, 0)?;
+                match section.as_ref() {
+                    pencil::sections::Section::Infinity => out.push("{O}"),
+                    pencil::sections::Section::Affine(x, y) => {
+                        out.push("{x=")?;
+                        self.write_ec_polynomial(out, &x.numerator)?;
+                        out.push("/")?;
+                        self.write_ec_polynomial(out, &x.denominator)?;
+                        out.push(", y=")?;
+                        self.write_ec_polynomial(out, &y.numerator)?;
+                        out.push("/")?;
+                        self.write_ec_polynomial(out, &y.denominator)?;
+                        out.push("}")
+                    }
+                }
+            }
+            Value::K3PencilKummer2(descent) => {
+                self.write_type(out, ty, 0)?;
+                out.push("[")?;
+                for (i, (nonsquare, support)) in descent.coordinates().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(if nonsquare {
+                        "(nonsquare, ["
+                    } else {
+                        "(square, ["
+                    })?;
+                    for (j, factor) in support.iter().enumerate() {
+                        if j != 0 {
+                            out.push(", ")?;
+                        }
+                        self.write_ec_polynomial(out, factor)?;
+                    }
+                    out.push("])")?;
+                }
+                out.push("]")
             }
             Value::K3PencilBase(parameter) => {
                 self.write_type(out, ty, 0)?;

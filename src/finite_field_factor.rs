@@ -1,5 +1,5 @@
 use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::model::Model;
 
@@ -136,4 +136,72 @@ pub(crate) fn quadratic_sign(
         sign = poly::multiply_mod(model, field, &raised, &digit_power, block)?;
     }
     Ok(sign)
+}
+
+type Factor = (usize, usize, Polynomial);
+
+pub(crate) fn factor_with_multiplicity(
+    model: &mut Model,
+    field: Field<'_>,
+    p: &[Scalar],
+) -> Result<Vec<Factor>> {
+    let mut remaining = poly::monic(model, field, p.to_vec())?;
+    if remaining.is_empty() {
+        return Err(Error::plain(
+            "cannot factor the zero polynomial over the residue field",
+        ));
+    }
+    let mut places = Vec::new();
+    let mut scale = 1usize;
+    while remaining.len() > 1 {
+        let derivative = poly::derivative(model, field, &remaining)?;
+        if derivative.is_empty() {
+            // Over a finite (perfect) field, an inseparable polynomial is
+            // a pth power. Recover its pth root even in extension fields.
+            let characteristic = field.ring.prime() as usize;
+            remaining = remaining
+                .iter()
+                .step_by(characteristic)
+                .map(|c| field.ring.frobenius(model, c, field.ring.degree() - 1))
+                .collect::<Result<_>>()?;
+            scale *= characteristic;
+            continue;
+        }
+        let common = poly::monic_gcd(model, field, remaining.clone(), derivative)?;
+        // f/gcd(f,f') contains precisely the irreducibles whose orders
+        // are nonzero mod p, each once. Strip their entire multiplicity.
+        let squarefree = poly::exact_divide(model, field, &remaining, &common)?;
+        for factor in factor_squarefree(model, field, squarefree)? {
+            let multiplicity = remove_factor(model, field, &mut remaining, &factor)?;
+            if multiplicity == 0 {
+                return Err(Error::plain("finite-field factor failed exact division"));
+            }
+            places.push((factor.len() - 1, multiplicity * scale, factor));
+        }
+    }
+    places.sort_unstable_by(|(d, _, p), (e, _, q)| d.cmp(e).then_with(|| p.cmp(q)));
+    Ok(places)
+}
+
+pub(crate) fn remove_factor(
+    model: &mut Model,
+    field: Field<'_>,
+    p: &mut Polynomial,
+    factor: &[Scalar],
+) -> Result<usize> {
+    if factor.len() < 2 {
+        return Err(Error::plain(
+            "finite-field factor must have positive degree",
+        ));
+    }
+    let mut multiplicity = 0;
+    while p.len() >= factor.len() {
+        let (quotient, remainder) = poly::divide(model, field, p.clone(), factor)?;
+        if !remainder.is_empty() {
+            break;
+        }
+        *p = quotient;
+        multiplicity += 1;
+    }
+    Ok(multiplicity)
 }

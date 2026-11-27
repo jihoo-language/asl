@@ -15,6 +15,7 @@ use super::{jets, quartic, ResolvedPoint};
 
 pub(crate) mod fiber;
 pub(crate) mod mordell;
+pub(crate) use fiber::relative::sections;
 
 pub(crate) enum Command {
     Define(Label, Label, u8, u8),
@@ -26,6 +27,7 @@ pub(crate) enum Command {
     Euler(Label, Box<ParsedExpr>),
     LFunction(Label),
     Bsd(Label),
+    Torsion2(Label),
 }
 
 pub(crate) struct Expression(pub(crate) Label, pub(crate) Operation);
@@ -97,6 +99,7 @@ pub(crate) struct Pencil {
     sections: [OnceCell<Section>; 16],
     counts: OnceCell<Box<[usize]>>,
     relative: OnceCell<fiber::relative::RelativeJacobian>,
+    torsion_roots: OnceCell<Vec<crate::ec_poly::Polynomial>>,
 }
 
 impl Pencil {
@@ -156,6 +159,7 @@ impl Pencil {
             sections: std::array::from_fn(|_| OnceCell::new()),
             counts: OnceCell::new(),
             relative: OnceCell::new(),
+            torsion_roots: OnceCell::new(),
         })
     }
 

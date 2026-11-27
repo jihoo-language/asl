@@ -697,6 +697,8 @@ enum TypedForm {
     Kummer(KummerAction),
     Enriques(EnriquesAction),
     K3Pencil(Rc<pencil::Pencil>, PencilAction),
+    K3PencilSectionNegate(Rc<pencil::Pencil>, Box<TypedExpr>),
+    K3PencilDescent(Rc<pencil::Pencil>, bool, Box<TypedExpr>),
     K3Mordell(Rc<mordell::Mordell>, mordell::Shift, i128, Box<TypedExpr>),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
@@ -1846,6 +1848,10 @@ impl Engine {
                         let pencil = self.model.k3_pencil(&name)?;
                         let relative = pencil.relative(&mut self.model)?;
                         relative.bsd(&mut self.model, &pencil, &name.text).map(Some)
+                    }
+                    Command::Torsion2(name) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil.torsion_report(&mut self.model, &name.text).map(Some)
                     }
                 };
             }
@@ -7697,6 +7703,26 @@ impl Engine {
                     (BinaryOp::Add, Value::KummerDiv(a), Value::KummerDiv(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (
+                        BinaryOp::Add,
+                        Value::K3PencilSection(left),
+                        Value::K3PencilSection(right),
+                    ) => {
+                        let Kind::K3PencilSection(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let pencil = self.model.k3_pencil(&Label {
+                            text: name.to_string(),
+                            span: expr.span,
+                        })?;
+                        left.add(&mut self.model, &pencil, &right)?
+                            .persist(&mut self.model)
+                    }
+                    (
+                        BinaryOp::Add,
+                        Value::K3PencilKummer2(left),
+                        Value::K3PencilKummer2(right),
+                    ) => left.add(&mut self.model, &right)?.persist(&mut self.model),
                     (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
                         rv_tl::add(&mut self.model, &a, &b)
                     }
@@ -9046,6 +9072,25 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::K3PencilDescent(pencil, divisible, input) => {
+                let Value::K3PencilSection(section) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let descent = section.descent(&mut self.model, pencil)?;
+                if *divisible {
+                    Ok(Value::Point(usize::from(descent.is_trivial())))
+                } else {
+                    descent.persist(&mut self.model)
+                }
+            }
+            TypedForm::K3PencilSectionNegate(pencil, input) => {
+                let Value::K3PencilSection(section) = self.eval(input)? else {
+                    unreachable!()
+                };
+                section
+                    .negate(&mut self.model, pencil)?
+                    .persist(&mut self.model)
+            }
             TypedForm::K3Pencil(pencil, action) => match action {
                 PencilAction::Param(inputs) => {
                     let (Value::RVUnram(u), Value::RVUnram(v)) =
@@ -11927,6 +11972,8 @@ impl Checker<'_> {
             TypeForm::KummerK3(name) => self.model.kummer_k3_type(name.text.into()),
             TypeForm::Enriques(name) => self.model.enriques_type(name.text.into()),
             TypeForm::K3PencilBase(name) => self.model.k3_pencil_base_type(&name),
+            TypeForm::K3PencilSection(name) => self.model.k3_pencil_section_type(&name),
+            TypeForm::K3PencilKummer2(name) => self.model.k3_pencil_kummer2_type(&name),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
@@ -13038,6 +13085,8 @@ impl Checker<'_> {
                         KummerPoint::identity(&curve).persist(self.model)?
                     }
                     Kind::KummerDiv(..) => kummer_div::Divisor::zero().persist(self.model)?,
+                    Kind::K3PencilSection(..) => pencil::sections::Section::Infinity.persist(self.model)?,
+                    Kind::K3PencilKummer2(..) => pencil::sections::Descent::default().persist(self.model)?,
                     Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
                     Kind::ECMap(source,target)=>{
                         ec_morphism::persist(self.model,Morphism::zero(source.clone(),target.clone()))?
@@ -15135,6 +15184,7 @@ impl Checker<'_> {
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::Enriques(expression) => self.enriques_expression(*expression),
             ExprForm::K3Pencil(expression) => self.pencil_expression(*expression),
+            ExprForm::K3PencilSection(expression) => self.pencil_section_expression(*expression),
             ExprForm::K3Mordell(expression) => {
                 let mordell::Expression(name, shift, steps, input) = *expression;
                 let marked = self.model.k3_mordell(&name)?;
@@ -16114,6 +16164,19 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::KummerDiv(KummerDivAction::Scale(-1, Box::new(input))),
                     ));
+                }
+                if let Kind::K3PencilSection(name) = self.model.kind(input.ty) {
+                    let pencil = self.model.k3_pencil(&Label {
+                        text: name.to_string(),
+                        span: input.span,
+                    })?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::K3PencilSectionNegate(pencil, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::K3PencilKummer2(..)) {
+                    return Ok((input.ty, input.kind));
                 }
                 if let Kind::Jacobian(name) = self.model.kind(input.ty) {
                     let curve = self.model.jacobian_curve(name)?;
@@ -19810,6 +19873,8 @@ impl Checker<'_> {
                         | Kind::RVCyclo(..)
                         | Kind::Jacobian(..)
                         | Kind::KummerDiv(..)
+                        | Kind::K3PencilSection(..)
+                        | Kind::K3PencilKummer2(..)
                         | Kind::ECPoint(..)
                         | Kind::HWMatrix(..)
                         | Kind::HWWMatrix(..)
@@ -22800,6 +22865,52 @@ impl Checker<'_> {
                         power,
                         Box::new(input),
                     )),
+                ))
+            }
+        }
+    }
+
+    fn pencil_section_expression(
+        &mut self,
+        expression: pencil::sections::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use pencil::sections::{Expression, Section};
+        match expression {
+            Expression::Literal(name, coordinates) => {
+                let pencil = self.model.k3_pencil(&name)?;
+                let ty = self.model.k3_pencil_section_type(&name)?;
+                let value =
+                    Section::literal(self.model, &pencil, *coordinates)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Torsion(name, index) => {
+                let pencil = self.model.k3_pencil(&name)?;
+                let ty = self.model.k3_pencil_section_type(&name)?;
+                let value = pencil.torsion_at(self.model, index)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Descent(input, divisible) => {
+                let input = self.expr(*input)?;
+                let Kind::K3PencilSection(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "K3 pencil two-descent",
+                        "an RVK3PencilSection point",
+                    ));
+                };
+                let name = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let pencil = self.model.k3_pencil(&name)?;
+                let ty = if divisible {
+                    self.model.named("S").unwrap()
+                } else {
+                    self.model.k3_pencil_kummer2_type(&name)?
+                };
+                Ok((
+                    ty,
+                    TypedForm::K3PencilDescent(pencil, divisible, Box::new(input)),
                 ))
             }
         }

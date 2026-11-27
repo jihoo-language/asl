@@ -129,6 +129,8 @@ pub(crate) enum TypeForm {
     KummerK3(Label),
     Enriques(Label),
     K3PencilBase(Label),
+    K3PencilSection(Label),
+    K3PencilKummer2(Label),
     KummerDisc(Label),
     KummerWeil(Label),
     KummerDiv(Label),
@@ -991,6 +993,7 @@ pub(crate) enum ExprForm {
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Expression>),
+    K3PencilSection(Box<crate::hyperelliptic_kummer_surface::pencil::sections::Expression>),
     K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
@@ -5235,12 +5238,59 @@ impl<'src> Parser<'src> {
                 "rvK3FiberEuler" => Command::Euler(name, Box::new(self.paren_expr(0)?)),
                 "rvK3PencilLFunction" => Command::LFunction(name),
                 "rvK3PencilBSD" => Command::Bsd(name),
+                "rvK3PencilTorsion2" => Command::Torsion2(name),
                 "rvK3PencilWeierstrass" => Command::Weierstrass(name),
                 "rvK3PencilDiscriminant" => Command::Discriminant(name),
                 _ => Command::Census(name),
             }
         };
         Ok(StatementForm::K3Pencil(Box::new(command)))
+    }
+
+    fn k3_pencil_section_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::pencil::sections::Expression;
+        let (expression, depth) = match name {
+            "rvK3PencilSectionPoint" => {
+                self.expect(Token::LBracket)?;
+                let pencil = self.label()?;
+                self.expect(Token::RBracket)?;
+                let coefficient = |parser: &mut Self| {
+                    parser.signed_tuple(
+                        "a signed residue coordinate",
+                        "K3 pencil section coefficient",
+                    )
+                };
+                let coordinates = [
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                    self.set_named_rows(coefficient)?,
+                ];
+                (Expression::Literal(pencil, Box::new(coordinates)), 0)
+            }
+            "rvK3PencilTorsion2At" => {
+                self.expect(Token::LBracket)?;
+                let pencil = self.label()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Torsion(pencil, index), 0)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (
+                    Expression::Descent(Box::new(input), name == "rvK3PencilDivisible2"),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::K3PencilSection(Box::new(expression)), depth)
     }
 
     fn k3_pencil_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
@@ -6619,7 +6669,8 @@ impl<'src> Parser<'src> {
                 | "rvK3FiberReduction"
                 | "rvK3FiberEuler"
                 | "rvK3PencilLFunction"
-                | "rvK3PencilBSD"),
+                | "rvK3PencilBSD"
+                | "rvK3PencilTorsion2"),
             ) => self.k3_pencil_statement(op)?,
             Token::Word(
                 op
@@ -10192,6 +10243,8 @@ impl<'src> Parser<'src> {
                 | "RVKummerK3"
                 | "RVEnriques"
                 | "RVK3PencilBase"
+                | "RVK3PencilSection"
+                | "RVK3PencilKummer2"
                 | "RVKummerDisc"
                 | "RVKummerDiv"
                 | "RVK3Lattice"
@@ -10211,6 +10264,8 @@ impl<'src> Parser<'src> {
                 "RVKummerK3" => TypeForm::KummerK3(endpoint),
                 "RVEnriques" => TypeForm::Enriques(endpoint),
                 "RVK3PencilBase" => TypeForm::K3PencilBase(endpoint),
+                "RVK3PencilSection" => TypeForm::K3PencilSection(endpoint),
+                "RVK3PencilKummer2" => TypeForm::K3PencilKummer2(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
@@ -12181,6 +12236,17 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.k3_pencil_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvK3PencilSectionPoint" | "rvK3PencilTorsion2At"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvK3PencilDescent2" | "rvK3PencilDivisible2"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.k3_pencil_section_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),
