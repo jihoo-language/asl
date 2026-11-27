@@ -124,6 +124,10 @@ impl Basis {
         Ok(self.theta.get_or_init(|| Rc::new(group)).clone())
     }
 
+    pub(crate) fn require_base_extension(&self, model: &mut Model, base: &Curve) -> Result<()> {
+        crate::hyperelliptic_jacobian::require_extension(model, base, &self.curve)
+    }
+
     pub(crate) fn binary_combination(&self, model: &mut Model, mut mask: u8) -> Result<Divisor> {
         let mut result = Divisor::zero(&self.curve);
         for generator in &self.generators {

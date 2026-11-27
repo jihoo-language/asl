@@ -3035,6 +3035,25 @@ impl<'src> Parser<'src> {
         use crate::generalized_kummer::Command;
         self.advance()?;
         self.expect(Token::LBracket)?;
+        if matches!(name, "rvGenKummerBetti" | "rvJacHilbBetti") {
+            let span = self.span();
+            let length = self.wide_unsigned("Jacobian Hilbert-scheme length")?;
+            self.expect(Token::Comma)?;
+            let i = self.wide_unsigned("cohomological degree")?;
+            self.expect(Token::RBracket)?;
+            let command = if name == "rvGenKummerBetti" {
+                if length == 0 {
+                    return Err(Error::new(
+                        span,
+                        "generalized Kummer length must be positive",
+                    ));
+                }
+                Command::Betti(length, i)
+            } else {
+                Command::HilbertBetti(length, i)
+            };
+            return Ok(StatementForm::GeneralizedKummer(Box::new(command)));
+        }
         let first = self.label()?;
         self.expect(Token::Comma)?;
         let positive_degree = |parser: &mut Self| {
@@ -3045,20 +3064,42 @@ impl<'src> Parser<'src> {
             }
             Ok(degree)
         };
-        let command = if name == "rvGenKummerLevel" {
+        let command = if matches!(name, "rvGenKummerLevel" | "rvGenKummerTrace") {
             let base = self.label()?;
             self.expect(Token::Comma)?;
             let degree = positive_degree(self)?;
+            let command = if name == "rvGenKummerTrace" {
+                self.expect(Token::Comma)?;
+                Command::Trace(
+                    first,
+                    base,
+                    degree,
+                    self.wide_unsigned("cohomological degree")?,
+                )
+            } else {
+                Command::Level(first, base, degree)
+            };
             self.expect(Token::RBracket)?;
-            Command::Level(first, base, degree)
+            command
         } else {
             let span = self.span();
             let length = self.wide_unsigned("Jacobian Hilbert-scheme length")?;
-            if name == "rvJacHilbPoints" {
+            if matches!(name, "rvJacHilbPoints" | "rvJacHilbTrace") {
                 self.expect(Token::Comma)?;
                 let degree = positive_degree(self)?;
+                let command = if name == "rvJacHilbTrace" {
+                    self.expect(Token::Comma)?;
+                    Command::HilbertTrace(
+                        first,
+                        length,
+                        degree,
+                        self.wide_unsigned("cohomological degree")?,
+                    )
+                } else {
+                    Command::Hilbert(first, length, degree)
+                };
                 self.expect(Token::RBracket)?;
-                Command::Hilbert(first, length, degree)
+                command
             } else {
                 if length == 0 {
                     return Err(Error::new(span, "summation fiber length must be positive"));
@@ -4236,7 +4277,8 @@ impl<'src> Parser<'src> {
             }
             Token::Word(
                 command @ ("rvJacHilbPoints" | "rvGenKummerPoints" | "rvGenKummerFiber"
-                | "rvGenKummerLevel"),
+                | "rvGenKummerLevel" | "rvGenKummerBetti" | "rvGenKummerTrace"
+                | "rvJacHilbBetti" | "rvJacHilbTrace"),
             ) => self.generalized_kummer_statement(command)?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),

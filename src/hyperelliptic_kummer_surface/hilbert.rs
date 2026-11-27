@@ -13,9 +13,24 @@ use super::k3::{exterior_power_sum, fixed_nodes, h1_power_sums, node_orbits};
 pub(crate) mod characteristic;
 
 const LIMBS: usize = 16;
-type Integer = Wide<LIMBS>;
-type Magnitude = Natural<LIMBS>;
+pub(crate) type Integer = Wide<LIMBS>;
+pub(crate) type Magnitude = Natural<LIMBS>;
 type Term = (usize, Integer);
+
+#[derive(Clone, Copy)]
+pub(crate) enum SurfaceKind {
+    K3,
+    Abelian,
+}
+
+impl SurfaceKind {
+    fn grading_unit(self) -> usize {
+        match self {
+            Self::K3 => 2,
+            Self::Abelian => 1,
+        }
+    }
+}
 
 pub(crate) enum Command {
     Points(Label, u128, u128),
@@ -115,19 +130,30 @@ fn coefficient(
     degree: Option<u128>,
     arithmetic: Option<(&Curve, u128)>,
 ) -> Result<Integer> {
+    let coefficients = coefficients(model, length, degree, arithmetic, SurfaceKind::K3)?;
+    Ok(*coefficients.last().unwrap().last().unwrap())
+}
+
+pub(crate) fn coefficients(
+    model: &mut Model,
+    length: u128,
+    degree: Option<u128>,
+    arithmetic: Option<(&Curve, u128)>,
+    kind: SurfaceKind,
+) -> Result<Vec<Vec<Integer>>> {
     let length = usize::try_from(length).map_err(|_| storage_limit())?;
     let degree = degree
         .map(usize::try_from)
         .transpose()
         .map_err(|_| storage_limit())?;
     let top = degree.unwrap_or(0);
-    check_storage(model, length, top)?;
+    check_storage(model, length, top, 1 + 4 / kind.grading_unit())?;
     let limit = length.min(degree.unwrap_or(length));
     let surface = match arithmetic {
-        None => Surface::Betti,
-        Some((curve, r)) => Surface::arithmetic(model, curve, r, limit)?,
+        None => Surface::Betti(kind),
+        Some((curve, r)) => Surface::arithmetic(model, curve, r, limit, kind)?,
     };
-    let weights = log_coefficients(model, length, degree, &surface)?;
+    let weights = log_coefficients(model, length, degree, &surface, kind)?;
     let zero = Integer::from_i128(0);
     let mut first = vec![zero; top + 1];
     first[0] = Integer::from_i128(1);
@@ -162,7 +188,7 @@ fn coefficient(
         }
         coefficients.push(row);
     }
-    Ok(coefficients[length][top])
+    Ok(coefficients)
 }
 
 fn log_coefficients(
@@ -170,13 +196,16 @@ fn log_coefficients(
     length: usize,
     degree: Option<usize>,
     surface: &Surface,
+    kind: SurfaceKind,
 ) -> Result<Vec<Vec<Term>>> {
     let mut result = vec![Vec::new(); length + 1];
+    let unit = kind.grading_unit();
     for m in 1..=length {
         for l in 1..=length / m {
             let j = m * l;
             let twist = j - l;
-            if degree.is_some_and(|top| twist > top) {
+            let shift = (2 / unit) * twist;
+            if degree.is_some_and(|top| shift > top) {
                 continue;
             }
             let magnitude = surface
@@ -187,13 +216,15 @@ fn log_coefficients(
                 magnitude,
                 negative: false,
             };
-            for b in 0..=2 {
-                let grade = twist + l * b;
+            for b in 0..=4 / unit {
+                let grade = shift + l * b;
                 if degree.is_some_and(|top| grade > top) {
                     break;
                 }
                 let shift = degree.map_or(0, |_| grade);
-                let trace = surface.trace(b, l)?;
+                // Odd oscillators give exterior powers. Their logarithmic
+                // coefficient has a minus sign at every power l.
+                let trace = surface.signed_trace(model, b * unit, l)?;
                 if !trace.is_zero() {
                     result[j].push((shift, checked_product(model, factor, trace)?));
                 }
@@ -204,15 +235,22 @@ fn log_coefficients(
 }
 
 enum Surface {
-    Betti,
+    Betti(SurfaceKind),
     Frobenius {
         powers: Vec<Magnitude>,
         middle: Vec<Integer>,
+        first: Vec<Integer>,
     },
 }
 
 impl Surface {
-    fn arithmetic(model: &mut Model, curve: &Curve, r: u128, limit: usize) -> Result<Self> {
+    fn arithmetic(
+        model: &mut Model,
+        curve: &Curve,
+        r: u128,
+        limit: usize,
+        kind: SurfaceKind,
+    ) -> Result<Self> {
         let q = curve.ring.size_of_residue_field()?;
         let q_power = power(model, q, r)?;
         let mut powers = Vec::with_capacity(limit + 1);
@@ -223,7 +261,10 @@ impl Surface {
         }
         // The bounds on the field powers also bound the required H¹ exponents.
         let step = usize::try_from(r).map_err(|_| intermediate_overflow())?;
-        let orbits = node_orbits(model, curve, q)?;
+        let orbits = match kind {
+            SurfaceKind::K3 => node_orbits(model, curve, q)?,
+            SurfaceKind::Abelian => Vec::new(),
+        };
         let weil = curve.weil(model)?;
         let traces = h1_power_sums(model, weil, 2 * step * limit, intermediate_overflow)?;
         let mut middle = Vec::with_capacity(limit + 1);
@@ -244,31 +285,54 @@ impl Surface {
                     .map_err(|_| intermediate_overflow())?,
             );
         }
-        Ok(Self::Frobenius { powers, middle })
+        let first = match kind {
+            SurfaceKind::Abelian => (0..=limit).map(|l| traces[step * l]).collect(),
+            SurfaceKind::K3 => Vec::new(),
+        };
+        Ok(Self::Frobenius {
+            powers,
+            middle,
+            first,
+        })
     }
 
     fn power(&self, exponent: usize) -> Magnitude {
         match self {
-            Self::Betti => Magnitude::from_small(1),
+            Self::Betti(_) => Magnitude::from_small(1),
             Self::Frobenius { powers, .. } => powers[exponent],
         }
     }
 
-    fn trace(&self, half_degree: usize, l: usize) -> Result<Integer> {
-        Ok(match (self, half_degree) {
-            (_, 0) | (Self::Betti, 2) => Integer::from_i128(1),
-            (Self::Betti, 1) => Integer::from_i128(22),
-            (Self::Frobenius { middle, .. }, 1) => middle[l],
-            (Self::Frobenius { powers, .. }, 2) => Integer {
+    fn signed_trace(&self, model: &mut Model, degree: usize, l: usize) -> Result<Integer> {
+        let value = match (self, degree) {
+            (Self::Betti(SurfaceKind::K3), b) => Integer::from_i128([1, 0, 22, 0, 1][b]),
+            (Self::Betti(SurfaceKind::Abelian), b) => Integer::from_i128([1, 4, 6, 4, 1][b]),
+            (_, 0) => Integer::from_i128(1),
+            (Self::Frobenius { first, .. }, 1) => first[l],
+            (Self::Frobenius { middle, .. }, 2) => middle[l],
+            (Self::Frobenius { first, powers, .. }, 3) => checked_product(
+                model,
+                first[l],
+                Integer {
+                    magnitude: powers[l],
+                    negative: false,
+                },
+            )?,
+            (Self::Frobenius { powers, .. }, 4) => Integer {
                 magnitude: multiply(powers[l], powers[l])?,
                 negative: false,
             },
-            _ => unreachable!("only even surface degrees 0, 2, 4 are used"),
+            _ => unreachable!("a surface has degrees zero through four"),
+        };
+        Ok(if degree.is_multiple_of(2) {
+            value
+        } else {
+            value.negate()
         })
     }
 }
 
-fn unsigned(value: Integer) -> Option<u128> {
+pub(crate) fn unsigned(value: Integer) -> Option<u128> {
     if value.negative && !value.is_zero() {
         return None;
     }
@@ -280,13 +344,13 @@ fn multiply(left: Magnitude, right: Magnitude) -> Result<Magnitude> {
         .ok_or_else(intermediate_overflow)
 }
 
-fn checked_product(model: &mut Model, left: Integer, right: Integer) -> Result<Integer> {
+pub(crate) fn checked_product(model: &mut Model, left: Integer, right: Integer) -> Result<Integer> {
     model.spend(1 + left.magnitude.bits().div_ceil(32) * right.magnitude.bits().div_ceil(32))?;
     left.multiply_wide(right)
         .map_err(|_| intermediate_overflow())
 }
 
-fn power(model: &mut Model, q: u64, mut exponent: u128) -> Result<Magnitude> {
+pub(crate) fn power(model: &mut Model, q: u64, mut exponent: u128) -> Result<Magnitude> {
     let mut result = Magnitude::from_small(1);
     let mut factor = Magnitude::from_small(u128::from(q));
     while exponent != 0 {
@@ -302,7 +366,7 @@ fn power(model: &mut Model, q: u64, mut exponent: u128) -> Result<Magnitude> {
     Ok(result)
 }
 
-fn check_storage(model: &mut Model, length: usize, degree: usize) -> Result<()> {
+fn check_storage(model: &mut Model, length: usize, degree: usize, atoms: usize) -> Result<()> {
     let entries = length
         .saturating_add(1)
         .saturating_mul(degree.saturating_add(1));
@@ -315,7 +379,7 @@ fn check_storage(model: &mut Model, length: usize, degree: usize) -> Result<()> 
     model.spend(length)?;
     let terms: usize = (1..=length).map(|m| length / m).sum();
     let words = size_of::<Term>().div_ceil(size_of::<usize>());
-    let cells = cells + 3 * terms * words;
+    let cells = cells + atoms * terms * words;
     if cells > MAX_PIVOT_CELLS {
         return Err(storage_limit());
     }
@@ -326,6 +390,6 @@ fn storage_limit() -> Error {
     Error::plain("Kummer Hilbert-scheme calculation exceeds the coefficient storage limit")
 }
 
-fn intermediate_overflow() -> Error {
+pub(crate) fn intermediate_overflow() -> Error {
     Error::plain("Kummer Hilbert-scheme exact intermediate exceeds 512 bits")
 }

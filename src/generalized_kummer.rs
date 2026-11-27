@@ -9,11 +9,17 @@ use crate::prime_linear;
 use crate::rv_ore::gcd;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod cohomology;
+
 pub(crate) enum Command {
     Hilbert(Label, u128, u128),
     Zero(Label, u128),
     Fiber(Label, u128, Box<ParsedExpr>),
     Level(Label, Label, u128),
+    Betti(u128, u128),
+    Trace(Label, Label, u128, u128),
+    HilbertBetti(u128, u128),
+    HilbertTrace(Label, u128, u128, u128),
 }
 
 pub(crate) fn require_curve(curve: &Curve) -> Result<()> {
@@ -117,15 +123,31 @@ pub(crate) fn level(
     base: &Curve,
     degree: u128,
 ) -> Result<(u128, u128)> {
+    require_level_basis(basis)?;
+    let ell = u128::from(basis.prime.get());
+    let (q, hilbert) = abelian_counts(model, base, ell, degree)?;
+    let n = ell as usize;
+    let torsion = rational_torsion(model, basis, base, degree as usize)?;
+    // The correction is integral because H_1 is already the group order.
+    let main = exact_divide(hilbert[n], hilbert[1])?;
+    let correction = q
+        .checked_pow((n - 1) as u32)
+        .and_then(|factor| factor.checked_mul(torsion - 1))
+        .ok_or_else(overflow)?;
+    Ok((main.checked_add(correction).ok_or_else(overflow)?, torsion))
+}
+
+fn require_level_basis(basis: &Basis) -> Result<()> {
     if basis.len() != 4 {
         return Err(Error::plain(
             "generalized Kummer level requires a genus-two torsion basis",
         ));
     }
-    let ell = u128::from(basis.prime.get());
-    let (q, hilbert) = abelian_counts(model, base, ell, degree)?;
-    let n = ell as usize;
-    let frobenius = basis.frobenius(model, base, degree as usize)?;
+    Ok(())
+}
+
+fn rational_torsion(model: &mut Model, basis: &Basis, base: &Curve, degree: usize) -> Result<u128> {
+    let frobenius = basis.frobenius(model, base, degree)?;
     let matrix = frobenius.matrix;
     let mut image = prime_linear::Basis::default();
     for i in 0..4 {
@@ -142,14 +164,7 @@ pub(crate) fn level(
             .collect();
         image.insert(model, basis.prime, row)?;
     }
-    let torsion = ell.pow((4 - image.rank()) as u32);
-    // The correction is integral because H_1 is already the group order.
-    let main = exact_divide(hilbert[n], hilbert[1])?;
-    let correction = q
-        .checked_pow((n - 1) as u32)
-        .and_then(|factor| factor.checked_mul(torsion - 1))
-        .ok_or_else(overflow)?;
-    Ok((main.checked_add(correction).ok_or_else(overflow)?, torsion))
+    Ok(u128::from(basis.prime.get()).pow((4 - image.rank()) as u32))
 }
 
 struct DivisorStatistic {

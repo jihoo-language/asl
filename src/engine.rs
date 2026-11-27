@@ -4756,7 +4756,7 @@ impl Engine {
         &mut self,
         command: crate::generalized_kummer::Command,
     ) -> Result<String> {
-        use crate::generalized_kummer::{self as kummer, Command};
+        use crate::generalized_kummer::{self as kummer, cohomology, Command};
         let curve_for = |model: &Model, name: &Label| {
             let curve = model
                 .jacobian_curve(&name.text)
@@ -4772,6 +4772,31 @@ impl Engine {
             }
         };
         match command {
+            Command::Betti(n, i) => {
+                let value = cohomology::betti(&mut self.model, n, i)?;
+                Ok(format!("rvGenKummerBetti[{n}, {i}] = {value}"))
+            }
+            Command::Trace(name, base, degree, i) => {
+                let basis = self.model.jacobian_level(&name)?;
+                let curve = curve_for(&self.model, &base)?;
+                let value = cohomology::trace(&mut self.model, &basis, &curve, degree, i)?;
+                Ok(format!(
+                    "rvGenKummerTrace[{}, {}, {degree}, {i}] = {value}",
+                    name.text, base.text
+                ))
+            }
+            Command::HilbertBetti(n, i) => {
+                let value = cohomology::hilbert_betti(&mut self.model, n, i)?;
+                Ok(format!("rvJacHilbBetti[{n}, {i}] = {value}"))
+            }
+            Command::HilbertTrace(name, n, degree, i) => {
+                let curve = curve_for(&self.model, &name)?;
+                let value = cohomology::hilbert_trace(&mut self.model, &curve, n, degree, i)?;
+                Ok(format!(
+                    "rvJacHilbTrace[{}, {n}, {degree}, {i}] = {value}",
+                    name.text
+                ))
+            }
             Command::Hilbert(name, length, degree) => {
                 let curve = curve_for(&self.model, &name)?;
                 let count = kummer::hilbert(&mut self.model, &curve, length, degree)?;
