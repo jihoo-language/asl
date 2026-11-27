@@ -146,6 +146,7 @@ pub(crate) enum TypeForm {
     K3PencilKummer2(Label),
     K3PencilCoverPoint(Label),
     KummerDisc(Label),
+    KummerBrauerFixed(Label, usize),
     KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -1031,6 +1032,7 @@ pub(crate) enum ExprForm {
     K3PencilSection(Box<crate::hyperelliptic_kummer_surface::pencil::sections::Expression>),
     K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
+    KummerBrauerLink(Box<crate::jacobian_level::linking::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
@@ -1283,6 +1285,7 @@ pub(crate) enum StatementForm {
     Hodge(crate::generalized_kummer::hodge::Command),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
+    KummerBrauerLink(Box<crate::jacobian_level::linking::Statement>),
     KummerNodeLattice(Box<crate::hyperelliptic_kummer_surface::nikulin::Command>),
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
@@ -3064,6 +3067,85 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Jacobian(Box::new(command)))
+    }
+
+    fn kummer_brauer_link_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::linking::Statement;
+        self.advance()?;
+        let statement = match command {
+            "rvkummerbrauerpairing" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Statement::Define(name, basis, base, degree)
+            }
+            "rvKummerBrauerLinkForm" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Form(name)
+            }
+            _ => Statement::Link(Box::new(self.paren_pair(0)?)),
+        };
+        Ok(StatementForm::KummerBrauerLink(Box::new(statement)))
+    }
+
+    fn kummer_brauer_link_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::linking::Expression;
+        let (expression, depth) = match name {
+            "rvKummerBrauerFixed" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let level = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let coordinates = self
+                    .set_named_rows(|parser| {
+                        parser.signed_wide("a signed coordinate", "Kummer Brauer fixed lift")
+                    })?
+                    .try_into()
+                    .map_err(|_| {
+                        Error::new(span, "Kummer Brauer fixed lift requires six coordinates")
+                    })?;
+                (Expression::Fixed(name, level, coordinates), 0)
+            }
+            "rvKummerBrauerScale" => {
+                self.expect(Token::LBracket)?;
+                let n = self.signed_wide("a signed integer", "Kummer Brauer scaling")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Scale(n, Box::new(input)), depth)
+            }
+            "rvKummerBrauerChange" => {
+                self.expect(Token::LBracket)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Change(target, Box::new(input)), depth)
+            }
+            _ => {
+                let input = self.paren_pair(nest)?;
+                let depth = 1 + input[0].depth.max(input[1].depth);
+                (Expression::Nonzero(Box::new(input)), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::KummerBrauerLink(Box::new(expression)),
+            depth,
+        )
     }
 
     fn jacobian_level_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -9525,6 +9607,11 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                command @ ("rvkummerbrauerpairing"
+                | "rvKummerBrauerLinkForm"
+                | "rvKummerBrauerLink"),
+            ) => self.kummer_brauer_link_statement(command)?,
+            Token::Word(
                 name @ ("rveclevel" | "rvecplainlevel" | "rvECLevelData" | "rvECLevelInvariants"),
             ) => self.ec_level_statement(name)?,
             Token::Word(
@@ -13100,6 +13187,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if name.text == "RVKummerBrauerFixed" && self.eat(Token::LParen)? {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let level = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KummerBrauerFixed(name, level), 0);
+        }
         if matches!(name.text.as_str(), "RVECLevelVec" | "RVECLevelMat")
             && self.eat(Token::LParen)?
         {
@@ -15380,6 +15474,14 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.enriques_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKummerBrauerFixed" | "rvKummerBrauerScale" | "rvKummerBrauerChange"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
+                {
+                    return self.kummer_brauer_link_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacPowerCoord" && self.eat(Token::LBracket)? {
                     let basis = self.label()?;

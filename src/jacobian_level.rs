@@ -15,6 +15,7 @@ use crate::rv_unram::{mul_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod brauer;
+pub(crate) mod linking;
 pub(crate) mod richelot;
 
 pub(crate) enum Command {

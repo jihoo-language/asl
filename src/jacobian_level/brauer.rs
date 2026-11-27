@@ -8,7 +8,7 @@ use crate::model::Model;
 use crate::rv_unram::{mul_mod, sub_mod};
 
 const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
-type Exterior = [[u64; 6]; 6];
+pub(super) type Exterior = [[u64; 6]; 6];
 
 pub(crate) fn report(
     model: &mut Model,
@@ -82,21 +82,24 @@ pub(crate) fn report(
     Ok(output)
 }
 
-fn twisted_exterior_square(matrix: &Matrix<u64>, modulus: u64, multiplier: u64) -> Exterior {
+pub(super) fn exterior_square(matrix: &Matrix<u64>, modulus: u64) -> Exterior {
     std::array::from_fn(|i| {
         let (r, s) = PAIRS[i];
         std::array::from_fn(|j| {
             let (u, v) = PAIRS[j];
             let forward = mul_mod(*matrix.entry(r, u), *matrix.entry(s, v), modulus);
             let reverse = mul_mod(*matrix.entry(r, v), *matrix.entry(s, u), modulus);
-            let entry = sub_mod(forward, reverse, modulus);
-            if i == j {
-                sub_mod(entry, multiplier, modulus)
-            } else {
-                entry
-            }
+            sub_mod(forward, reverse, modulus)
         })
     })
+}
+
+fn twisted_exterior_square(matrix: &Matrix<u64>, modulus: u64, multiplier: u64) -> Exterior {
+    let mut exterior = exterior_square(matrix, modulus);
+    for (i, row) in exterior.iter_mut().enumerate() {
+        row[i] = sub_mod(row[i], multiplier, modulus);
+    }
+    exterior
 }
 
 fn smith_exponents(model: &mut Model, ring: Residues, mut rows: Exterior) -> Result<[usize; 6]> {

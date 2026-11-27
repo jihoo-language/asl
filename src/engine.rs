@@ -70,6 +70,7 @@ use crate::hyperelliptic_kummer_surface::{
     polarized as kummer_div, unimodular, Point as KummerPoint,
 };
 use crate::jacobian_level;
+use crate::jacobian_level::linking as brauer_linking;
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -682,6 +683,12 @@ enum EllipticModularAction {
     SpecializeCoefficient(usize, Box<TypedExpr>),
 }
 
+struct TypedBrauerLink {
+    pairing: Rc<brauer_linking::Pairing>,
+    levels: [usize; 2],
+    inputs: [TypedExpr; 2],
+}
+
 enum ECLevelAction {
     Matrix(Box<TypedExpr>),
     Coordinates(Box<TypedExpr>),
@@ -831,6 +838,14 @@ enum TypedForm {
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
+    KummerBrauerScale(u64, u64, Box<TypedExpr>),
+    KummerBrauerChange(
+        Rc<brauer_linking::Pairing>,
+        Box<brauer_linking::Change>,
+        usize,
+        Box<TypedExpr>,
+    ),
+    KummerBrauerNonzero(Box<TypedBrauerLink>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
     K3LatticeReflect(Box<[TypedExpr; 2]>),
@@ -2454,6 +2469,9 @@ impl Engine {
             }
             StatementForm::Hurwitz(query) => return query.report(&mut self.model).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
+            StatementForm::KummerBrauerLink(command) => {
+                return self.kummer_brauer_link_statement(*command)
+            }
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {
                 self.bielliptic_command(*command)?;
@@ -6831,6 +6849,45 @@ impl Engine {
         }
     }
 
+    fn kummer_brauer_link_statement(
+        &mut self,
+        statement: brauer_linking::Statement,
+    ) -> Result<Option<String>> {
+        use brauer_linking::Statement;
+        match statement {
+            Statement::Define(name, marking, base, degree) => {
+                self.model.define_kummer_brauer_pairing(name, |model| {
+                    let marking = model.jacobian_power_level(&marking)?;
+                    let curve = model
+                        .kummer_curve(&base.text)
+                        .map_err(|error| error.at(base.span))?;
+                    brauer_linking::Pairing::new(model, marking, base, &curve, degree)
+                })?;
+                Ok(None)
+            }
+            Statement::Link(inputs) => {
+                let plan = self.checker().kummer_brauer_link_inputs(*inputs)?;
+                let value = self.eval_kummer_brauer_link(&plan)?;
+                Ok(Some(value.report()))
+            }
+            Statement::Form(name) => {
+                let pairing = self.model.kummer_brauer_pairing(&name.text)?;
+                pairing.form(&mut self.model, &name.text).map(Some)
+            }
+        }
+    }
+
+    fn eval_kummer_brauer_link(&mut self, plan: &TypedBrauerLink) -> Result<brauer_linking::Value> {
+        let [left, right] = &plan.inputs;
+        let (Value::KummerBrauerFixed(v), Value::KummerBrauerFixed(w)) =
+            (self.eval(left)?, self.eval(right)?)
+        else {
+            unreachable!()
+        };
+        plan.pairing
+            .link(&mut self.model, plan.levels[0], v, plan.levels[1], w)
+    }
+
     fn jacobian_level_command(
         &mut self,
         command: jacobian_level::Command,
@@ -9595,6 +9652,15 @@ impl Engine {
                             std::array::from_fn(|i| ec_level::add_vectors(a.0[i], b.0[i], n));
                         Ok(Value::ECLevelMat(ec_level::Matrix(columns)))
                     }
+                    (BinaryOp::Add, Value::KummerBrauerFixed(a), Value::KummerBrauerFixed(b)) => {
+                        let Kind::KummerBrauerFixed(name, level) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let modulus = self.model.kummer_brauer_pairing(name)?.modulus(*level)?;
+                        Ok(Value::KummerBrauerFixed(brauer_linking::add_vectors(
+                            a, b, modulus,
+                        )))
+                    }
                     (BinaryOp::Add, Value::KummerDisc(a), Value::KummerDisc(b)) => {
                         Ok(Value::KummerDisc(a ^ b))
                     }
@@ -11299,6 +11365,27 @@ impl Engine {
                     }
                 }
             },
+            TypedForm::KummerBrauerScale(coefficient, modulus, input) => {
+                let Value::KummerBrauerFixed(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::KummerBrauerFixed(brauer_linking::scaled(
+                    value,
+                    *coefficient,
+                    *modulus,
+                )))
+            }
+            TypedForm::KummerBrauerChange(target, change, level, input) => {
+                let Value::KummerBrauerFixed(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = change.apply(&mut self.model, target, *level, value)?;
+                Ok(Value::KummerBrauerFixed(value))
+            }
+            TypedForm::KummerBrauerNonzero(input) => {
+                let value = self.eval_kummer_brauer_link(input)?;
+                Ok(Value::Point(usize::from(value.nonzero())))
+            }
             TypedForm::KummerDiscQuadratic(input) => {
                 let Value::KummerDisc(mask) = self.eval(input)? else {
                     unreachable!()
@@ -14602,6 +14689,7 @@ impl Checker<'_> {
             TypeForm::K3PencilKummer2(name) => self.model.k3_pencil_kummer2_type(&name),
             TypeForm::K3PencilCoverPoint(name) => self.model.k3_pencil_cover_point_type(&name),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
+            TypeForm::KummerBrauerFixed(name, level) => self.model.kummer_brauer_type(&name, level),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -15718,6 +15806,7 @@ impl Checker<'_> {
                     Kind::ASOddDeRham(..) | Kind::ASOddTate(..) => odd_ext::zero(),
                     Kind::PrimeScalar(..) => Value::PrimeScalar(0),
                     Kind::KummerDisc(..) => Value::KummerDisc(0),
+                    Kind::KummerBrauerFixed(..) => Value::KummerBrauerFixed([0; 6]),
                     Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
                     Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
@@ -17952,6 +18041,9 @@ impl Checker<'_> {
                 ))
             }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
+            ExprForm::KummerBrauerLink(expression) => {
+                self.kummer_brauer_link_expression(*expression)
+            }
             ExprForm::ECLevel(expression) => self.ec_level_expression(*expression),
             ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
@@ -19016,6 +19108,13 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
+                }
+                if let Kind::KummerBrauerFixed(name, level) = self.model.kind(input.ty) {
+                    let modulus = self.model.kummer_brauer_pairing(name)?.modulus(*level)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::KummerBrauerScale(modulus - 1, modulus, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
@@ -22803,6 +22902,7 @@ impl Checker<'_> {
                         | Kind::ASOddTate(..)
                         | Kind::PrimeScalar(..)
                         | Kind::KummerDisc(..)
+                        | Kind::KummerBrauerFixed(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
@@ -27443,6 +27543,86 @@ impl Checker<'_> {
             Ok(())
         } else {
             Err(self.invalid_operand(input, operation, "an RVSiegelWeight"))
+        }
+    }
+
+    fn kummer_brauer_link_inputs(
+        &mut self,
+        [left, right]: [ParsedExpr; 2],
+    ) -> Result<TypedBrauerLink> {
+        let left = self.expr(left)?;
+        let right = self.expr(right)?;
+        let (a, a_level) = self.kummer_brauer_operand(&left, "rvKummerBrauerLink")?;
+        let (b, b_level) = self.kummer_brauer_operand(&right, "rvKummerBrauerLink")?;
+        if a != b {
+            return Err(Error::new(
+                right.span,
+                "Kummer Brauer linking requires the same named pairing",
+            ));
+        }
+        let pairing = self.model.kummer_brauer_pairing(&a)?;
+        Ok(TypedBrauerLink {
+            pairing,
+            levels: [a_level, b_level],
+            inputs: [left, right],
+        })
+    }
+
+    fn kummer_brauer_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(Rc<str>, usize)> {
+        let Kind::KummerBrauerFixed(name, level) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "a Kummer Brauer fixed lift"));
+        };
+        Ok((Rc::clone(name), *level))
+    }
+
+    fn kummer_brauer_link_expression(
+        &mut self,
+        expression: brauer_linking::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use brauer_linking::Expression;
+        match expression {
+            Expression::Fixed(name, level, coordinates) => {
+                let pairing = self.model.kummer_brauer_pairing(&name.text)?;
+                let value = pairing.fixed(self.model, level, coordinates)?;
+                let ty = self.model.kummer_brauer_type(&name, level)?;
+                Ok((ty, TypedForm::Constant(Value::KummerBrauerFixed(value))))
+            }
+            Expression::Scale(coefficient, input) => {
+                let input = self.expr(*input)?;
+                let (name, level) = self.kummer_brauer_operand(&input, "rvKummerBrauerScale")?;
+                let modulus = self.model.kummer_brauer_pairing(&name)?.modulus(level)?;
+                let coefficient = coefficient.rem_euclid(i128::from(modulus)) as u64;
+                Ok((
+                    input.ty,
+                    TypedForm::KummerBrauerScale(coefficient, modulus, Box::new(input)),
+                ))
+            }
+            Expression::Change(target, input) => {
+                let input = self.expr(*input)?;
+                let (name, level) = self.kummer_brauer_operand(&input, "rvKummerBrauerChange")?;
+                let source = self.model.kummer_brauer_pairing(&name)?;
+                let target_pairing = self.model.kummer_brauer_pairing(&target.text)?;
+                let change = target_pairing.change(self.model, &source)?;
+                let ty = self.model.kummer_brauer_type(&target, level)?;
+                Ok((
+                    ty,
+                    TypedForm::KummerBrauerChange(
+                        target_pairing,
+                        Box::new(change),
+                        level,
+                        Box::new(input),
+                    ),
+                ))
+            }
+            Expression::Nonzero(inputs) => {
+                let plan = self.kummer_brauer_link_inputs(*inputs)?;
+                let ty = self.model.named("S").unwrap();
+                Ok((ty, TypedForm::KummerBrauerNonzero(Box::new(plan))))
+            }
         }
     }
 
