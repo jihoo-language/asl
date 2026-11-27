@@ -40,3 +40,15 @@ rvK3CasselsTangents[T];
 rvK3CasselsPair[T](b);
 rvK3CasselsPair[T](a);
 rvK3CasselsPair[T](delta);
+
+rvk3cassels Second[Bcover]{
+  0{[4],[12]}{[5],[3]}{[1]},
+  1{}{[6],[3]}{[1]},
+  2{[0],[8]}{[7],[21]}{[1]}
+};
+rvk3selmer4 R[M]{T,Second};
+rvK3Selmer4[R];
+show rvK3Selmer4Pair[R](a,b);
+assert rvK3Selmer4Contains[R](delta)==S.hi;
+assert rvK3Selmer4Contains[R](a)==S.lo;
+show rvK3Selmer4ImageBasis[R,0];

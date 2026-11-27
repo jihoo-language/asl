@@ -3,10 +3,12 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::hyperelliptic_kummer_surface::nikulin::binary_rref;
 use crate::model::Model;
+use crate::syntax::Label;
 
 use super::{Cover, Descent, Pencil, Section};
 
 pub(crate) struct MordellImage {
+    pub(crate) pencil_name: Label,
     pencil: Rc<Pencil>,
     rank: usize,
     image_rows: Vec<u32>,
@@ -17,6 +19,7 @@ pub(crate) struct MordellImage {
 impl MordellImage {
     pub(crate) fn new(
         model: &mut Model,
+        pencil_name: Label,
         pencil: Rc<Pencil>,
         generators: &[Rc<Section>],
     ) -> Result<Self> {
@@ -32,8 +35,9 @@ impl MordellImage {
                 pivots.len(), rank + 2,
             )));
         }
-        model.allocate(7 + 2 * rows.len())?;
+        model.allocate(7 + pencil_name.text.len() + 2 * rows.len())?;
         Ok(Self {
+            pencil_name,
             pencil,
             rank,
             image_rows: rows,
@@ -85,23 +89,39 @@ impl MordellImage {
         )
     }
 
-    fn coset(&self, model: &mut Model, cover: &Cover) -> Result<Option<u32>> {
-        if !Rc::ptr_eq(&self.pencil, &cover.pencil) {
-            return Err(Error::plain(
-                "K3 pencil covering and Mordell-Weil certificate require the same named pencil",
-            ));
-        }
-        let selmer = self.pencil.selmer_space(model)?;
-        let Some(mut vector) = selmer.encode_local(model, &cover.b)? else {
-            return Ok(None);
-        };
+    pub(super) fn pencil(&self) -> &Rc<Pencil> {
+        &self.pencil
+    }
+
+    pub(super) fn rank(&self) -> usize {
+        self.rank
+    }
+
+    pub(super) fn rows(&self) -> &[u32] {
+        &self.image_rows
+    }
+
+    pub(super) fn reduce(&self, model: &mut Model, mut vector: u32) -> Result<u32> {
         model.spend(self.pivots.len())?;
         for (&row, &pivot) in self.image_rows.iter().zip(&self.pivots) {
             if vector & (1 << pivot) != 0 {
                 vector ^= row;
             }
         }
-        Ok(Some(vector))
+        Ok(vector)
+    }
+
+    pub(super) fn coset(&self, model: &mut Model, cover: &Cover) -> Result<Option<u32>> {
+        if !Rc::ptr_eq(&self.pencil, &cover.pencil) {
+            return Err(Error::plain(
+                "K3 pencil covering and Mordell-Weil certificate require the same named pencil",
+            ));
+        }
+        let selmer = self.pencil.selmer_space(model)?;
+        let Some(vector) = selmer.encode_local(model, &cover.b)? else {
+            return Ok(None);
+        };
+        self.reduce(model, vector).map(Some)
     }
 
     pub(crate) fn sha_class(&self, model: &mut Model, cover: &Cover) -> Result<Descent> {

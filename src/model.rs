@@ -681,6 +681,7 @@ pub(crate) struct Model {
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
+    k3_selmer_four: HashMap<String, Rc<pencil::sections::covering::four::Certificate>>,
     k3_pencil_covers: HashMap<String, Rc<pencil::sections::covering::Cover>>,
     k3_pencil_mw_images: HashMap<String, Rc<pencil::sections::covering::MordellImage>>,
     k3_mordell: HashMap<String, Rc<mordell::Mordell>>,
@@ -813,6 +814,7 @@ impl Model {
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
+            k3_selmer_four: HashMap::new(),
             k3_pencil_covers: HashMap::new(),
             k3_pencil_mw_images: HashMap::new(),
             k3_mordell: HashMap::new(),
@@ -4314,6 +4316,43 @@ impl Model {
         })
     }
 
+    pub(crate) fn define_k3_selmer_four(
+        &mut self,
+        name: Label,
+        image: &Label,
+        witnesses: &[Label],
+    ) -> Result<()> {
+        if self.k3_selmer_four.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("four-Selmer certificate '{}' is already defined", name.text),
+            ));
+        }
+        let image = self.k3_pencil_mw_image(image)?;
+        let witnesses = witnesses
+            .iter()
+            .map(|witness| self.k3_cassels(witness))
+            .collect::<Result<Vec<_>>>()?;
+        let certificate =
+            pencil::sections::covering::four::Certificate::new(self, image, &witnesses)
+                .map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_selmer_four.insert(name.text, Rc::new(certificate));
+        Ok(())
+    }
+
+    pub(crate) fn k3_selmer_four(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<pencil::sections::covering::four::Certificate>> {
+        self.k3_selmer_four.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown four-Selmer certificate '{}'", name.text),
+            )
+        })
+    }
+
     pub(crate) fn define_k3_pencil_cover(
         &mut self,
         name: Label,
@@ -4369,9 +4408,14 @@ impl Model {
                 ),
             ));
         }
-        let pencil = self.k3_pencil(pencil)?;
-        let image = pencil::sections::covering::MordellImage::new(self, pencil, sections)
-            .map_err(|error| error.at(name.span))?;
+        let named_pencil = self.k3_pencil(pencil)?;
+        let image = pencil::sections::covering::MordellImage::new(
+            self,
+            pencil.clone(),
+            named_pencil,
+            sections,
+        )
+        .map_err(|error| error.at(name.span))?;
         self.allocate(1 + name.text.len())?;
         self.k3_pencil_mw_images.insert(name.text, Rc::new(image));
         Ok(())

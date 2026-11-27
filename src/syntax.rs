@@ -6388,13 +6388,19 @@ impl<'src> Parser<'src> {
         use crate::hyperelliptic_kummer_surface::pencil::sections::covering::cassels::AuxiliaryInput;
         use crate::hyperelliptic_kummer_surface::pencil::sections::covering::Command;
         self.advance()?;
-        let command = if matches!(name, "rvk3pencilcover" | "rvk3pencilmw2" | "rvk3cassels") {
+        let command = if matches!(
+            name,
+            "rvk3pencilcover" | "rvk3pencilmw2" | "rvk3cassels" | "rvk3selmer4"
+        ) {
             let label = self.label()?;
             self.expect(Token::LBracket)?;
             let pencil = self.label()?;
             self.expect(Token::RBracket)?;
             match name {
                 "rvk3pencilcover" => Command::Define(label, pencil, Box::new(self.paren_expr(0)?)),
+                "rvk3selmer4" => {
+                    Command::DefineFour(label, pencil, self.set_named_rows(|p| p.label())?)
+                }
                 "rvk3pencilmw2" => {
                     Command::DefineImage(label, pencil, self.set_named_rows(|p| p.expr(0))?)
                 }
@@ -6427,6 +6433,7 @@ impl<'src> Parser<'src> {
                 "rvK3PencilCoverQuadrics" => Command::Quadrics(label),
                 "rvK3PencilMW2" => Command::Image(label),
                 "rvK3CasselsTangents" => Command::CasselsTangents(label),
+                "rvK3Selmer4" => Command::Four(label),
                 "rvK3CasselsPair" => {
                     self.expect(Token::RBracket)?;
                     return Ok(StatementForm::K3PencilCover(Box::new(
@@ -6482,6 +6489,38 @@ impl<'src> Parser<'src> {
                     }
                 };
                 (expression, 0)
+            }
+            "rvK3Selmer4Pair"
+            | "rvK3Selmer4Contains"
+            | "rvK3Selmer4ImageBasis"
+            | "rvK3Selmer4QuotientBasis" => {
+                use crate::hyperelliptic_kummer_surface::pencil::sections::covering::four::Expression as Four;
+                self.expect(Token::LBracket)?;
+                let certificate = self.label()?;
+                let (operation, depth) = match name {
+                    "rvK3Selmer4Pair" => {
+                        self.expect(Token::RBracket)?;
+                        let inputs = self.paren_pair(nest)?;
+                        let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                        (Four::Pair(certificate, Box::new(inputs)), depth)
+                    }
+                    "rvK3Selmer4Contains" => {
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = 1 + input.depth;
+                        (Four::Contains(certificate, Box::new(input)), depth)
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        (
+                            Four::Basis(certificate, index, name == "rvK3Selmer4QuotientBasis"),
+                            0,
+                        )
+                    }
+                };
+                (Expression::SelmerFour(operation), depth)
             }
             "rvK3PencilCoverLift" | "rvK3PencilShaClass" => {
                 self.expect(Token::LBracket)?;
@@ -8090,7 +8129,9 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilCoverStatus"
                 | "rvk3cassels"
                 | "rvK3CasselsPair"
-                | "rvK3CasselsTangents"),
+                | "rvK3CasselsTangents"
+                | "rvk3selmer4"
+                | "rvK3Selmer4"),
             ) => self.k3_pencil_cover_statement(op)?,
             Token::Word(
                 op
@@ -13870,6 +13911,10 @@ impl<'src> Parser<'src> {
                         | "rvK3PencilCoverPoint"
                         | "rvK3PencilCoverLift"
                         | "rvK3PencilShaClass"
+                        | "rvK3Selmer4Pair"
+                        | "rvK3Selmer4Contains"
+                        | "rvK3Selmer4ImageBasis"
+                        | "rvK3Selmer4QuotientBasis"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),

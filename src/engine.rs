@@ -761,6 +761,14 @@ enum TypedForm {
     K3PencilSectionNegate(Rc<pencil::Pencil>, Box<TypedExpr>),
     K3PencilDescent(Rc<pencil::Pencil>, bool, Box<TypedExpr>),
     K3PencilSelmerContains(Rc<pencil::Pencil>, Box<TypedExpr>),
+    K3SelmerFourPair(
+        Rc<pencil::sections::covering::four::Certificate>,
+        Box<[TypedExpr; 2]>,
+    ),
+    K3SelmerFourContains(
+        Rc<pencil::sections::covering::four::Certificate>,
+        Box<TypedExpr>,
+    ),
     K3PencilCoverMap(Rc<pencil::sections::covering::Cover>, Box<TypedExpr>),
     K3PencilCoverLift(Rc<pencil::sections::covering::Cover>, Box<TypedExpr>),
     K3Mordell(Rc<mordell::Mordell>, mordell::Shift, i128, Box<TypedExpr>),
@@ -7913,6 +7921,14 @@ impl Engine {
                 let pairing = self.model.k3_cassels(&name)?;
                 Ok(Some(pairing.tangents(&name.text)))
             }
+            Command::DefineFour(name, image, witnesses) => {
+                self.model.define_k3_selmer_four(name, &image, &witnesses)?;
+                Ok(None)
+            }
+            Command::Four(name) => {
+                let certificate = self.model.k3_selmer_four(&name)?;
+                Ok(Some(certificate.report(&name.text)))
+            }
             Command::CasselsPair(name, input) => {
                 let pairing = self.model.k3_cassels(&name)?;
                 let ty = self
@@ -10185,6 +10201,26 @@ impl Engine {
                 } else {
                     descent.persist(&mut self.model)
                 }
+            }
+            TypedForm::K3SelmerFourPair(certificate, inputs) => {
+                let Value::K3PencilKummer2(left) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::K3PencilKummer2(right) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                Ok(Value::PrimeScalar(certificate.pairing(
+                    &mut self.model,
+                    &left,
+                    &right,
+                )?))
+            }
+            TypedForm::K3SelmerFourContains(certificate, input) => {
+                let Value::K3PencilKummer2(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let contains = certificate.contains(&mut self.model, &class)?;
+                Ok(Value::Point(usize::from(contains)))
             }
             TypedForm::K3PencilSelmerContains(pencil, input) => {
                 let Value::K3PencilKummer2(descent) = self.eval(input)? else {
@@ -25105,6 +25141,7 @@ impl Checker<'_> {
                 let ty = self.model.k3_pencil_cover_point_type(&name)?;
                 Ok((ty, TypedForm::K3PencilCoverLift(cover, Box::new(input))))
             }
+            Expression::SelmerFour(operation) => self.selmer_four_expression(operation),
             Expression::ShaClass(cover, image) => {
                 let cover = self.model.k3_pencil_cover(&cover)?;
                 let image = self.model.k3_pencil_mw_image(&image)?;
@@ -25169,6 +25206,53 @@ impl Checker<'_> {
                     ty,
                     TypedForm::K3PencilDescent(pencil, divisible, Box::new(input)),
                 ))
+            }
+        }
+    }
+
+    fn selmer_four_expression(
+        &mut self,
+        expression: pencil::sections::covering::four::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use pencil::sections::covering::four::Expression;
+        match expression {
+            Expression::Pair(name, inputs) => {
+                let certificate = self.model.k3_selmer_four(&name)?;
+                let class_type = self
+                    .model
+                    .k3_pencil_kummer2_type(certificate.pencil_name())?;
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                self.require_type(class_type, &left, "four-Selmer left class")?;
+                self.require_type(class_type, &right, "four-Selmer right class")?;
+                let ty = self.model.prime_scalar_type(Prime::validated(2))?;
+                Ok((
+                    ty,
+                    TypedForm::K3SelmerFourPair(certificate, Box::new([left, right])),
+                ))
+            }
+            Expression::Contains(name, input) => {
+                let certificate = self.model.k3_selmer_four(&name)?;
+                let ty = self
+                    .model
+                    .k3_pencil_kummer2_type(certificate.pencil_name())?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "four-Selmer class")?;
+                Ok((
+                    self.model.named("S").unwrap(),
+                    TypedForm::K3SelmerFourContains(certificate, Box::new(input)),
+                ))
+            }
+            Expression::Basis(name, index, quotient) => {
+                let certificate = self.model.k3_selmer_four(&name)?;
+                let ty = self
+                    .model
+                    .k3_pencil_kummer2_type(certificate.pencil_name())?;
+                let value = certificate
+                    .basis(self.model, index, quotient)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
         }
     }

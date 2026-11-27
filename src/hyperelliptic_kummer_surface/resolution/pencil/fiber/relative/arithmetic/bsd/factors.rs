@@ -27,6 +27,25 @@ struct Factors {
 }
 
 impl Pencil {
+    pub(crate) fn split_torsion_certificate(
+        &self,
+        model: &mut Model,
+    ) -> Result<Option<[String; 2]>> {
+        if self.torsion_roots(model)?.len() != 3 {
+            return Ok(None);
+        }
+        let data = self.relative(model)?.l_data(model, self)?;
+        let field = field(&self.curve);
+        let Ok((additive, multiplicative)) = torsion_places(&data.places, field.ring.prime())
+        else {
+            return Ok(None);
+        };
+        Ok(Some([
+            describe_place(model, field, additive)?,
+            describe_place(model, field, multiplicative)?,
+        ]))
+    }
+
     pub(crate) fn bsd_factors(&self, model: &mut Model, name: &str) -> Result<String> {
         let factors = Factors::new(model, self)?;
         let bound = factors.sha_divisibility_bound(model)?;

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use crate::ec_morphism::Rational;
-use crate::ec_poly::{self as poly, Field, Polynomial};
+use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::model::Model;
@@ -82,32 +82,60 @@ impl Pairing {
     }
 
     pub(crate) fn pair(&self, model: &mut Model, name: &str, right: &Descent) -> Result<String> {
-        let selmer = self.cover.pencil.selmer_space(model)?;
-        if !selmer.contains(model, right)? {
-            return Err(Error::plain(
-                "Cassels second class must be everywhere locally soluble",
-            ));
-        }
-        let field = field(&self.cover.pencil.curve);
-        let squares = ResidueSquares::new(model, field)?;
-        let eta = constant_nonsquare(model, field)?;
-        let right = representatives(model, field, right)?;
-        let mut sign = 1;
         let mut factors = Vec::new();
-        // The Selmer support includes every finite root collision and both
-        // squareclass supports. Outside it, smooth conics and primitive
-        // projective data give even tangent valuations, so all symbols are 1.
-        for parameter in selmer.finite_parameters().map(Some).chain([None]) {
-            let evidence = local::evaluate(model, field, &squares, &eta, self, &right, parameter)?;
-            sign *= evidence.sign();
+        let signs = self.products(model, &[right], |parameter, evidence| {
             let label = parameter.map_or_else(|| "infinity".into(), |a| format!("t={a:?}"));
             factors.push(format!("{label}: {}", evidence.report()));
-        }
+        })?;
+        let sign = signs[0];
         let value = if sign > 0 { "0" } else { "1/2" };
         Ok(format!(
             "rvK3CasselsPair[{name}] = sign={sign}, value={value} in Q/Z, local factors=[{}]",
             factors.join("; ")
         ))
+    }
+
+    pub(super) fn bits(&self, model: &mut Model, rights: &[Descent]) -> Result<Vec<bool>> {
+        let rights: Vec<_> = rights.iter().collect();
+        Ok(self
+            .products(model, &rights, |_, _| {})?
+            .into_iter()
+            .map(|sign| sign == -1)
+            .collect())
+    }
+
+    fn products(
+        &self,
+        model: &mut Model,
+        rights: &[&Descent],
+        mut report: impl FnMut(Option<&Scalar>, &local::Evidence<'_>),
+    ) -> Result<Vec<i32>> {
+        let selmer = self.cover.pencil.selmer_space(model)?;
+        let field = field(&self.cover.pencil.curve);
+        let mut polynomials = Vec::new();
+        for right in rights {
+            if !selmer.contains(model, right)? {
+                return Err(Error::plain(
+                    "Cassels second class must be everywhere locally soluble",
+                ));
+            }
+            polynomials.push(representatives(model, field, right)?);
+        }
+        let squares = ResidueSquares::new(model, field)?;
+        let eta = constant_nonsquare(model, field)?;
+        let mut signs = vec![1; polynomials.len()];
+        // The Selmer support includes every finite root collision and both
+        // squareclass supports. Outside it, smooth conics and primitive
+        // projective data give even tangent valuations, so all symbols are 1.
+        for parameter in selmer.finite_parameters().map(Some).chain([None]) {
+            let witness = local::certify(model, field, &squares, &eta, self, parameter)?;
+            for (right, sign) in polynomials.iter().zip(&mut signs) {
+                let evidence = witness.evaluate(model, field, &squares, right, parameter)?;
+                *sign *= evidence.sign();
+                report(parameter, &evidence);
+            }
+        }
+        Ok(signs)
     }
 }
 

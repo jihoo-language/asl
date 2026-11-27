@@ -12,14 +12,18 @@ use series::{certified_lead, Laurent, Root};
 const MAX_PRECISION: usize = 128;
 type RootCharts = [[Scalar; ROOT_DEGREE + 1]; 3];
 
-pub(super) struct Evidence {
+pub(super) struct Witness {
     x: Laurent,
     tangents: [(i64, Scalar); 3],
+}
+
+pub(super) struct Evidence<'a> {
+    witness: &'a Witness,
     right: [(i64, Scalar); 3],
     symbols: [i32; 3],
 }
 
-impl Evidence {
+impl Evidence<'_> {
     pub(super) fn sign(&self) -> i32 {
         self.symbols.into_iter().product()
     }
@@ -27,20 +31,19 @@ impl Evidence {
     pub(super) fn report(&self) -> String {
         format!(
             "x-chart s^{}*{:?}, tangent (valuation, leading unit)={:?}, right (valuation, leading unit)={:?}, symbols={:?}, product={}",
-            self.x.order, self.x.coefficients, self.tangents, self.right, self.symbols, self.sign(),
+            self.witness.x.order, self.witness.x.coefficients, self.witness.tangents, self.right, self.symbols, self.sign(),
         )
     }
 }
 
-pub(super) fn evaluate(
+pub(super) fn certify(
     model: &mut Model,
     field: Field<'_>,
     squares: &ResidueSquares,
     eta: &Scalar,
     pairing: &Pairing,
-    right: &[Polynomial; 3],
     parameter: Option<&Scalar>,
-) -> Result<Evidence> {
+) -> Result<Witness> {
     let cover = &pairing.cover;
     let weight = if parameter.is_some() {
         0
@@ -153,26 +156,38 @@ pub(super) fn evaluate(
         }
     }
     let tangents = leading.map(|v| v.expect("leading terms are certified"));
-    let [a, b, c] = right;
-    let right = [
-        chart(model, field, a, parameter)?,
-        chart(model, field, b, parameter)?,
-        chart(model, field, c, parameter)?,
-    ];
-    let minus_one = squares.symbol(&field.signed(-1), 0) >> 1;
-    let symbols = std::array::from_fn(|i| {
-        let (order, ref angular) = tangents[i];
-        let left = squares.symbol(angular, order.rem_euclid(2) as usize);
-        let right = right[i].symbol(squares);
-        hilbert(left, right, minus_one)
-    });
-    let right = right.map(|r| (r.order, r.coefficients[0].clone()));
-    Ok(Evidence {
-        x,
-        tangents,
-        right,
-        symbols,
-    })
+    Ok(Witness { x, tangents })
+}
+
+impl Witness {
+    pub(super) fn evaluate(
+        &self,
+        model: &mut Model,
+        field: Field<'_>,
+        squares: &ResidueSquares,
+        right: &[Polynomial; 3],
+        parameter: Option<&Scalar>,
+    ) -> Result<Evidence<'_>> {
+        let [a, b, c] = right;
+        let right = [
+            chart(model, field, a, parameter)?,
+            chart(model, field, b, parameter)?,
+            chart(model, field, c, parameter)?,
+        ];
+        let minus_one = squares.symbol(&field.signed(-1), 0) >> 1;
+        let symbols = std::array::from_fn(|i| {
+            let (order, ref angular) = self.tangents[i];
+            let left = squares.symbol(angular, order.rem_euclid(2) as usize);
+            let right = right[i].symbol(squares);
+            hilbert(left, right, minus_one)
+        });
+        let right = right.map(|r| (r.order, r.coefficients[0].clone()));
+        Ok(Evidence {
+            witness: self,
+            right,
+            symbols,
+        })
+    }
 }
 
 fn differences(

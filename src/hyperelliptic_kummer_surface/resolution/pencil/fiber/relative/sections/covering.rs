@@ -16,6 +16,7 @@ use super::{
 };
 
 pub(crate) mod cassels;
+pub(crate) mod four;
 mod image;
 pub(crate) use image::MordellImage;
 
@@ -28,6 +29,8 @@ pub(crate) enum Command {
     DefineCassels(Label, Label, Vec<cassels::AuxiliaryInput>),
     CasselsTangents(Label),
     CasselsPair(Label, Box<ParsedExpr>),
+    DefineFour(Label, Label, Vec<Label>),
+    Four(Label),
 }
 
 pub(crate) struct Cover {

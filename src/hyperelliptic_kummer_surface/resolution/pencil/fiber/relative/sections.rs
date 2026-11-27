@@ -25,6 +25,7 @@ pub(crate) enum Expression {
     CoverMap(Box<ParsedExpr>),
     CoverLift(Label, Box<ParsedExpr>),
     ShaClass(Label, Label),
+    SelmerFour(covering::four::Expression),
     Torsion(Label, usize),
     SelmerBasis(Label, usize),
     SelmerContains(Box<ParsedExpr>),
