@@ -5,8 +5,8 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Poset, TypeId, Value};
 use crate::syntax::{Label, MAX_IDENTIFIER_BYTES};
 
-const MAX_OCCURRENCES: usize = 4096;
-const MAX_SOLUTIONS: usize = 4096;
+pub(crate) const MAX_OCCURRENCES: usize = 4096;
+pub(crate) const MAX_SOLUTIONS: usize = 4096;
 
 pub(crate) type Component = (Label, Vec<usize>);
 pub(crate) type Transition = (Label, Label, Vec<usize>);
@@ -113,6 +113,40 @@ impl Diagram {
         }
 
         model.allocate(cells + count * count + 2 * count + 1)?;
+        Ok(Self {
+            base,
+            site,
+            order,
+            offsets,
+            arrows,
+        })
+    }
+
+    pub(crate) fn generated(
+        model: &mut Model,
+        base: TypeId,
+        sizes: Vec<usize>,
+        mut transition: impl FnMut(&mut Model, usize, usize) -> Result<Vec<usize>>,
+    ) -> Result<Self> {
+        let site = model.poset(base).expect("named space");
+        let count = site.names.len();
+        let offsets = Self::build_offsets(&sizes)?;
+        let (order, _) = Self::site_orders(model, &site)?;
+        let mut cells = count * count + 2 * count + 1;
+        let mut arrows = vec![vec![None; count]; count];
+        model.spend(count * count)?;
+        for (x, row) in arrows.iter_mut().enumerate() {
+            for (y, arrow) in row.iter_mut().enumerate() {
+                if site.strict_less(x, y) {
+                    cells += sizes[x];
+                    check_cells(cells)?;
+                    let entries = transition(model, x, y)?;
+                    Self::check_entries(model, sizes[x], sizes[y], &entries)?;
+                    *arrow = Some(Arrow::from(entries));
+                }
+            }
+        }
+        model.allocate(cells)?;
         Ok(Self {
             base,
             site,
@@ -233,20 +267,27 @@ impl Diagram {
     fn visit_sections(
         &self,
         model: &mut Model,
+        points: &[usize],
         emit: impl FnMut(&[usize]) -> Result<ControlFlow<()>>,
     ) -> Result<bool> {
-        let domains: Vec<_> = (0..self.site.names.len()).map(|x| self.size(x)).collect();
+        let mut positions = vec![None; self.site.names.len()];
+        model.spend(positions.len() + points.len())?;
+        for (index, &point) in points.iter().enumerate() {
+            positions[point] = Some(index);
+        }
+        let domains: Vec<_> = points.iter().map(|&x| self.size(x)).collect();
+        let order: Vec<_> = self.order.iter().filter_map(|&x| positions[x]).collect();
         solve(
             model,
             &domains,
-            &self.order,
+            &order,
             |model, x, i, push| {
                 model.spend(self.site.names.len())?;
                 push.extend(
-                    self.arrows[x]
+                    self.arrows[points[x]]
                         .iter()
-                        .enumerate()
-                        .filter_map(|(y, map)| map.as_ref().map(|images| (y, images[i]))),
+                        .zip(&positions)
+                        .filter_map(|(map, &position)| Some((position?, map.as_ref()?[i]))),
                 );
                 Ok(())
             },
@@ -255,17 +296,22 @@ impl Diagram {
     }
 
     pub(crate) fn section_count(&self, model: &mut Model) -> Result<usize> {
+        let points: Vec<_> = (0..self.site.names.len()).collect();
         let mut count = 0;
-        self.visit_sections(model, |_| {
+        self.visit_sections(model, &points, |_| {
             count += 1;
             Ok(ControlFlow::Continue(()))
         })?;
         Ok(count)
     }
 
-    fn sections(&self, model: &mut Model) -> Result<Vec<Vec<usize>>> {
+    pub(crate) fn sections_on(
+        &self,
+        model: &mut Model,
+        points: &[usize],
+    ) -> Result<Vec<Vec<usize>>> {
         let mut rows = Vec::new();
-        self.visit_sections(model, |row| {
+        self.visit_sections(model, points, |row| {
             if rows.len() == MAX_SOLUTIONS {
                 return Err(Error::plain(
                     "set-family exceeds the limit of 4096 sections",
@@ -276,7 +322,7 @@ impl Diagram {
             Ok(ControlFlow::Continue(()))
         })?;
         let sort_steps = rows.len().max(1).ilog2() as usize + 1;
-        model.spend(rows.len() * (self.site.names.len() + 1) * sort_steps)?;
+        model.spend(rows.len() * (points.len() + 1) * sort_steps)?;
         rows.sort_unstable();
         Ok(rows)
     }
@@ -481,7 +527,8 @@ impl Elements {
                 "set section index exceeds the limit of 4096 sections",
             ));
         }
-        let sections = diagram.sections(model)?;
+        let points: Vec<_> = (0..diagram.site.names.len()).collect();
+        let sections = diagram.sections_on(model, &points)?;
         let row = sections
             .get(index)
             .ok_or_else(|| Error::plain("set section index is outside its range"))?;

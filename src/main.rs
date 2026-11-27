@@ -22,6 +22,7 @@ mod cohomology;
 mod comodule;
 mod complex;
 mod cyclic;
+mod dependent_sets;
 mod engine;
 mod eo;
 mod error;

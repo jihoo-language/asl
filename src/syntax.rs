@@ -2,6 +2,7 @@ use crate::bp::Operation as BpOperation;
 use crate::bp_page::{Mode as BpPageMode, Operation as BpPageOp};
 use crate::bp_vpage::Operation as BpVPageOp;
 use crate::comodule::Generator;
+use crate::dependent_sets::Operation as SetOperation;
 use crate::eo::Report as EoReport;
 use crate::error::{Error, Result, Span};
 use crate::map_bracket::Operation as MapBracketOp;
@@ -628,6 +629,7 @@ pub(crate) enum ExprForm {
     SetIdentity(Label),
     SetCompose(Box<[ParsedExpr; 2]>),
     SetTotal(Label, Label, Box<ParsedExpr>),
+    SetDependent(SetOperation, Label, Option<Label>, Option<Box<ParsedExpr>>),
     Name(Label),
     Point(ParsedType, Label),
     Class(ParsedType, usize, ClassForm),
@@ -938,6 +940,8 @@ pub(crate) enum StatementForm {
     SetElements(Label, Label),
     SetNatural(Label, Label, Label, Vec<crate::set_family::Component>),
     SetSections(Label),
+    SetPullback(Label, Label, ParsedExpr),
+    SetDependent(Label, Label, Label, bool),
     MixedComplex(
         Label,
         usize,
@@ -1842,6 +1846,25 @@ impl<'src> Parser<'src> {
         let span = self.span();
         let kind = match self.token() {
             Token::Eof => return Ok(None),
+            Token::Word("setpullback") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetPullback(name, family, self.paren_expr(0)?)
+            }
+            Token::Word("setsum" | "setproduct") => {
+                let product = self.token() == Token::Word("setproduct");
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let total = self.label()?;
+                self.expect(Token::Comma)?;
+                let body = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetDependent(name, total, body, product)
+            }
             Token::Word("setfamily") => {
                 self.advance()?;
                 let family = self.label()?;
@@ -4766,6 +4789,31 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RParen)?;
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
+            }
+            Token::Word(name) if SetOperation::detect(name).is_some() => {
+                let operation = SetOperation::detect(name).unwrap();
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let first = self.label()?;
+                let second = match operation {
+                    SetOperation::PullNatural | SetOperation::Evaluation => {
+                        self.expect(Token::Comma)?;
+                        Some(self.label()?)
+                    }
+                    _ => None,
+                };
+                self.expect(Token::RBracket)?;
+                let input = if matches!(operation, SetOperation::Evaluation) {
+                    None
+                } else {
+                    Some(Box::new(self.paren_expr(nest)?))
+                };
+                let depth = input.as_ref().map_or(0, |expr| expr.depth + 1);
+                expr(
+                    span,
+                    ExprForm::SetDependent(operation, first, second, input),
+                    depth,
+                )
             }
             Token::Word("setProjection" | "setsect" | "setId" | "setTotal") => {
                 let operation = self.label()?;

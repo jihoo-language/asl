@@ -132,6 +132,30 @@ indices. See [examples/set-families.asl](examples/set-families.asl) for a
 connected three-sheeted circle cover with no section and the trivial cover
 with three sections.
 
+### Pullback and dependent sums and products
+
+For a monotone map `f : Y -> X` of named sites, `setpullback PH[H](f);`
+pulls a family `H` on `X` back to `Y`. Given a natural map `u : H -> K`,
+`setPullNat[PH,PK](u)` pulls its components back along the common map.
+
+If `E` is the elements space of `F` and `G` is a family on `E`,
+`setsum Sum[E,G];` and `setproduct Pi[E,G];` give families on the base of
+`F`. The sum fiber at `x` is the disjoint union of `G(x,i)` over
+`i` in `F(x)`. The product fiber at `x` consists of compatible sections
+of `G` over all points of `E` lying above `x` in the base, including the
+points lying over `x` itself. Product transitions restrict sections to
+the smaller future. If the current fiber is empty, the future can still
+admit multiple sections. An entirely empty future has one section.
+
+Let `PH` and `PP` be the pullbacks of `H` and `Pi` along
+`setProjection[E]`. Then `setEval[Pi,PP]` has type `SetNat(PP,G)`.
+`setTranspose[Pi](u)` turns `u : SetNat(PH,G)` into a map
+`SetNat(H,Pi)`, and `setUntranspose[PH](v)` goes back. For the sum,
+`setSumLift[Sum](u)` turns `u : SetNat(G,PH)` into a map
+`SetNat(Sum,H)`, and `setSumRestrict[PH](v)` goes back. See
+[examples/dependent-sets.asl](examples/dependent-sets.asl) for both
+adjunctions, the explicit evaluation map, and an empty current fiber.
+
 ## Sheaf cohomology on a finite poset
 
 `sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.

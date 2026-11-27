@@ -16,6 +16,7 @@ use crate::ce::CePage;
 use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
+use crate::dependent_sets;
 use crate::error::{Error, Result};
 use crate::jet_hom;
 use crate::jet_page;
@@ -444,6 +445,7 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
+    set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
     set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
@@ -502,6 +504,7 @@ impl Model {
         let mut model = Self {
             types: Vec::new(),
             set_families: HashMap::new(),
+            set_origins: HashMap::new(),
             set_elements: HashMap::new(),
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
@@ -1549,6 +1552,23 @@ impl Model {
         self.set_families
             .insert(Rc::from(name.text.as_str()), Rc::new(diagram));
         Ok(())
+    }
+
+    pub(crate) fn define_dependent_set(
+        &mut self,
+        name: &Label,
+        diagram: set_family::Diagram,
+        origin: dependent_sets::Origin,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.define_set_family(name, diagram)?;
+        self.set_origins
+            .insert(Rc::from(name.text.as_str()), origin);
+        Ok(())
+    }
+
+    pub(crate) fn set_origin(&self, name: &str) -> Option<dependent_sets::Origin> {
+        self.set_origins.get(name).cloned()
     }
 
     pub(crate) fn check_new_set_family(&self, name: &Label) -> Result<()> {

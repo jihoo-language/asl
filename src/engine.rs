@@ -17,6 +17,7 @@ use crate::cobar_squares;
 use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
+use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::eo;
 use crate::error::{Error, Result, Span};
 use crate::jet_hom;
@@ -355,7 +356,29 @@ impl SheafComputation {
     }
 }
 
+enum DependentAction {
+    PullNatural(Rc<dependent_sets::Pullback>, Rc<set_family::Diagram>),
+    Evaluation(Rc<dependent_sets::Product>),
+    Transpose(
+        Rc<dependent_sets::Product>,
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+    ),
+    Untranspose(
+        Rc<dependent_sets::Product>,
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+    ),
+    SumLift(Rc<dependent_sets::Sum>, Rc<set_family::Diagram>),
+    SumRestrict(
+        Rc<dependent_sets::Sum>,
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+    ),
+}
+
 enum TypedForm {
+    SetDependent(DependentAction, Option<Box<TypedExpr>>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
     SetCompose(
@@ -948,6 +971,70 @@ impl Engine {
                 let data = self.model.sheaf(&name)?;
                 let rank = data.rank(&mut self.model, degree)?;
                 format!("shdim[{}, {degree}] = {rank}", name.text)
+            }
+            StatementForm::SetPullback(name, family, map) => {
+                self.model.check_new_set_family(&name)?;
+                let source = self.model.set_family(&family)?;
+                let map = self.checker().expr(map)?;
+                let Kind::Arrow(domain, range) = *self.model.kind(map.ty) else {
+                    return Err(Error::new(
+                        map.span,
+                        "setpullback requires a monotone map of named sites",
+                    ));
+                };
+                if !matches!(self.model.kind(domain), Kind::Space(_)) || range != source.base {
+                    return Err(Error::new(
+                        map.span,
+                        "setpullback requires a named domain and the family's site as codomain",
+                    ));
+                }
+                let Value::Map(rows) = self.eval(&map)? else {
+                    unreachable!()
+                };
+                let (diagram, origin) = dependent_sets::Pullback::build(
+                    &mut self.model,
+                    domain,
+                    family.text.into(),
+                    &source,
+                    &rows,
+                )?;
+                self.model.define_dependent_set(
+                    &name,
+                    diagram,
+                    dependent_sets::Origin::Pullback(Rc::new(origin)),
+                )?;
+                return Ok(None);
+            }
+            StatementForm::SetDependent(name, total, family, product) => {
+                self.model.check_new_set_family(&name)?;
+                let (total, elements) = self.model.set_elements(&total)?;
+                let body = self.model.set_family(&family)?;
+                if body.base != total {
+                    return Err(Error::new(
+                        family.span,
+                        "dependent family must live on the declared elements space",
+                    ));
+                }
+                let base = self
+                    .model
+                    .set_family_named(&elements.family)
+                    .expect("elements family");
+                let projection = dependent_sets::Projection {
+                    total,
+                    elements,
+                    body: family.text.into(),
+                };
+                let (diagram, origin) = if product {
+                    let (diagram, origin) =
+                        dependent_sets::Product::build(&mut self.model, projection, &base, &body)?;
+                    (diagram, dependent_sets::Origin::Product(Rc::new(origin)))
+                } else {
+                    let (diagram, origin) =
+                        dependent_sets::Sum::build(&mut self.model, projection, &base, &body)?;
+                    (diagram, dependent_sets::Origin::Sum(Rc::new(origin)))
+                };
+                self.model.define_dependent_set(&name, diagram, origin)?;
+                return Ok(None);
             }
             StatementForm::SetFamily(family, site, fibers, transitions) => {
                 self.model.check_new_set_family(&family)?;
@@ -2713,6 +2800,32 @@ impl Engine {
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
             TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::SetDependent(action, input) => {
+                let rows = if let Some(input) = input {
+                    let Value::SetNat(rows) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    rows
+                } else {
+                    Rc::new([])
+                };
+                match action {
+                    DependentAction::PullNatural(pullback, source) => {
+                        pullback.natural(&mut self.model, source, &rows)
+                    }
+                    DependentAction::Evaluation(product) => product.evaluate(&mut self.model),
+                    DependentAction::Transpose(product, source, lifted) => {
+                        product.transpose(&mut self.model, source, lifted, &rows)
+                    }
+                    DependentAction::Untranspose(product, source, lifted) => {
+                        product.untranspose(&mut self.model, source, lifted, &rows)
+                    }
+                    DependentAction::SumLift(sum, body) => sum.lift(&mut self.model, body, &rows),
+                    DependentAction::SumRestrict(sum, source, body) => {
+                        sum.restrict(&mut self.model, source, body, &rows)
+                    }
+                }
+            }
             TypedForm::SetIdentity(diagram) => diagram.identity(&mut self.model),
             TypedForm::SetSection(elements, diagram, index) => {
                 elements.section(&mut self.model, diagram, *index)
@@ -6042,6 +6155,175 @@ impl Checker<'_> {
         .map_err(|error| error.at(ty.span))
     }
 
+    fn get_pullback(&self, name: &str) -> Result<Rc<dependent_sets::Pullback>> {
+        match self.model.set_origin(name) {
+            Some(dependent_sets::Origin::Pullback(origin)) => Ok(origin),
+            _ => Err(Error::plain(format!("'{name}' is not a set pullback"))),
+        }
+    }
+
+    fn get_set_product(&self, name: &str) -> Result<Rc<dependent_sets::Product>> {
+        match self.model.set_origin(name) {
+            Some(dependent_sets::Origin::Product(origin)) => Ok(origin),
+            _ => Err(Error::plain(format!(
+                "'{name}' is not a dependent set product"
+            ))),
+        }
+    }
+
+    fn get_set_sum(&self, name: &str) -> Result<Rc<dependent_sets::Sum>> {
+        match self.model.set_origin(name) {
+            Some(dependent_sets::Origin::Sum(origin)) => Ok(origin),
+            _ => Err(Error::plain(format!("'{name}' is not a dependent set sum"))),
+        }
+    }
+
+    fn set_dependent(
+        &mut self,
+        operation: SetOperation,
+        first: Label,
+        second: Option<Label>,
+        input: Option<Box<ParsedExpr>>,
+    ) -> Result<(TypeId, TypedForm)> {
+        let input = input
+            .map(|expr| self.expr(*expr))
+            .transpose()?
+            .map(Box::new);
+        let first: Rc<str> = first.text.into();
+        let second = second.map(|label| Rc::<str>::from(label.text));
+        let (source, target) = if let Some(operand) = &input {
+            self.set_nat_ends(operand.ty)?
+        } else {
+            (Rc::from(""), Rc::from(""))
+        };
+        let (domain, range, action) = match operation {
+            SetOperation::PullNatural => {
+                let second = second.expect("parsed target pullback");
+                let a = self.get_pullback(&first)?;
+                let b = self.get_pullback(&second)?;
+                if a.family != source || b.family != target || !a.same_map(&b) {
+                    return Err(Error::plain(
+                        "setPullNat requires pullbacks of the two families along the same map",
+                    ));
+                }
+                let diagram = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered source");
+                (first, second, DependentAction::PullNatural(a, diagram))
+            }
+            SetOperation::Evaluation => {
+                let second = second.expect("parsed projection pullback");
+                let product = self.get_set_product(&first)?;
+                let lifted = self.get_pullback(&second)?;
+                product.projection.check(&lifted)?;
+                if lifted.family != first {
+                    return Err(Error::plain(
+                        "setEval requires the pullback of the indicated product",
+                    ));
+                }
+                (
+                    second,
+                    product.projection.body.clone(),
+                    DependentAction::Evaluation(product),
+                )
+            }
+            SetOperation::Transpose => {
+                let product = self.get_set_product(&first)?;
+                let lifted = self.get_pullback(&source)?;
+                product.projection.check(&lifted)?;
+                if target != product.projection.body {
+                    return Err(Error::plain(
+                        "setTranspose requires a map to the product's body family",
+                    ));
+                }
+                let a = self
+                    .model
+                    .set_family_named(&lifted.family)
+                    .expect("registered source");
+                let pulled = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered pullback");
+                (
+                    lifted.family.clone(),
+                    first,
+                    DependentAction::Transpose(product, a, pulled),
+                )
+            }
+            SetOperation::Untranspose => {
+                let product = self.get_set_product(&target)?;
+                let lifted = self.get_pullback(&first)?;
+                product.projection.check(&lifted)?;
+                if lifted.family != source {
+                    return Err(Error::plain(
+                        "setUntranspose requires the pullback of the map's source family",
+                    ));
+                }
+                let a = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered source");
+                let pulled = self
+                    .model
+                    .set_family_named(&first)
+                    .expect("registered pullback");
+                (
+                    first,
+                    product.projection.body.clone(),
+                    DependentAction::Untranspose(product, a, pulled),
+                )
+            }
+            SetOperation::SumLift => {
+                let sum = self.get_set_sum(&first)?;
+                let lifted = self.get_pullback(&target)?;
+                sum.projection.check(&lifted)?;
+                if source != sum.projection.body {
+                    return Err(Error::plain(
+                        "setSumLift requires a map from the sum's body family",
+                    ));
+                }
+                let body = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered body");
+                (
+                    first,
+                    lifted.family.clone(),
+                    DependentAction::SumLift(sum, body),
+                )
+            }
+            SetOperation::SumRestrict => {
+                let sum = self.get_set_sum(&source)?;
+                let lifted = self.get_pullback(&first)?;
+                sum.projection.check(&lifted)?;
+                if lifted.family != target {
+                    return Err(Error::plain(
+                        "setSumRestrict requires the pullback of the map's target family",
+                    ));
+                }
+                let a = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered sum");
+                let body = self
+                    .model
+                    .set_family_named(&sum.projection.body)
+                    .expect("registered body");
+                (
+                    sum.projection.body.clone(),
+                    first,
+                    DependentAction::SumRestrict(sum, a, body),
+                )
+            }
+        };
+        let evaluation = matches!(operation, SetOperation::Evaluation);
+        let ty = self
+            .model
+            .register_set_nat_type(domain, range, evaluation)?;
+        Ok((ty, TypedForm::SetDependent(action, input)))
+    }
+
     fn set_nat_ends(&self, ty: TypeId) -> Result<(Rc<str>, Rc<str>)> {
         if let Kind::SetNat(source, target) = self.model.kind(ty) {
             return Ok((source.clone(), target.clone()));
@@ -6075,6 +6357,9 @@ impl Checker<'_> {
 
     fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
+            ExprForm::SetDependent(operation, first, second, input) => {
+                self.set_dependent(operation, first, second, input)
+            }
             ExprForm::SetProjection(name) => {
                 let (domain, elements) = self.model.set_elements(&name)?;
                 let diagram = self
