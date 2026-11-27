@@ -148,6 +148,7 @@ pub(crate) enum TypeForm {
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
     HodgeTensor(Label, i128, i128),
+    Verbitsky(Label, i128, i128),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
     KSExterior(Label, i128),
@@ -5851,6 +5852,15 @@ impl<'src> Parser<'src> {
         })
     }
 
+    fn verbitsky_grade_args(&mut self) -> Result<(Label, i128, i128)> {
+        let marking = self.label()?;
+        self.expect(Token::Comma)?;
+        let length = self.signed_wide("an integer Hilbert length", "Hilbert length")?;
+        self.expect(Token::Comma)?;
+        let degree = self.signed_wide("an integer cohomological degree", "cohomological degree")?;
+        Ok((marking, length, degree))
+    }
+
     fn hodge_wick_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::Command;
         self.advance()?;
@@ -5889,8 +5899,34 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 Command::Trace(marking, self.hodge_wick_entries()?)
             }
-            "rvHodgePair" => Command::Pair(Box::new(self.paren_pair(0)?)),
-            _ => Command::Integral(Box::new(self.paren_expr(0)?)),
+            "rvHodgePair" | "rvVerbitskyPair" => {
+                Command::Pair(name == "rvVerbitskyPair", Box::new(self.paren_pair(0)?))
+            }
+            "rvVerbitskyRank" | "rvVerbitskyRelations" => {
+                use crate::hyperelliptic_kummer_surface::hodge_wick::ring::Command as Ring;
+                self.expect(Token::LBracket)?;
+                let (basis, n, degree) = self.verbitsky_grade_args()?;
+                self.expect(Token::RBracket)?;
+                Command::Ring(Box::new(if name == "rvVerbitskyRank" {
+                    Ring::Rank(basis, n, degree)
+                } else {
+                    Ring::Relations(basis, n, degree)
+                }))
+            }
+            "rvVerbitskySignature" => {
+                self.expect(Token::LBracket)?;
+                let degree =
+                    self.signed_wide("an integer cohomological degree", "cohomological degree")?;
+                self.expect(Token::RBracket)?;
+                let h = self.paren_expr(0)?;
+                Command::Ring(Box::new(
+                    crate::hyperelliptic_kummer_surface::hodge_wick::ring::Command::Signature(
+                        degree,
+                        Box::new(h),
+                    ),
+                ))
+            }
+            _ => Command::Integral(name == "rvVerbitskyIntegral", Box::new(self.paren_expr(0)?)),
         };
         Ok(StatementForm::HodgeWick(Box::new(command)))
     }
@@ -5902,11 +5938,39 @@ impl<'src> Parser<'src> {
         nest: usize,
     ) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::hodge_wick::Expression;
-        let (operation, depth) = if name == "rvHodgeCup" {
+        let (operation, depth) = if matches!(name, "rvVerbitskyClass" | "rvVerbitskyRepresentative")
+        {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (
+                Expression::Cast(name == "rvVerbitskyClass", Box::new(input)),
+                depth,
+            )
+        } else if name == "rvVerbitskyBasis" {
+            self.expect(Token::LBracket)?;
+            let (basis, n, degree) = self.verbitsky_grade_args()?;
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            (Expression::Basis(basis, n, degree, index), 0)
+        } else if name == "rvVerbitskyPrimitive" {
+            self.expect(Token::LBracket)?;
+            let degree =
+                self.signed_wide("an integer cohomological degree", "cohomological degree")?;
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            let h = self.paren_expr(nest)?;
+            let depth = h.depth + 1;
+            (Expression::Primitive(degree, index, Box::new(h)), depth)
+        } else if matches!(name, "rvHodgeCup" | "rvVerbitskyCup") {
             let pair = self.paren_pair(nest)?;
             let depth = 1 + pair[0].depth.max(pair[1].depth);
-            (Expression::Cup(Box::new(pair)), depth)
-        } else if name == "rvHodgeScale" {
+            (
+                Expression::Cup(name == "rvVerbitskyCup", Box::new(pair)),
+                depth,
+            )
+        } else if matches!(name, "rvHodgeScale" | "rvVerbitskyScale") {
             self.expect(Token::LBracket)?;
             let numerator = self.signed_wide("an integer numerator", "Hodge Wick numerator")?;
             self.expect(Token::Comma)?;
@@ -5916,7 +5980,11 @@ impl<'src> Parser<'src> {
             let input = self.paren_expr(nest)?;
             let depth = input.depth + 1;
             (
-                Expression::Scale((numerator, denominator), Box::new(input)),
+                Expression::Scale(
+                    name == "rvVerbitskyScale",
+                    (numerator, denominator),
+                    Box::new(input),
+                ),
                 depth,
             )
         } else {
@@ -8685,7 +8753,15 @@ impl<'src> Parser<'src> {
                 | "rvKummerK3ArtinTate"),
             ) => self.kummer_k3_statement(command)?,
             Token::Word(
-                command @ ("rvhodgewick" | "rvHodgeTrace" | "rvHodgePair" | "rvHodgeIntegral"),
+                command @ ("rvhodgewick"
+                | "rvHodgeTrace"
+                | "rvHodgePair"
+                | "rvHodgeIntegral"
+                | "rvVerbitskyPair"
+                | "rvVerbitskyIntegral"
+                | "rvVerbitskyRank"
+                | "rvVerbitskyRelations"
+                | "rvVerbitskySignature"),
             ) => self.hodge_wick_statement(command)?,
             Token::Word(command @ ("rvKummerDivPair" | "rvKummerFujiki")) => {
                 self.kummer_divisor_statement(command)?
@@ -12576,7 +12652,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVNakajima" | "RVHilbCoh" | "RVHodgeTensor"
+            "RVNakajima" | "RVHilbCoh" | "RVHodgeTensor" | "RVVerbitsky"
         ) && self.eat(Token::LParen)?
         {
             let (basis, length, degree) = self.nakajima_grade_args()?;
@@ -12584,6 +12660,7 @@ impl<'src> Parser<'src> {
             let form = match name.text.as_str() {
                 "RVNakajima" => TypeForm::Nakajima(basis, length, degree),
                 "RVHodgeTensor" => TypeForm::HodgeTensor(basis, length, degree),
+                "RVVerbitsky" => TypeForm::Verbitsky(basis, length, degree),
                 _ => TypeForm::HilbertCohomology(basis, length, degree),
             };
             return ty(span, form, 0);
@@ -14409,9 +14486,22 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvHodgeUnit" | "rvHodgeD" | "rvHodgeQ" | "rvHodgeInverseBB" | "rvHodgeScale"
+                    "rvHodgeUnit"
+                        | "rvHodgeD"
+                        | "rvHodgeQ"
+                        | "rvHodgeInverseBB"
+                        | "rvHodgeScale"
+                        | "rvVerbitskyScale"
+                        | "rvVerbitskyBasis"
+                        | "rvVerbitskyPrimitive"
                 ) && self.token() == Token::LBracket)
-                    || (name.text == "rvHodgeCup" && self.token() == Token::LParen)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvHodgeCup"
+                            | "rvVerbitskyCup"
+                            | "rvVerbitskyClass"
+                            | "rvVerbitskyRepresentative"
+                    ) && self.token() == Token::LParen)
                 {
                     return self.hodge_tensor_expression(&name.text, span, nest);
                 }

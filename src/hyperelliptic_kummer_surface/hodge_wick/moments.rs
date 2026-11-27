@@ -7,32 +7,17 @@ use super::rational::{arithmetic, Integer, Rational, LIMBS};
 use super::{storage, term_cells, work_limit, Form, Power, Tensor};
 
 pub(super) fn integral(model: &mut Model, form: &Form, tensor: &Tensor) -> Result<Rational> {
-    let mut moments = Moments {
-        form,
-        divisors: BTreeMap::new(),
-        transcendental: BTreeMap::new(),
-        traces: Vec::new(),
-        factors: vec![Some(Integer::from_i128(form.multiplicity as i128))],
-        cache_cells: 0,
-    };
+    let mut moments = Moments::new(form);
     let mut sum = Rational::zero();
     for (powers, &coefficient) in &tensor.terms {
-        let split = powers.partition_point(|power| usize::from(power.index) < form.gram.size());
-        let (divisor, transcendental) = powers.split_at(split);
-        let d = moments.divisor(model, divisor)?;
-        if d.is_zero() {
-            continue;
-        }
-        let t = moments.transcendental(model, transcendental)?;
-        let product = coefficient
-            .multiply(model, d)?
-            .multiply(model, Rational::wide(t))?;
+        let value = moments.monomial(model, powers)?;
+        let product = coefficient.multiply(model, value)?;
         sum = sum.add(model, product)?;
     }
     Ok(sum)
 }
 
-struct Moments<'a> {
+pub(super) struct Moments<'a> {
     form: &'a Form,
     divisors: BTreeMap<Vec<Power>, Rational>,
     transcendental: BTreeMap<Vec<Power>, Integer>,
@@ -41,7 +26,30 @@ struct Moments<'a> {
     cache_cells: usize,
 }
 
-impl Moments<'_> {
+impl<'a> Moments<'a> {
+    pub(super) fn new(form: &'a Form) -> Self {
+        Self {
+            form,
+            divisors: BTreeMap::new(),
+            transcendental: BTreeMap::new(),
+            traces: Vec::new(),
+            factors: vec![Some(Integer::from_i128(form.multiplicity as i128))],
+            cache_cells: 0,
+        }
+    }
+
+    pub(super) fn monomial(&mut self, model: &mut Model, powers: &[Power]) -> Result<Rational> {
+        let split =
+            powers.partition_point(|power| usize::from(power.index) < self.form.gram.size());
+        let (divisor, transcendental) = powers.split_at(split);
+        let d = self.divisor(model, divisor)?;
+        if d.is_zero() {
+            return Ok(d);
+        }
+        let t = self.transcendental(model, transcendental)?;
+        d.multiply(model, Rational::wide(t))
+    }
+
     fn reserve(&mut self, powers: &[Power]) -> Result<()> {
         self.cache_cells = self.cache_cells.saturating_add(term_cells(powers));
         storage(self.cache_cells)

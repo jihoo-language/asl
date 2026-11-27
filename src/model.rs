@@ -286,6 +286,7 @@ pub(crate) enum Kind {
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
     HodgeTensor(nakajima::Grade),
+    Verbitsky(nakajima::Grade),
     K3Clifford(Rc<str>, u8),
     OG6Clifford(Rc<str>, u8),
     KSExterior(Rc<str>, i128),
@@ -1176,7 +1177,8 @@ impl Model {
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
-            | Kind::HodgeTensor(ref grade) => {
+            | Kind::HodgeTensor(ref grade)
+            | Kind::Verbitsky(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
                 } else {
@@ -1435,6 +1437,7 @@ impl Model {
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
                 | Kind::HodgeTensor(..)
+                | Kind::Verbitsky(..)
                 | Kind::K3Clifford(..)
                 | Kind::OG6Clifford(..)
                 | Kind::KSExterior(..)
@@ -4888,6 +4891,11 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn verbitsky_type(&mut self, grade: nakajima::Grade) -> Result<TypeId> {
+        self.hodge_wick(&grade.basis)?.validate_grade(&grade)?;
+        self.inhabited_type(Kind::Verbitsky(grade), 0)
+    }
+
     pub(crate) fn hodge_tensor_type(&mut self, grade: nakajima::Grade) -> Result<TypeId> {
         self.hodge_wick(&grade.basis)?.validate_grade(&grade)?;
         self.inhabited_type(Kind::HodgeTensor(grade), 0)
@@ -6400,6 +6408,7 @@ impl Model {
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
             | Kind::HodgeTensor(..)
+            | Kind::Verbitsky(..)
             | Kind::K3Clifford(..)
             | Kind::OG6Clifford(..)
             | Kind::KSExterior(..)
@@ -6933,6 +6942,10 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::Verbitsky(grade) => out.push(&format!(
+                "RVVerbitsky({},{},{})",
+                grade.basis, grade.length, grade.degree
+            )),
             Kind::HodgeTensor(grade) => out.push(&format!(
                 "RVHodgeTensor({},{},{})",
                 grade.basis, grade.length, grade.degree
@@ -8059,7 +8072,7 @@ impl Model {
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
                 }
-                Kind::HodgeTensor(ref grade) => {
+                Kind::HodgeTensor(ref grade) | Kind::Verbitsky(ref grade) => {
                     if grade.supports_states() {
                         return Err(Error::plain(
                             "cannot enumerate a rational Hodge Wick component",
@@ -9841,7 +9854,7 @@ impl Model {
                 self.write_nakajima_terms(out, state, 1)
             }
             Value::HodgeTensor(tensor) => {
-                let Kind::HodgeTensor(grade) = self.kind(ty) else {
+                let (Kind::HodgeTensor(grade) | Kind::Verbitsky(grade)) = self.kind(ty) else {
                     unreachable!()
                 };
                 let form = self.hodge_wick(&grade.basis)?;

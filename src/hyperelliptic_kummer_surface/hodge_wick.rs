@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -14,6 +15,7 @@ use super::nakajima::Grade;
 mod field;
 mod moments;
 mod rational;
+pub(crate) mod ring;
 use field::Etale;
 use rational::{Rational, LIMBS, Q};
 
@@ -22,8 +24,9 @@ pub(crate) type Entry = (i128, i128);
 pub(crate) enum Command {
     Declare(Label, usize, Vec<i128>, Vec<Vec<Entry>>),
     Trace(Label, Vec<Entry>),
-    Pair(Box<[ParsedExpr; 2]>),
-    Integral(Box<ParsedExpr>),
+    Pair(bool, Box<[ParsedExpr; 2]>),
+    Integral(bool, Box<ParsedExpr>),
+    Ring(Box<ring::Command>),
 }
 
 pub(crate) enum Expression {
@@ -31,8 +34,11 @@ pub(crate) enum Expression {
     Divisor(Label, u128, usize),
     Quadratic(Label, u128, Vec<Entry>),
     Inverse(Label, u128),
-    Scale(Entry, Box<ParsedExpr>),
-    Cup(Box<[ParsedExpr; 2]>),
+    Scale(bool, Entry, Box<ParsedExpr>),
+    Cup(bool, Box<[ParsedExpr; 2]>),
+    Cast(bool, Box<ParsedExpr>),
+    Basis(Label, i128, i128, usize),
+    Primitive(i128, usize, Box<ParsedExpr>),
 }
 
 pub(crate) struct Form {
@@ -41,6 +47,7 @@ pub(crate) struct Form {
     field: Etale,
     multiplicity: usize,
     dimension: usize,
+    slices: RefCell<BTreeMap<(i128, i128), Rc<ring::Slice>>>,
 }
 
 impl Form {
@@ -94,6 +101,7 @@ impl Form {
             field,
             multiplicity: m,
             dimension,
+            slices: RefCell::default(),
         })
     }
 
@@ -179,7 +187,7 @@ struct Power {
     exponent: u128,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Tensor {
     terms: BTreeMap<Vec<Power>, Rational>,
     cells: usize,

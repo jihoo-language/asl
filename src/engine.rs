@@ -838,6 +838,8 @@ enum TypedForm {
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     HodgeTensorCup(Box<[TypedExpr; 2]>),
+    HodgeTensorCast(bool, Box<TypedExpr>),
+    VerbitskyPrimitive(usize, Box<TypedExpr>),
     HodgeTensorScale(hodge_wick::Entry, Box<TypedExpr>),
     HilbertCohomologyLlvLower(Box<[TypedExpr; 2]>),
     HilbertCohomologyRotate(Box<[TypedExpr; 3]>),
@@ -5919,15 +5921,23 @@ impl Engine {
                 let trace = form.trace(&mut self.model, &coefficients)?;
                 format!("rvHodgeTrace[{}] = {trace}", name.text)
             }
-            Command::Pair(pair) => {
+            Command::Ring(command) => return self.verbitsky_command(*command).map(Some),
+            Command::Pair(canonical, pair) => {
+                let operation = if canonical {
+                    "rvVerbitskyPair"
+                } else {
+                    "rvHodgePair"
+                };
                 let [left, right] = *pair;
                 let mut checker = self.checker();
                 let left = checker.expr(left)?;
                 let right = checker.expr(right)?;
-                let grade = checker.hodge_tensor_grade(&left, "rvHodgePair")?.clone();
-                let right_grade = checker.hodge_tensor_grade(&right, "rvHodgePair")?;
+                let grade = checker
+                    .hodge_tensor_grade(&left, operation, canonical)?
+                    .clone();
+                let right_grade = checker.hodge_tensor_grade(&right, operation, canonical)?;
                 if grade.basis != right_grade.basis || !grade.complementary(right_grade) {
-                    return Err(Error::new(right.span, "rvHodgePair requires complementary degrees at the same marking and Hilbert length"));
+                    return Err(Error::new(right.span, format!("{operation} requires complementary degrees at the same marking and Hilbert length")));
                 }
                 let (Value::HodgeTensor(left), Value::HodgeTensor(right)) =
                     (self.eval(&left)?, self.eval(&right)?)
@@ -5937,18 +5947,23 @@ impl Engine {
                 let form = self.model.hodge_wick(&grade.basis)?;
                 let product = left.cup(&mut self.model, &right)?;
                 let value = form.integral(&mut self.model, &product)?;
-                format!("rvHodgePair = {value}")
+                format!("{operation} = {value}")
             }
-            Command::Integral(tensor) => {
+            Command::Integral(canonical, tensor) => {
+                let operation = if canonical {
+                    "rvVerbitskyIntegral"
+                } else {
+                    "rvHodgeIntegral"
+                };
                 let input = self.checker().expr(*tensor)?;
                 let grade = self
                     .checker()
-                    .hodge_tensor_grade(&input, "rvHodgeIntegral")?
+                    .hodge_tensor_grade(&input, operation, canonical)?
                     .clone();
                 if grade.length.checked_mul(4) != Some(grade.degree) {
                     return Err(Error::new(
                         input.span,
-                        "rvHodgeIntegral requires the top cohomological degree",
+                        format!("{operation} requires the top cohomological degree"),
                     ));
                 }
                 let Value::HodgeTensor(value) = self.eval(&input)? else {
@@ -5956,10 +5971,56 @@ impl Engine {
                 };
                 let form = self.model.hodge_wick(&grade.basis)?;
                 let value = form.integral(&mut self.model, &value)?;
-                format!("rvHodgeIntegral = {value}")
+                format!("{operation} = {value}")
             }
         };
         Ok(Some(result))
+    }
+
+    fn verbitsky_command(&mut self, command: hodge_wick::ring::Command) -> Result<String> {
+        use hodge_wick::ring::{Command, Lefschetz};
+        let relations = matches!(&command, Command::Relations(..));
+        match command {
+            Command::Rank(name, length, degree) | Command::Relations(name, length, degree) => {
+                let form = self.model.hodge_wick(&name.text)?;
+                let grade = nakajima::Grade {
+                    basis: name.text.as_str().into(),
+                    length,
+                    degree,
+                };
+                form.validate_grade(&grade)?;
+                let value = if relations {
+                    form.relations(&mut self.model, &grade)?
+                } else {
+                    form.rank(&grade)?.to_string()
+                };
+                let report = if relations {
+                    "rvVerbitskyRelations"
+                } else {
+                    "rvVerbitskyRank"
+                };
+                Ok(format!(
+                    "{report}[{}, {length}, {degree}] = {value}",
+                    name.text
+                ))
+            }
+            Command::Signature(degree, h) => {
+                let h = self.checker().expr(*h)?;
+                let grade = self.checker().verbitsky_primitive_grade(&h, degree)?;
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let Value::HodgeTensor(h) = self.eval(&h)? else {
+                    unreachable!()
+                };
+                let Lefschetz::Signature { full, primitive } =
+                    form.lefschetz(&mut self.model, &grade, &h, None)?
+                else {
+                    unreachable!()
+                };
+                Ok(format!(
+                    "rvVerbitskySignature[{degree}] = full={full:?} primitive={primitive:?}"
+                ))
+            }
+        }
     }
 
     fn hilbert_cohomology_report(
@@ -11057,8 +11118,10 @@ impl Engine {
                     .persist(&mut self.model)
             }
             TypedForm::HodgeTensorCup(inputs) => {
-                let Kind::HodgeTensor(grade) = self.model.kind(expr.ty) else {
-                    unreachable!()
+                let (grade, canonical) = match self.model.kind(expr.ty) {
+                    Kind::HodgeTensor(grade) => (grade.clone(), false),
+                    Kind::Verbitsky(grade) => (grade.clone(), true),
+                    _ => unreachable!(),
                 };
                 if !grade.supports_states() {
                     return hodge_wick::Tensor::default().persist(&mut self.model);
@@ -11068,7 +11131,49 @@ impl Engine {
                 else {
                     unreachable!()
                 };
-                left.cup(&mut self.model, &right)?.persist(&mut self.model)
+                let product = left.cup(&mut self.model, &right)?;
+                if canonical {
+                    self.model
+                        .hodge_wick(&grade.basis)?
+                        .project(&mut self.model, &grade, &product)?
+                        .persist(&mut self.model)
+                } else {
+                    product.persist(&mut self.model)
+                }
+            }
+            TypedForm::HodgeTensorCast(project, input) => {
+                let value = self.eval(input)?;
+                if !project {
+                    return Ok(value);
+                }
+                let Value::HodgeTensor(tensor) = value else {
+                    unreachable!()
+                };
+                let Kind::Verbitsky(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                self.model
+                    .hodge_wick(&grade.basis)?
+                    .project(&mut self.model, &grade, &tensor)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::VerbitskyPrimitive(index, input) => {
+                use hodge_wick::ring::Lefschetz;
+                let Value::HodgeTensor(h) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::Verbitsky(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let form = self.model.hodge_wick(&grade.basis)?;
+                let Lefschetz::Primitive(value) =
+                    form.lefschetz(&mut self.model, &grade, &h, Some(*index))?
+                else {
+                    unreachable!()
+                };
+                value.persist(&mut self.model)
             }
             TypedForm::HodgeTensorScale(amount, input) => {
                 let Value::HodgeTensor(value) = self.eval(input)? else {
@@ -13857,6 +13962,13 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::Verbitsky(name, length, degree) => {
+                self.model.verbitsky_type(nakajima::Grade {
+                    basis: name.text.into(),
+                    length,
+                    degree,
+                })
+            }
             TypeForm::HodgeTensor(name, length, degree) => {
                 self.model.hodge_tensor_type(nakajima::Grade {
                     basis: name.text.into(),
@@ -14945,7 +15057,7 @@ impl Checker<'_> {
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
-                    Kind::HodgeTensor(..) => hodge_wick::Tensor::default().persist(self.model)?,
+                    Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
@@ -18107,7 +18219,10 @@ impl Checker<'_> {
                         TypedForm::Mukai(MukaiAction::Negate(Box::new(input))),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::HodgeTensor(..)) {
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::HodgeTensor(..) | Kind::Verbitsky(..)
+                ) {
                     return Ok((
                         input.ty,
                         TypedForm::HodgeTensorScale((-1, 1), Box::new(input)),
@@ -21962,6 +22077,7 @@ impl Checker<'_> {
                         | Kind::Nakajima(..)
                         | Kind::HilbertCohomology(..)
                         | Kind::HodgeTensor(..)
+                        | Kind::Verbitsky(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
@@ -23658,12 +23774,47 @@ impl Checker<'_> {
         }
     }
 
-    fn hodge_tensor_grade(&self, input: &TypedExpr, operation: &str) -> Result<&nakajima::Grade> {
-        if let Kind::HodgeTensor(grade) = self.model.kind(input.ty) {
-            Ok(grade)
-        } else {
-            Err(self.invalid_operand(input, operation, "an RVHodgeTensor polynomial"))
+    fn hodge_tensor_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+        canonical: bool,
+    ) -> Result<&nakajima::Grade> {
+        match (self.model.kind(input.ty), canonical) {
+            (Kind::HodgeTensor(grade), false) | (Kind::Verbitsky(grade), true) => Ok(grade),
+            _ => Err(self.invalid_operand(
+                input,
+                operation,
+                if canonical {
+                    "an RVVerbitsky class"
+                } else {
+                    "an RVHodgeTensor polynomial"
+                },
+            )),
         }
+    }
+
+    fn verbitsky_primitive_grade(&self, h: &TypedExpr, degree: i128) -> Result<nakajima::Grade> {
+        let mut grade = self
+            .hodge_tensor_grade(h, "Verbitsky Lefschetz form", true)?
+            .clone();
+        if grade.degree != 2 {
+            return Err(Error::new(
+                h.span,
+                "Verbitsky Lefschetz form needs a degree-two divisor",
+            ));
+        }
+        grade.degree = degree;
+        self.model
+            .hodge_wick(&grade.basis)?
+            .validate_grade(&grade)?;
+        if degree as u128 / 2 > grade.length as u128 {
+            return Err(Error::new(
+                h.span,
+                "Verbitsky primitive degree must be at most the middle cohomological degree",
+            ));
+        }
+        Ok(grade)
     }
 
     fn hodge_tensor_expression(
@@ -23685,37 +23836,90 @@ impl Checker<'_> {
                 let form = self.model.hodge_wick(&name.text)?;
                 (name, n, 4, form.inverse(self.model)?)
             }
-            Expression::Scale(amount, input) => {
+            Expression::Scale(canonical, amount, input) => {
                 if amount.1 <= 0 {
                     return Err(Error::plain(
                         "Hodge Wick rational denominator must be positive",
                     ));
                 }
                 let input = self.expr(*input)?;
-                self.hodge_tensor_grade(&input, "rvHodgeScale")?;
+                self.hodge_tensor_grade(
+                    &input,
+                    if canonical {
+                        "rvVerbitskyScale"
+                    } else {
+                        "rvHodgeScale"
+                    },
+                    canonical,
+                )?;
                 return Ok((
                     input.ty,
                     TypedForm::HodgeTensorScale(amount, Box::new(input)),
                 ));
             }
-            Expression::Cup(inputs) => {
+            Expression::Cup(canonical, inputs) => {
+                let operation = if canonical {
+                    "rvVerbitskyCup"
+                } else {
+                    "rvHodgeCup"
+                };
                 let [left, right] = *inputs;
                 let left = self.expr(left)?;
                 let right = self.expr(right)?;
-                let mut grade = self.hodge_tensor_grade(&left, "rvHodgeCup")?.clone();
-                let other = self.hodge_tensor_grade(&right, "rvHodgeCup")?;
+                let mut grade = self
+                    .hodge_tensor_grade(&left, operation, canonical)?
+                    .clone();
+                let other = self.hodge_tensor_grade(&right, operation, canonical)?;
                 if grade.basis != other.basis || grade.length != other.length {
                     return Err(Error::new(
                         right.span,
-                        "rvHodgeCup requires the same marking and Hilbert length",
+                        format!("{operation} requires the same marking and Hilbert length"),
                     ));
                 }
                 grade.degree = grade
                     .degree
                     .checked_add(other.degree)
                     .ok_or_else(nakajima::grade_range)?;
-                let ty = self.model.hodge_tensor_type(grade)?;
+                let ty = if canonical {
+                    self.model.verbitsky_type(grade)?
+                } else {
+                    self.model.hodge_tensor_type(grade)?
+                };
                 return Ok((ty, TypedForm::HodgeTensorCup(Box::new([left, right]))));
+            }
+            Expression::Cast(project, input) => {
+                let input = self.expr(*input)?;
+                let name = if project {
+                    "rvVerbitskyClass"
+                } else {
+                    "rvVerbitskyRepresentative"
+                };
+                let grade = self.hodge_tensor_grade(&input, name, !project)?.clone();
+                let ty = if project {
+                    self.model.verbitsky_type(grade)?
+                } else {
+                    self.model.hodge_tensor_type(grade)?
+                };
+                return Ok((ty, TypedForm::HodgeTensorCast(project, Box::new(input))));
+            }
+            Expression::Basis(name, length, degree, index) => {
+                let grade = nakajima::Grade {
+                    basis: name.text.into(),
+                    length,
+                    degree,
+                };
+                let ty = self.model.verbitsky_type(grade.clone())?;
+                let tensor = self
+                    .model
+                    .hodge_wick(&grade.basis)?
+                    .basis(self.model, &grade, index)?;
+                return Ok((ty, TypedForm::Constant(tensor.persist(self.model)?)));
+            }
+            Expression::Primitive(degree, index, h) => {
+                let h = self.expr(*h)?;
+                let grade = self.verbitsky_primitive_grade(&h, degree)?;
+                let ty = self.model.verbitsky_type(grade)?;
+                return Ok((ty, TypedForm::VerbitskyPrimitive(index, Box::new(h))));
             }
         };
         let grade = nakajima::Grade {
