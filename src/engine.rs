@@ -32,8 +32,10 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai;
+use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
     self as kummer_surface, hilbert_square, nakajima, nikulin, polarized as kummer_div, unimodular,
@@ -563,6 +565,21 @@ enum KummerWeilAction {
     Frobenius(nikulin::Action, Box<TypedExpr>),
 }
 
+enum CliffordAction {
+    Vector(Box<TypedExpr>),
+    Reverse(Box<TypedExpr>),
+    Negate(Box<TypedExpr>),
+    Scale(i128, u128, Box<TypedExpr>),
+    Multiply(Box<[TypedExpr; 2]>),
+    Act(u8, Box<[TypedExpr; 2]>),
+}
+
+enum SpinorAction {
+    Negate(Box<TypedExpr>),
+    Scale(i128, u128, Box<TypedExpr>),
+    Act(u8, Box<[TypedExpr; 2]>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -645,6 +662,8 @@ enum TypedForm {
     K3LatticeTransvection(u8, i128, Box<TypedExpr>),
     K3LatticeNegate(Box<TypedExpr>),
     Nakajima(nakajima::Operation, Box<TypedExpr>),
+    K3Clifford(CliffordAction),
+    K3Spinor(SpinorAction),
     Mukai(MukaiAction),
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
     HilbertSquareDivisor(i128, Box<TypedExpr>),
@@ -1674,6 +1693,12 @@ impl Engine {
             }
             StatementForm::K3Lattice(command) => {
                 return self.k3_lattice_command(*command).map(Some)
+            }
+            StatementForm::K3CliffordCoefficient(command) => {
+                return self.clifford_coefficient(command).map(Some)
+            }
+            StatementForm::K3SpinorCoefficient(command) => {
+                return self.spinor_coefficient(command).map(Some)
             }
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
@@ -5361,6 +5386,101 @@ impl Engine {
         }
     }
 
+    fn spinor_coefficient(&mut self, command: spinor::Coefficient) -> Result<String> {
+        let spinor::Coefficient(index, input) = command;
+        let checker = &mut self.checker();
+        let input = checker.expr(*input)?;
+        checker.spinor_operand(&input, "rvK3SpinCoeff")?;
+        let Value::K3Spinor(spinor) = self.eval(&input)? else {
+            unreachable!()
+        };
+        let value = spinor.coefficient(&mut self.model, index)?;
+        Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
+    }
+
+    fn eval_spinor(&mut self, action: &SpinorAction) -> Result<Value> {
+        match action {
+            SpinorAction::Negate(input) | SpinorAction::Scale(_, _, input) => {
+                let Value::K3Spinor(spinor) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match action {
+                    SpinorAction::Negate(_) => spinor.signed_map(&mut self.model, |_| true)?,
+                    SpinorAction::Scale(n, d, _) => spinor.scale(&mut self.model, *n, *d)?,
+                    _ => unreachable!(),
+                }
+                .persist(&mut self.model)
+            }
+            SpinorAction::Act(chirality, inputs) => {
+                let [actor, spinor] = inputs.as_ref();
+                let (Value::K3Clifford(actor), Value::K3Spinor(spinor)) =
+                    (self.eval(actor)?, self.eval(spinor)?)
+                else {
+                    unreachable!()
+                };
+                spinor
+                    .act(&mut self.model, &actor, *chirality)?
+                    .persist(&mut self.model)
+            }
+        }
+    }
+
+    fn clifford_coefficient(&mut self, command: clifford::Coefficient) -> Result<String> {
+        let clifford::Coefficient(mask, input) = command;
+        let checker = &mut self.checker();
+        let input = checker.expr(*input)?;
+        checker.clifford_operand(&input, "rvCliffordCoeff")?;
+        let Value::K3Clifford(element) = self.eval(&input)? else {
+            unreachable!()
+        };
+        let value = element.coefficient(&mut self.model, mask)?;
+        Ok(format!("rvCliffordCoeff[{mask}] = {value}"))
+    }
+
+    fn eval_clifford(&mut self, action: &CliffordAction) -> Result<Value> {
+        match action {
+            CliffordAction::Vector(input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                clifford::Element::from_vector(&mut self.model, &vector)?.persist(&mut self.model)
+            }
+            CliffordAction::Reverse(input)
+            | CliffordAction::Negate(input)
+            | CliffordAction::Scale(_, _, input) => {
+                let Value::K3Clifford(element) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match action {
+                    CliffordAction::Reverse(_) => element.reverse(&mut self.model)?,
+                    CliffordAction::Negate(_) => element.signed_map(&mut self.model, |_| true)?,
+                    CliffordAction::Scale(n, d, _) => element.scale(&mut self.model, *n, *d)?,
+                    _ => unreachable!(),
+                }
+                .persist(&mut self.model)
+            }
+            CliffordAction::Multiply(inputs) => {
+                let [a, b] = inputs.as_ref();
+                let (Value::K3Clifford(a), Value::K3Clifford(b)) = (self.eval(a)?, self.eval(b)?)
+                else {
+                    unreachable!()
+                };
+                a.multiply(&mut self.model, &b)?.persist(&mut self.model)
+            }
+            CliffordAction::Act(parity, inputs) => {
+                let [actor, vector] = inputs.as_ref();
+                let (Value::K3Clifford(actor), Value::K3Lattice(vector)) =
+                    (self.eval(actor)?, self.eval(vector)?)
+                else {
+                    unreachable!()
+                };
+                actor
+                    .act(&mut self.model, &vector, *parity)?
+                    .persist(&mut self.model)
+            }
+        }
+    }
+
     fn eval_mukai(&mut self, action: &MukaiAction) -> Result<Value> {
         match action {
             MukaiAction::FromDivisor(input) => {
@@ -6162,6 +6282,12 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Lattice(a), Value::K3Lattice(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::K3Clifford(a), Value::K3Clifford(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::K3Spinor(a), Value::K3Spinor(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
@@ -7722,6 +7848,8 @@ impl Engine {
                 };
                 vector.negate(&mut self.model)?.persist(&mut self.model)
             }
+            TypedForm::K3Clifford(action) => self.eval_clifford(action),
+            TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::K3AutoDiv(word, input) => {
                 let Value::KummerDiv(divisor) = self.eval(input)? else {
                     unreachable!()
@@ -10092,6 +10220,8 @@ impl Checker<'_> {
             TypeForm::Nakajima(name, length, degree) => {
                 self.model.nakajima_type(&name, length, degree)
             }
+            TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
+            TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
@@ -11135,6 +11265,8 @@ impl Checker<'_> {
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
+                    Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
+                    Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
@@ -13272,6 +13404,8 @@ impl Checker<'_> {
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
+            ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
+            ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
@@ -13974,6 +14108,18 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 if matches!(self.model.kind(input.ty), Kind::K3Lattice(..)) {
                     return Ok((input.ty, TypedForm::K3LatticeNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::K3Clifford(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::K3Clifford(CliffordAction::Negate(Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::K3Spinor(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::K3Spinor(SpinorAction::Negate(Box::new(input))),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Mukai(..)) {
                     return Ok((
@@ -17727,6 +17873,8 @@ impl Checker<'_> {
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
+                        | Kind::K3Clifford(..)
+                        | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::HilbertSquare(..)
                         | Kind::ASDeRham(..)
@@ -19441,6 +19589,129 @@ impl Checker<'_> {
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
         }
+    }
+
+    fn spinor_operand(&self, input: &TypedExpr, operation: &str) -> Result<(&Rc<str>, u8)> {
+        let Kind::K3Spinor(marking, chirality) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVK3Spinor vector"));
+        };
+        Ok((marking, *chirality))
+    }
+
+    fn spinor_expression(&mut self, expression: spinor::Expression) -> Result<(TypeId, TypedForm)> {
+        use spinor::Expression;
+        let (ty, action) = match expression {
+            Expression::Basis(marking, chirality, index) => {
+                let ty = self.model.k3_spinor_type(&marking, chirality)?;
+                let value = spinor::Element::basis(index).persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Scale(numerator, denominator, input) => {
+                let input = self.expr(*input)?;
+                self.spinor_operand(&input, "rvK3SpinorScale")?;
+                (
+                    input.ty,
+                    SpinorAction::Scale(numerator, denominator, Box::new(input)),
+                )
+            }
+            Expression::Act(inputs) => {
+                let [actor, spinor] = *inputs;
+                let actor = self.expr(actor)?;
+                let (marking, parity) = self.clifford_operand(&actor, "rvK3SpinAct")?;
+                let marking = Label {
+                    text: marking.to_string(),
+                    span: actor.span,
+                };
+                let spinor = self.expr(spinor)?;
+                let (_, chirality) = self.spinor_operand(&spinor, "rvK3SpinAct")?;
+                let expected = self.model.k3_spinor_type(&marking, chirality)?;
+                self.require_type(expected, &spinor, "rvK3SpinAct spinor")?;
+                (
+                    self.model.k3_spinor_type(&marking, chirality ^ parity)?,
+                    SpinorAction::Act(chirality, Box::new([actor, spinor])),
+                )
+            }
+        };
+        Ok((ty, TypedForm::K3Spinor(action)))
+    }
+
+    fn clifford_operand(&self, input: &TypedExpr, operation: &str) -> Result<(&Rc<str>, u8)> {
+        let Kind::K3Clifford(marking, parity) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVK3Clifford element"));
+        };
+        Ok((marking, *parity))
+    }
+
+    fn clifford_expression(
+        &mut self,
+        expression: clifford::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use clifford::Expression;
+        let marking_label = |name: &str, span| Label {
+            text: name.into(),
+            span,
+        };
+        let volume = matches!(&expression, Expression::Volume(_));
+        let (ty, action) = match expression {
+            Expression::One(marking) | Expression::Volume(marking) => {
+                let ty = self.model.k3_clifford_type(&marking, 0)?;
+                let element = if volume {
+                    clifford::Element::volume()
+                } else {
+                    clifford::Element::one()
+                };
+                return Ok((ty, TypedForm::Constant(element.persist(self.model)?)));
+            }
+            Expression::Vector(input) => {
+                let input = self.expr(*input)?;
+                let marking = marking_label(
+                    self.k3_lattice_operand(&input, "rvCliffordVector")?,
+                    input.span,
+                );
+                (
+                    self.model.k3_clifford_type(&marking, 1)?,
+                    CliffordAction::Vector(Box::new(input)),
+                )
+            }
+            Expression::Reverse(input) => {
+                let input = self.expr(*input)?;
+                self.clifford_operand(&input, "rvCliffordReverse")?;
+                (input.ty, CliffordAction::Reverse(Box::new(input)))
+            }
+            Expression::Scale(numerator, denominator, input) => {
+                let input = self.expr(*input)?;
+                self.clifford_operand(&input, "rvCliffordScale")?;
+                (
+                    input.ty,
+                    CliffordAction::Scale(numerator, denominator, Box::new(input)),
+                )
+            }
+            Expression::Multiply(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let (marking, p) = self.clifford_operand(&left, "rvCliffordMul")?;
+                let marking = marking_label(marking, left.span);
+                let (_, q) = self.clifford_operand(&right, "rvCliffordMul")?;
+                let required = self.model.k3_clifford_type(&marking, q)?;
+                self.require_type(required, &right, "rvCliffordMul right argument")?;
+                (
+                    self.model.k3_clifford_type(&marking, p ^ q)?,
+                    CliffordAction::Multiply(Box::new([left, right])),
+                )
+            }
+            Expression::Act(inputs) => {
+                let [actor, vector] = *inputs;
+                let actor = self.expr(actor)?;
+                let (marking, parity) = self.clifford_operand(&actor, "rvCliffordAct")?;
+                let marking = marking_label(marking, actor.span);
+                let ty = self.model.k3_lattice_type(&marking)?;
+                let vector = self.expr(vector)?;
+                self.require_type(ty, &vector, "rvCliffordAct vector")?;
+                (ty, CliffordAction::Act(parity, Box::new([actor, vector])))
+            }
+        };
+        Ok((ty, TypedForm::K3Clifford(action)))
     }
 
     fn mukai_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {

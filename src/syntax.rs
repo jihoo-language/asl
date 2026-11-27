@@ -131,6 +131,8 @@ pub(crate) enum TypeForm {
     KummerDiv(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
+    K3Clifford(Label, u8),
+    K3Spinor(Label, u8),
     Mukai(Label),
     HilbertSquare(Label, i128),
     ECMap(Label, Label),
@@ -979,6 +981,8 @@ pub(crate) enum ExprForm {
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
+    K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
+    K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1171,6 +1175,8 @@ pub(crate) enum StatementForm {
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     NakajimaPair(Box<[ParsedExpr; 2]>),
+    K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
+    K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
@@ -3032,6 +3038,138 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::K3Automorphism(Box::new(command)))
     }
 
+    fn spinor_coefficient_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::spinor::Coefficient;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let index = self.spinor_index()?;
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::K3SpinorCoefficient(Coefficient(
+            index,
+            Box::new(self.paren_expr(0)?),
+        )))
+    }
+
+    fn spinor_index(&mut self) -> Result<u32> {
+        use crate::hyperelliptic_kummer_surface::spinor::DIMENSION;
+        let (index, at) = self.number()?;
+        if index >= DIMENSION {
+            return Err(Error::new(at, "K3 spinor index must be between 0 and 1023"));
+        }
+        Ok(index as u32)
+    }
+
+    fn spinor_chirality(&mut self) -> Result<u8> {
+        let (chirality, at) = self.number()?;
+        if chirality > 1 {
+            return Err(Error::new(at, "K3 spinor chirality must be 0 or 1"));
+        }
+        Ok(chirality as u8)
+    }
+
+    fn spinor_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::spinor::Expression;
+        let (expression, depth) = match name {
+            "rvK3SpinorBasis" => {
+                self.expect(Token::LBracket)?;
+                let marking = self.label()?;
+                self.expect(Token::Comma)?;
+                let chirality = self.spinor_chirality()?;
+                self.expect(Token::Comma)?;
+                let index = self.spinor_index()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(marking, chirality, index), 0)
+            }
+            "rvK3SpinorScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("a signed numerator", "K3 spinor scalar numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wide_unsigned("K3 spinor scalar denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Scale(numerator, denominator, Box::new(input)),
+                    depth,
+                )
+            }
+            _ => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Act(Box::new(inputs)), depth)
+            }
+        };
+        expr(span, ExprForm::K3Spinor(Box::new(expression)), depth)
+    }
+
+    fn clifford_coefficient_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::clifford::{Coefficient, VOLUME_MASK};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let (mask, at) = self.number()?;
+        if mask > VOLUME_MASK as usize {
+            return Err(Error::new(at, "Clifford monomial mask must fit 22 bits"));
+        }
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::K3CliffordCoefficient(Coefficient(
+            mask as u32,
+            Box::new(self.paren_expr(0)?),
+        )))
+    }
+
+    fn clifford_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::clifford::Expression;
+        let (expression, depth) = match name {
+            "rvCliffordOne" | "rvCliffordVolume" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::RBracket)?;
+                let expression = if name == "rvCliffordOne" {
+                    Expression::One(basis)
+                } else {
+                    Expression::Volume(basis)
+                };
+                (expression, 0)
+            }
+            "rvCliffordScale" => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("a signed numerator", "Clifford scalar numerator")?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wide_unsigned("Clifford scalar denominator")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Scale(numerator, denominator, Box::new(input)),
+                    depth,
+                )
+            }
+            "rvCliffordMul" | "rvCliffordAct" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                let expression = if name == "rvCliffordMul" {
+                    Expression::Multiply(Box::new(inputs))
+                } else {
+                    Expression::Act(Box::new(inputs))
+                };
+                (expression, depth)
+            }
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                let expression = if name == "rvCliffordVector" {
+                    Expression::Vector(Box::new(input))
+                } else {
+                    Expression::Reverse(Box::new(input))
+                };
+                (expression, depth)
+            }
+        };
+        expr(span, ExprForm::K3Clifford(Box::new(expression)), depth)
+    }
+
     fn k3_lattice_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::unimodular::Command;
         self.advance()?;
@@ -4738,6 +4876,8 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
             }
+            Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
+            Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
                 StatementForm::NakajimaPair(Box::new(self.paren_pair(0)?))
@@ -7996,6 +8136,23 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVK3Clifford" && self.eat(Token::LParen)? {
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let (parity, at) = self.number()?;
+            if parity > 1 {
+                return Err(Error::new(at, "Clifford parity must be 0 or 1"));
+            }
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::K3Clifford(basis, parity as u8), 0);
+        }
+        if name.text == "RVK3Spinor" && self.eat(Token::LParen)? {
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let chirality = self.spinor_chirality()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::K3Spinor(basis, chirality), 0);
+        }
         if name.text == "RVECMap" && self.eat(Token::LParen)? {
             let source = self.label()?;
             self.expect(Token::Comma)?;
@@ -10047,6 +10204,26 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.kummer_divisor_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCliffordOne" | "rvCliffordVolume" | "rvCliffordScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCliffordVector"
+                            | "rvCliffordReverse"
+                            | "rvCliffordMul"
+                            | "rvCliffordAct"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.clifford_expression(&name.text, span, nest);
+                }
+                if (matches!(name.text.as_str(), "rvK3SpinorBasis" | "rvK3SpinorScale")
+                    && self.token() == Token::LBracket)
+                    || (name.text == "rvK3SpinAct" && self.token() == Token::LParen)
+                {
+                    return self.spinor_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

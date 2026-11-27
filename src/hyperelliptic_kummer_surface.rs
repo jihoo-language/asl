@@ -11,6 +11,7 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod arithmetic;
+pub(crate) mod clifford;
 pub(crate) mod dynamics;
 pub(crate) mod enriques;
 pub(crate) mod hilbert;
@@ -21,7 +22,9 @@ pub(crate) mod nakajima;
 pub(crate) mod newton;
 pub(crate) mod nikulin;
 pub(crate) mod polarized;
+pub(crate) mod rational_sparse;
 pub(crate) mod resolution;
+pub(crate) mod spinor;
 pub(crate) mod theta;
 pub(crate) mod unimodular;
 pub(crate) mod weil;

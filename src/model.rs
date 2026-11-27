@@ -34,6 +34,7 @@ use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Po
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, nakajima, nikulin, unimodular, Point as KummerPoint,
 };
+use crate::hyperelliptic_kummer_surface::{clifford, rational_sparse, spinor};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -263,6 +264,8 @@ pub(crate) enum Kind {
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
+    K3Clifford(Rc<str>, u8),
+    K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
     HilbertSquare(Rc<str>, i128),
     ECMap(Rc<str>, Rc<str>),
@@ -436,6 +439,8 @@ pub(crate) enum Value {
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
+    K3Clifford(Rc<clifford::Element>),
+    K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
     ECMap(Rc<ECMap>),
@@ -1017,6 +1022,7 @@ impl Model {
             }
             Kind::HilbertSquare(_, degree) if hilbert_square::dimension(degree) == 0 => 1,
             Kind::HilbertSquare(..) => usize::MAX,
+            Kind::K3Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1236,6 +1242,8 @@ impl Model {
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
+                | Kind::K3Clifford(..)
+                | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
                 | Kind::HilbertSquare(..)
                 | Kind::ECMap(..)
@@ -3900,6 +3908,24 @@ impl Model {
         self.inhabited_type(Kind::K3Lattice(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn k3_clifford_type(&mut self, basis: &Label, parity: u8) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            basis,
+            "K3 Clifford algebra requires a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::K3Clifford(basis.text.as_str().into(), parity), 0)
+    }
+
+    pub(crate) fn k3_spinor_type(&mut self, basis: &Label, chirality: u8) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            basis,
+            "K3 spinors require a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::K3Spinor(basis.text.as_str().into(), chirality), 0)
+    }
+
     pub(crate) fn mukai_type(&mut self, name: &Label) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -5091,6 +5117,8 @@ impl Model {
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
+            | Kind::K3Clifford(..)
+            | Kind::K3Spinor(..)
             | Kind::Mukai(..)
             | Kind::HilbertSquare(..)
             | Kind::ECMap(..)
@@ -5602,6 +5630,8 @@ impl Model {
                 "RVNakajima({},{},{})",
                 grade.basis, grade.length, grade.degree
             )),
+            Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
+            Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::HilbertSquare(name, degree) => {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
@@ -5891,6 +5921,8 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Mukai(a), Value::Mukai(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6224,6 +6256,8 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
+            (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
+            (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::Mukai(a), Value::Mukai(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
@@ -6575,6 +6609,16 @@ impl Model {
                     return Err(Error::plain(
                         "an elliptic rational morphism type cannot be enumerated",
                     ));
+                }
+                Kind::K3Clifford(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the rational K3 Clifford algebra",
+                    ))
+                }
+                Kind::K3Spinor(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational K3 half-spin module",
+                    ))
                 }
                 Kind::ECPoint(ref name) => self.ec_curve(name)?.elements(self, MAX_ELEMENTS)?,
                 Kind::ECKernel(ref name, ell) => {
@@ -7385,6 +7429,27 @@ impl Model {
         out.push("}")
     }
 
+    fn write_sparse_rational<D: rational_sparse::Domain>(
+        &mut self,
+        out: &mut Text,
+        ty: TypeId,
+        element: &rational_sparse::Coefficients<D>,
+    ) -> Result<()> {
+        self.write_type(out, ty, 0)?;
+        out.push("{[")?;
+        for (i, &(index, numerator)) in element.terms().iter().enumerate() {
+            self.spend(1)?;
+            if i != 0 {
+                out.push(", ")?;
+            }
+            out.push(&format!(
+                "({index}, {})",
+                rational_sparse::signed_text(numerator)
+            ))?;
+        }
+        out.push(&format!("] / {}}}", element.denominator_text()))
+    }
+
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
             Value::Bar(support) => {
@@ -8046,6 +8111,8 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{w={w:?}, b={b:?}}}"))
             }
+            Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
+            Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::Mukai(vector) => {
                 let (w, b) = vector.c.coordinates();
                 self.write_type(out, ty, 0)?;
