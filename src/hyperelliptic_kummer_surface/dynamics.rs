@@ -36,6 +36,7 @@ pub(crate) enum Command {
     FrobFixed(Label, Label, u128),
     FrobZeta(Label, Label),
     StratumTrace(Label, Label, Label, u128, u128, Option<u128>),
+    SpechtTrace(Label, Label, Label, u128, u128, Option<u128>),
     FrobHilbert(Label, Label, u128, u128, Option<u128>),
 }
 
@@ -84,6 +85,9 @@ impl Command {
             Self::FrobZeta(name, base) => semilinear::zeta(model, &name, &base).map(Some),
             Self::StratumTrace(word, base, shape, r, i, coefficient) => {
                 strata::report(model, &word, &base, &shape, r, i, coefficient).map(Some)
+            }
+            Self::SpechtTrace(word, base, shape, r, i, coefficient) => {
+                strata::specht_report(model, &word, &base, &shape, r, i, coefficient).map(Some)
             }
             Self::FrobHilbert(name, base, length, power, grade) => {
                 semilinear::hilbert(model, &name, &base, length, power, grade).map(Some)

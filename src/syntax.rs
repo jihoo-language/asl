@@ -1194,6 +1194,7 @@ pub(crate) enum StatementForm {
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     HilbertStratum(Box<crate::hyperelliptic_kummer_surface::stratum::Command>),
+    DeclareSpecht(Box<crate::hyperelliptic_kummer_surface::specht::Declaration>),
     CrystallineNewton(crate::hyperelliptic_kummer_surface::newton::Command),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     Hodge(crate::generalized_kummer::hodge::Command),
@@ -3393,7 +3394,10 @@ impl<'src> Parser<'src> {
                 Ok(power)
             };
             let command = match operation {
-                "rvK3StratumFrobTrace" | "rvK3StratumEulerFactor" => {
+                "rvK3StratumFrobTrace"
+                | "rvK3StratumEulerFactor"
+                | "rvK3SpechtFrobTrace"
+                | "rvK3SpechtEulerFactor" => {
                     self.expect(Token::Comma)?;
                     let base = self.label()?;
                     self.expect(Token::Comma)?;
@@ -3402,13 +3406,20 @@ impl<'src> Parser<'src> {
                     let r = positive_iteration(self)?;
                     self.expect(Token::Comma)?;
                     let i = self.wide_unsigned("cohomological degree")?;
-                    let coefficient = if operation == "rvK3StratumEulerFactor" {
+                    let coefficient = if matches!(
+                        operation,
+                        "rvK3StratumEulerFactor" | "rvK3SpechtEulerFactor"
+                    ) {
                         self.expect(Token::Comma)?;
                         Some(self.wide_unsigned("Euler-factor coefficient index")?)
                     } else {
                         None
                     };
-                    Command::StratumTrace(name, base, shape, r, i, coefficient)
+                    if matches!(operation, "rvK3SpechtFrobTrace" | "rvK3SpechtEulerFactor") {
+                        Command::SpechtTrace(name, base, shape, r, i, coefficient)
+                    } else {
+                        Command::StratumTrace(name, base, shape, r, i, coefficient)
+                    }
                 }
                 "rvK3FrobFixed" | "rvK3FrobZeta" | "rvK3FrobHilbFixed" | "rvK3FrobHilbTrace" => {
                     self.expect(Token::Comma)?;
@@ -4402,6 +4413,34 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::HilbertStratum(Box::new(command)))
+    }
+
+    fn specht_stratum_statement(&mut self) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::specht::Declaration;
+        self.advance()?;
+        let name = self.label()?;
+        self.expect(Token::LBracket)?;
+        let shape = self.label()?;
+        self.expect(Token::RBracket)?;
+        let diagrams = self.set_named_rows(|parser| {
+            parser.expect(Token::LParen)?;
+            let size = parser.wide_unsigned("Hilbert–Chow part size")?;
+            parser.expect(Token::Comma)?;
+            parser.expect(Token::LBracket)?;
+            let mut rows = Vec::new();
+            while parser.token() != Token::RBracket {
+                rows.push(parser.wide_unsigned("Specht row length")?);
+                if !parser.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            parser.expect(Token::RBracket)?;
+            parser.expect(Token::RParen)?;
+            Ok((size, rows))
+        })?;
+        Ok(StatementForm::DeclareSpecht(Box::new(Declaration(
+            name, shape, diagrams,
+        ))))
     }
 
     fn kummer_node_lattice_statement(&mut self) -> Result<StatementForm> {
@@ -6202,6 +6241,7 @@ impl<'src> Parser<'src> {
                 operation @ ("rvOG10Lattice" | "rvOG10Pair" | "rvOG10Div" | "rvOG10Fujiki"
                 | "rvOG10RR" | "rvOG10Wall" | "rvOG10Walls"),
             ) => self.og10_statement(operation)?,
+            Token::Word("rvspechtstratum") => self.specht_stratum_statement()?,
             Token::Word(
                 operation @ ("rvhilbstratum"
                 | "rvHilbStratumData"
@@ -6338,6 +6378,8 @@ impl<'src> Parser<'src> {
                 | "rvK3FrobHilbFixed"
                 | "rvK3StratumFrobTrace"
                 | "rvK3StratumEulerFactor"
+                | "rvK3SpechtFrobTrace"
+                | "rvK3SpechtEulerFactor"
                 | "rvK3FrobHilbTrace"
                 | "rvK3AutoNikulin"),
             ) => self.k3_automorphism_statement(name)?,

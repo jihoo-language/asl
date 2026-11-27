@@ -642,6 +642,7 @@ pub(crate) struct Model {
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     cm_ring_orders: HashMap<String, cm_ring::Order>,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
+    specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     og6_cusps: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp>>,
@@ -755,6 +756,7 @@ impl Model {
             k3_periods: HashMap::new(),
             cm_ring_orders: HashMap::new(),
             hilbert_strata: HashMap::new(),
+            specht_strata: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
@@ -3747,6 +3749,32 @@ impl Model {
                 format!("unknown Hilbert–Chow stratum '{}'", name.text),
             )
         })
+    }
+
+    pub(crate) fn define_specht_stratum(
+        &mut self,
+        name: Label,
+        decoration: hyperelliptic_kummer_surface::specht::Decoration,
+    ) -> Result<()> {
+        if self.specht_strata.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Specht stratum '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(name.text.len() + decoration.storage())?;
+        self.specht_strata.insert(name.text, Rc::new(decoration));
+        Ok(())
+    }
+
+    pub(crate) fn specht_stratum(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::specht::Decoration>> {
+        self.specht_strata
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Specht stratum '{}'", name.text)))
     }
 
     pub(crate) fn show_jacobian_level_frobenius(

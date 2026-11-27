@@ -233,26 +233,40 @@ pub(crate) fn symmetric_partition_product(
 ) -> Result<Vec<Integer>> {
     let limit = (rows.len() - 1) as u128;
     let width = rows[0].len();
-    let mut product = vec![Integer::from_i128(0); width];
-    product[0] = Integer::from_i128(1);
+    let mut product = vec![Integer::from_i128(1)];
     for &(_, count) in parts {
         let row = &rows[count.min(limit) as usize];
-        model.spend(width)?;
-        let mut next = vec![Integer::from_i128(0); width];
-        for (j, &left) in product
-            .iter()
-            .enumerate()
-            .filter(|(_, value)| !value.is_zero())
-        {
-            model.spend(width - j)?;
-            for (target, &right) in next[j..].iter_mut().zip(row) {
-                if !right.is_zero() {
-                    let term = checked_product(model, left, right)?;
-                    *target = target.add(term).map_err(|_| intermediate_overflow())?;
-                }
+        product = graded_product(model, &product, row, width)?;
+    }
+    product.resize(width, Integer::from_i128(0));
+    Ok(product)
+}
+
+pub(super) fn graded_product(
+    model: &mut Model,
+    left: &[Integer],
+    right: &[Integer],
+    width: usize,
+) -> Result<Vec<Integer>> {
+    if left.is_empty() || right.is_empty() {
+        return Ok(Vec::new());
+    }
+    let width = width.min(left.len() + right.len() - 1);
+    model.spend(width)?;
+    let mut product = vec![Integer::from_i128(0); width];
+    for (j, &left) in left
+        .iter()
+        .take(width)
+        .enumerate()
+        .filter(|(_, value)| !value.is_zero())
+    {
+        model.spend((width - j).min(right.len()))?;
+        for (target, &right) in product[j..].iter_mut().zip(right) {
+            if !right.is_zero() {
+                let term = checked_product(model, left, right)?;
+                *target = target.add(term).map_err(|_| intermediate_overflow())?;
             }
         }
-        product = next;
     }
     Ok(product)
 }

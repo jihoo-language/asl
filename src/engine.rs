@@ -1821,6 +1821,10 @@ impl Engine {
                 return command.execute(&mut self.model).map(Some)
             }
             StatementForm::HilbertStratum(command) => return command.execute(&mut self.model),
+            StatementForm::DeclareSpecht(declaration) => {
+                declaration.execute(&mut self.model)?;
+                return Ok(None);
+            }
             StatementForm::KummerNodeLattice(command) => {
                 return command.execute(&mut self.model).map(Some)
             }

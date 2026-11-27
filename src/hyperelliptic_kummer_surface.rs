@@ -30,6 +30,7 @@ pub(crate) mod rational_sparse;
 pub(crate) mod resolution;
 pub(crate) use resolution::pencil;
 pub(crate) use resolution::pencil::mordell;
+pub(crate) mod specht;
 pub(crate) mod spinor;
 pub(crate) mod stratum;
 pub(crate) mod theta;
