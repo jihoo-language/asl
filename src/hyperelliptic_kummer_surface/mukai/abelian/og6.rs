@@ -10,6 +10,7 @@ use crate::hyperelliptic_kummer_surface::polarized;
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod cusp;
 pub(crate) mod monodromy;
 
 const N: usize = 3;

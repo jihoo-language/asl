@@ -710,6 +710,8 @@ enum TypedForm {
     OG6(Rc<og6::Lattice>, i128, Box<TypedExpr>),
     OG6Negate(Box<TypedExpr>),
     OG6Reflect(Rc<og6::Lattice>, Box<[TypedExpr; 2]>),
+    OG6CuspTransvection(Rc<og6::cusp::Cusp>, usize, Box<[TypedExpr; 2]>),
+    OG6CuspCentral(Rc<og6::cusp::Cusp>, i128, Box<TypedExpr>),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
     OG10Wall(
         og10::WallOperation,
@@ -1857,6 +1859,7 @@ impl Engine {
             StatementForm::AbMukaiPair(inputs) => {
                 return self.abelian_mukai_pair(*inputs).map(Some)
             }
+            StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
             StatementForm::OG6(command) => return self.og6_command(*command),
             StatementForm::OG10(command) => return self.og10_command(*command).map(Some),
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
@@ -5948,6 +5951,33 @@ impl Engine {
         ))
     }
 
+    fn og6_cusp_command(&mut self, command: og6::cusp::Command) -> Result<Option<String>> {
+        use og6::cusp::Command;
+        match command {
+            Command::Define(name, inputs) => {
+                let [h, e, f] = *inputs;
+                let checker = &mut self.checker();
+                let h = checker.expr(h)?;
+                let lattice = checker.og6_operand(&h, "rvog6cusp")?;
+                let e = checker.expr(e)?;
+                let f = checker.expr(f)?;
+                checker.require_type(h.ty, &e, "rvog6cusp")?;
+                checker.require_type(h.ty, &f, "rvog6cusp")?;
+                let (Value::OG6(h), Value::OG6(e), Value::OG6(f)) =
+                    (self.eval(&h)?, self.eval(&e)?, self.eval(&f)?)
+                else {
+                    unreachable!()
+                };
+                self.model.define_og6_cusp(name, &lattice, [h, e, f])?;
+                Ok(None)
+            }
+            Command::Gram(name) => {
+                let cusp = self.model.og6_cusp(&name)?;
+                Ok(Some(cusp.gram(&mut self.model, &name.text)?))
+            }
+        }
+    }
+
     fn og6_command(&mut self, command: og6::Command) -> Result<Option<String>> {
         use og6::Command;
         let unary_operation = match &command {
@@ -8744,6 +8774,22 @@ impl Engine {
                     unreachable!()
                 };
                 og6::Class::new(&mut self.model, lattice, vector, *exceptional)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG6CuspTransvection(cusp, index, inputs) => {
+                let (Value::OG6(u), Value::OG6(x)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                cusp.transvection(&mut self.model, *index, &u, &x)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG6CuspCentral(cusp, k, input) => {
+                let Value::OG6(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cusp.central(&mut self.model, *k, &x)?
                     .persist(&mut self.model)
             }
             TypedForm::OG6Reflect(lattice, inputs) => {
@@ -14632,6 +14678,7 @@ impl Checker<'_> {
             ExprForm::OG10(expression) => self.og10_expression(*expression),
             ExprForm::AbMukai(expression) => self.abelian_mukai_expression(*expression),
             ExprForm::OG6(expression) => self.og6_expression(*expression),
+            ExprForm::OG6Cusp(expression) => self.og6_cusp_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
@@ -21406,6 +21453,43 @@ impl Checker<'_> {
             text: name.to_string(),
             span: input.span,
         })
+    }
+
+    fn og6_cusp_expression(
+        &mut self,
+        expression: og6::cusp::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use og6::cusp::Expression;
+        let name = match &expression {
+            Expression::Basis(name, _)
+            | Expression::Transvection(name, ..)
+            | Expression::Central(name, ..) => name,
+        };
+        let cusp = self.model.og6_cusp(name)?;
+        let lattice = Label {
+            text: cusp.lattice_name.to_string(),
+            span: name.span,
+        };
+        let ty = self.model.og6_type(&lattice)?;
+        let form = match expression {
+            Expression::Basis(_, index) => {
+                TypedForm::Constant(cusp.basis(index)?.persist(self.model)?)
+            }
+            Expression::Transvection(_, index, inputs) => {
+                let [u, x] = *inputs;
+                let u = self.expr(u)?;
+                let x = self.expr(x)?;
+                self.require_type(ty, &u, "rvOG6CuspTransvection direction")?;
+                self.require_type(ty, &x, "rvOG6CuspTransvection class")?;
+                TypedForm::OG6CuspTransvection(cusp, index, Box::new([u, x]))
+            }
+            Expression::Central(_, k, input) => {
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "rvOG6CuspCentral")?;
+                TypedForm::OG6CuspCentral(cusp, k, Box::new(input))
+            }
+        };
+        Ok((ty, form))
     }
 
     fn og6_expression(&mut self, expression: og6::Expression) -> Result<(TypeId, TypedForm)> {

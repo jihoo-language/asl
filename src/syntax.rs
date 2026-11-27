@@ -1003,6 +1003,7 @@ pub(crate) enum ExprForm {
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
     AbMukai(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::Expression>),
     OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Expression>),
+    OG6Cusp(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1216,6 +1217,7 @@ pub(crate) enum StatementForm {
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
     AbMukaiPair(Box<[ParsedExpr; 2]>),
     OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Command>),
+    OG6Cusp(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -3005,6 +3007,71 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn og6_cusp_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Command;
+        self.advance()?;
+        let command = if operation == "rvog6cusp" {
+            let name = self.label()?;
+            self.expect(Token::LParen)?;
+            let h = self.expr(1)?;
+            self.expect(Token::Comma)?;
+            let e = self.expr(1)?;
+            self.expect(Token::Comma)?;
+            let f = self.expr(1)?;
+            self.expect(Token::RParen)?;
+            Command::Define(name, Box::new([h, e, f]))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Gram(name)
+        };
+        Ok(StatementForm::OG6Cusp(Box::new(command)))
+    }
+
+    fn og6_cusp_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Expression;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let (expression, depth) = match operation {
+            "rvOG6CuspBasis" => {
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(name, index), 0)
+            }
+            "rvOG6CuspTransvection" => {
+                let index = self.number()?.0;
+                if index > 1 {
+                    return Err(Error::new(
+                        span,
+                        "rvOG6CuspTransvection axis must be 0 or 1",
+                    ));
+                }
+                self.expect(Token::RBracket)?;
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (
+                    Expression::Transvection(name, index, Box::new(inputs)),
+                    depth,
+                )
+            }
+            _ => {
+                let k = self.signed_wide("a signed integer", "OG6 cusp central coefficient")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Central(name, k, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::OG6Cusp(Box::new(expression)), depth)
     }
 
     fn og6_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -6119,6 +6186,9 @@ impl<'src> Parser<'src> {
             Token::Word("rvAbMukaiPair") => {
                 self.advance()?;
                 StatementForm::AbMukaiPair(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word(operation @ ("rvog6cusp" | "rvOG6CuspGram")) => {
+                self.og6_cusp_statement(operation)?
             }
             Token::Word(
                 operation @ ("rvog6" | "rvOG6Lattice" | "rvOG6Pair" | "rvOG6Div" | "rvOG6Fujiki"
@@ -11724,6 +11794,13 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvAbMukaiKummerH2" && self.token() == Token::LParen)
                 {
                     return self.abelian_mukai_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvOG6CuspBasis" | "rvOG6CuspTransvection" | "rvOG6CuspCentral"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.og6_cusp_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

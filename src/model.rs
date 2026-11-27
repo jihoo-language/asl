@@ -644,6 +644,7 @@ pub(crate) struct Model {
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
+    og6_cusps: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp>>,
     og6_lattices: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>>,
     mukai_moduli: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>>,
     hilbert_square_form: Option<Rc<hilbert_square::Form>>,
@@ -757,6 +758,7 @@ impl Model {
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
+            og6_cusps: HashMap::new(),
             og6_lattices: HashMap::new(),
             hilbert_square_form: None,
             richelot_isogenies: HashMap::new(),
@@ -4155,6 +4157,40 @@ impl Model {
         self.allocate(name.text.len() + lattice.cells())?;
         self.og6_lattices.insert(name.text, Rc::new(lattice));
         Ok(())
+    }
+
+    pub(crate) fn define_og6_cusp(
+        &mut self,
+        name: Label,
+        lattice_name: &Label,
+        inputs: [Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Class>; 3],
+    ) -> Result<()> {
+        if self.og6_cusps.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("OG6 cusp '{}' is already defined", name.text),
+            ));
+        }
+        let lattice = self.og6_lattice(lattice_name)?;
+        let cusp = hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp::new(
+            self,
+            lattice_name.text.as_str().into(),
+            &lattice,
+            inputs,
+        )?;
+        self.allocate(name.text.len() + cusp.cells())?;
+        self.og6_cusps.insert(name.text, Rc::new(cusp));
+        Ok(())
+    }
+
+    pub(crate) fn og6_cusp(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::Cusp>> {
+        self.og6_cusps
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown OG6 cusp '{}'", name.text)))
     }
 
     pub(crate) fn og6_lattice(
