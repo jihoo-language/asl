@@ -30,6 +30,7 @@ use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
@@ -276,6 +277,7 @@ pub(crate) enum Kind {
     MukaiQuotient(Rc<str>),
     HilbertSquare(Rc<str>, i128),
     SiegelWeight,
+    ModularHecke(u128),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -459,6 +461,7 @@ pub(crate) enum Value {
     MukaiQuotient(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
     SiegelWeight(crate::siegel::Weight),
+    ModularHecke(Rc<hecke::Operator>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -1072,7 +1075,8 @@ impl Model {
             | Kind::OG10(..)
             | Kind::AbMukai(..)
             | Kind::OG6(..)
-            | Kind::SiegelWeight => usize::MAX,
+            | Kind::SiegelWeight
+            | Kind::ModularHecke(..) => usize::MAX,
             Kind::Nakajima(ref grade) | Kind::HilbertCohomology(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
@@ -1313,6 +1317,7 @@ impl Model {
                 | Kind::OG6(..)
                 | Kind::HilbertSquare(..)
                 | Kind::SiegelWeight
+                | Kind::ModularHecke(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -4370,6 +4375,11 @@ impl Model {
         self.inhabited_type(Kind::SiegelWeight, 0)
     }
 
+    pub(crate) fn modular_hecke_type(&mut self, weight: u128) -> Result<TypeId> {
+        hecke::validate_weight(weight)?;
+        self.inhabited_type(Kind::ModularHecke(weight), 0)
+    }
+
     pub(crate) fn register_siegel_chamber(
         &mut self,
         name: Label,
@@ -5645,6 +5655,7 @@ impl Model {
             | Kind::OG6(..)
             | Kind::HilbertSquare(..)
             | Kind::SiegelWeight
+            | Kind::ModularHecke(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -6172,6 +6183,7 @@ impl Model {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
             }
             Kind::SiegelWeight => out.push("RVSiegelWeight"),
+            Kind::ModularHecke(weight) => out.push(&format!("RVHecke({weight})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -6471,6 +6483,7 @@ impl Model {
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a == b),
+            (Value::ModularHecke(a), Value::ModularHecke(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6814,6 +6827,7 @@ impl Model {
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
             (Value::SiegelWeight(a), Value::SiegelWeight(b)) => Ok(a.cmp(b)),
+            (Value::ModularHecke(a), Value::ModularHecke(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -7182,6 +7196,9 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a rational Hilbert-square component",
                     ));
+                }
+                Kind::ModularHecke(..) => {
+                    return Err(Error::plain("cannot enumerate the level-one Hecke algebra"));
                 }
                 Kind::SiegelWeight => {
                     return Err(Error::plain("cannot enumerate the Siegel weight lattice"))
@@ -8768,6 +8785,17 @@ impl Model {
             Value::HilbertCohomology(class) => {
                 self.write_type(out, ty, 0)?;
                 self.write_nakajima_terms(out, class.numerator(), class.denominator())
+            }
+            Value::ModularHecke(operator) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, (index, coefficient)) in operator.terms().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("T_{index}: {}", hecke::decimal(coefficient)))?;
+                }
+                out.push("}")
             }
             Value::SiegelWeight(weight) => {
                 self.write_type(out, ty, 0)?;

@@ -281,3 +281,197 @@ fn the_example_shows_normalized_rationals_and_classical_traces() {
         )
     );
 }
+
+#[test]
+fn formal_hecke_operators_use_graded_integer_arithmetic() {
+    let report = stdout(interpret(
+        "let a = rvHeckeT[12,2];
+         let b = rvHeckeT[12,3];
+         let one = rvHeckeUnit[12];
+         let z = zero[RVHecke(12)];
+         assert one == rvHeckeT[12,1];
+         assert rvHeckeMul(a,one) == a;
+         assert rvHeckeMul(a,z) == z;
+         assert rvHeckeMul(a,b) == rvHeckeT[12,6];
+         assert rvHeckeMul(a,b) == rvHeckeMul(b,a);
+         assert rvHeckeMul(a,a) == add(rvHeckeT[12,4],rvHeckeScale[2048](one));
+         assert rvHeckeMul(rvHeckeT[12,4],rvHeckeT[12,6]) ==
+            add(rvHeckeT[12,24],rvHeckeScale[2048](rvHeckeT[12,6]));
+         assert rvHeckeMul(a,add(a,neg(b))) ==
+            add(rvHeckeMul(a,a),neg(rvHeckeMul(a,b)));
+         assert add(a,neg(a)) == z;
+         assert rvHeckeScale[0](b) == z;
+         assert rvHeckeSameAction(a,rvHeckeScale[-24](one)) == S.hi;
+         assert rvHeckeSameAction(a,z) == S.lo;
+         rvHeckeActionTrace(a);
+         rvHeckeChar(a);
+         rvHeckeCharCoeff[1](a);
+         rvHeckeCharCoeff[2](a);",
+    ));
+    assert_eq!(
+        report,
+        "rvHeckeActionTrace = -24\nrvHeckeChar = [1, 24]\nrvHeckeCharCoeff[1] = 24\nrvHeckeCharCoeff[2] = 0\n"
+    );
+}
+
+fn hecke24_matrix(f: &[i128], g: &[i128], index: usize) -> [[i128; 2]; 2] {
+    let column = |form: &[i128]| {
+        let first = hecke_q_coefficient(form, 24, index, 1);
+        [
+            first,
+            hecke_q_coefficient(form, 24, index, 2) - f[2] * first,
+        ]
+    };
+    [column(f), column(g)]
+}
+
+fn hecke_q_coefficient(form: &[i128], weight: u32, index: usize, j: usize) -> i128 {
+    (1..=j)
+        .filter(|&d| j.is_multiple_of(d) && index.is_multiple_of(d))
+        .map(|d| (d as i128).pow(weight - 1) * form[(j * index) / (d * d)])
+        .sum()
+}
+
+fn characteristic_2x2([[a, c], [b, d]]: [[i128; 2]; 2]) -> [i128; 3] {
+    [1, -a - d, a * d - b * c]
+}
+
+#[test]
+fn formal_hecke_characters_match_independent_q_expansion_action() {
+    let bound = 12;
+    let delta = delta(bound);
+    let e4 = e4(bound);
+    let e4_cubed = convolve(&convolve(&e4, &e4, bound), &e4, bound);
+    let f = convolve(&delta, &e4_cubed, bound);
+    let g = convolve(&delta, &delta, bound);
+    let t2 = hecke24_matrix(&f, &g, 2);
+    let t6 = hecke24_matrix(&f, &g, 6);
+    assert_eq!(characteristic_2x2(t2), [1, -1080, -20468736]);
+    let mixed = std::array::from_fn(|i| {
+        std::array::from_fn(|j| 3 * i128::from(i == j) - 2 * t2[i][j] + t6[i][j])
+    });
+    let formal_relation = "let t = rvHeckeT[24,2];
+        let one = rvHeckeUnit[24];
+        let relation = add(add(rvHeckeMul(t,t),rvHeckeScale[-1080](t)),rvHeckeScale[-20468736](one));
+        assert relation == zero[RVHecke(24)];";
+    assert!(diagnostic(interpret(formal_relation)).contains("assertion failed"));
+
+    let [one, trace, determinant] = characteristic_2x2(mixed);
+    assert_eq!(
+        stdout(example("graded-hecke-operators")),
+        format!(
+            "rvHeckeActionTrace = 1080\nrvHeckeChar = [1, -1080, -20468736]\n\
+             RVHecke(24){{T_1: -12080128, T_2: -1080, T_4: 1}}\n\
+             rvHeckeChar = [{one}, {trace}, {determinant}]\n"
+        )
+    );
+}
+
+#[test]
+fn weight_thirty_six_characteristic_uses_three_exact_newton_steps() {
+    let bound = 6;
+    let delta = delta(bound);
+    let e4 = e4(bound);
+    let e4_cubed = convolve(&convolve(&e4, &e4, bound), &e4, bound);
+    let delta_squared = convolve(&delta, &delta, bound);
+    let f = convolve(&delta, &convolve(&e4_cubed, &e4_cubed, bound), bound);
+    let g = convolve(&delta_squared, &e4_cubed, bound);
+    let h = convolve(&delta_squared, &delta, bound);
+    assert_eq!([f[1], g[1], g[2], h[1], h[2], h[3]], [1, 0, 1, 0, 0, 1]);
+
+    let [a, b, c] = [&f, &g, &h].map(|form| {
+        let [u, v, w] = [1, 2, 3].map(|j| hecke_q_coefficient(form, 36, 2, j));
+        let v = v - u * f[2];
+        [u, v, w - u * f[3] - v * g[3]]
+    });
+    let trace = a[0] + b[1] + c[2];
+    let second = a[0] * b[1] - a[1] * b[0] + a[0] * c[2] - a[2] * c[0] + b[1] * c[2] - b[2] * c[1];
+    let determinant = a[0] * (b[1] * c[2] - b[2] * c[1]) - b[0] * (a[1] * c[2] - a[2] * c[1])
+        + c[0] * (a[1] * b[2] - a[2] * b[1]);
+    let report = stdout(interpret(
+        "let a = rvHeckeT[36,2]; rvHeckeChar(a); rvHeckeCharCoeff[3](a);",
+    ));
+    assert_eq!(
+        report,
+        format!(
+            "rvHeckeChar = [1, {}, {second}, {}]\nrvHeckeCharCoeff[3] = {}\n",
+            -trace, -determinant, -determinant,
+        )
+    );
+}
+
+#[test]
+fn hecke_characteristic_scalar_shortcuts_preserve_large_weight_and_empty_space() {
+    let weight = u128::MAX - 1;
+    let degree = weight / 12 - u128::from(weight % 12 == 2);
+    let index = u128::MAX;
+    let source = format!(
+        "let t = rvHeckeT[2,{index}];
+         let z = zero[RVHecke(2)];
+         assert rvHeckeMul(t,rvHeckeUnit[2]) == t;
+         assert rvHeckeSameAction(t,z) == S.hi;
+         rvHeckeActionTrace(t);
+         rvHeckeChar(t);
+         let a = rvHeckeUnit[{weight}];
+         rvHeckeActionTrace(a);
+         rvHeckeCharCoeff[1](a);
+         rvHeckeCharCoeff[{degree}](neg(a));
+         rvHeckeCharCoeff[2](zero[RVHecke({weight})]);
+         rvHeckeChar(rvHeckeScale[5](rvHeckeUnit[36]));
+         rvHeckeChar(zero[RVHecke(36)]);"
+    );
+    assert_eq!(
+        stdout(interpret(&source)),
+        format!(
+            "rvHeckeActionTrace = 0\nrvHeckeChar = [1]\nrvHeckeActionTrace = {degree}\n\
+             rvHeckeCharCoeff[1] = -{degree}\nrvHeckeCharCoeff[{degree}] = 1\n\
+             rvHeckeCharCoeff[2] = 0\nrvHeckeChar = [1, -15, 75, -125]\nrvHeckeChar = [1, 0, 0, 0]\n"
+        )
+    );
+}
+
+#[test]
+fn hecke_operators_diagnose_invalid_grades_and_arithmetic_limits() {
+    let index = u128::MAX;
+    for (source, expected) in [
+        (
+            "show rvHeckeT[3,1];".to_owned(),
+            "even level-one weight at least 2",
+        ),
+        (
+            "show zero[RVHecke(0)];".to_owned(),
+            "even level-one weight at least 2",
+        ),
+        (
+            "show rvHeckeT[12,0];".to_owned(),
+            "Hecke index n must be positive",
+        ),
+        (
+            "show rvHeckeMul(rvHeckeT[12,5],rvHeckeT[24,5]);".to_owned(),
+            "RVHecke(12)",
+        ),
+        (
+            "show rvHeckeSameAction(rvHeckeT[12,5],rvHeckeT[24,5]);".to_owned(),
+            "RVHecke(12)",
+        ),
+        (
+            "show add(rvHeckeT[12,5],rvHeckeT[24,5]);".to_owned(),
+            "RVHecke(12)",
+        ),
+        (
+            format!("show rvHeckeMul(rvHeckeT[12,{index}],rvHeckeT[12,2]);"),
+            "index product exceeds unsigned 128-bit range",
+        ),
+        (
+            "show rvHeckeMul(rvHeckeT[514,2],rvHeckeT[514,2]);".to_owned(),
+            "exact intermediate exceeds 512 bits",
+        ),
+        (
+            format!("rvHeckeChar(zero[RVHecke({})]);", index - 1),
+            "exceeds the coefficient storage limit",
+        ),
+    ] {
+        let error = diagnostic(interpret(&source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}

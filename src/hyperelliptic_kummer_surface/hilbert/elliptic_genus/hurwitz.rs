@@ -79,7 +79,7 @@ fn valid_discriminant(n: u128) -> bool {
     matches!(n % 4, 0 | 3)
 }
 
-fn trace(model: &mut Model, k: u128, n: u128) -> Result<Integer> {
+pub(super) fn trace(model: &mut Model, k: u128, n: u128) -> Result<Integer> {
     if k < 2 || !k.is_multiple_of(2) {
         return Err(Error::plain(
             "level-one cusp-form Hecke trace requires even weight at least 2",

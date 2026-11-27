@@ -38,6 +38,7 @@ use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
     abelian::{self, og6},
@@ -744,6 +745,8 @@ enum TypedForm {
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     SiegelReflect(usize, Box<TypedExpr>),
+    ModularHeckeScale(i128, Box<TypedExpr>),
+    ModularHeckeBinary(hecke::Pair, u128, Box<[TypedExpr; 2]>),
     SiegelNegate(Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
@@ -1945,6 +1948,16 @@ impl Engine {
             }
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
+            StatementForm::ModularHecke(query, input) => {
+                let input = self.checker().expr(*input)?;
+                let weight = self
+                    .checker()
+                    .hecke_operator_operand(&input, query.name())?;
+                let Value::ModularHecke(operator) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return query.write(&mut self.model, weight, &operator).map(Some);
+            }
             StatementForm::Hurwitz(query) => return query.report(&mut self.model).map(Some),
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
@@ -7399,6 +7412,9 @@ impl Engine {
                     (BinaryOp::Add, Value::HilbertSquare(a), Value::HilbertSquare(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::ModularHecke(a), Value::ModularHecke(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::SiegelWeight(a), Value::SiegelWeight(b)) => {
                         a.add(b).map(Value::SiegelWeight)
                     }
@@ -9274,6 +9290,31 @@ impl Engine {
                     unreachable!()
                 };
                 word.iterate(&mut self.model, point, *power)
+            }
+            TypedForm::ModularHeckeScale(coefficient, input) => {
+                let Value::ModularHecke(operator) = self.eval(input)? else {
+                    unreachable!()
+                };
+                operator
+                    .scale(&mut self.model, hecke::integer(*coefficient))?
+                    .persist(&mut self.model)
+            }
+            TypedForm::ModularHeckeBinary(pair, weight, inputs) => {
+                let (Value::ModularHecke(a), Value::ModularHecke(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                match pair {
+                    hecke::Pair::Multiply => a
+                        .multiply(&mut self.model, *weight, &b)?
+                        .persist(&mut self.model),
+                    hecke::Pair::SameAction => Ok(Value::Point(usize::from(a.same_action(
+                        &mut self.model,
+                        *weight,
+                        &b,
+                    )?))),
+                }
             }
             TypedForm::SiegelReflect(index, input) => {
                 let Value::SiegelWeight(weight) = self.eval(input)? else {
@@ -11636,6 +11677,7 @@ impl Checker<'_> {
             TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::ModularHecke(weight) => self.model.modular_hecke_type(weight),
             TypeForm::SiegelWeight => self.model.siegel_weight_type(),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
@@ -12687,6 +12729,7 @@ impl Checker<'_> {
                     Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::ModularHecke(..) => hecke::Operator::zero().persist(self.model)?,
                     Kind::SiegelWeight => Value::SiegelWeight(crate::siegel::Weight::ZERO),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
@@ -14922,6 +14965,35 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::ModularHecke(operation) => match operation {
+                hecke::Expression::Basis(weight, index) => Ok((
+                    self.model.modular_hecke_type(weight)?,
+                    TypedForm::Constant(hecke::Operator::basis(index)?.persist(self.model)?),
+                )),
+                hecke::Expression::Scale(coefficient, input) => {
+                    let input = self.expr(*input)?;
+                    self.hecke_operator_operand(&input, "rvHeckeScale")?;
+                    Ok((
+                        input.ty,
+                        TypedForm::ModularHeckeScale(coefficient, Box::new(input)),
+                    ))
+                }
+                hecke::Expression::Binary(pair, inputs) => {
+                    let [left, right] = *inputs;
+                    let left = self.expr(left)?;
+                    let right = self.expr(right)?;
+                    let weight = self.hecke_operator_operand(&left, pair.name())?;
+                    self.require_type(left.ty, &right, pair.name())?;
+                    let ty = match pair {
+                        hecke::Pair::Multiply => left.ty,
+                        hecke::Pair::SameAction => self.model.named("S").unwrap(),
+                    };
+                    Ok((
+                        ty,
+                        TypedForm::ModularHeckeBinary(pair, weight, Box::new([left, right])),
+                    ))
+                }
+            },
             ExprForm::SiegelWeight(weight) => Ok((
                 self.model.siegel_weight_type()?,
                 TypedForm::Constant(Value::SiegelWeight(weight)),
@@ -15661,6 +15733,9 @@ impl Checker<'_> {
                             Box::new(input),
                         ),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::ModularHecke(..)) {
+                    return Ok((input.ty, TypedForm::ModularHeckeScale(-1, Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::SiegelWeight) {
                     return Ok((input.ty, TypedForm::SiegelNegate(Box::new(input))));
@@ -19406,6 +19481,7 @@ impl Checker<'_> {
                         | Kind::OG6(..)
                         | Kind::HilbertSquare(..)
                         | Kind::SiegelWeight
+                        | Kind::ModularHecke(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -22056,6 +22132,14 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn hecke_operator_operand(&self, input: &TypedExpr, operation: &str) -> Result<u128> {
+        if let Kind::ModularHecke(weight) = *self.model.kind(input.ty) {
+            Ok(weight)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVHecke(k) operator"))
+        }
     }
 
     fn siegel_weight_operand(&self, input: &TypedExpr, operation: &str) -> Result<()> {

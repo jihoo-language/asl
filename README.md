@@ -1342,6 +1342,14 @@ $$
 
 where $P_0=1$, $P_1=t$, and $P_j=tP_{j-1}-nP_{j-2}$. It uses binary doubling for the recurrence and checked 512-bit integers for the trace sum. The example gives $\operatorname{Tr}(T_5\mid S_{12})=4830$ and $\operatorname{Tr}(T_2\mid S_{24})=1080$. [Zagier, Utrecht lectures, §6.3](https://people.mpim-bonn.mpg.de/zagier/files/tex/UtrechtLectures/UtBook.pdf) · [Runnable example](examples/hurwitz-eichler-selberg.asl)
 
+#### Formal level-one Hecke operators
+
+`RVHecke(k)` is the integral Hecke algebra in even weight $k\ge2$. Construct $T_n$ with `rvHeckeT[k,n]` for $n\ge1$, or its unit $T_1$ with `rvHeckeUnit[k]`. Use `zero[RVHecke(k)]`, `add`, `neg`, and `rvHeckeScale[c](A)` for finite integer combinations. The product `rvHeckeMul(A,B)` extends $T_m T_n=\sum_{d\mid\gcd(m,n)}d^{k-1}T_{mn/d^2}$ bilinearly. These operations preserve the weight, and `==` compares the formal coefficients. [Zagier, Utrecht lectures, §2.1](https://people.mpim-bonn.mpg.de/zagier/files/tex/UtrechtLectures/UtBook.pdf)
+
+`rvHeckeActionTrace(A);` reports the trace of the action on $S_k(\operatorname{SL}_2(\mathbb Z))$. `rvHeckeChar(A);` gives the characteristic polynomial as descending coefficients $[1,c_1,\ldots,c_d]$, where $d=\dim S_k$. `rvHeckeCharCoeff[j](A);` gives $c_j$, with $c_0=1$ and zero for $j>d$. The calculation combines Eichler–Selberg traces with exact Newton identities, and uses $\det(X-cT_1)=(X-c)^d$ for scalar operators. The commands use checked 512-bit integer intermediates and bounded computation.
+
+`rvHeckeSameAction(A,B)` is true when $\operatorname{Tr}((A-B)^2)=0$. Each $T_n$ is self-adjoint for the Petersson inner product, so this trace is the sum of squares of the real eigenvalues of $A-B$. In weight 24, $T_2^2-1080T_2-20468736T_1$ has zero action on the two-dimensional cusp space and a nonzero formal $T_4$ coefficient. [Runnable example](examples/graded-hecke-operators.asl)
+
 #### Integral period chambers and Farey wall crossing
 
 `rvsiegelchamber H[A,B,C];` names the open chamber containing the positive definite imaginary-period ray with matrix $Y=\left(\begin{smallmatrix}A&B\\B&C\end{smallmatrix}\right)$. The coordinates are signed integers. An integral change of basis that makes $Y$ diagonal places the ray on a separating wall, so the declaration requires an open chamber. The reference chamber has $0<B<\min(A,C)$. Projectivizing the cone identifies it with the upper half-plane by $(B+i\sqrt{AC-B^2})/A$, where the reference chamber is the ideal Farey triangle with vertices $0,1,\infty$. [Cheng–Verlinde, §2 and Appendix A](https://arxiv.org/abs/0806.2337)
