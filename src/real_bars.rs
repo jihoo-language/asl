@@ -30,6 +30,22 @@ struct Finite {
 }
 
 impl Bar {
+    pub(crate) fn exponent_at(&self, t: i128) -> Result<usize> {
+        if !self.contains_shift(t, t) {
+            return Err(Error::plain(
+                "rho bar does not live in the requested degree",
+            ));
+        }
+        let exponent = (self.birth as i128)
+            .checked_sub(t)
+            .and_then(|a| usize::try_from(a).ok());
+        exponent.ok_or_else(|| Error::plain("rho bar exponent is outside the supported range"))
+    }
+
+    pub(crate) fn lift_at(&self, model: &mut Model, t: i128) -> Result<Vec<Term>> {
+        real_motivic::shift_support(model, &self.representative, self.exponent_at(t)?)
+    }
+
     pub(crate) fn grade(&self, s: usize, k: i128) -> Result<Grade> {
         rho_localized::section_grade(s, self.birth as i128, classical_degree(k)?)
     }
@@ -196,6 +212,16 @@ impl Group {
                 self.bars.len(),
             ))
         })
+    }
+
+    pub(crate) fn living(&self, model: &mut Model, t: i128) -> Result<Vec<usize>> {
+        model.spend(self.bars.len())?;
+        Ok(self
+            .bars
+            .iter()
+            .enumerate()
+            .filter_map(|(index, bar)| bar.contains_shift(t, t).then_some(index))
+            .collect())
     }
 
     pub(crate) fn describe(&self, model: &mut Model) -> Result<String> {

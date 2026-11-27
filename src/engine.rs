@@ -52,6 +52,7 @@ use crate::q_module;
 use crate::rank_jets;
 use crate::rank_variety;
 use crate::real_ext;
+use crate::real_extensions::{self, Operation as RealExtOp};
 use crate::real_massey;
 use crate::real_motivic;
 use crate::real_transfer;
@@ -455,6 +456,8 @@ enum TypedForm {
     RealComplex(Box<TypedExpr>),
     RhoNull(usize, Box<TypedExpr>),
     RealBar(RealBarOp, usize, i128, usize),
+    RealExtension(RealExtOp, motivic::Grade, Box<TypedExpr>),
+    RhoProductNull(usize, Box<[TypedExpr; 2]>),
     RealMassey(bool, real_massey::Layout, Box<[TypedExpr; 3]>),
     RealMasseyNull(motivic::Grade, Box<[TypedExpr; 2]>),
     RealTripleClass(Option<usize>, Box<TypedExpr>),
@@ -1485,6 +1488,45 @@ impl Engine {
                     Some(exponent) => format!("rhoorder = {exponent}"),
                     None => "rhoorder = infinite".to_string(),
                 }
+            }
+            StatementForm::RhoDepth(input) => {
+                let input = self.checker().expr(*input)?;
+                let kind = self.model.kind(input.ty);
+                let (grade, is_bar) = match *kind {
+                    Kind::RMExt(grade) => (grade, false),
+                    Kind::RMBar(grade) => (grade, true),
+                    _ => {
+                        return Err(self.checker().invalid_operand(
+                            &input,
+                            "rhodepth",
+                            "an RMExt class or RMBar coordinates",
+                        ));
+                    }
+                };
+                let Value::Class(coords) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let depth = if is_bar {
+                    real_extensions::depth_of_support(&mut self.model, grade, &coords)?
+                } else {
+                    real_extensions::depth(&mut self.model, (input.ty, &coords))?
+                };
+                match depth {
+                    Some(depth) => format!("rhodepth = {depth}"),
+                    None => "rhodepth = infinite".to_owned(),
+                }
+            }
+            StatementForm::RhoHidden(pair) => {
+                let [a, b] = *pair;
+                let mut checker = self.checker();
+                let a = checker.expr(a)?;
+                let b = checker.expr(b)?;
+                checker.rmext_grade(&a, "rhohidden")?;
+                checker.rmext_grade(&b, "rhohidden")?;
+                let (Value::Class(x), Value::Class(y)) = (self.eval(&a)?, self.eval(&b)?) else {
+                    unreachable!()
+                };
+                real_extensions::hidden(&mut self.model, (a.ty, &x), (b.ty, &y))?
             }
             StatementForm::RealTripleDim(bracket) => {
                 let bracket = self.checker().expr(*bracket)?;
@@ -2931,6 +2973,36 @@ impl Engine {
                     RealBarOp::Representative => Ok(bar.representative()),
                     RealBarOp::Witness => bar.witness(&mut self.model),
                 }
+            }
+            TypedForm::RealExtension(op, grade, input) => {
+                let Value::Class(coords) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match op {
+                    RealExtOp::Coordinates => {
+                        real_extensions::decompose(&mut self.model, (input.ty, &coords))
+                    }
+                    RealExtOp::Class => {
+                        real_extensions::reconstruct(&mut self.model, *grade, &coords, expr.ty)
+                    }
+                    RealExtOp::Lift => real_extensions::lift(&mut self.model, *grade, &coords),
+                    RealExtOp::Divide(power) => real_extensions::divide(
+                        &mut self.model,
+                        (input.ty, &coords),
+                        *power,
+                        expr.ty,
+                    ),
+                    RealExtOp::Edge(_, f) => {
+                        real_extensions::edge(&mut self.model, (input.ty, &coords), expr.ty, *f)
+                    }
+                }
+            }
+            TypedForm::RhoProductNull(power, inputs) => {
+                let [a, b] = inputs.as_ref();
+                let (Value::Class(x), Value::Class(y)) = (self.eval(a)?, self.eval(b)?) else {
+                    unreachable!()
+                };
+                real_extensions::product_null(&mut self.model, (a.ty, &x), (b.ty, &y), *power)
             }
             TypedForm::RhoNull(power, input) => {
                 let grade = self.model.kind(input.ty).real_grade().unwrap();
@@ -4977,6 +5049,96 @@ struct Checker<'a> {
     locals: Vec<(String, TypeId)>,
 }
 
+macro_rules! rank_arithmetic_expression {
+    () => {
+        ExprForm::HeckeBasis(..)
+            | ExprForm::HeckeScalar(..)
+            | ExprForm::HeckeNegate(..)
+            | ExprForm::WzwBasis(..)
+            | ExprForm::WzwSEntry(..)
+            | ExprForm::WzwTEntry(..)
+            | ExprForm::WzwUnary(..)
+            | ExprForm::WzwScale(..)
+            | ExprForm::LensTv(..)
+            | ExprForm::WzwTv(..)
+            | ExprForm::CycloRatio(..)
+            | ExprForm::WzwCoordinate(..)
+            | ExprForm::CycloEmbed(..)
+            | ExprForm::CycloRoot(..)
+            | ExprForm::CycloProduct(..)
+            | ExprForm::CycloScale(..)
+            | ExprForm::CycloConjugate(..)
+            | ExprForm::FusionHandle(..)
+            | ExprForm::Verlinde(..)
+            | ExprForm::FusionBasis(..)
+            | ExprForm::FusionOne(..)
+            | ExprForm::FusionProduct(..)
+            | ExprForm::FusionScale(..)
+            | ExprForm::FusionDual(..)
+            | ExprForm::QuantumBasis(..)
+            | ExprForm::OreTerm(..)
+            | ExprForm::OreProduct(..)
+            | ExprForm::OreApply(..)
+            | ExprForm::QuantumReduce(..)
+            | ExprForm::QuantumPSection(..)
+            | ExprForm::QuantumCurvature(..)
+            | ExprForm::QuantumNabla(..)
+            | ExprForm::QuantumAnnihilator(..)
+            | ExprForm::QuantumProduct(..)
+            | ExprForm::QuantumUnary(..)
+            | ExprForm::Hive(..)
+            | ExprForm::SphericalBasis(..)
+            | ExprForm::SphericalScalar(..)
+            | ExprForm::SphericalProduct(..)
+            | ExprForm::SatakeInverse(..)
+            | ExprForm::SatakeCharacter(..)
+            | ExprForm::SatakeTransform(..)
+            | ExprForm::SatakeScalar(..)
+            | ExprForm::SatakeProduct(..)
+            | ExprForm::SphericalEmbedding(..)
+            | ExprForm::HeckeProduct(..)
+            | ExprForm::RVLaurentMonomial(..)
+            | ExprForm::RVIwAdlv(..)
+            | ExprForm::RVAdlv(..)
+            | ExprForm::RVNewton(..)
+            | ExprForm::RVScale(..)
+            | ExprForm::RVField(..)
+            | ExprForm::RVInverse(..)
+            | ExprForm::RVHilbert90(..)
+            | ExprForm::RVTwisted(..)
+            | ExprForm::RVShintani(..)
+            | ExprForm::RVSpecialize(..)
+    };
+}
+
+macro_rules! bp_expression {
+    () => {
+        ExprForm::BpInteger(..)
+            | ExprForm::BpVariable(..)
+            | ExprForm::BpVPageGenerator(..)
+            | ExprForm::BpVPageClass(..)
+            | ExprForm::BpVPageOperation(..)
+            | ExprForm::BpPageGenerator(..)
+            | ExprForm::BpPageClass(..)
+            | ExprForm::BpPageOperation(..)
+            | ExprForm::BpModExtGen(..)
+            | ExprForm::BpModExtClass(..)
+            | ExprForm::BpModExtRep(..)
+            | ExprForm::BpRaise(..)
+            | ExprForm::BpTriple(..)
+            | ExprForm::BpTripleBase(..)
+            | ExprForm::BpHigher(..)
+            | ExprForm::BpMassey(..)
+            | ExprForm::BpHeightGenerator(..)
+            | ExprForm::BpHeightOperation(..)
+            | ExprForm::BpRelOperation(..)
+            | ExprForm::BpRelGenerator(..)
+            | ExprForm::BpExtGenerator(..)
+            | ExprForm::BpExtOperation(..)
+            | ExprForm::BpOperation(..)
+    };
+}
+
 impl Checker<'_> {
     fn ty(&mut self, ty: ParsedType) -> Result<TypeId> {
         self.model.spend(1)?;
@@ -5036,6 +5198,7 @@ impl Checker<'_> {
                 self.model.sheaf_hom_type(form, &source, &target, degree)
             }
             TypeForm::RMExt(grade) => self.model.rmext_type(grade),
+            TypeForm::RMBar(grade) => self.model.rmbar_type(grade),
             TypeForm::RMTriple(grade) => self.model.rm_triple_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
@@ -5289,6 +5452,15 @@ impl Checker<'_> {
 
     fn expr_inner(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         self.model.spend(1)?;
+        // Keep the checker frames for distinct expression families separate.
+        match expr {
+            rank_arithmetic_expression!() => self.expr_rank_arithmetic(expr),
+            bp_expression!() => self.expr_bp(expr, span),
+            expr => self.expr_regular(expr, span),
+        }
+    }
+
+    fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
             ExprForm::Name(name) => {
                 if let Some((index, (_, ty))) = self
@@ -5338,7 +5510,7 @@ impl Checker<'_> {
                     Kind::MixedChain(..) | Kind::MixedPage(..) => odd_ext::zero(),
                     Kind::Sheaf(SheafForm::Class, ..) | Kind::SheafComplex(SheafForm::Class, ..) | Kind::SheafHom(SheafForm::Class, ..) =>
                         odd_ext::zero(),
-                    Kind::RhoBock(..) | Kind::RMExt(..) => cohomology::zero(),
+                    Kind::RhoBock(..) | Kind::RMExt(..) | Kind::RMBar(..) => cohomology::zero(),
                     Kind::RhoLoc(..) => rho_localized::zero(),
                     Kind::RhoMin(..) => rho_minimal::zero(),
                     Kind::PCobar(..) | Kind::PCobarAn(..) => odd_cobar::zero(),
@@ -6539,6 +6711,58 @@ impl Checker<'_> {
                 let value = self.prime_generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::RealBarTerm(grade, index, at) => {
+                let group = real_extensions::bars(self.model, grade)?;
+                group
+                    .get(index)
+                    .and_then(|bar| bar.exponent_at(grade.t))
+                    .map_err(|error| error.at(at))?;
+                let ty = self.model.rmbar_type(grade)?;
+                self.model.allocate(1)?;
+                Ok((ty, TypedForm::Constant(Value::Class([index].into()))))
+            }
+            ExprForm::RealExtension(op, input) => {
+                let input = self.expr(*input)?;
+                let grade = match op {
+                    RealExtOp::Class | RealExtOp::Lift => {
+                        let Kind::RMBar(grade) = *self.model.kind(input.ty) else {
+                            return Err(self.invalid_operand(
+                                &input,
+                                op.name(),
+                                "RMBar coordinates",
+                            ));
+                        };
+                        grade
+                    }
+                    _ => self.rmext_grade(&input, op.name())?,
+                };
+                let ty = match op {
+                    RealExtOp::Coordinates => self.model.rmbar_type(grade)?,
+                    RealExtOp::Class => self.model.rmext_type(grade)?,
+                    RealExtOp::Lift => self.model.real_cobar_type(grade)?,
+                    RealExtOp::Divide(power) => self
+                        .model
+                        .rmext_type(real_extensions::quotient_grade(grade, power)?)?,
+                    RealExtOp::Edge(r, f) => self
+                        .model
+                        .rho_page_type(real_extensions::edge_grade(grade, r, f)?)?,
+                };
+                Ok((ty, TypedForm::RealExtension(op, grade, Box::new(input))))
+            }
+            ExprForm::RhoProductNull(power, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let grade = self
+                    .rmext_grade(&a, "rhoProductNull")?
+                    .product(self.rmext_grade(&b, "rhoProductNull")?)?;
+                real_extensions::quotient_grade(grade, power)?;
+                let previous = grade.previous().ok_or_else(|| {
+                    Error::new(span, "rhoProductNull requires positive total cobar length")
+                })?;
+                let ty = self.model.real_cobar_type(previous)?;
+                Ok((ty, TypedForm::RhoProductNull(power, Box::new([a, b]))))
+            }
             ExprForm::RealBar(op, s, k, index, at) => {
                 let group = self.model.real_bars(s, k)?;
                 let bar = group.get(index).map_err(|error| error.at(at))?;
@@ -6815,617 +7039,6 @@ impl Checker<'_> {
                 let value = rv_hom::identity(self.model, ty)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
-            ExprForm::HeckeBasis(canonical, window) => {
-                let ty = self.model.iw_hecke_type(window.len())?;
-                let value = if canonical {
-                    rv_iwhecke::canonical(self.model, &window)?
-                } else {
-                    rv_iwhecke::standard(self.model, window)?
-                };
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::HeckeScalar(rank, degree) => {
-                let ty = self.model.iw_hecke_type(rank)?;
-                let value = rv_iwhecke::scalar(self.model, rank, degree)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::HeckeNegate(input) => {
-                let input = self.expr(*input)?;
-                if matches!(self.model.kind(input.ty), Kind::RVOre) {
-                    return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
-                }
-                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
-                    return Ok((
-                        input.ty,
-                        TypedForm::QuantumPUnary(grade, QuantumOp::Scale(-1), Box::new(input)),
-                    ));
-                }
-                if matches!(self.model.kind(input.ty), Kind::RVQGr(..)) {
-                    return Ok((
-                        input.ty,
-                        TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
-                    ));
-                }
-                if matches!(self.model.kind(input.ty), Kind::RVCycloQ(..)) {
-                    return Ok((input.ty, TypedForm::CycloRatioNegate(Box::new(input))));
-                }
-                if let Kind::RVWzw(grade) = *self.model.kind(input.ty) {
-                    return Ok((
-                        input.ty,
-                        TypedForm::WzwUnary(grade, WzwOp::Negate, Box::new(input)),
-                    ));
-                }
-                if matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
-                    return Ok((input.ty, TypedForm::CycloScale(-1, Box::new(input))));
-                }
-                if let Kind::RVFusion(grade) = *self.model.kind(input.ty) {
-                    return Ok((input.ty, TypedForm::FusionScale(grade, -1, Box::new(input))));
-                }
-                if !matches!(
-                    self.model.kind(input.ty),
-                    Kind::RVIwHecke(..) | Kind::RVSphHecke(..) | Kind::RVSatake(..)
-                ) {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "neg",
-                        "an affine Hecke element, a spherical Hecke element, a Satake polynomial, a fusion element, or a cyclotomic integer",
-                    ));
-                }
-                Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
-            }
-            ExprForm::WzwBasis(rank, level, weight) => {
-                let grade = rv_wzw::Grade::checked(rank, level)?;
-                let ty = self.model.wzw_type(grade)?;
-                let value = rv_wzw::basis(self.model, grade, weight)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::WzwSEntry(rank, level, left, right) => {
-                let grade = rv_wzw::Grade::checked(rank, level)?;
-                let ty = self.model.cyclotomic_type(grade.order)?;
-                let value = rv_wzw::s_entry(self.model, grade, left, right)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::WzwTEntry(rank, level, weight, power) => {
-                let grade = rv_wzw::Grade::checked(rank, level)?;
-                let ty = self.model.cyclotomic_type(grade.order)?;
-                let value = rv_wzw::t_entry(self.model, grade, weight, power)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::WzwUnary(operation, input) => {
-                let input = self.expr(*input)?;
-                let grade = self.wzw_grade(&input, operation.name())?;
-                Ok((
-                    input.ty,
-                    TypedForm::WzwUnary(grade, operation, Box::new(input)),
-                ))
-            }
-            ExprForm::WzwScale(arguments) => {
-                let [scalar, input] = *arguments;
-                let input = self.expr(input)?;
-                let grade = self.wzw_grade(&input, "rvWzwScale")?;
-                let scalar = self.expr(scalar)?;
-                let ty = self.model.cyclotomic_type(grade.order)?;
-                self.require_type(ty, &scalar, "rvWzwScale")?;
-                Ok((
-                    input.ty,
-                    TypedForm::WzwScale(grade, Box::new([scalar, input])),
-                ))
-            }
-            ExprForm::LensTv(rank, level, p, q) => {
-                let grade = rv_wzw::Grade::checked(rank, level)?;
-                let ty = self.model.cyclotomic_rational_type(grade.order)?;
-                let value = rv_lens::lens(self.model, grade, p, q)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::WzwTv(rank, level, word) => {
-                let grade = rv_wzw::Grade::checked(rank, level)?;
-                let ty = self.model.cyclotomic_rational_type(grade.order)?;
-                let value = rv_lens::word(self.model, grade, &word)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::CycloRatio(denominator, input) => {
-                let input = self.expr(*input)?;
-                let order = self.cyclotomic_order(&input, "rvCycloRat")?;
-                let ty = self.model.cyclotomic_rational_type(order)?;
-                Ok((ty, TypedForm::CycloRatio(denominator, Box::new(input))))
-            }
-            ExprForm::WzwCoordinate(weight, input) => {
-                let input = self.expr(*input)?;
-                let grade = self.wzw_grade(&input, "rvWzwCoord")?;
-                let ty = self.model.cyclotomic_type(grade.order)?;
-                Ok((ty, TypedForm::WzwCoordinate(grade, weight, Box::new(input))))
-            }
-            ExprForm::CycloEmbed(target, input) => {
-                let input = self.expr(*input)?;
-                let source = self.cyclotomic_order(&input, "rvCycloEmbed")?;
-                let ty = self.model.cyclotomic_type(target)?;
-                if !target.is_multiple_of(source) {
-                    return Err(Error::new(
-                        input.span,
-                        "cyclotomic embedding requires the source order to divide the target order",
-                    ));
-                }
-                Ok((ty, TypedForm::CycloEmbed(source, target, Box::new(input))))
-            }
-            ExprForm::CycloRoot(order, power) => {
-                let ty = self.model.cyclotomic_type(order)?;
-                let value = rv_cyclotomic::root(self.model, order, power)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::CycloProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                let order = self.cyclotomic_order(&left, "rvCycloMul")?;
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvCycloMul")?;
-                Ok((
-                    left.ty,
-                    TypedForm::CycloProduct(order, Box::new([left, right])),
-                ))
-            }
-            ExprForm::CycloScale(factor, input) => {
-                let input = self.expr(*input)?;
-                self.cyclotomic_order(&input, "rvCycloScale")?;
-                Ok((input.ty, TypedForm::CycloScale(factor, Box::new(input))))
-            }
-            ExprForm::CycloConjugate(input) => {
-                let input = self.expr(*input)?;
-                let order = self.cyclotomic_order(&input, "rvCycloConj")?;
-                Ok((input.ty, TypedForm::CycloConjugate(order, Box::new(input))))
-            }
-            ExprForm::FusionHandle(rank, level) => {
-                let grade = rv_fusion::Grade::checked(rank, level)?;
-                let ty = self.model.fusion_type(grade)?;
-                let value = rv_fusion::handle(self.model, grade)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::Verlinde(label, input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
-                    let name = if label.is_some() {
-                        "rvVerlinde"
-                    } else {
-                        "rvQDim"
-                    };
-                    return Err(self.invalid_operand(&input, name, "a fusion element"));
-                };
-                let order = rv_verlinde::order(grade)?;
-                let ty = self.model.cyclotomic_type(order)?;
-                let point = rv_verlinde::torus(
-                    self.model,
-                    grade,
-                    label.unwrap_or_else(|| vec![0; grade.rank]),
-                )?;
-                Ok((ty, TypedForm::Verlinde(order, point, Box::new(input))))
-            }
-            ExprForm::FusionBasis(level, weight) => {
-                let grade = rv_fusion::Grade::checked(weight.len(), level)?;
-                let ty = self.model.fusion_type(grade)?;
-                let value = rv_fusion::basis(self.model, grade, weight)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::FusionOne(rank, level) => {
-                let grade = rv_fusion::Grade::checked(rank, level)?;
-                let ty = self.model.fusion_type(grade)?;
-                let value = rv_fusion::basis(self.model, grade, vec![0; rank])?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::FusionProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                let Kind::RVFusion(grade) = *self.model.kind(left.ty) else {
-                    return Err(self.invalid_operand(&left, "rvFusionMul", "a fusion element"));
-                };
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvFusionMul")?;
-                Ok((
-                    left.ty,
-                    TypedForm::FusionProduct(grade, Box::new([left, right])),
-                ))
-            }
-            ExprForm::FusionScale(factor, input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "rvFusionScale", "a fusion element"));
-                };
-                Ok((
-                    input.ty,
-                    TypedForm::FusionScale(grade, factor, Box::new(input)),
-                ))
-            }
-            ExprForm::FusionDual(input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "rvFusionDual", "a fusion element"));
-                };
-                Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
-            }
-            ExprForm::QuantumBasis(rank, ambient, shape) => {
-                let grade = rv_qgr::Grade::checked(rank, ambient)?;
-                let ty = self.model.quantum_grassmannian_type(grade)?;
-                let value = rv_qgr::basis(self.model, grade, shape)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::OreTerm(q, theta, coefficient) => {
-                let ty = self.model.ore_type()?;
-                let value = rv_ore::term(self.model, q, theta, coefficient)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::OreProduct(arguments) => {
-                let [a, b] = *arguments;
-                let a = self.expr(a)?;
-                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
-                    return Err(self.invalid_operand(&a, "rvOreMul", "an Ore operator"));
-                }
-                let b = self.expr(b)?;
-                self.require_type(a.ty, &b, "rvOreMul")?;
-                Ok((a.ty, TypedForm::OreProduct(Box::new([a, b]))))
-            }
-            ExprForm::OreApply(arguments) => {
-                let [a, b] = *arguments;
-                let a = self.expr(a)?;
-                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
-                    return Err(self.invalid_operand(&a, "rvOreApply", "an Ore operator"));
-                }
-                let b = self.expr(b)?;
-                let Kind::RVQGr(grade) = *self.model.kind(b.ty) else {
-                    return Err(self.invalid_operand(
-                        &b,
-                        "rvOreApply",
-                        "a quantum Grassmannian element",
-                    ));
-                };
-                Ok((b.ty, TypedForm::OreApply(grade, Box::new([a, b]))))
-            }
-            ExprForm::QuantumReduce(p, input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVQGr(grassmannian) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvQGrMod",
-                        "an integral quantum Grassmannian element",
-                    ));
-                };
-                let prime = rv_pcurv::checked_prime(self.model, p)?;
-                let grade = rv_pcurv::ModGrade {
-                    prime,
-                    grassmannian,
-                };
-                let ty = self.model.quantum_mod_type(grade)?;
-                Ok((ty, TypedForm::QuantumReduce(grade, Box::new(input))))
-            }
-            ExprForm::QuantumPSection(p, k, n, shape, column) => {
-                let grade = rv_pcurv::ModGrade::checked(self.model, p, k, n)?;
-                let ty = self.model.quantum_mod_type(grade)?;
-                let value = if column {
-                    rv_pcurv::column(self.model, grade, shape)?
-                } else {
-                    rv_pcurv::basis(self.model, grade, shape)?
-                };
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::QuantumCurvature(satake, input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVQGrP(grade) = *self.model.kind(input.ty) else {
-                    let op = if satake {
-                        "rvQGrCurvatureSatake"
-                    } else {
-                        "rvQGrCurvature"
-                    };
-                    return Err(self.invalid_operand(
-                        &input,
-                        op,
-                        "a finite-field Schubert section",
-                    ));
-                };
-                Ok((
-                    input.ty,
-                    TypedForm::QuantumCurvature(grade, satake, Box::new(input)),
-                ))
-            }
-            ExprForm::QuantumNabla(input) => {
-                let input = self.expr(*input)?;
-                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
-                    return Ok((input.ty, TypedForm::QuantumPNabla(grade, Box::new(input))));
-                }
-                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvQGrNabla",
-                        "a quantum Grassmannian element",
-                    ));
-                };
-                Ok((input.ty, TypedForm::QuantumNabla(grade, Box::new(input))))
-            }
-            ExprForm::QuantumAnnihilator(rank, ambient) => {
-                let grade = rv_qgr::Grade::checked(rank, ambient)?;
-                let ty = self.model.ore_type()?;
-                let value = rv_qconnection::annihilator(self.model, grade)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::QuantumProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                let Kind::RVQGr(grade) = *self.model.kind(left.ty) else {
-                    return Err(self.invalid_operand(
-                        &left,
-                        "rvQGrMul",
-                        "a quantum Grassmannian element",
-                    ));
-                };
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvQGrMul")?;
-                Ok((
-                    left.ty,
-                    TypedForm::QuantumProduct(grade, Box::new([left, right])),
-                ))
-            }
-            ExprForm::QuantumUnary(operation, input) => {
-                let input = self.expr(*input)?;
-                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
-                    let ty = if matches!(operation, QuantumOp::Transpose) {
-                        let grassmannian = grade.grassmannian.complement();
-                        self.model.quantum_mod_type(rv_pcurv::ModGrade {
-                            grassmannian,
-                            ..grade
-                        })?
-                    } else {
-                        input.ty
-                    };
-                    return Ok((
-                        ty,
-                        TypedForm::QuantumPUnary(grade, operation, Box::new(input)),
-                    ));
-                }
-                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        operation.name(),
-                        "a quantum Grassmannian element",
-                    ));
-                };
-                let ty = if matches!(operation, QuantumOp::Transpose) {
-                    self.model.quantum_grassmannian_type(grade.complement())?
-                } else {
-                    input.ty
-                };
-                Ok((ty, TypedForm::QuantumUnary(operation, Box::new(input))))
-            }
-            ExprForm::Hive(weights, interior) => {
-                let boundary = rv_hive::Boundary::checked(self.model, weights)?;
-                let ty = self.model.hive_type(boundary.clone())?;
-                let value = if let Some(interior) = interior {
-                    rv_hive::literal(self.model, &boundary, interior)?
-                } else {
-                    self.model.hive_witness(ty)?
-                };
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::SphericalBasis(coweight) => {
-                let ty = self.model.sph_hecke_type(coweight.len())?;
-                let value = rv_sphhecke::basis(self.model, coweight)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::SphericalScalar(rank, degree) => {
-                let ty = self.model.sph_hecke_type(rank)?;
-                let value = rv_sphhecke::scalar(self.model, rank, degree)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::SphericalProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                if !matches!(self.model.kind(left.ty), Kind::RVSphHecke(..)) {
-                    return Err(self.invalid_operand(
-                        &left,
-                        "rvSphMul",
-                        "a spherical Hecke element",
-                    ));
-                }
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvSphMul")?;
-                Ok((
-                    left.ty,
-                    TypedForm::SphericalProduct(Box::new([left, right])),
-                ))
-            }
-            ExprForm::SatakeInverse(input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVSatake(rank) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvSatakeInverse",
-                        "a Satake polynomial",
-                    ));
-                };
-                let ty = self.model.sph_hecke_type(rank)?;
-                Ok((ty, TypedForm::SatakeInverse(Box::new(input))))
-            }
-            ExprForm::SatakeCharacter(intersection, coweight) => {
-                let ty = if intersection {
-                    self.model.sph_hecke_type(coweight.len())?
-                } else {
-                    self.model.satake_type(coweight.len())?
-                };
-                let value = rv_satake::schur(self.model, &coweight, intersection)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::SatakeTransform(input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvSatake",
-                        "a spherical Hecke element",
-                    ));
-                };
-                let ty = self.model.satake_type(rank)?;
-                Ok((ty, TypedForm::SatakeTransform(Box::new(input))))
-            }
-            ExprForm::SatakeScalar(rank, power) => {
-                let ty = self.model.satake_type(rank)?;
-                let value = rv_satake::scalar(self.model, rank, power)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::SatakeProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                if !matches!(self.model.kind(left.ty), Kind::RVSatake(..)) {
-                    return Err(self.invalid_operand(&left, "rvSatakeMul", "a Satake polynomial"));
-                }
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvSatakeMul")?;
-                Ok((left.ty, TypedForm::SatakeProduct(Box::new([left, right]))))
-            }
-            ExprForm::SphericalEmbedding(input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "rvSphIwahori",
-                        "a spherical Hecke element",
-                    ));
-                };
-                let ty = self.model.iw_hecke_type(rank)?;
-                Ok((ty, TypedForm::SphericalEmbedding(Box::new(input))))
-            }
-            ExprForm::HeckeProduct(arguments) => {
-                let [left, right] = *arguments;
-                let left = self.expr(left)?;
-                if !matches!(self.model.kind(left.ty), Kind::RVIwHecke(..)) {
-                    return Err(self.invalid_operand(
-                        &left,
-                        "rvHeckeMul",
-                        "an affine Hecke element",
-                    ));
-                }
-                let right = self.expr(right)?;
-                self.require_type(left.ty, &right, "rvHeckeMul")?;
-                Ok((left.ty, TypedForm::HeckeProduct(Box::new([left, right]))))
-            }
-            ExprForm::RVLaurentMonomial(power, input) => {
-                let input = self.expr(*input)?;
-                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, "rvU", "an RVHom map"));
-                };
-                let ty = self.model.rv_laurent_type(grade.clone())?;
-                Ok((ty, TypedForm::RVLaurentMonomial(power, Box::new(input))))
-            }
-            ExprForm::RVIwAdlv(boundary, modulus, root, window, arguments) => {
-                let [a, x] = *arguments;
-                let a = self.expr(a)?;
-                let x = self.expr(x)?;
-                let step = rv_hodge::relative_step(
-                    self.model,
-                    a.ty,
-                    x.ty,
-                    modulus,
-                    root,
-                    boundary.name(),
-                )?;
-                rv_iwahori::check_window(self.model, a.ty, &window)?;
-                let ty = self.model.named("S").unwrap();
-                Ok((
-                    ty,
-                    TypedForm::RVIwAdlv(boundary, step, window, Box::new([a, x])),
-                ))
-            }
-            ExprForm::RVAdlv(boundary, modulus, root, mu, arguments) => {
-                let [a, x] = *arguments;
-                let a = self.expr(a)?;
-                let x = self.expr(x)?;
-                let step = rv_hodge::relative_step(
-                    self.model,
-                    a.ty,
-                    x.ty,
-                    modulus,
-                    root,
-                    boundary.name(),
-                )?;
-                rv_hodge::check_coweight(self.model, a.ty, &mu)?;
-                let ty = self.model.named("S").unwrap();
-                Ok((ty, TypedForm::RVAdlv(boundary, step, mu, Box::new([a, x]))))
-            }
-            ExprForm::RVNewton(operation, modulus, root, input) => {
-                let input = self.expr(*input)?;
-                let (ty, embedding) =
-                    rv_newton::plan(self.model, input.ty, modulus, root, operation)?;
-                Ok((
-                    ty,
-                    TypedForm::RVNewton(operation, embedding, Box::new(input)),
-                ))
-            }
-            ExprForm::RVScale(scalar, input) => {
-                let input = self.expr(*input)?;
-                let field = match self.model.kind(input.ty) {
-                    Kind::RVHom(grade) | Kind::RVLaurent(grade) => grade.field,
-                    Kind::JetHom(grade) => self.model.jet_path(grade.diagram.path).field,
-                    Kind::JetPage(grade) => self.model.jet_path(grade.chain.diagram.path).field,
-                    _ => {
-                        return Err(self.invalid_operand(
-                            &input,
-                            "rvScale",
-                            "an RVHom or RVLaurent map, JetHom cochain, or JetPage class",
-                        ))
-                    }
-                };
-                field.check_element(scalar)?;
-                Ok((input.ty, TypedForm::RVScale(field, scalar, Box::new(input))))
-            }
-            ExprForm::RVField(operation, input) => {
-                let input = self.expr(*input)?;
-                if let (Kind::RVLaurent(grade), rv_field::Operation::Frobenius(iterations)) =
-                    (self.model.kind(input.ty), operation)
-                {
-                    let field = grade.field;
-                    let ty = rv_laurent::frobenius_type(self.model, grade.clone(), iterations)?;
-                    return Ok((
-                        ty,
-                        TypedForm::RVLaurentFrobenius(field, iterations, Box::new(input)),
-                    ));
-                }
-                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, operation.name(), "an RVHom map"));
-                };
-                let (ty, map) = rv_field::plan(self.model, grade.clone(), operation)?;
-                Ok((ty, TypedForm::RVField(map, Box::new(input))))
-            }
-            ExprForm::RVInverse(input) => {
-                let input = self.expr(*input)?;
-                let ty = rv_descent::inverse_type(self.model, input.ty)?;
-                Ok((ty, TypedForm::RVInverse(Box::new(input))))
-            }
-            ExprForm::RVHilbert90(modulus, root, input) => {
-                let input = self.expr(*input)?;
-                let embedding = rv_descent::hilbert_embedding(self.model, input.ty, modulus, root)?;
-                Ok((input.ty, TypedForm::RVHilbert90(embedding, Box::new(input))))
-            }
-            ExprForm::RVTwisted(operation, modulus, root, arguments) => {
-                let [left, input, right] = *arguments;
-                let left = self.expr(left)?;
-                let input = self.expr(input)?;
-                let right = self.expr(right)?;
-                let types = [left.ty, input.ty, right.ty];
-                let (ty, embedding) =
-                    rv_descent::twist_plan(self.model, operation, types, modulus, root)?;
-                Ok((
-                    ty,
-                    TypedForm::RVTwisted(operation, embedding, Box::new([left, input, right])),
-                ))
-            }
-            ExprForm::RVShintani(operation, modulus, root, input) => {
-                let input = self.expr(*input)?;
-                let (ty, embedding) =
-                    rv_shintani::plan(self.model, input.ty, modulus, root, operation)?;
-                Ok((
-                    ty,
-                    TypedForm::RVShintani(operation, embedding, Box::new(input)),
-                ))
-            }
-            ExprForm::RVSpecialize(modulus, point, input) => {
-                let input = self.expr(*input)?;
-                let ty = rv_hom::specialize_type(self.model, input.ty, modulus, point)?;
-                Ok((ty, TypedForm::RVSpecialize(Box::new(input))))
-            }
             ExprForm::QExtGenerator(spec, index, at) => {
                 let grade = self.q_grade(spec)?;
                 let ty = self.model.q_ext_type(grade)?;
@@ -7439,427 +7052,6 @@ impl Checker<'_> {
                 let rank = self.model.q_ext(ty)?.rank();
                 let value = self.generator(ty, rank, index, at)?;
                 Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpInteger(spec, integer) => {
-                let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
-                let ty = self.model.bp_type(shape)?;
-                let value = bp::persist(self.model, BpPolynomial::integer(integer))?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpVariable(spec, slot, index) => {
-                let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
-                if slot == Some(0) {
-                    return Err(Error::new(span, "BP arrow slots start at 1"));
-                }
-                let ty = self.model.bp_type(shape)?;
-                let polynomial = shape.variable(slot.unwrap_or(0), index)?;
-                let value = bp::persist(self.model, polynomial)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpVPageGenerator(spec, index, at) => {
-                let grade = self.bp_vpage_grade(spec)?;
-                let ty = self.model.bp_vpage_type(grade)?;
-                let rank = self.model.bp_vpage(ty)?.rank();
-                let value = self.prime_generator(ty, rank, index, at)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpVPageClass((page, t, filtration), input) => {
-                let input = self.expr(*input)?;
-                let shape = self.bp_shape(&input, "bpVClass")?;
-                if shape.depth == 0 || shape.thickness.is_some() || shape.depth > shape.height {
-                    return Err(self.invalid_operand(
-                        &input,
-                        "bpVClass",
-                        "a BPI cochain with an invariant generator v_h",
-                    ));
-                }
-                let grade = bp_vpage::Grade::new(shape, page, t, filtration)?;
-                let ty = self.model.bp_vpage_type(grade)?;
-                Ok((ty, TypedForm::BpVPageClass(Box::new(input))))
-            }
-            ExprForm::BpVPageOperation(name, operation, input) => {
-                let input = self.expr(*input)?;
-                let Kind::BPVPage(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, &name.text, "a BPVPage class"));
-                };
-                let ty = if matches!(operation, bp_vpage::Operation::Rep) {
-                    self.model.bp_type(grade.shape)?
-                } else {
-                    self.model.bp_vpage_type(operation.target(grade)?)?
-                };
-                Ok((ty, TypedForm::BpVPageOperation(operation, Box::new(input))))
-            }
-            ExprForm::BpPageGenerator(mode, spec, index, at) => {
-                let grade = self.bp_page_grade(mode, spec)?;
-                let ty = self.model.bp_page_type(grade)?;
-                let rank = self.model.bp_page(ty)?.rank();
-                let value = self.prime_generator(ty, rank, index, at)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpPageClass(mode, (page, t, filtration), input) => {
-                let input = self.expr(*input)?;
-                let name = match mode {
-                    bp_page::Mode::Bockstein => "bpBockClass",
-                    bp_page::Mode::Novikov => "bpNovClass",
-                };
-                let shape = self.bp_shape(&input, name)?;
-                if shape.depth != 0 {
-                    return Err(self.invalid_operand(&input, name, "an integral BP cochain"));
-                }
-                let grade = bp_page::Grade {
-                    shape,
-                    mode,
-                    page,
-                    t,
-                    filtration,
-                };
-                let ty = self.model.bp_page_type(grade)?;
-                Ok((ty, TypedForm::BpPageClass(Box::new(input))))
-            }
-            ExprForm::BpPageOperation(name, mode, operation, input) => {
-                let input = self.expr(*input)?;
-                let Kind::BPPage(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
-                };
-                if grade.mode != mode {
-                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
-                }
-                let ty = if matches!(operation, bp_page::Operation::Representative) {
-                    self.model.bp_type(grade.shape)?
-                } else {
-                    self.model.bp_page_type(operation.target(grade)?)?
-                };
-                Ok((ty, TypedForm::BpPageOperation(operation, Box::new(input))))
-            }
-            ExprForm::BpModExtGen(spec, index, at) => {
-                let grade = self.bp_mod_ext_grade(spec)?;
-                let ty = self.model.bp_mod_ext_type(grade)?;
-                let rank = self.model.bp_mod_ext(ty)?.rank();
-                let value = self.prime_generator(ty, rank, index, at)?;
-                Ok((ty, TypedForm::Constant(value)))
-            }
-            ExprForm::BpModExtClass(thick, t, input) => {
-                let (name, expected) = if thick {
-                    ("bpThickExtClass", "a BPThick cochain")
-                } else {
-                    ("bpIExtClass", "a BPI cochain")
-                };
-                let input = self.expr(*input)?;
-                let shape = self.bp_shape(&input, name)?;
-                if shape.depth == 0 || shape.thickness.is_some() != thick {
-                    return Err(self.invalid_operand(&input, name, expected));
-                }
-                let ty = self.model.bp_mod_ext_type(bp_mod_ext::Grade { shape, t })?;
-                Ok((ty, TypedForm::BpModExtClass(Box::new(input))))
-            }
-            ExprForm::BpModExtRep(thick, input) => {
-                let (name, expected) = if thick {
-                    ("bpThickExtRep", "a BPThickExt class")
-                } else {
-                    ("bpIExtRep", "a BPIExt class")
-                };
-                let input = self.expr(*input)?;
-                let Kind::BPModExt(grade) = *self.model.kind(input.ty) else {
-                    return Err(self.invalid_operand(&input, name, expected));
-                };
-                if grade.shape.thickness.is_some() != thick {
-                    return Err(self.invalid_operand(&input, name, expected));
-                }
-                let ty = self.model.bp_type(grade.shape)?;
-                Ok((ty, TypedForm::BpModExtRep(Box::new(input))))
-            }
-            ExprForm::BpRaise(height, input) => {
-                let input = self.expr(*input)?;
-                let ty = match *self.model.kind(input.ty) {
-                    Kind::BP(shape) => self.model.bp_type(shape.raise(height)?)?,
-                    Kind::BPPage(mut grade) => {
-                        grade.shape = grade.shape.raise(height)?;
-                        self.model.bp_page_type(grade)?
-                    }
-                    Kind::BPExt(mut grade) => {
-                        grade.shape = grade.shape.raise(height)?;
-                        self.model.bp_ext_type(grade)?
-                    }
-                    _ => {
-                        return Err(self.invalid_operand(
-                            &input,
-                            "bpRaise",
-                            "a BP cochain, page class, or BPExt class",
-                        ))
-                    }
-                };
-                Ok((ty, TypedForm::BpRaise(Box::new(input))))
-            }
-            ExprForm::BpTriple(inputs) => {
-                let (layout, inputs) = self.bp_triple_inputs(*inputs, "bpTriple")?;
-                let ty = self.model.bp_triple_type(layout.target)?;
-                Ok((ty, TypedForm::BpTriple(layout, inputs)))
-            }
-            ExprForm::BpTripleBase(input) => {
-                let input = self.expr(*input)?;
-                let grade = self.bp_triple_grade(&input, "bpTripleBase")?;
-                let ty = self.model.bp_ext_type(grade)?;
-                Ok((ty, TypedForm::BpTripleBase(Box::new(input))))
-            }
-            ExprForm::BpHigher(arity, mut inputs) => {
-                let (operation, witnesses) = if let Some(arity) = arity {
-                    ("bpHigherSystem", Some(inputs.split_off(arity)))
-                } else {
-                    ("bpChosenHigher", None)
-                };
-                let inputs = inputs
-                    .into_iter()
-                    .map(|input| self.expr(input))
-                    .collect::<Result<Vec<_>>>()?;
-                let grades = inputs
-                    .iter()
-                    .map(|input| self.bp_ext_operand(input, operation))
-                    .collect::<Result<Vec<_>>>()?;
-                let layout = bp_higher::Layout::new(self.model, grades)?;
-                let witnesses = witnesses
-                    .map(|witnesses| {
-                        witnesses
-                            .into_iter()
-                            .zip(layout.witness_grades())
-                            .map(|(witness, grade)| {
-                                let witness = self.expr(witness)?;
-                                let ty = self.model.bp_type(grade.shape)?;
-                                self.require_type(ty, &witness, operation)?;
-                                Ok(witness)
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .transpose()?;
-                let ty = self.model.bp_ext_type(layout.target)?;
-                Ok((ty, TypedForm::BpHigher(layout, inputs, witnesses)))
-            }
-            ExprForm::BpMassey(inputs) => {
-                let inputs = inputs
-                    .into_iter()
-                    .map(|input| self.expr(input))
-                    .collect::<Result<Vec<_>>>()?;
-                let shapes = inputs
-                    .iter()
-                    .map(|input| self.bp_shape(input, "bpMassey"))
-                    .collect::<Result<Vec<_>>>()?;
-                let layout = bp::Massey::new(shapes.try_into().unwrap_or_else(|_| unreachable!()))?;
-                Ok((
-                    self.model.bp_type(layout.target)?,
-                    TypedForm::BpMassey(layout, inputs),
-                ))
-            }
-            ExprForm::BpHeightGenerator(spec, index, at) => {
-                let grade = self.bp_height_grade(spec)?;
-                let ty = self.model.bp_height_type(grade)?;
-                let rank = self.model.bp_ext(ty)?.rank();
-                if index >= rank {
-                    return Err(Error::new(
-                        at,
-                        format!("bpHeightgen index {index} is out of range for rank {rank}"),
-                    ));
-                }
-                Ok((
-                    ty,
-                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
-                ))
-            }
-            ExprForm::BpHeightOperation(operation, input) => {
-                let input = self.expr(*input)?;
-                let ty = if let BpHeightOp::Class(r, h, t) = operation {
-                    let top = self.bp_shape(&input, operation.name())?;
-                    top.require_integral(operation.name())?;
-                    self.model
-                        .bp_height_type(bp_height::ClassGrade { top, r, h, t })?
-                } else {
-                    let Kind::BPHeight(grade) = *self.model.kind(input.ty) else {
-                        return Err(self.invalid_operand(
-                            &input,
-                            operation.name(),
-                            "a BPHeight class",
-                        ));
-                    };
-                    match operation {
-                        BpHeightOp::Representative => self.model.bp_type(grade.top)?,
-                        BpHeightOp::Differential => self.model.bp_height_type(grade.target()?)?,
-                        BpHeightOp::Next => self.model.bp_height_type(grade.next_page()?)?,
-                        BpHeightOp::Previous => {
-                            self.model.bp_height_type(grade.previous_page()?)?
-                        }
-                        BpHeightOp::Class(..) => unreachable!(),
-                    }
-                };
-                Ok((ty, TypedForm::BpHeightOperation(operation, Box::new(input))))
-            }
-            ExprForm::BpRelOperation(operation, input) => {
-                let input = self.expr(*input)?;
-                let (ty, shape) = match (operation, self.model.kind(input.ty).clone()) {
-                    (BpRelOp::Quotient(lower), Kind::BPExt(grade)) => {
-                        let shape = bp_rel::Shape::with_lower(grade.shape, lower)?;
-                        (
-                            self.model
-                                .bp_rel_ext_type(bp_rel::Grade { shape, t: grade.t })?,
-                            shape,
-                        )
-                    }
-                    (BpRelOp::Quotient(lower), _) => {
-                        let upper = self.bp_shape(&input, "bpRel")?;
-                        let shape = bp_rel::Shape::with_lower(upper, lower)?;
-                        (self.model.bp_rel_type(shape)?, shape)
-                    }
-                    (BpRelOp::Lift, Kind::BPRel(shape)) => {
-                        (self.model.bp_type(shape.upper)?, shape)
-                    }
-                    (BpRelOp::Class(t), Kind::BPRel(shape)) => (
-                        self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?,
-                        shape,
-                    ),
-                    (BpRelOp::Representative, Kind::BPRelExt(grade)) => {
-                        (self.model.bp_rel_type(grade.shape)?, grade.shape)
-                    }
-                    (BpRelOp::HeightDelta, Kind::BPRel(shape)) => {
-                        (self.model.bp_type(shape.next()?.lower_shape())?, shape)
-                    }
-                    (BpRelOp::HeightDelta, Kind::BPRelExt(grade)) => {
-                        let shape = grade.shape.next()?.lower_shape();
-                        let ty = self
-                            .model
-                            .bp_ext_type(bp_classes::Grade { shape, t: grade.t })?;
-                        (ty, grade.shape)
-                    }
-                    (BpRelOp::Lift, _) => {
-                        return Err(self.invalid_operand(&input, "bpRelLift", "a BPRel cochain"))
-                    }
-                    (BpRelOp::Class(_), _) => {
-                        return Err(self.invalid_operand(&input, "bpRelClass", "a BPRel cochain"))
-                    }
-                    (BpRelOp::Representative, _) => {
-                        return Err(self.invalid_operand(&input, "bpRelRep", "a BPRelExt class"))
-                    }
-                    (BpRelOp::HeightDelta, _) => {
-                        return Err(self.invalid_operand(
-                            &input,
-                            "bpHeightDelta",
-                            "a BPRel cochain or BPRelExt class",
-                        ))
-                    }
-                    _ => unreachable!(),
-                };
-                Ok((
-                    ty,
-                    TypedForm::BpRelOperation(operation, shape, Box::new(input)),
-                ))
-            }
-            ExprForm::BpRelGenerator(spec, t, index, at) => {
-                let shape = self.bp_relative_shape(spec)?;
-                let ty = self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?;
-                let rank = self.model.bp_ext(ty)?.rank();
-                if index >= rank {
-                    return Err(Error::new(
-                        at,
-                        format!("bprelgen index {index} is out of range for rank {rank}"),
-                    ));
-                }
-                Ok((
-                    ty,
-                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
-                ))
-            }
-            ExprForm::BpExtGenerator(spec, t, index, at) => {
-                let grade = self.bp_ext_grade(spec, t)?;
-                let ty = self.model.bp_ext_type(grade)?;
-                let rank = self.model.bp_ext(ty)?.rank();
-                if index >= rank {
-                    return Err(Error::new(
-                        at,
-                        format!("bpextgen index {index} is out of range for rank {rank}"),
-                    ));
-                }
-                Ok((
-                    ty,
-                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
-                ))
-            }
-            ExprForm::BpExtOperation(operation, input) => {
-                let input = self.expr(*input)?;
-                let ty = match operation {
-                    BpExtOp::Class(t) => {
-                        let shape = self.bp_shape(&input, "bpExtClass")?;
-                        shape.require_integral("bpExtClass")?;
-                        self.model.bp_ext_type(bp_classes::Grade { shape, t })?
-                    }
-                    BpExtOp::Representative => {
-                        let grade = self.bp_ext_operand(&input, "bpExtRep")?;
-                        self.model.bp_type(grade.shape)?
-                    }
-                    BpExtOp::Scale(_) => {
-                        if !matches!(
-                            self.model.kind(input.ty),
-                            Kind::BPExt(..)
-                                | Kind::BPRel(..)
-                                | Kind::BPRelExt(..)
-                                | Kind::BPHeight(..)
-                        ) {
-                            return Err(self.invalid_operand(
-                                &input,
-                                "bpScale",
-                                "a BPExt, BPRelExt, or BPHeight class or a BPRel cochain",
-                            ));
-                        }
-                        input.ty
-                    }
-                };
-                Ok((ty, TypedForm::BpExtOperation(operation, Box::new(input))))
-            }
-            ExprForm::BpOperation(operation, input) => {
-                let input = self.expr(*input)?;
-                let kind = self.model.kind(input.ty);
-                if let Kind::BPModExt(grade) = *kind {
-                    let grade = grade.map(operation)?;
-                    let ty = if grade.shape.depth == 0 {
-                        self.model.bp_ext_type(bp_classes::Grade {
-                            shape: grade.shape,
-                            t: grade.t,
-                        })?
-                    } else {
-                        self.model.bp_mod_ext_type(grade)?
-                    };
-                    return Ok((ty, TypedForm::BpModExtOperation(operation, Box::new(input))));
-                }
-                if matches!(operation, bp::Operation::Negate)
-                    && matches!(
-                        kind,
-                        Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..) | Kind::BPHeight(..)
-                    )
-                {
-                    return Ok((
-                        input.ty,
-                        TypedForm::BpExtOperation(BpExtOp::Scale(-1), Box::new(input)),
-                    ));
-                }
-                if let Kind::BPRel(shape) = *kind {
-                    let (target, operation) = match operation {
-                        bp::Operation::Differential => (shape.next()?, BpRelOp::Differential),
-                        bp::Operation::Null(t) => (shape.previous()?, BpRelOp::Null(t)),
-                        _ => {
-                            return Err(self.invalid_operand(
-                                &input,
-                                operation.name(),
-                                "a BP polynomial",
-                            ))
-                        }
-                    };
-                    let ty = self.model.bp_rel_type(target)?;
-                    return Ok((
-                        ty,
-                        TypedForm::BpRelOperation(operation, shape, Box::new(input)),
-                    ));
-                }
-                let shape = self.bp_shape(&input, operation.name())?;
-                let ty = self.model.bp_type(operation.target(shape)?)?;
-                Ok((
-                    ty,
-                    TypedForm::BpOperation(operation, shape, Box::new(input)),
-                ))
             }
             ExprForm::RvMonomial(selected, powers) => {
                 let selected = q_koszul::indices(self.model, selected)?;
@@ -8756,6 +7948,1051 @@ impl Checker<'_> {
                 let ty = self.model.arrow(domain, range)?;
                 Ok((ty, TypedForm::Sew(charts)))
             }
+            rank_arithmetic_expression!() | bp_expression!() => unreachable!(),
+        }
+    }
+
+    fn expr_rank_arithmetic(&mut self, expr: ExprForm) -> Result<(TypeId, TypedForm)> {
+        match expr {
+            ExprForm::HeckeBasis(canonical, window) => {
+                let ty = self.model.iw_hecke_type(window.len())?;
+                let value = if canonical {
+                    rv_iwhecke::canonical(self.model, &window)?
+                } else {
+                    rv_iwhecke::standard(self.model, window)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::HeckeScalar(rank, degree) => {
+                let ty = self.model.iw_hecke_type(rank)?;
+                let value = rv_iwhecke::scalar(self.model, rank, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::HeckeNegate(input) => {
+                let input = self.expr(*input)?;
+                if matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))));
+                }
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::QuantumPUnary(grade, QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVQGr(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVCycloQ(..)) {
+                    return Ok((input.ty, TypedForm::CycloRatioNegate(Box::new(input))));
+                }
+                if let Kind::RVWzw(grade) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::WzwUnary(grade, WzwOp::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
+                    return Ok((input.ty, TypedForm::CycloScale(-1, Box::new(input))));
+                }
+                if let Kind::RVFusion(grade) = *self.model.kind(input.ty) {
+                    return Ok((input.ty, TypedForm::FusionScale(grade, -1, Box::new(input))));
+                }
+                if !matches!(
+                    self.model.kind(input.ty),
+                    Kind::RVIwHecke(..) | Kind::RVSphHecke(..) | Kind::RVSatake(..)
+                ) {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "neg",
+                        "an affine Hecke element, a spherical Hecke element, a Satake polynomial, a fusion element, or a cyclotomic integer",
+                    ));
+                }
+                Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::WzwBasis(rank, level, weight) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.wzw_type(grade)?;
+                let value = rv_wzw::basis(self.model, grade, weight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwSEntry(rank, level, left, right) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                let value = rv_wzw::s_entry(self.model, grade, left, right)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwTEntry(rank, level, weight, power) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                let value = rv_wzw::t_entry(self.model, grade, weight, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.wzw_grade(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::WzwUnary(grade, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::WzwScale(arguments) => {
+                let [scalar, input] = *arguments;
+                let input = self.expr(input)?;
+                let grade = self.wzw_grade(&input, "rvWzwScale")?;
+                let scalar = self.expr(scalar)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                self.require_type(ty, &scalar, "rvWzwScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::WzwScale(grade, Box::new([scalar, input])),
+                ))
+            }
+            ExprForm::LensTv(rank, level, p, q) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_lens::lens(self.model, grade, p, q)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwTv(rank, level, word) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_rational_type(grade.order)?;
+                let value = rv_lens::word(self.model, grade, &word)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CycloRatio(denominator, input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_order(&input, "rvCycloRat")?;
+                let ty = self.model.cyclotomic_rational_type(order)?;
+                Ok((ty, TypedForm::CycloRatio(denominator, Box::new(input))))
+            }
+            ExprForm::WzwCoordinate(weight, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.wzw_grade(&input, "rvWzwCoord")?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                Ok((ty, TypedForm::WzwCoordinate(grade, weight, Box::new(input))))
+            }
+            ExprForm::CycloEmbed(target, input) => {
+                let input = self.expr(*input)?;
+                let source = self.cyclotomic_order(&input, "rvCycloEmbed")?;
+                let ty = self.model.cyclotomic_type(target)?;
+                if !target.is_multiple_of(source) {
+                    return Err(Error::new(
+                        input.span,
+                        "cyclotomic embedding requires the source order to divide the target order",
+                    ));
+                }
+                Ok((ty, TypedForm::CycloEmbed(source, target, Box::new(input))))
+            }
+            ExprForm::CycloRoot(order, power) => {
+                let ty = self.model.cyclotomic_type(order)?;
+                let value = rv_cyclotomic::root(self.model, order, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::CycloProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let order = self.cyclotomic_order(&left, "rvCycloMul")?;
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvCycloMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::CycloProduct(order, Box::new([left, right])),
+                ))
+            }
+            ExprForm::CycloScale(factor, input) => {
+                let input = self.expr(*input)?;
+                self.cyclotomic_order(&input, "rvCycloScale")?;
+                Ok((input.ty, TypedForm::CycloScale(factor, Box::new(input))))
+            }
+            ExprForm::CycloConjugate(input) => {
+                let input = self.expr(*input)?;
+                let order = self.cyclotomic_order(&input, "rvCycloConj")?;
+                Ok((input.ty, TypedForm::CycloConjugate(order, Box::new(input))))
+            }
+            ExprForm::FusionHandle(rank, level) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::handle(self.model, grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::Verlinde(label, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    let name = if label.is_some() {
+                        "rvVerlinde"
+                    } else {
+                        "rvQDim"
+                    };
+                    return Err(self.invalid_operand(&input, name, "a fusion element"));
+                };
+                let order = rv_verlinde::order(grade)?;
+                let ty = self.model.cyclotomic_type(order)?;
+                let point = rv_verlinde::torus(
+                    self.model,
+                    grade,
+                    label.unwrap_or_else(|| vec![0; grade.rank]),
+                )?;
+                Ok((ty, TypedForm::Verlinde(order, point, Box::new(input))))
+            }
+            ExprForm::FusionBasis(level, weight) => {
+                let grade = rv_fusion::Grade::checked(weight.len(), level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::basis(self.model, grade, weight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::FusionOne(rank, level) => {
+                let grade = rv_fusion::Grade::checked(rank, level)?;
+                let ty = self.model.fusion_type(grade)?;
+                let value = rv_fusion::basis(self.model, grade, vec![0; rank])?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::FusionProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let Kind::RVFusion(grade) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(&left, "rvFusionMul", "a fusion element"));
+                };
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvFusionMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::FusionProduct(grade, Box::new([left, right])),
+                ))
+            }
+            ExprForm::FusionScale(factor, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvFusionScale", "a fusion element"));
+                };
+                Ok((
+                    input.ty,
+                    TypedForm::FusionScale(grade, factor, Box::new(input)),
+                ))
+            }
+            ExprForm::FusionDual(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVFusion(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvFusionDual", "a fusion element"));
+                };
+                Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
+            }
+            ExprForm::QuantumBasis(rank, ambient, shape) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let ty = self.model.quantum_grassmannian_type(grade)?;
+                let value = rv_qgr::basis(self.model, grade, shape)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::OreTerm(q, theta, coefficient) => {
+                let ty = self.model.ore_type()?;
+                let value = rv_ore::term(self.model, q, theta, coefficient)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::OreProduct(arguments) => {
+                let [a, b] = *arguments;
+                let a = self.expr(a)?;
+                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
+                    return Err(self.invalid_operand(&a, "rvOreMul", "an Ore operator"));
+                }
+                let b = self.expr(b)?;
+                self.require_type(a.ty, &b, "rvOreMul")?;
+                Ok((a.ty, TypedForm::OreProduct(Box::new([a, b]))))
+            }
+            ExprForm::OreApply(arguments) => {
+                let [a, b] = *arguments;
+                let a = self.expr(a)?;
+                if !matches!(self.model.kind(a.ty), Kind::RVOre) {
+                    return Err(self.invalid_operand(&a, "rvOreApply", "an Ore operator"));
+                }
+                let b = self.expr(b)?;
+                let Kind::RVQGr(grade) = *self.model.kind(b.ty) else {
+                    return Err(self.invalid_operand(
+                        &b,
+                        "rvOreApply",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                Ok((b.ty, TypedForm::OreApply(grade, Box::new([a, b]))))
+            }
+            ExprForm::QuantumReduce(p, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGr(grassmannian) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvQGrMod",
+                        "an integral quantum Grassmannian element",
+                    ));
+                };
+                let prime = rv_pcurv::checked_prime(self.model, p)?;
+                let grade = rv_pcurv::ModGrade {
+                    prime,
+                    grassmannian,
+                };
+                let ty = self.model.quantum_mod_type(grade)?;
+                Ok((ty, TypedForm::QuantumReduce(grade, Box::new(input))))
+            }
+            ExprForm::QuantumPSection(p, k, n, shape, column) => {
+                let grade = rv_pcurv::ModGrade::checked(self.model, p, k, n)?;
+                let ty = self.model.quantum_mod_type(grade)?;
+                let value = if column {
+                    rv_pcurv::column(self.model, grade, shape)?
+                } else {
+                    rv_pcurv::basis(self.model, grade, shape)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QuantumCurvature(satake, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVQGrP(grade) = *self.model.kind(input.ty) else {
+                    let op = if satake {
+                        "rvQGrCurvatureSatake"
+                    } else {
+                        "rvQGrCurvature"
+                    };
+                    return Err(self.invalid_operand(
+                        &input,
+                        op,
+                        "a finite-field Schubert section",
+                    ));
+                };
+                Ok((
+                    input.ty,
+                    TypedForm::QuantumCurvature(grade, satake, Box::new(input)),
+                ))
+            }
+            ExprForm::QuantumNabla(input) => {
+                let input = self.expr(*input)?;
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    return Ok((input.ty, TypedForm::QuantumPNabla(grade, Box::new(input))));
+                }
+                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvQGrNabla",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                Ok((input.ty, TypedForm::QuantumNabla(grade, Box::new(input))))
+            }
+            ExprForm::QuantumAnnihilator(rank, ambient) => {
+                let grade = rv_qgr::Grade::checked(rank, ambient)?;
+                let ty = self.model.ore_type()?;
+                let value = rv_qconnection::annihilator(self.model, grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::QuantumProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                let Kind::RVQGr(grade) = *self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvQGrMul",
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvQGrMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::QuantumProduct(grade, Box::new([left, right])),
+                ))
+            }
+            ExprForm::QuantumUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                if let Kind::RVQGrP(grade) = *self.model.kind(input.ty) {
+                    let ty = if matches!(operation, QuantumOp::Transpose) {
+                        let grassmannian = grade.grassmannian.complement();
+                        self.model.quantum_mod_type(rv_pcurv::ModGrade {
+                            grassmannian,
+                            ..grade
+                        })?
+                    } else {
+                        input.ty
+                    };
+                    return Ok((
+                        ty,
+                        TypedForm::QuantumPUnary(grade, operation, Box::new(input)),
+                    ));
+                }
+                let Kind::RVQGr(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.name(),
+                        "a quantum Grassmannian element",
+                    ));
+                };
+                let ty = if matches!(operation, QuantumOp::Transpose) {
+                    self.model.quantum_grassmannian_type(grade.complement())?
+                } else {
+                    input.ty
+                };
+                Ok((ty, TypedForm::QuantumUnary(operation, Box::new(input))))
+            }
+            ExprForm::Hive(weights, interior) => {
+                let boundary = rv_hive::Boundary::checked(self.model, weights)?;
+                let ty = self.model.hive_type(boundary.clone())?;
+                let value = if let Some(interior) = interior {
+                    rv_hive::literal(self.model, &boundary, interior)?
+                } else {
+                    self.model.hive_witness(ty)?
+                };
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SphericalBasis(coweight) => {
+                let ty = self.model.sph_hecke_type(coweight.len())?;
+                let value = rv_sphhecke::basis(self.model, coweight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SphericalScalar(rank, degree) => {
+                let ty = self.model.sph_hecke_type(rank)?;
+                let value = rv_sphhecke::scalar(self.model, rank, degree)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SphericalProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVSphHecke(..)) {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvSphMul",
+                        "a spherical Hecke element",
+                    ));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvSphMul")?;
+                Ok((
+                    left.ty,
+                    TypedForm::SphericalProduct(Box::new([left, right])),
+                ))
+            }
+            ExprForm::SatakeInverse(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSatake(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSatakeInverse",
+                        "a Satake polynomial",
+                    ));
+                };
+                let ty = self.model.sph_hecke_type(rank)?;
+                Ok((ty, TypedForm::SatakeInverse(Box::new(input))))
+            }
+            ExprForm::SatakeCharacter(intersection, coweight) => {
+                let ty = if intersection {
+                    self.model.sph_hecke_type(coweight.len())?
+                } else {
+                    self.model.satake_type(coweight.len())?
+                };
+                let value = rv_satake::schur(self.model, &coweight, intersection)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SatakeTransform(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSatake",
+                        "a spherical Hecke element",
+                    ));
+                };
+                let ty = self.model.satake_type(rank)?;
+                Ok((ty, TypedForm::SatakeTransform(Box::new(input))))
+            }
+            ExprForm::SatakeScalar(rank, power) => {
+                let ty = self.model.satake_type(rank)?;
+                let value = rv_satake::scalar(self.model, rank, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::SatakeProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVSatake(..)) {
+                    return Err(self.invalid_operand(&left, "rvSatakeMul", "a Satake polynomial"));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvSatakeMul")?;
+                Ok((left.ty, TypedForm::SatakeProduct(Box::new([left, right]))))
+            }
+            ExprForm::SphericalEmbedding(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVSphHecke(rank) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "rvSphIwahori",
+                        "a spherical Hecke element",
+                    ));
+                };
+                let ty = self.model.iw_hecke_type(rank)?;
+                Ok((ty, TypedForm::SphericalEmbedding(Box::new(input))))
+            }
+            ExprForm::HeckeProduct(arguments) => {
+                let [left, right] = *arguments;
+                let left = self.expr(left)?;
+                if !matches!(self.model.kind(left.ty), Kind::RVIwHecke(..)) {
+                    return Err(self.invalid_operand(
+                        &left,
+                        "rvHeckeMul",
+                        "an affine Hecke element",
+                    ));
+                }
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvHeckeMul")?;
+                Ok((left.ty, TypedForm::HeckeProduct(Box::new([left, right]))))
+            }
+            ExprForm::RVLaurentMonomial(power, input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvU", "an RVHom map"));
+                };
+                let ty = self.model.rv_laurent_type(grade.clone())?;
+                Ok((ty, TypedForm::RVLaurentMonomial(power, Box::new(input))))
+            }
+            ExprForm::RVIwAdlv(boundary, modulus, root, window, arguments) => {
+                let [a, x] = *arguments;
+                let a = self.expr(a)?;
+                let x = self.expr(x)?;
+                let step = rv_hodge::relative_step(
+                    self.model,
+                    a.ty,
+                    x.ty,
+                    modulus,
+                    root,
+                    boundary.name(),
+                )?;
+                rv_iwahori::check_window(self.model, a.ty, &window)?;
+                let ty = self.model.named("S").unwrap();
+                Ok((
+                    ty,
+                    TypedForm::RVIwAdlv(boundary, step, window, Box::new([a, x])),
+                ))
+            }
+            ExprForm::RVAdlv(boundary, modulus, root, mu, arguments) => {
+                let [a, x] = *arguments;
+                let a = self.expr(a)?;
+                let x = self.expr(x)?;
+                let step = rv_hodge::relative_step(
+                    self.model,
+                    a.ty,
+                    x.ty,
+                    modulus,
+                    root,
+                    boundary.name(),
+                )?;
+                rv_hodge::check_coweight(self.model, a.ty, &mu)?;
+                let ty = self.model.named("S").unwrap();
+                Ok((ty, TypedForm::RVAdlv(boundary, step, mu, Box::new([a, x]))))
+            }
+            ExprForm::RVNewton(operation, modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let (ty, embedding) =
+                    rv_newton::plan(self.model, input.ty, modulus, root, operation)?;
+                Ok((
+                    ty,
+                    TypedForm::RVNewton(operation, embedding, Box::new(input)),
+                ))
+            }
+            ExprForm::RVScale(scalar, input) => {
+                let input = self.expr(*input)?;
+                let field = match self.model.kind(input.ty) {
+                    Kind::RVHom(grade) | Kind::RVLaurent(grade) => grade.field,
+                    Kind::JetHom(grade) => self.model.jet_path(grade.diagram.path).field,
+                    Kind::JetPage(grade) => self.model.jet_path(grade.chain.diagram.path).field,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "rvScale",
+                            "an RVHom or RVLaurent map, JetHom cochain, or JetPage class",
+                        ))
+                    }
+                };
+                field.check_element(scalar)?;
+                Ok((input.ty, TypedForm::RVScale(field, scalar, Box::new(input))))
+            }
+            ExprForm::RVField(operation, input) => {
+                let input = self.expr(*input)?;
+                if let (Kind::RVLaurent(grade), rv_field::Operation::Frobenius(iterations)) =
+                    (self.model.kind(input.ty), operation)
+                {
+                    let field = grade.field;
+                    let ty = rv_laurent::frobenius_type(self.model, grade.clone(), iterations)?;
+                    return Ok((
+                        ty,
+                        TypedForm::RVLaurentFrobenius(field, iterations, Box::new(input)),
+                    ));
+                }
+                let Kind::RVHom(grade) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, operation.name(), "an RVHom map"));
+                };
+                let (ty, map) = rv_field::plan(self.model, grade.clone(), operation)?;
+                Ok((ty, TypedForm::RVField(map, Box::new(input))))
+            }
+            ExprForm::RVInverse(input) => {
+                let input = self.expr(*input)?;
+                let ty = rv_descent::inverse_type(self.model, input.ty)?;
+                Ok((ty, TypedForm::RVInverse(Box::new(input))))
+            }
+            ExprForm::RVHilbert90(modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let embedding = rv_descent::hilbert_embedding(self.model, input.ty, modulus, root)?;
+                Ok((input.ty, TypedForm::RVHilbert90(embedding, Box::new(input))))
+            }
+            ExprForm::RVTwisted(operation, modulus, root, arguments) => {
+                let [left, input, right] = *arguments;
+                let left = self.expr(left)?;
+                let input = self.expr(input)?;
+                let right = self.expr(right)?;
+                let types = [left.ty, input.ty, right.ty];
+                let (ty, embedding) =
+                    rv_descent::twist_plan(self.model, operation, types, modulus, root)?;
+                Ok((
+                    ty,
+                    TypedForm::RVTwisted(operation, embedding, Box::new([left, input, right])),
+                ))
+            }
+            ExprForm::RVShintani(operation, modulus, root, input) => {
+                let input = self.expr(*input)?;
+                let (ty, embedding) =
+                    rv_shintani::plan(self.model, input.ty, modulus, root, operation)?;
+                Ok((
+                    ty,
+                    TypedForm::RVShintani(operation, embedding, Box::new(input)),
+                ))
+            }
+            ExprForm::RVSpecialize(modulus, point, input) => {
+                let input = self.expr(*input)?;
+                let ty = rv_hom::specialize_type(self.model, input.ty, modulus, point)?;
+                Ok((ty, TypedForm::RVSpecialize(Box::new(input))))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn expr_bp(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
+        match expr {
+            ExprForm::BpInteger(spec, integer) => {
+                let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
+                let ty = self.model.bp_type(shape)?;
+                let value = bp::persist(self.model, BpPolynomial::integer(integer))?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpVariable(spec, slot, index) => {
+                let shape = bp::Shape::new(self.model, spec.0, spec.1, spec.2)?;
+                if slot == Some(0) {
+                    return Err(Error::new(span, "BP arrow slots start at 1"));
+                }
+                let ty = self.model.bp_type(shape)?;
+                let polynomial = shape.variable(slot.unwrap_or(0), index)?;
+                let value = bp::persist(self.model, polynomial)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpVPageGenerator(spec, index, at) => {
+                let grade = self.bp_vpage_grade(spec)?;
+                let ty = self.model.bp_vpage_type(grade)?;
+                let rank = self.model.bp_vpage(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpVPageClass((page, t, filtration), input) => {
+                let input = self.expr(*input)?;
+                let shape = self.bp_shape(&input, "bpVClass")?;
+                if shape.depth == 0 || shape.thickness.is_some() || shape.depth > shape.height {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "bpVClass",
+                        "a BPI cochain with an invariant generator v_h",
+                    ));
+                }
+                let grade = bp_vpage::Grade::new(shape, page, t, filtration)?;
+                let ty = self.model.bp_vpage_type(grade)?;
+                Ok((ty, TypedForm::BpVPageClass(Box::new(input))))
+            }
+            ExprForm::BpVPageOperation(name, operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::BPVPage(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, &name.text, "a BPVPage class"));
+                };
+                let ty = if matches!(operation, bp_vpage::Operation::Rep) {
+                    self.model.bp_type(grade.shape)?
+                } else {
+                    self.model.bp_vpage_type(operation.target(grade)?)?
+                };
+                Ok((ty, TypedForm::BpVPageOperation(operation, Box::new(input))))
+            }
+            ExprForm::BpPageGenerator(mode, spec, index, at) => {
+                let grade = self.bp_page_grade(mode, spec)?;
+                let ty = self.model.bp_page_type(grade)?;
+                let rank = self.model.bp_page(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpPageClass(mode, (page, t, filtration), input) => {
+                let input = self.expr(*input)?;
+                let name = match mode {
+                    bp_page::Mode::Bockstein => "bpBockClass",
+                    bp_page::Mode::Novikov => "bpNovClass",
+                };
+                let shape = self.bp_shape(&input, name)?;
+                if shape.depth != 0 {
+                    return Err(self.invalid_operand(&input, name, "an integral BP cochain"));
+                }
+                let grade = bp_page::Grade {
+                    shape,
+                    mode,
+                    page,
+                    t,
+                    filtration,
+                };
+                let ty = self.model.bp_page_type(grade)?;
+                Ok((ty, TypedForm::BpPageClass(Box::new(input))))
+            }
+            ExprForm::BpPageOperation(name, mode, operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::BPPage(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
+                };
+                if grade.mode != mode {
+                    return Err(self.invalid_operand(&input, &name.text, mode.type_name()));
+                }
+                let ty = if matches!(operation, bp_page::Operation::Representative) {
+                    self.model.bp_type(grade.shape)?
+                } else {
+                    self.model.bp_page_type(operation.target(grade)?)?
+                };
+                Ok((ty, TypedForm::BpPageOperation(operation, Box::new(input))))
+            }
+            ExprForm::BpModExtGen(spec, index, at) => {
+                let grade = self.bp_mod_ext_grade(spec)?;
+                let ty = self.model.bp_mod_ext_type(grade)?;
+                let rank = self.model.bp_mod_ext(ty)?.rank();
+                let value = self.prime_generator(ty, rank, index, at)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::BpModExtClass(thick, t, input) => {
+                let (name, expected) = if thick {
+                    ("bpThickExtClass", "a BPThick cochain")
+                } else {
+                    ("bpIExtClass", "a BPI cochain")
+                };
+                let input = self.expr(*input)?;
+                let shape = self.bp_shape(&input, name)?;
+                if shape.depth == 0 || shape.thickness.is_some() != thick {
+                    return Err(self.invalid_operand(&input, name, expected));
+                }
+                let ty = self.model.bp_mod_ext_type(bp_mod_ext::Grade { shape, t })?;
+                Ok((ty, TypedForm::BpModExtClass(Box::new(input))))
+            }
+            ExprForm::BpModExtRep(thick, input) => {
+                let (name, expected) = if thick {
+                    ("bpThickExtRep", "a BPThickExt class")
+                } else {
+                    ("bpIExtRep", "a BPIExt class")
+                };
+                let input = self.expr(*input)?;
+                let Kind::BPModExt(grade) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, name, expected));
+                };
+                if grade.shape.thickness.is_some() != thick {
+                    return Err(self.invalid_operand(&input, name, expected));
+                }
+                let ty = self.model.bp_type(grade.shape)?;
+                Ok((ty, TypedForm::BpModExtRep(Box::new(input))))
+            }
+            ExprForm::BpRaise(height, input) => {
+                let input = self.expr(*input)?;
+                let ty = match *self.model.kind(input.ty) {
+                    Kind::BP(shape) => self.model.bp_type(shape.raise(height)?)?,
+                    Kind::BPPage(mut grade) => {
+                        grade.shape = grade.shape.raise(height)?;
+                        self.model.bp_page_type(grade)?
+                    }
+                    Kind::BPExt(mut grade) => {
+                        grade.shape = grade.shape.raise(height)?;
+                        self.model.bp_ext_type(grade)?
+                    }
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "bpRaise",
+                            "a BP cochain, page class, or BPExt class",
+                        ))
+                    }
+                };
+                Ok((ty, TypedForm::BpRaise(Box::new(input))))
+            }
+            ExprForm::BpTriple(inputs) => {
+                let (layout, inputs) = self.bp_triple_inputs(*inputs, "bpTriple")?;
+                let ty = self.model.bp_triple_type(layout.target)?;
+                Ok((ty, TypedForm::BpTriple(layout, inputs)))
+            }
+            ExprForm::BpTripleBase(input) => {
+                let input = self.expr(*input)?;
+                let grade = self.bp_triple_grade(&input, "bpTripleBase")?;
+                let ty = self.model.bp_ext_type(grade)?;
+                Ok((ty, TypedForm::BpTripleBase(Box::new(input))))
+            }
+            ExprForm::BpHigher(arity, mut inputs) => {
+                let (operation, witnesses) = if let Some(arity) = arity {
+                    ("bpHigherSystem", Some(inputs.split_off(arity)))
+                } else {
+                    ("bpChosenHigher", None)
+                };
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let grades = inputs
+                    .iter()
+                    .map(|input| self.bp_ext_operand(input, operation))
+                    .collect::<Result<Vec<_>>>()?;
+                let layout = bp_higher::Layout::new(self.model, grades)?;
+                let witnesses = witnesses
+                    .map(|witnesses| {
+                        witnesses
+                            .into_iter()
+                            .zip(layout.witness_grades())
+                            .map(|(witness, grade)| {
+                                let witness = self.expr(witness)?;
+                                let ty = self.model.bp_type(grade.shape)?;
+                                self.require_type(ty, &witness, operation)?;
+                                Ok(witness)
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .transpose()?;
+                let ty = self.model.bp_ext_type(layout.target)?;
+                Ok((ty, TypedForm::BpHigher(layout, inputs, witnesses)))
+            }
+            ExprForm::BpMassey(inputs) => {
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| self.expr(input))
+                    .collect::<Result<Vec<_>>>()?;
+                let shapes = inputs
+                    .iter()
+                    .map(|input| self.bp_shape(input, "bpMassey"))
+                    .collect::<Result<Vec<_>>>()?;
+                let layout = bp::Massey::new(shapes.try_into().unwrap_or_else(|_| unreachable!()))?;
+                Ok((
+                    self.model.bp_type(layout.target)?,
+                    TypedForm::BpMassey(layout, inputs),
+                ))
+            }
+            ExprForm::BpHeightGenerator(spec, index, at) => {
+                let grade = self.bp_height_grade(spec)?;
+                let ty = self.model.bp_height_type(grade)?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bpHeightgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
+                ))
+            }
+            ExprForm::BpHeightOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = if let BpHeightOp::Class(r, h, t) = operation {
+                    let top = self.bp_shape(&input, operation.name())?;
+                    top.require_integral(operation.name())?;
+                    self.model
+                        .bp_height_type(bp_height::ClassGrade { top, r, h, t })?
+                } else {
+                    let Kind::BPHeight(grade) = *self.model.kind(input.ty) else {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "a BPHeight class",
+                        ));
+                    };
+                    match operation {
+                        BpHeightOp::Representative => self.model.bp_type(grade.top)?,
+                        BpHeightOp::Differential => self.model.bp_height_type(grade.target()?)?,
+                        BpHeightOp::Next => self.model.bp_height_type(grade.next_page()?)?,
+                        BpHeightOp::Previous => {
+                            self.model.bp_height_type(grade.previous_page()?)?
+                        }
+                        BpHeightOp::Class(..) => unreachable!(),
+                    }
+                };
+                Ok((ty, TypedForm::BpHeightOperation(operation, Box::new(input))))
+            }
+            ExprForm::BpRelOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let (ty, shape) = match (operation, self.model.kind(input.ty).clone()) {
+                    (BpRelOp::Quotient(lower), Kind::BPExt(grade)) => {
+                        let shape = bp_rel::Shape::with_lower(grade.shape, lower)?;
+                        (
+                            self.model
+                                .bp_rel_ext_type(bp_rel::Grade { shape, t: grade.t })?,
+                            shape,
+                        )
+                    }
+                    (BpRelOp::Quotient(lower), _) => {
+                        let upper = self.bp_shape(&input, "bpRel")?;
+                        let shape = bp_rel::Shape::with_lower(upper, lower)?;
+                        (self.model.bp_rel_type(shape)?, shape)
+                    }
+                    (BpRelOp::Lift, Kind::BPRel(shape)) => {
+                        (self.model.bp_type(shape.upper)?, shape)
+                    }
+                    (BpRelOp::Class(t), Kind::BPRel(shape)) => (
+                        self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?,
+                        shape,
+                    ),
+                    (BpRelOp::Representative, Kind::BPRelExt(grade)) => {
+                        (self.model.bp_rel_type(grade.shape)?, grade.shape)
+                    }
+                    (BpRelOp::HeightDelta, Kind::BPRel(shape)) => {
+                        (self.model.bp_type(shape.next()?.lower_shape())?, shape)
+                    }
+                    (BpRelOp::HeightDelta, Kind::BPRelExt(grade)) => {
+                        let shape = grade.shape.next()?.lower_shape();
+                        let ty = self
+                            .model
+                            .bp_ext_type(bp_classes::Grade { shape, t: grade.t })?;
+                        (ty, grade.shape)
+                    }
+                    (BpRelOp::Lift, _) => {
+                        return Err(self.invalid_operand(&input, "bpRelLift", "a BPRel cochain"))
+                    }
+                    (BpRelOp::Class(_), _) => {
+                        return Err(self.invalid_operand(&input, "bpRelClass", "a BPRel cochain"))
+                    }
+                    (BpRelOp::Representative, _) => {
+                        return Err(self.invalid_operand(&input, "bpRelRep", "a BPRelExt class"))
+                    }
+                    (BpRelOp::HeightDelta, _) => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "bpHeightDelta",
+                            "a BPRel cochain or BPRelExt class",
+                        ))
+                    }
+                    _ => unreachable!(),
+                };
+                Ok((
+                    ty,
+                    TypedForm::BpRelOperation(operation, shape, Box::new(input)),
+                ))
+            }
+            ExprForm::BpRelGenerator(spec, t, index, at) => {
+                let shape = self.bp_relative_shape(spec)?;
+                let ty = self.model.bp_rel_ext_type(bp_rel::Grade { shape, t })?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bprelgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
+                ))
+            }
+            ExprForm::BpExtGenerator(spec, t, index, at) => {
+                let grade = self.bp_ext_grade(spec, t)?;
+                let ty = self.model.bp_ext_type(grade)?;
+                let rank = self.model.bp_ext(ty)?.rank();
+                if index >= rank {
+                    return Err(Error::new(
+                        at,
+                        format!("bpextgen index {index} is out of range for rank {rank}"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(bp_classes::generator(self.model, index)?),
+                ))
+            }
+            ExprForm::BpExtOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let ty = match operation {
+                    BpExtOp::Class(t) => {
+                        let shape = self.bp_shape(&input, "bpExtClass")?;
+                        shape.require_integral("bpExtClass")?;
+                        self.model.bp_ext_type(bp_classes::Grade { shape, t })?
+                    }
+                    BpExtOp::Representative => {
+                        let grade = self.bp_ext_operand(&input, "bpExtRep")?;
+                        self.model.bp_type(grade.shape)?
+                    }
+                    BpExtOp::Scale(_) => {
+                        if !matches!(
+                            self.model.kind(input.ty),
+                            Kind::BPExt(..)
+                                | Kind::BPRel(..)
+                                | Kind::BPRelExt(..)
+                                | Kind::BPHeight(..)
+                        ) {
+                            return Err(self.invalid_operand(
+                                &input,
+                                "bpScale",
+                                "a BPExt, BPRelExt, or BPHeight class or a BPRel cochain",
+                            ));
+                        }
+                        input.ty
+                    }
+                };
+                Ok((ty, TypedForm::BpExtOperation(operation, Box::new(input))))
+            }
+            ExprForm::BpOperation(operation, input) => {
+                let input = self.expr(*input)?;
+                let kind = self.model.kind(input.ty);
+                if let Kind::BPModExt(grade) = *kind {
+                    let grade = grade.map(operation)?;
+                    let ty = if grade.shape.depth == 0 {
+                        self.model.bp_ext_type(bp_classes::Grade {
+                            shape: grade.shape,
+                            t: grade.t,
+                        })?
+                    } else {
+                        self.model.bp_mod_ext_type(grade)?
+                    };
+                    return Ok((ty, TypedForm::BpModExtOperation(operation, Box::new(input))));
+                }
+                if matches!(operation, bp::Operation::Negate)
+                    && matches!(
+                        kind,
+                        Kind::BPExt(..) | Kind::BPRel(..) | Kind::BPRelExt(..) | Kind::BPHeight(..)
+                    )
+                {
+                    return Ok((
+                        input.ty,
+                        TypedForm::BpExtOperation(BpExtOp::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if let Kind::BPRel(shape) = *kind {
+                    let (target, operation) = match operation {
+                        bp::Operation::Differential => (shape.next()?, BpRelOp::Differential),
+                        bp::Operation::Null(t) => (shape.previous()?, BpRelOp::Null(t)),
+                        _ => {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "a BP polynomial",
+                            ))
+                        }
+                    };
+                    let ty = self.model.bp_rel_type(target)?;
+                    return Ok((
+                        ty,
+                        TypedForm::BpRelOperation(operation, shape, Box::new(input)),
+                    ));
+                }
+                let shape = self.bp_shape(&input, operation.name())?;
+                let ty = self.model.bp_type(operation.target(shape)?)?;
+                Ok((
+                    ty,
+                    TypedForm::BpOperation(operation, shape, Box::new(input)),
+                ))
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -9664,6 +9901,14 @@ impl Checker<'_> {
         }
     }
 
+    fn rmext_grade(&self, input: &TypedExpr, operation: &str) -> Result<motivic::Grade> {
+        if let Kind::RMExt(grade) = *self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RMExt class"))
+        }
+    }
+
     fn real_grade(&self, input: &TypedExpr, operation: &str) -> Result<motivic::Grade> {
         self.model.kind(input.ty).real_grade().ok_or_else(|| {
             let expected = if operation == "rhoShift" {
@@ -10300,6 +10545,7 @@ impl Checker<'_> {
                         | Kind::SheafHom(..)
                         | Kind::SheafPage(..)
                         | Kind::RMExt(..)
+                        | Kind::RMBar(..)
                         | Kind::SheafLocal(..)
                         | Kind::PCobar(..)
                         | Kind::PCobarAn(..)

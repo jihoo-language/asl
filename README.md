@@ -331,6 +331,16 @@ The calculation uses the normalized cobar at $t=0,w=-k$. Filtering its basis by 
 
 Use `rmbarGen[s,k,i]` for the bar's `RMExt` generator and `rmbarRep[s,k,i]` for its traced real cocycle. For a finite bar, `rmbarNull[s,k,i]` gives the paired cochain $u$ with $du=\rho^r z$, where $z$ is the traced representative. The null starts in filtration zero in topological degree $B-r$ and supports the differential $d_r$ to the filtration-$r$ class of $\rho^r z$. The example verifies this correspondence for length six in $(s,k)=(2,5)$ and length seven in $(3,6)$. [Real-motivic rho bars example](examples/real-motivic-bars.asl)
 
+### Multiplicative rho extensions
+
+`rmbarCoords(x)` expresses an `RMExt(s,t,w)` class in the basis of bars at fixed $k=t-w$ that live at $t$. Its `RMBar(s,t,w)` result has terms $\rho^{B-t}b_i$, where $i$ is the index in `rmbars[s,k]` and $B$ is that bar's birth. `rmbarTerm[s,t,w,i]` selects a living term. `rmbarClass` reconstructs the original class and `rmbarLift` gives the actual sum of shifted bar cocycles. `RMBar` supports `add`, `zero`, and finite enumeration.
+
+`rhodepth(x);` prints the smallest exponent among the occupied bars, which is the largest $a$ such that $x$ is in the image of multiplication by $\rho^a$. It prints `infinite` for zero. `rhoDivide[a](x)` chooses a preimage in topological degree $t+a$ and weight $w+a$ using the same bar indices. This choice omits any bars that die under the shift, and the interpreter checks the result with `rhoShift[a]`.
+
+`rhoEinf[f](x)` takes a class of depth at least $f$ to $F^fH/F^{f+1}H$ on the stable `RhoBock` page. For a nonempty slice it uses page $1+\max(0,t-2w)$. Use `rhoEinf[r,f](x)` to request a later or equal page when comparing grades with `rhoMul`. `rhohidden(a,b);` reports a `hidden` product when the nonzero Yoneda product has depth larger than the sum of the two input depths. It reports `zero` for a vanishing product and `visible` when the depths add. For a permissible division of the product, `rhoProductNull[j](a,b)` gives a cochain with differential equal to the sum of the product of `extRep` lifts and $\rho^j$ times the `rmbarLift` of the chosen quotient's coordinates.
+
+The example gives $[\tau_0][\tau_0^2]$ exact depth one and order one. The two leading classes multiply to zero in filtration zero on the stable page, while their real-motivic product has a nonzero filtration-one class. It also checks depth two for $[\xi_1][\tau_0^4]$ and $[\tau_0^2][\tau_0^4]$. [Real-motivic multiplicative extensions](examples/real-rho-extensions.asl)
+
 ### Real-motivic triple Massey products
 
 Use `rmTriple(a,b,c)` for the affine coset of the ordered triple Massey product. Each input may be an `RMExt` class or a closed `RMCobar` cochain. The adjacent balanced products $ab$ and $bc$ must be boundaries. `rmMasseyNull(a,b)` gives an actual primitive of $ab$ in positive total cobar length. `rmMassey(a,b,c)` gives the corresponding cocycle $uc+av$, where $du=ab$ and $dv=bc$. This raw operation needs only the defining system. For an adjacent product of length zero the product must already vanish and its negative-length primitive contributes zero.

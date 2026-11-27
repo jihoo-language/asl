@@ -41,6 +41,7 @@ use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
 use crate::real_bars;
 use crate::real_ext;
+use crate::real_extensions;
 use crate::real_massey;
 use crate::real_motivic;
 use crate::rho_bock;
@@ -163,6 +164,7 @@ pub(crate) enum Kind {
     RhoMin(motivic::Grade),
     MExt(motivic::Grade),
     RMExt(motivic::Grade),
+    RMBar(motivic::Grade),
     RMTriple(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
@@ -688,6 +690,7 @@ impl Model {
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMBar(..)
             | Kind::RMTriple(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
@@ -865,6 +868,7 @@ impl Model {
                 | Kind::ExtAn(..)
                 | Kind::MExt(..)
                 | Kind::RMExt(..)
+                | Kind::RMBar(..)
                 | Kind::RMTriple(..)
                 | Kind::RhoBock(..)
                 | Kind::XExt(..)
@@ -1683,6 +1687,10 @@ impl Model {
         let page = Rc::new(rho_bock::Page::build(self, grade)?);
         self.rho_pages.insert(ty, page.clone());
         Ok(page)
+    }
+
+    pub(crate) fn rmbar_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMBar(grade), 0)
     }
 
     pub(crate) fn rmext_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
@@ -2921,6 +2929,7 @@ impl Model {
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMBar(..)
             | Kind::RMTriple(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
@@ -3159,6 +3168,7 @@ impl Model {
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
             &Kind::RMExt(motivic::Grade { s, t, w }) => out.push(&format!("RMExt({s}, {t}, {w})")),
+            &Kind::RMBar(motivic::Grade { s, t, w }) => out.push(&format!("RMBar({s}, {t}, {w})")),
             &Kind::RMTriple(motivic::Grade { s, t, w }) => {
                 out.push(&format!("RMTriple({s}, {t}, {w})"))
             }
@@ -3926,6 +3936,13 @@ impl Model {
                 Kind::Cohomology(..) => {
                     let rank = self.cohomology(ty)?.rank();
                     self.enumerate_supports(0, rank, Value::Class)?
+                }
+                Kind::RMBar(grade) => {
+                    let bars = real_extensions::bars(self, grade)?;
+                    let living = bars.living(self, grade.t)?;
+                    self.enumerate_supports(0, living.len(), |support| {
+                        Value::Class(support.iter().map(|&i| living[i]).collect())
+                    })?
                 }
                 Kind::RMExt(..) => {
                     let rank = self.real_ext(ty)?.rank();
@@ -4809,6 +4826,13 @@ impl Model {
                 out.push("}")
             }
             Value::Class(support) => {
+                let bars = match *self.kind(ty) {
+                    Kind::RMBar(grade) if !support.is_empty() => {
+                        self.spend(support.len())?;
+                        Some((real_extensions::bars(self, grade)?, grade.t))
+                    }
+                    _ => None,
+                };
                 self.write_type(out, ty, 0)?;
                 out.push("{")?;
                 if support.is_empty() {
@@ -4818,7 +4842,12 @@ impl Model {
                     if index != 0 {
                         out.push(" + ")?;
                     }
-                    out.push(&format!("g{generator}"))?;
+                    if let Some((bars, t)) = &bars {
+                        let exponent = bars.get(*generator)?.exponent_at(*t)?;
+                        out.push(&format!("rho^{exponent}*b{generator}"))?;
+                    } else {
+                        out.push(&format!("g{generator}"))?;
+                    }
                 }
                 out.push("}")
             }

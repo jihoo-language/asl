@@ -11,6 +11,7 @@ use crate::model::DiffFamily;
 use crate::motivic::Grade as MotivicGrade;
 use crate::odd_cobar::FactorLiteral;
 use crate::odd_massey::Operation as OddSystemOp;
+use crate::real_extensions::Operation as RealExtOp;
 use crate::rho_bock;
 use crate::rho_localized;
 use crate::rho_minimal::Operation as RhoMinOp;
@@ -72,6 +73,7 @@ pub(crate) enum TypeForm {
     RhoMin(MotivicGrade),
     MExt(MotivicGrade),
     RMExt(MotivicGrade),
+    RMBar(MotivicGrade),
     RMTriple(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
@@ -714,6 +716,9 @@ pub(crate) enum ExprForm {
     MExtGenerator(MotivicGrade, usize, Span),
     RMExtGenerator(MotivicGrade, usize, Span),
     RealBar(RealBarOp, usize, i128, usize, Span),
+    RealBarTerm(MotivicGrade, usize, Span),
+    RealExtension(RealExtOp, Box<ParsedExpr>),
+    RhoProductNull(usize, Box<[ParsedExpr; 2]>),
     ExtAnGenerator(usize, usize, usize, usize, Span),
     RestrictAlgebra(usize, Box<ParsedExpr>),
     CobarCup(usize, Box<ParsedExpr>, Box<ParsedExpr>),
@@ -926,6 +931,8 @@ pub(crate) enum StatementForm {
     MExtDimension(MotivicGrade),
     RMExtDimension(MotivicGrade),
     RhoOrder(Box<ParsedExpr>),
+    RhoDepth(Box<ParsedExpr>),
+    RhoHidden(Box<[ParsedExpr; 2]>),
     RealBars(usize, i128),
     RealBarRank(usize, i128, i128, usize),
     RealTripleDim(Box<ParsedExpr>),
@@ -2378,6 +2385,14 @@ impl<'src> Parser<'src> {
                 let input = self.paren_expr(0)?;
                 StatementForm::RhoOrder(Box::new(input))
             }
+            Token::Word("rhodepth") => {
+                self.advance()?;
+                StatementForm::RhoDepth(Box::new(self.paren_expr(0)?))
+            }
+            Token::Word("rhohidden") => {
+                self.advance()?;
+                StatementForm::RhoHidden(self.real_extension_pair(0, span, "rhohidden")?)
+            }
             Token::Word("rmTripleDim") => {
                 self.advance()?;
                 StatementForm::RealTripleDim(Box::new(self.paren_expr(0)?))
@@ -3464,7 +3479,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RMTriple" | "RhoLoc" | "RhoMin"
+            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RMBar" | "RMTriple" | "RhoLoc" | "RhoMin"
         ) && self.eat(Token::LParen)?
         {
             let grade = self.motivic_grade()?;
@@ -3473,6 +3488,7 @@ impl<'src> Parser<'src> {
                 "MCobar" => TypeForm::MCobar(grade),
                 "RMCobar" => TypeForm::RMCobar(grade),
                 "RMExt" => TypeForm::RMExt(grade),
+                "RMBar" => TypeForm::RMBar(grade),
                 "RMTriple" => TypeForm::RMTriple(grade),
                 "RhoLoc" => TypeForm::RhoLoc(grade),
                 "RhoMin" => TypeForm::RhoMin(grade),
@@ -5454,6 +5470,47 @@ impl<'src> Parser<'src> {
                     self.expect(Token::RBrace)?;
                     return expr(span, ExprForm::RhoLocWord(t, vertex, factors), 0);
                 }
+                if matches!(
+                    name.text.as_str(),
+                    "rmbarCoords" | "rmbarClass" | "rmbarLift"
+                ) && self.token() == Token::LParen
+                {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let op = match name.text.as_str() {
+                        "rmbarCoords" => RealExtOp::Coordinates,
+                        "rmbarClass" => RealExtOp::Class,
+                        _ => RealExtOp::Lift,
+                    };
+                    return expr(span, ExprForm::RealExtension(op, Box::new(input)), depth);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rhoDivide" | "rhoEinf" | "rhoProductNull"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let (index, _) = self.number()?;
+                    let op = match name.text.as_str() {
+                        "rhoDivide" => RealExtOp::Divide(index),
+                        "rhoEinf" => {
+                            if self.eat(Token::Comma)? {
+                                RealExtOp::Edge(Some(index), self.number()?.0)
+                            } else {
+                                RealExtOp::Edge(None, index)
+                            }
+                        }
+                        _ => {
+                            self.expect(Token::RBracket)?;
+                            let inputs = self.real_extension_pair(nest, span, "rhoProductNull")?;
+                            let depth = inputs[0].depth.max(inputs[1].depth) + 1;
+                            return expr(span, ExprForm::RhoProductNull(index, inputs), depth);
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::RealExtension(op, Box::new(input)), depth);
+                }
                 if name.text == "rhoNull" && self.eat(Token::LBracket)? {
                     let (power, _) = self.number()?;
                     self.expect(Token::RBracket)?;
@@ -5892,6 +5949,13 @@ impl<'src> Parser<'src> {
                     let (index, at) = self.number()?;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::PExtAnGenerator(p, n, s, t, index, at), 0);
+                }
+                if name.text == "rmbarTerm" && self.eat(Token::LBracket)? {
+                    let grade = self.motivic_grade()?;
+                    self.expect(Token::Comma)?;
+                    let (index, at) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::RealBarTerm(grade, index, at), 0);
                 }
                 if matches!(name.text.as_str(), "rmbarGen" | "rmbarRep" | "rmbarNull")
                     && self.eat(Token::LBracket)?
@@ -7122,6 +7186,20 @@ impl<'src> Parser<'src> {
         let (root, _) = self.number()?;
         self.expect(Token::RBracket)?;
         Ok((modulus, root))
+    }
+
+    fn real_extension_pair(
+        &mut self,
+        nest: usize,
+        span: Span,
+        name: &str,
+    ) -> Result<Box<[ParsedExpr; 2]>> {
+        self.expect(Token::LParen)?;
+        let pair = self
+            .arguments(nest)?
+            .try_into()
+            .map_err(|_| Error::new(span, format!("{name} requires two RMExt classes")))?;
+        Ok(Box::new(pair))
     }
 
     fn paren_expr(&mut self, nest: usize) -> Result<ParsedExpr> {
