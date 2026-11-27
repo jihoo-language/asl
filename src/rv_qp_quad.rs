@@ -542,6 +542,13 @@ impl<const N: usize> Wide<N> {
         }
     }
 
+    pub(crate) fn resize<const M: usize>(self) -> Result<Wide<M>> {
+        Ok(Wide {
+            magnitude: self.magnitude.resize().ok_or_else(arithmetic)?,
+            negative: self.negative,
+        })
+    }
+
     pub(crate) fn multiply(self, coefficient: i128) -> Result<Self> {
         let magnitude = self
             .magnitude

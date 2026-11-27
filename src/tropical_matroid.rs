@@ -7,7 +7,7 @@ use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::rv_phodge::valuation;
 
-mod determinant;
+pub(crate) mod determinant;
 
 const MAX_GROUND: usize = 64;
 

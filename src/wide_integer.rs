@@ -23,6 +23,16 @@ impl<const N: usize> Natural<N> {
         value
     }
 
+    pub(crate) fn resize<const M: usize>(self) -> Option<Natural<M>> {
+        let common = N.min(M);
+        if self.0[common..].iter().any(|&digit| digit != 0) {
+            return None;
+        }
+        let mut result = Natural::default();
+        result.0[..common].copy_from_slice(&self.0[..common]);
+        Some(result)
+    }
+
     pub(crate) fn small(self) -> Option<u128> {
         if self.0[4..].iter().any(|&digit| digit != 0) {
             return None;

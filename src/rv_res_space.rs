@@ -8,7 +8,7 @@ use crate::odd_cobar::Prime;
 use crate::prime_linear::invert;
 use crate::rv_qp_quad::gauge::Coefficients as FieldArithmetic;
 use crate::rv_qp_quad::{Element, Field};
-use crate::tropical_matroid;
+use crate::tropical_matroid::{self, determinant};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Grade {
@@ -320,7 +320,7 @@ fn specialize(
     grade: Grade,
     weights: &[i64],
     field: FieldArithmetic,
-    mut rows: Vec<Vec<Element>>,
+    rows: Vec<Vec<Element>>,
 ) -> Result<Space> {
     let width = grade.width;
     if weights.len() != width {
@@ -332,6 +332,25 @@ fn specialize(
     if let [row] = rows.as_slice() {
         return specialize_line(model, grade, weights, field, row);
     }
+    model.spend(rows.len() * (1 + width))?;
+    match narrow_echelon(model, grade, weights, field, rows.clone()) {
+        Err(error) if crate::rv_qp_quad::is_coefficient_overflow(&error) => {
+            let reduced = determinant::weighted_echelon(model, field, rows, weights)
+                .map_err(determinant::explain_residue_limit)?;
+            Space::new(model, grade, reduced)
+        }
+        other => other,
+    }
+}
+
+fn narrow_echelon(
+    model: &mut Model,
+    grade: Grade,
+    weights: &[i64],
+    field: FieldArithmetic,
+    mut rows: Vec<Vec<Element>>,
+) -> Result<Space> {
+    let width = grade.width;
     let mut pivots = Vec::new();
     for i in 0..rows.len().min(width) {
         // These are the valuations in the matrix with column j scaled by
