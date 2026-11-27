@@ -98,6 +98,7 @@ pub(crate) enum TypeForm {
     RVOre,
     RVFusion(usize, usize),
     RVCyclo(usize),
+    RVWzw(usize, usize),
     JetHom(JetHomSpec),
     JetPage(JetPageSpec),
     VKoszul(QSpec<i64>),
@@ -151,6 +152,26 @@ pub(crate) enum RvIdealOp {
 
 pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type HiveSpec = [Vec<i128>; 3];
+
+#[derive(Clone, Copy)]
+pub(crate) enum WzwOp {
+    S(bool),
+    T(i128),
+    Charge,
+    Negate,
+}
+
+impl WzwOp {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::S(false) => "rvWzwS",
+            Self::S(true) => "rvWzwSAdjoint",
+            Self::T(_) => "rvWzwT",
+            Self::Charge => "rvWzwCharge",
+            Self::Negate => "neg",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum QuantumOp {
@@ -649,6 +670,13 @@ pub(crate) enum ExprForm {
     CycloProduct(Box<[ParsedExpr; 2]>),
     CycloScale(i128, Box<ParsedExpr>),
     CycloConjugate(Box<ParsedExpr>),
+    CycloEmbed(usize, Box<ParsedExpr>),
+    WzwBasis(usize, usize, Vec<i128>),
+    WzwSEntry(usize, usize, Vec<i128>, Vec<i128>),
+    WzwTEntry(usize, usize, Vec<i128>, i128),
+    WzwUnary(WzwOp, Box<ParsedExpr>),
+    WzwScale(Box<[ParsedExpr; 2]>),
+    WzwCoordinate(Vec<i128>, Box<ParsedExpr>),
     FusionProduct(Box<[ParsedExpr; 2]>),
     FusionScale(i128, Box<ParsedExpr>),
     FusionDual(Box<ParsedExpr>),
@@ -3715,6 +3743,11 @@ impl<'src> Parser<'src> {
             let depth = spec.localized.source.depth.max(spec.localized.target.depth) + 1;
             return ty(span, TypeForm::VBock(spec), depth);
         }
+        if name.text == "RVWzw" && self.eat(Token::LParen)? {
+            let (rank, level) = self.fusion_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVWzw(rank, level), 0);
+        }
         if name.text == "RVCyclo" && self.eat(Token::LParen)? {
             let (order, _) = self.number()?;
             self.expect(Token::RParen)?;
@@ -6123,6 +6156,71 @@ impl<'src> Parser<'src> {
                     };
                     return expr(span, form, 0);
                 }
+                if matches!(
+                    name.text.as_str(),
+                    "rvWzwBasis" | "rvWzwSEntry" | "rvWzwTEntry"
+                ) && self.eat(Token::LBracket)?
+                {
+                    let (rank, level) = self.fusion_grade()?;
+                    self.expect(Token::Comma)?;
+                    let weight = self.signed_tuple("a signed WZW weight", "WZW weight")?;
+                    let form = match name.text.as_str() {
+                        "rvWzwSEntry" => {
+                            self.expect(Token::Comma)?;
+                            let right = self.signed_tuple("a signed WZW weight", "WZW weight")?;
+                            ExprForm::WzwSEntry(rank, level, weight, right)
+                        }
+                        "rvWzwTEntry" => {
+                            let power = if self.eat(Token::Comma)? {
+                                self.signed_wide("a signed twist power", "twist power")?
+                            } else {
+                                1
+                            };
+                            ExprForm::WzwTEntry(rank, level, weight, power)
+                        }
+                        _ => ExprForm::WzwBasis(rank, level, weight),
+                    };
+                    self.expect(Token::RBracket)?;
+                    return expr(span, form, 0);
+                }
+                if name.text == "rvWzwCoord" && self.eat(Token::LBracket)? {
+                    let weight = self.signed_tuple("a signed WZW weight", "WZW weight")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::WzwCoordinate(weight, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rvWzwScale" && self.token() == Token::LParen {
+                    let arguments = self.paren_pair(nest)?;
+                    let depth = 1 + arguments[0].depth.max(arguments[1].depth);
+                    return expr(span, ExprForm::WzwScale(Box::new(arguments)), depth);
+                }
+                if let Some(operation) = match name.text.as_str() {
+                    "rvWzwS" if self.token() == Token::LParen => Some(WzwOp::S(false)),
+                    "rvWzwSAdjoint" if self.token() == Token::LParen => Some(WzwOp::S(true)),
+                    "rvWzwCharge" if self.token() == Token::LParen => Some(WzwOp::Charge),
+                    "rvWzwT" if self.eat(Token::LBracket)? => {
+                        let power = self.signed_wide("a signed twist power", "twist power")?;
+                        self.expect(Token::RBracket)?;
+                        Some(WzwOp::T(power))
+                    }
+                    _ => None,
+                } {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::WzwUnary(operation, Box::new(input)), depth);
+                }
+                if name.text == "rvCycloEmbed" && self.eat(Token::LBracket)? {
+                    let (order, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::CycloEmbed(order, Box::new(input)), depth);
+                }
                 if name.text == "rvCyclo" && self.eat(Token::LBracket)? {
                     let (order, _) = self.number()?;
                     self.expect(Token::Comma)?;
@@ -6710,6 +6808,13 @@ impl<'src> Parser<'src> {
         self.expect(Token::Comma)?;
         let (ambient, _) = self.number()?;
         Ok((rank, ambient))
+    }
+
+    fn fusion_grade(&mut self) -> Result<(usize, usize)> {
+        let (rank, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (level, _) = self.number()?;
+        Ok((rank, level))
     }
 
     fn hive_spec(&mut self) -> Result<HiveSpec> {

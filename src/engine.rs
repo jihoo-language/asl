@@ -109,6 +109,7 @@ use crate::rv_tree;
 use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
+use crate::rv_wzw;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_ext::{self, Ends as SheafEnds};
@@ -124,6 +125,7 @@ use crate::syntax::MixedSpec;
 use crate::syntax::QuantumOp;
 use crate::syntax::RvHHSpec;
 use crate::syntax::RvNCSpec;
+use crate::syntax::WzwOp;
 use crate::syntax::{
     BinaryOp, BpExtOp, BpHeightOp, BpHeightSpec, BpRelOp, ClassForm, CyclicForm, Entries, ExprForm,
     JetHomSpec, JetOp, JetPageSpec, JetPathArg, Label, MapMaySpec, ParsedExpr, ParsedType, QSpec,
@@ -365,6 +367,10 @@ enum TypedForm {
     CycloProduct(usize, Box<[TypedExpr; 2]>),
     CycloScale(i128, Box<TypedExpr>),
     CycloConjugate(usize, Box<TypedExpr>),
+    CycloEmbed(usize, usize, Box<TypedExpr>),
+    WzwUnary(rv_wzw::Grade, WzwOp, Box<TypedExpr>),
+    WzwScale(rv_wzw::Grade, Box<[TypedExpr; 2]>),
+    WzwCoordinate(rv_wzw::Grade, Vec<i128>, Box<TypedExpr>),
     Verlinde(usize, Vec<i128>, Box<TypedExpr>),
     SatakeProduct(Box<[TypedExpr; 2]>),
     RVLaurentFrobenius(BinaryField, usize, Box<TypedExpr>),
@@ -2519,6 +2525,9 @@ impl Engine {
                         let (p, _, _, _) = self.model.kind(expr.ty).pcobar_grade().unwrap();
                         odd_cobar::add(&mut self.model, p, &a, &b)
                     }
+                    (BinaryOp::Add, Value::RVWzw(a), Value::RVWzw(b)) => {
+                        rv_wzw::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::RVCyclo(a), Value::RVCyclo(b)) => {
                         rv_cyclotomic::add(&mut self.model, &a, &b)
                     }
@@ -3363,6 +3372,36 @@ impl Engine {
                     unreachable!()
                 };
                 rv_cyclotomic::scale(&mut self.model, &terms, *factor)
+            }
+            TypedForm::CycloEmbed(source, target, input) => {
+                let Value::RVCyclo(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_cyclotomic::embed(&mut self.model, *source, *target, &terms)
+            }
+            TypedForm::WzwUnary(grade, operation, input) => {
+                let Value::RVWzw(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match *operation {
+                    WzwOp::S(adjoint) => rv_wzw::s_action(&mut self.model, *grade, &terms, adjoint),
+                    WzwOp::T(power) => rv_wzw::t_action(&mut self.model, *grade, &terms, power),
+                    WzwOp::Charge => rv_wzw::charge(&mut self.model, &terms),
+                    WzwOp::Negate => rv_wzw::negate(&mut self.model, &terms),
+                }
+            }
+            TypedForm::WzwScale(grade, arguments) => {
+                let values = [self.eval(&arguments[0])?, self.eval(&arguments[1])?];
+                let [Value::RVCyclo(scalar), Value::RVWzw(state)] = values else {
+                    unreachable!()
+                };
+                rv_wzw::scale(&mut self.model, *grade, &state, &scalar)
+            }
+            TypedForm::WzwCoordinate(grade, weight, input) => {
+                let Value::RVWzw(terms) = self.eval(input)? else {
+                    unreachable!()
+                };
+                rv_wzw::coordinate(&mut self.model, *grade, &terms, weight.clone())
             }
             TypedForm::CycloConjugate(order, input) => {
                 let Value::RVCyclo(terms) = self.eval(input)? else {
@@ -4896,6 +4935,9 @@ impl Checker<'_> {
             TypeForm::RVIwHecke(rank) => self.model.iw_hecke_type(rank),
             TypeForm::RVSphHecke(rank) => self.model.sph_hecke_type(rank),
             TypeForm::RVSatake(rank) => self.model.satake_type(rank),
+            TypeForm::RVWzw(rank, level) => {
+                self.model.wzw_type(rv_wzw::Grade::checked(rank, level)?)
+            }
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
             TypeForm::RVFusion(rank, level) => self
                 .model
@@ -5195,6 +5237,7 @@ impl Checker<'_> {
                     Kind::RVOre => rv_ore::zero(),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
+                    Kind::RVWzw(..) => rv_wzw::zero(),
                     Kind::RVLaurent(..) => rv_laurent::zero(),
                     Kind::Cohomology(..) | Kind::Stable(..) | Kind::Ext(..) | Kind::ExtAn(..) | Kind::MExt(..) | Kind::XExt(..) | Kind::MapExt(..) | Kind::May(..) | Kind::MayAn(..) | Kind::MapMay(..) | Kind::CeAn(..) => {
                         cohomology::zero()
@@ -6521,6 +6564,12 @@ impl Checker<'_> {
                         TypedForm::QuantumUnary(QuantumOp::Scale(-1), Box::new(input)),
                     ));
                 }
+                if let Kind::RVWzw(grade) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::WzwUnary(grade, WzwOp::Negate, Box::new(input)),
+                    ));
+                }
                 if matches!(self.model.kind(input.ty), Kind::RVCyclo(..)) {
                     return Ok((input.ty, TypedForm::CycloScale(-1, Box::new(input))));
                 }
@@ -6538,6 +6587,62 @@ impl Checker<'_> {
                     ));
                 }
                 Ok((input.ty, TypedForm::HeckeNegate(Box::new(input))))
+            }
+            ExprForm::WzwBasis(rank, level, weight) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.wzw_type(grade)?;
+                let value = rv_wzw::basis(self.model, grade, weight)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwSEntry(rank, level, left, right) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                let value = rv_wzw::s_entry(self.model, grade, left, right)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwTEntry(rank, level, weight, power) => {
+                let grade = rv_wzw::Grade::checked(rank, level)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                let value = rv_wzw::t_entry(self.model, grade, weight, power)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::WzwUnary(operation, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.wzw_grade(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::WzwUnary(grade, operation, Box::new(input)),
+                ))
+            }
+            ExprForm::WzwScale(arguments) => {
+                let [scalar, input] = *arguments;
+                let input = self.expr(input)?;
+                let grade = self.wzw_grade(&input, "rvWzwScale")?;
+                let scalar = self.expr(scalar)?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                self.require_type(ty, &scalar, "rvWzwScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::WzwScale(grade, Box::new([scalar, input])),
+                ))
+            }
+            ExprForm::WzwCoordinate(weight, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.wzw_grade(&input, "rvWzwCoord")?;
+                let ty = self.model.cyclotomic_type(grade.order)?;
+                Ok((ty, TypedForm::WzwCoordinate(grade, weight, Box::new(input))))
+            }
+            ExprForm::CycloEmbed(target, input) => {
+                let input = self.expr(*input)?;
+                let source = self.cyclotomic_order(&input, "rvCycloEmbed")?;
+                let ty = self.model.cyclotomic_type(target)?;
+                if !target.is_multiple_of(source) {
+                    return Err(Error::new(
+                        input.span,
+                        "cyclotomic embedding requires the source order to divide the target order",
+                    ));
+                }
+                Ok((ty, TypedForm::CycloEmbed(source, target, Box::new(input))))
             }
             ExprForm::CycloRoot(order, power) => {
                 let ty = self.model.cyclotomic_type(order)?;
@@ -9820,6 +9925,13 @@ impl Checker<'_> {
         }
     }
 
+    fn wzw_grade(&self, input: &TypedExpr, operation: &str) -> Result<rv_wzw::Grade> {
+        match *self.model.kind(input.ty) {
+            Kind::RVWzw(grade) => Ok(grade),
+            _ => Err(self.invalid_operand(input, operation, "a WZW torus state")),
+        }
+    }
+
     fn cyclotomic_order(&self, input: &TypedExpr, operation: &str) -> Result<usize> {
         match *self.model.kind(input.ty) {
             Kind::RVCyclo(order) => Ok(order),
@@ -9927,6 +10039,7 @@ impl Checker<'_> {
                         | Kind::RVOre
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::RVWzw(..)
                         | Kind::VKoszul(..)
                         | Kind::VExt(..)
                         | Kind::VBock(..)

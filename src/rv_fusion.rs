@@ -146,15 +146,16 @@ pub(crate) fn scale(model: &mut Model, grade: Grade, support: &Support, c: i128)
     persist(model, terms, grade.rank)
 }
 
+pub(crate) fn dual_weight(weight: &[i128]) -> Weight {
+    let width = *weight.last().unwrap();
+    weight.iter().rev().map(|&entry| width - entry).collect()
+}
+
 pub(crate) fn dual(model: &mut Model, grade: Grade, support: &Support) -> Result<Value> {
     model.spend(size(grade.rank) * support.len() * (1 + support.len().max(1).ilog2() as usize))?;
     let mut terms: Vec<_> = support
         .iter()
-        .map(|(weight, coefficient)| {
-            let width = weight[grade.rank - 1];
-            let dual: Weight = weight.iter().rev().map(|&entry| width - entry).collect();
-            (dual, *coefficient)
-        })
+        .map(|(weight, coefficient)| (dual_weight(weight), *coefficient))
         .collect();
     terms.sort_unstable();
     persist(model, terms, grade.rank)
@@ -343,45 +344,57 @@ fn unit(grade: Grade) -> Support {
     [(vec![0; grade.rank].into(), 1)].into()
 }
 
-fn handle_support(model: &mut Model, grade: Grade) -> Result<Support> {
-    const MAX_LABELS: usize = 4096;
+pub(crate) fn visit_weights(
+    model: &mut Model,
+    grade: Grade,
+    limit: usize,
+    limit_error: &'static str,
+    mut visit: impl FnMut(&mut Model, &[i128]) -> Result<()>,
+) -> Result<()> {
     let mut labels = 1i128;
     for i in 1..grade.rank {
         labels = labels * (grade.level as i128 + i as i128) / i as i128;
-        if labels > MAX_LABELS as i128 {
-            return Err(Error::plain(
-                "fusion handle exceeds the limit of 4096 integrable weights",
-            ));
+        if labels > limit as i128 {
+            return Err(Error::plain(limit_error));
         }
     }
     model.spend(labels as usize * grade.rank)?;
-    let mut result = Sum::default();
     let mut coordinates = vec![0i128; grade.rank];
     let level = grade.level as i128;
     loop {
-        let width = coordinates[grade.rank - 1];
-        let conjugate: Weight = coordinates
-            .iter()
-            .rev()
-            .map(|&entry| width - entry)
-            .collect();
-        let weight: Weight = coordinates.as_slice().into();
-        let product = basis_product(
-            model,
-            grade,
-            &weight,
-            &conjugate,
-            size(grade.rank) * result.0.len(),
-        )?;
-        for (weight, multiplicity) in product.0 {
-            result.add(model, &weight, multiplicity, 0)?;
-        }
+        visit(model, &coordinates)?;
         let Some(index) = (1..grade.rank).rev().find(|&i| coordinates[i] < level) else {
             break;
         };
         let next = coordinates[index] + 1;
         coordinates[index..].fill(next);
     }
+    Ok(())
+}
+
+fn handle_support(model: &mut Model, grade: Grade) -> Result<Support> {
+    let mut result = Sum::default();
+    visit_weights(
+        model,
+        grade,
+        4096,
+        "fusion handle exceeds the limit of 4096 integrable weights",
+        |model, coordinates| {
+            let conjugate = dual_weight(coordinates);
+            let weight: Weight = coordinates.into();
+            let product = basis_product(
+                model,
+                grade,
+                &weight,
+                &conjugate,
+                size(grade.rank) * result.0.len(),
+            )?;
+            for (weight, multiplicity) in product.0 {
+                result.add(model, &weight, multiplicity, 0)?;
+            }
+            Ok(())
+        },
+    )?;
     Ok(result.0.into_iter().collect())
 }
 

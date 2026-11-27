@@ -203,6 +203,47 @@ pub(crate) fn product_coefficients(
     reduced(model, order, coefficients)
 }
 
+pub(crate) fn shifted(
+    model: &mut Model,
+    order: usize,
+    source: &[i128],
+    exponent: i128,
+) -> Result<Vec<i128>> {
+    if source.is_empty() {
+        return Ok(Vec::new());
+    }
+    model.spend(source.len())?;
+    let power = exponent.rem_euclid(order as i128) as usize;
+    if power == 0 {
+        return Ok(source.to_vec());
+    }
+    let mut result = vec![0; order];
+    for (i, &coefficient) in source.iter().enumerate() {
+        result[(i + power) % order] = coefficient;
+    }
+    reduced(model, order, result)
+}
+
+pub(crate) fn embed(
+    model: &mut Model,
+    source: usize,
+    target: usize,
+    coefficients: &[i128],
+) -> Result<Value> {
+    if !target.is_multiple_of(source) {
+        return Err(Error::plain(
+            "cyclotomic embedding requires the source order to divide the target order",
+        ));
+    }
+    let step = target / source;
+    model.spend(coefficients.len())?;
+    let mut result = vec![0; target];
+    for (i, &coefficient) in coefficients.iter().enumerate() {
+        result[step * i] = coefficient;
+    }
+    finish(model, target, result)
+}
+
 pub(crate) fn conjugate(model: &mut Model, order: usize, coefficients: &[i128]) -> Result<Value> {
     let coefficients = substitute_root(model, order, coefficients, order - 1)?;
     persist(model, coefficients)

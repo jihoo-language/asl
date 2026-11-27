@@ -73,6 +73,7 @@ use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
+use crate::rv_wzw;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
@@ -193,6 +194,7 @@ pub(crate) enum Kind {
     RVOre,
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
+    RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
     JetPage(jet_page::Grade),
     VKoszul(v_koszul::Grade),
@@ -328,6 +330,7 @@ pub(crate) enum Value {
     RVOre(rv_ore::Support),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
+    RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
     RVNCChain(rv_negative::Support),
     RVHHChain(rv_hh::Support),
@@ -698,7 +701,8 @@ impl Model {
             | Kind::RVSphHecke(..)
             | Kind::RVSatake(..)
             | Kind::RVFusion(..)
-            | Kind::RVCyclo(..) => usize::MAX,
+            | Kind::RVCyclo(..)
+            | Kind::RVWzw(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVHive(..) => {
                 if inhabited {
@@ -875,6 +879,7 @@ impl Model {
                 | Kind::RVOre
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
+                | Kind::RVWzw(..)
                 | Kind::VKoszul(..)
                 | Kind::VExt(..)
                 | Kind::VBock(..)
@@ -1938,6 +1943,10 @@ impl Model {
         self.inhabited_type(Kind::RVHom(grade), depth)
     }
 
+    pub(crate) fn wzw_type(&mut self, grade: rv_wzw::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVWzw(grade), 0)
+    }
+
     pub(crate) fn cyclotomic_type(&mut self, order: usize) -> Result<TypeId> {
         rv_cyclotomic::check_order(order)?;
         self.inhabited_type(Kind::RVCyclo(order), 0)
@@ -2874,6 +2883,7 @@ impl Model {
             | Kind::RVOre
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::RVWzw(..)
             | Kind::VKoszul(..)
             | Kind::VExt(..)
             | Kind::VBock(..)
@@ -3251,6 +3261,10 @@ impl Model {
             Kind::RVFusion(grade) => {
                 out.push(&format!("RVFusion({}, {})", grade.rank, grade.level))
             }
+            Kind::RVWzw(grade) => out.push(&format!(
+                "RVWzw({}, {})",
+                grade.fusion.rank, grade.fusion.level
+            )),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
             Kind::RVOre => out.push("RVOre"),
             Kind::RVQGrP(grade) => out.push(&format!(
@@ -3437,6 +3451,9 @@ impl Model {
             }
             (Value::RVFusion(left), Value::RVFusion(right)) => {
                 Ok(rv_fusion::compare(self, left, right)?.is_eq())
+            }
+            (Value::RVWzw(left), Value::RVWzw(right)) => {
+                Ok(rv_wzw::compare(self, left, right)?.is_eq())
             }
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 Ok(rv_cyclotomic::compare(self, left, right)?.is_eq())
@@ -3665,6 +3682,7 @@ impl Model {
             (Value::RVFusion(left), Value::RVFusion(right)) => {
                 rv_fusion::compare(self, left, right)
             }
+            (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
                 rv_cyclotomic::compare(self, left, right)
             }
@@ -3851,6 +3869,11 @@ impl Model {
                 }
                 Kind::RVSphHecke(..) => {
                     return Err(Error::plain("cannot enumerate a spherical Hecke algebra"))
+                }
+                Kind::RVWzw(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a cyclotomic torus state module",
+                    ))
                 }
                 Kind::RVCyclo(..) => {
                     return Err(Error::plain("cannot enumerate an integral cyclotomic ring"));
@@ -4990,6 +5013,18 @@ impl Model {
                     .iter()
                     .map(|term| (term.coweight.as_ref(), term.coefficient.as_ref())),
             ),
+            Value::RVWzw(terms) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (index, (weight, coefficient)) in terms.iter().enumerate() {
+                    self.spend(1 + weight.len() + coefficient.len())?;
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{weight:?}: {coefficient:?}"))?;
+                }
+                out.push("}")
+            }
             Value::RVCyclo(coefficients) => {
                 self.spend(coefficients.len())?;
                 self.write_type(out, ty, 0)?;
