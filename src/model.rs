@@ -86,6 +86,7 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
+use crate::rv_crossed::{self, postnikov};
 use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
@@ -195,6 +196,9 @@ impl DiffFamily {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     Space(String),
+    FiniteGroup(Rc<str>),
+    PostnikovCochain(Rc<str>, usize),
+    PostnikovCell(Rc<str>),
     SetNat(Rc<str>, Rc<str>),
     QModule(String),
     MixedHomology(mixed::Grade),
@@ -437,6 +441,9 @@ impl Kind {
 #[derive(Clone)]
 pub(crate) enum Value {
     Point(usize),
+    GroupElement(usize),
+    PostnikovCochain(Rc<postnikov::Cochain>),
+    PostnikovCell(postnikov::Cell),
     Pair(Rc<(Value, Value)>),
     Map(Rc<[Value]>),
     SetNat(Rc<[usize]>),
@@ -624,6 +631,9 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
+    finite_groups: HashMap<Rc<str>, Rc<rv_crossed::Group>>,
+    crossed_modules: HashMap<Rc<str>, Rc<rv_crossed::Crossed>>,
+    postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
     set_recollements: HashMap<Rc<str>, Rc<crate::set_gluing::Recollement>>,
@@ -762,6 +772,9 @@ impl Model {
     pub(crate) fn new() -> Self {
         let mut model = Self {
             types: Vec::new(),
+            finite_groups: HashMap::new(),
+            crossed_modules: HashMap::new(),
+            postnikov_systems: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -912,6 +925,94 @@ impl Model {
         model
     }
 
+    pub(crate) fn define_finite_group(
+        &mut self,
+        name: Label,
+        group: rv_crossed::Group,
+    ) -> Result<()> {
+        if self.finite_groups.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "finite group is already defined"));
+        }
+        self.allocate(group.cells() + name.text.len())?;
+        self.finite_groups.insert(name.text.into(), Rc::new(group));
+        Ok(())
+    }
+
+    pub(crate) fn finite_group(&self, name: &Label) -> Result<Rc<rv_crossed::Group>> {
+        self.finite_groups
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown finite group '{}'", name.text)))
+    }
+
+    pub(crate) fn finite_group_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.finite_group(name)?;
+        self.inhabited_type(Kind::FiniteGroup(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_crossed_module(
+        &mut self,
+        name: Label,
+        crossed: rv_crossed::Crossed,
+    ) -> Result<()> {
+        if self.crossed_modules.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "crossed module is already defined"));
+        }
+        self.allocate(crossed.cells() + name.text.len())?;
+        self.crossed_modules
+            .insert(name.text.into(), Rc::new(crossed));
+        Ok(())
+    }
+
+    pub(crate) fn crossed_module(&self, name: &Label) -> Result<Rc<rv_crossed::Crossed>> {
+        self.crossed_modules
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown crossed module '{}'", name.text)))
+    }
+
+    pub(crate) fn define_postnikov(
+        &mut self,
+        name: Label,
+        post: postnikov::Postnikov,
+    ) -> Result<()> {
+        if self.postnikov_systems.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "Postnikov system is already defined"));
+        }
+        self.allocate(post.cells() + name.text.len())?;
+        self.postnikov_systems
+            .insert(name.text.into(), Rc::new(post));
+        Ok(())
+    }
+
+    pub(crate) fn postnikov(&self, name: &Label) -> Result<Rc<postnikov::Postnikov>> {
+        self.postnikov_systems
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Postnikov system '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn postnikov_cochain_type(&mut self, name: &Label, degree: usize) -> Result<TypeId> {
+        self.postnikov(name)?;
+        if !matches!(degree, 2 | 3) {
+            return Err(Error::new(
+                name.span,
+                "Postnikov cochain degree must be 2 or 3",
+            ));
+        }
+        self.inhabited_type(Kind::PostnikovCochain(name.text.as_str().into(), degree), 0)
+    }
+
+    pub(crate) fn postnikov_cell_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.postnikov(name)?;
+        self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn reset_work(&mut self) {
         self.work = MAX_WORK;
     }
@@ -942,6 +1043,15 @@ impl Model {
     ) -> TypeId {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
+            Kind::FiniteGroup(ref name) => self.finite_groups[name.as_ref()].order(),
+            Kind::PostnikovCochain(ref name, degree) => {
+                let post = &self.postnikov_systems[name.as_ref()];
+                (post.prime.get() as usize).saturating_pow(post.size(degree) as u32)
+            }
+            Kind::PostnikovCell(ref name) => {
+                let post = &self.postnikov_systems[name.as_ref()];
+                post.order() * post.prime.get() as usize
+            }
             Kind::QModule(_) => 1,
             Kind::SetNat(..) => {
                 if inhabited {
@@ -1444,6 +1554,9 @@ impl Model {
                 | Kind::OG6Clifford(..)
                 | Kind::KSExterior(..)
                 | Kind::KSNomizu(..)
+                | Kind::FiniteGroup(..)
+                | Kind::PostnikovCochain(..)
+                | Kind::PostnikovCell(..)
                 | Kind::KSEnd(..)
                 | Kind::QZ
                 | Kind::K3Spinor(..)
@@ -6478,6 +6591,9 @@ impl Model {
             | Kind::OG6Clifford(..)
             | Kind::KSExterior(..)
             | Kind::KSNomizu(..)
+            | Kind::FiniteGroup(..)
+            | Kind::PostnikovCochain(..)
+            | Kind::PostnikovCell(..)
             | Kind::KSEnd(..)
             | Kind::QZ
             | Kind::K3Spinor(..)
@@ -6645,6 +6761,11 @@ impl Model {
     fn write_type(&self, out: &mut Text, ty: TypeId, precedence: u8) -> Result<()> {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
+            Kind::FiniteGroup(name) => out.push(&format!("RVGroup({name})")),
+            Kind::PostnikovCochain(name, degree) => {
+                out.push(&format!("RVPostnikovCochain({name},{degree})"))
+            }
+            Kind::PostnikovCell(name) => out.push(&format!("RVPostnikovCell({name})")),
             Kind::SetNat(source, target) => out.push(&format!("SetNat({source}, {target})")),
             Kind::MixedHomology(grade) => out.push(&format!(
                 "MixedH({}, {})",
@@ -7202,6 +7323,12 @@ impl Model {
                 Ok(left == right)
             }
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
+            (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a == b),
+            (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a == b),
+            (Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
+                self.spend(a.0.len().min(b.0.len()))?;
+                Ok(a == b)
+            }
             (Value::SetNat(left), Value::SetNat(right)) => {
                 self.spend(left.len().min(right.len()))?;
                 Ok(left == right)
@@ -7500,6 +7627,12 @@ impl Model {
         self.spend(1)?;
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
+            (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a.cmp(b)),
+            (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a.cmp(b)),
+            (Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
+                self.spend(a.0.len().min(b.0.len()))?;
+                Ok(a.cmp(b))
+            }
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left.cmp(right)),
             (Value::SetNat(left), Value::SetNat(right)) => {
                 self.spend(left.len().min(right.len()))?;
@@ -7919,6 +8052,45 @@ impl Model {
             Vec::new()
         } else {
             match *self.kind(ty) {
+                Kind::FiniteGroup(ref name) => {
+                    let count = self.finite_groups[name.as_ref()].order();
+                    self.allocate(count)?;
+                    (0..count).map(Value::GroupElement).collect()
+                }
+                Kind::PostnikovCell(ref name) => {
+                    let post = self.postnikov_systems[name.as_ref()].clone();
+                    let count = post.order() * post.prime.get() as usize;
+                    self.check_element_limit(count)?;
+                    self.allocate(2 * count)?;
+                    (0..post.order())
+                        .flat_map(|object| {
+                            (0..post.prime.get()).map(move |coordinate| {
+                                Value::PostnikovCell(postnikov::Cell { object, coordinate })
+                            })
+                        })
+                        .collect()
+                }
+                Kind::PostnikovCochain(ref name, degree) => {
+                    let post = self.postnikov_systems[name.as_ref()].clone();
+                    let dimension = post.size(degree);
+                    let prime = post.prime.get() as usize;
+                    let count = self.types[ty.0].cardinality_bound;
+                    self.check_element_limit(count)?;
+                    self.spend(dimension * count)?;
+                    (0..count)
+                        .map(|mut index| {
+                            let mut values = Vec::new();
+                            for j in 0..dimension {
+                                let residue = (index % prime) as u32;
+                                index /= prime;
+                                if residue != 0 {
+                                    values.push((j, residue));
+                                }
+                            }
+                            postnikov::Cochain(values).persist(self)
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                }
                 Kind::QModule(_) => {
                     return Err(Error::plain(
                         "coefficient modules are allowed only as Koszul endpoints",
@@ -9162,6 +9334,21 @@ impl Model {
 
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
+            Value::GroupElement(i) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{i}}}"))
+            }
+            Value::PostnikovCell(cell) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{}, {}}}", cell.object, cell.coordinate))
+            }
+            Value::PostnikovCochain(cochain) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                self.spend(cochain.0.len())?;
+                out.push(&format!("{:?}", cochain.0))?;
+                out.push("}")
+            }
             Value::Bar(support) => {
                 let Kind::Bar(modulus) = *self.kind(ty) else {
                     unreachable!()

@@ -130,6 +130,7 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_conformal;
+use crate::rv_crossed::{self, postnikov};
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -719,7 +720,25 @@ enum ECRecognitionAction {
     Recognize(crate::legendre_cm::Family, Box<TypedExpr>),
 }
 
+enum CrossedAction {
+    Multiply(Rc<rv_crossed::Group>, Box<[TypedExpr; 2]>),
+    Inverse(Rc<rv_crossed::Group>, Box<TypedExpr>),
+    Boundary(Rc<rv_crossed::Crossed>, Box<TypedExpr>),
+    Act(Rc<rv_crossed::Crossed>, Box<[TypedExpr; 2]>),
+    KernelAct(Rc<rv_crossed::Crossed>, usize, Box<TypedExpr>),
+}
+
+enum PostnikovAction {
+    Neg(Rc<postnikov::Postnikov>, Box<TypedExpr>),
+    Coboundary(Rc<postnikov::Postnikov>, Box<TypedExpr>),
+    Gauge(Rc<postnikov::Postnikov>, bool, Box<[TypedExpr; 2]>),
+    Compose(Rc<postnikov::Postnikov>, bool, Box<[TypedExpr; 2]>),
+    Associator(Rc<postnikov::Postnikov>, [usize; 3], Box<TypedExpr>),
+}
+
 enum TypedForm {
+    Crossed(CrossedAction),
+    Postnikov(PostnikovAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
         reflection: Rc<set_topology::Reflection>,
@@ -2253,6 +2272,8 @@ impl Engine {
                 return self.ks_exterior_command(*command).map(Some)
             }
             StatementForm::KSNomizu(command) => return self.ks_nomizu_command(*command).map(Some),
+            StatementForm::Crossed(command) => return self.crossed_command(*command),
+            StatementForm::Postnikov(command) => return self.postnikov_command(*command),
             StatementForm::KSEnd(command) => return self.ks_end_command(*command).map(Some),
             StatementForm::KSAlexander(command) => {
                 return self.ks_alexander_command(*command).map(Some)
@@ -7276,6 +7297,162 @@ impl Engine {
         value.persist(&mut self.model)
     }
 
+    fn crossed_command(&mut self, command: rv_crossed::Command) -> Result<Option<String>> {
+        use rv_crossed::Command;
+        match command {
+            Command::Cyclic(name, order) => {
+                let group = rv_crossed::Group::cyclic(&mut self.model, order)?;
+                self.model.define_finite_group(name, group)?;
+            }
+            Command::Group(name, table) => {
+                let group = rv_crossed::Group::new(&mut self.model, table)?;
+                self.model.define_finite_group(name, group)?;
+            }
+            Command::Crossed {
+                name,
+                h,
+                e,
+                boundary,
+                action,
+            } => {
+                let groups = [
+                    (&h, self.model.finite_group(&h)?),
+                    (&e, self.model.finite_group(&e)?),
+                ]
+                .map(|(label, group)| (label.text.as_str().into(), group));
+                let crossed = rv_crossed::Crossed::new(&mut self.model, groups, boundary, action)?;
+                self.model.define_crossed_module(name, crossed)?;
+            }
+            Command::Data(name) => {
+                return Ok(Some(self.model.crossed_module(&name)?.data(&name.text)))
+            }
+            Command::QuotientMul(name, g, h) => {
+                let crossed = self.model.crossed_module(&name)?;
+                crossed.object(g)?;
+                crossed.object(h)?;
+                return Ok(Some(format!(
+                    "rvCrossedQuotientMul[{},{g},{h}] = {}",
+                    name.text,
+                    crossed.quotient_mul(g, h)
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn postnikov_command(&mut self, command: postnikov::Command) -> Result<Option<String>> {
+        use postnikov::Command;
+        let report = match command {
+            Command::Declare(name, crossed, generator) => {
+                let crossed = self.model.crossed_module(&crossed)?;
+                let post = postnikov::Postnikov::new(&mut self.model, crossed, generator)?;
+                self.model.define_postnikov(name, post)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self
+                .model
+                .postnikov(&name)?
+                .data(&mut self.model, &name.text)?,
+            Command::Class(input) => {
+                let input = self.checker().expr(*input)?;
+                let post = self
+                    .checker()
+                    .postnikov_cochain(&input, 3, "rvPostnikovClass")?;
+                let cochain = self.eval_postnikov_cochain(&input)?;
+                post.class_report(&mut self.model, &cochain)?
+            }
+            Command::Coefficient(indices, input) => {
+                let input = self.checker().expr(*input)?;
+                let post =
+                    self.checker()
+                        .postnikov_cochain(&input, indices.len(), "rvPostnikovCoeff")?;
+                let cochain = self.eval_postnikov_cochain(&input)?;
+                let value = post.coefficient(&mut self.model, &cochain, &indices)?;
+                format!("rvPostnikovCoeff{indices:?} = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_group_element(&mut self, input: &TypedExpr) -> Result<usize> {
+        let Value::GroupElement(index) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(index)
+    }
+
+    fn eval_crossed(&mut self, action: &CrossedAction) -> Result<Value> {
+        let result = match action {
+            CrossedAction::Multiply(group, x) => group.mul(
+                self.eval_group_element(&x[0])?,
+                self.eval_group_element(&x[1])?,
+            ),
+            CrossedAction::Inverse(group, x) => group.inv(self.eval_group_element(x)?),
+            CrossedAction::Boundary(crossed, x) => crossed.boundary(self.eval_group_element(x)?),
+            CrossedAction::Act(crossed, x) => crossed.act(
+                self.eval_group_element(&x[0])?,
+                self.eval_group_element(&x[1])?,
+            ),
+            CrossedAction::KernelAct(crossed, g, x) => {
+                crossed.kernel_act(*g, self.eval_group_element(x)?)?
+            }
+        };
+        Ok(Value::GroupElement(result))
+    }
+
+    fn eval_postnikov_cochain(&mut self, input: &TypedExpr) -> Result<Rc<postnikov::Cochain>> {
+        let Value::PostnikovCochain(cochain) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(cochain)
+    }
+
+    fn eval_postnikov(&mut self, action: &PostnikovAction) -> Result<Value> {
+        let cochain = match action {
+            PostnikovAction::Neg(post, input) => {
+                let input = self.eval_postnikov_cochain(input)?;
+                post.neg(&mut self.model, &input)?
+            }
+            PostnikovAction::Coboundary(post, input) => {
+                let input = self.eval_postnikov_cochain(input)?;
+                post.coboundary(&mut self.model, &input)?
+            }
+            PostnikovAction::Gauge(post, witness, inputs) => {
+                let (a, b) = (
+                    self.eval_postnikov_cochain(&inputs[0])?,
+                    self.eval_postnikov_cochain(&inputs[1])?,
+                );
+                if *witness {
+                    post.gauge_witness(&mut self.model, &a, &b)?
+                } else {
+                    post.gauge(&mut self.model, &a, &b)?
+                }
+            }
+            PostnikovAction::Compose(post, horizontal, inputs) => {
+                let (Value::PostnikovCell(a), Value::PostnikovCell(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let value = if *horizontal {
+                    post.horizontal(a, b)
+                } else {
+                    post.vertical(a, b)?
+                };
+                return Ok(Value::PostnikovCell(value));
+            }
+            PostnikovAction::Associator(post, tuple, input) => {
+                let input = self.eval_postnikov_cochain(input)?;
+                return Ok(Value::PostnikovCell(post.associator_cell(
+                    &mut self.model,
+                    &input,
+                    *tuple,
+                )?));
+            }
+        };
+        cochain.persist(&mut self.model)
+    }
+
     fn ks_nomizu_command(&mut self, command: nomizu::Command) -> Result<String> {
         use nomizu::Command;
         match command {
@@ -9186,6 +9363,16 @@ impl Engine {
                     (BinaryOp::Add, Value::KSNomizu(a), Value::KSNomizu(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
+                        let Kind::PostnikovCochain(name, _) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let post = self.model.postnikov(&Label {
+                            text: name.to_string(),
+                            span: expr.span,
+                        })?;
+                        post.add(&mut self.model, &a, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::KSEnd(a), Value::KSEnd(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -11071,6 +11258,8 @@ impl Engine {
             TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
             TypedForm::KSExterior(action) => self.eval_ks_exterior(action, expr.span),
             TypedForm::KSNomizu(action) => self.eval_ks_nomizu(action, expr.span),
+            TypedForm::Crossed(action) => self.eval_crossed(action),
+            TypedForm::Postnikov(action) => self.eval_postnikov(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
                 .eval_ks_link(action, expr.span)?
@@ -14078,6 +14267,11 @@ impl Checker<'_> {
             TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
             TypeForm::KSExterior(name, degree) => self.model.ks_exterior_type(&name, degree),
             TypeForm::KSNomizu(name, m, degree) => self.model.ks_nomizu_type(&name, m, degree),
+            TypeForm::FiniteGroup(name) => self.model.finite_group_type(&name),
+            TypeForm::PostnikovCochain(name, degree) => {
+                self.model.postnikov_cochain_type(&name, degree)
+            }
+            TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::QZ => self.model.qz_type(),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
@@ -14883,6 +15077,8 @@ impl Checker<'_> {
             ExprForm::SetTopology(operation, name, input) => {
                 self.set_topology_expression(operation, name, input)
             }
+            ExprForm::Crossed(expression) => self.crossed_expression(*expression),
+            ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
                 let name: Rc<str> = name.text.into();
@@ -15154,6 +15350,7 @@ impl Checker<'_> {
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
+                    Kind::PostnikovCochain(..) => postnikov::Cochain::zero().persist(self.model)?,
                     Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
                     Kind::QZ => qz::Scalar::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
@@ -18295,6 +18492,16 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::KSNomizu(KSNomizuAction::Scale(-1, 1, Box::new(input))),
+                    ));
+                }
+                if let Kind::PostnikovCochain(name, _) = self.model.kind(input.ty) {
+                    let post = self.model.postnikov(&Label {
+                        text: name.to_string(),
+                        span: input.span,
+                    })?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::Postnikov(PostnikovAction::Neg(post, Box::new(input))),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KSEnd(..)) {
@@ -22199,6 +22406,7 @@ impl Checker<'_> {
                         | Kind::OG6Clifford(..)
                         | Kind::KSExterior(..)
                         | Kind::KSNomizu(..)
+                        | Kind::PostnikovCochain(..)
                         | Kind::KSEnd(..)
                         | Kind::QZ
                         | Kind::K3Spinor(..)
@@ -25338,6 +25546,230 @@ impl Checker<'_> {
     ) -> Result<()> {
         let expected = self.model.ks_nomizu_type(name, m, degree)?;
         self.require_type(expected, input, op)
+    }
+
+    fn group_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
+        let Kind::FiniteGroup(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "a finite group element"));
+        };
+        Ok(Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn crossed_expression(
+        &mut self,
+        expression: rv_crossed::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use rv_crossed::Expression;
+        let (ty, action) = match expression {
+            Expression::Element(name, index) => {
+                let ty = self.model.finite_group_type(&name)?;
+                let value = self.model.finite_group(&name)?.element(index)?;
+                return Ok((ty, TypedForm::Constant(Value::GroupElement(value))));
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let name = self.group_operand(&a, "rvGroupMul")?;
+                self.require_type(a.ty, &b, "rvGroupMul")?;
+                (
+                    a.ty,
+                    CrossedAction::Multiply(self.model.finite_group(&name)?, Box::new([a, b])),
+                )
+            }
+            Expression::Inverse(input) => {
+                let input = self.expr(*input)?;
+                let name = self.group_operand(&input, "rvGroupInv")?;
+                (
+                    input.ty,
+                    CrossedAction::Inverse(self.model.finite_group(&name)?, Box::new(input)),
+                )
+            }
+            Expression::Associator(name, tuple) => {
+                let crossed = self.model.crossed_module(&name)?;
+                let h = Label {
+                    text: crossed.h_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.finite_group_type(&h)?;
+                let value = crossed.standard_associator(tuple)?;
+                return Ok((ty, TypedForm::Constant(Value::GroupElement(value))));
+            }
+            Expression::Boundary(name, input) => {
+                let input = self.expr(*input)?;
+                let crossed = self.model.crossed_module(&name)?;
+                let h = Label {
+                    text: crossed.h_name.to_string(),
+                    span: name.span,
+                };
+                let e = Label {
+                    text: crossed.e_name.to_string(),
+                    span: name.span,
+                };
+                let domain = self.model.finite_group_type(&h)?;
+                self.require_type(domain, &input, "rvCrossedBoundary")?;
+                (
+                    self.model.finite_group_type(&e)?,
+                    CrossedAction::Boundary(crossed, Box::new(input)),
+                )
+            }
+            Expression::Act(name, inputs) => {
+                let [a, b] = *inputs;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let crossed = self.model.crossed_module(&name)?;
+                let h = Label {
+                    text: crossed.h_name.to_string(),
+                    span: name.span,
+                };
+                let e = Label {
+                    text: crossed.e_name.to_string(),
+                    span: name.span,
+                };
+                let h_type = self.model.finite_group_type(&h)?;
+                let e_type = self.model.finite_group_type(&e)?;
+                self.require_type(e_type, &a, "rvCrossedAct")?;
+                self.require_type(h_type, &b, "rvCrossedAct")?;
+                (h_type, CrossedAction::Act(crossed, Box::new([a, b])))
+            }
+            Expression::KernelAct(name, g, input) => {
+                let crossed = self.model.crossed_module(&name)?;
+                let input = self.expr(*input)?;
+                let h = Label {
+                    text: crossed.h_name.to_string(),
+                    span: name.span,
+                };
+                let ty = self.model.finite_group_type(&h)?;
+                self.require_type(ty, &input, "rvCrossedKernelAct")?;
+                (ty, CrossedAction::KernelAct(crossed, g, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::Crossed(action)))
+    }
+
+    fn postnikov_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
+        let Kind::PostnikovCochain(name, _) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "a Postnikov cochain"));
+        };
+        Ok(Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn postnikov_cochain(
+        &mut self,
+        input: &TypedExpr,
+        degree: usize,
+        op: &str,
+    ) -> Result<Rc<postnikov::Postnikov>> {
+        let name = self.postnikov_operand(input, op)?;
+        let ty = self.model.postnikov_cochain_type(&name, degree)?;
+        self.require_type(ty, input, op)?;
+        self.model.postnikov(&name)
+    }
+
+    fn postnikov_expression(
+        &mut self,
+        expression: postnikov::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use postnikov::Expression;
+        let gauge_witness = matches!(expression, Expression::GaugeWitness(_));
+        let horizontal = matches!(expression, Expression::Horizontal(_));
+        let (ty, action) = match expression {
+            Expression::Literal(name, degree, dense) => {
+                let ty = self.model.postnikov_cochain_type(&name, degree)?;
+                let value = self
+                    .model
+                    .postnikov(&name)?
+                    .literal(self.model, degree, dense)?
+                    .persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Canonical(name) => {
+                let ty = self.model.postnikov_cochain_type(&name, 3)?;
+                let value = Value::PostnikovCochain(self.model.postnikov(&name)?.canonical());
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::FromChoices(name, section, lifts) => {
+                let ty = self.model.postnikov_cochain_type(&name, 3)?;
+                let value = self
+                    .model
+                    .postnikov(&name)?
+                    .with_choices(self.model, section, lifts)?
+                    .persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Cell(name, object, residue) => {
+                let ty = self.model.postnikov_cell_type(&name)?;
+                let cell = self.model.postnikov(&name)?.cell(object, residue)?;
+                return Ok((ty, TypedForm::Constant(Value::PostnikovCell(cell))));
+            }
+            Expression::Coboundary(input) => {
+                let input = self.expr(*input)?;
+                let op = "rvPostnikovCoboundary";
+                let post = self.postnikov_cochain(&input, 2, op)?;
+                let name = self.postnikov_operand(&input, op)?;
+                let ty = self.model.postnikov_cochain_type(&name, 3)?;
+                (ty, PostnikovAction::Coboundary(post, Box::new(input)))
+            }
+            Expression::Gauge(inputs) | Expression::GaugeWitness(inputs) => {
+                let [a, b] = *inputs;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let op = if gauge_witness {
+                    "rvPostnikovGaugeWitness"
+                } else {
+                    "rvPostnikovGauge"
+                };
+                let post = self.postnikov_cochain(&a, 3, op)?;
+                let name = self.postnikov_operand(&a, op)?;
+                let b_type = self
+                    .model
+                    .postnikov_cochain_type(&name, if gauge_witness { 3 } else { 2 })?;
+                self.require_type(b_type, &b, op)?;
+                let ty = self
+                    .model
+                    .postnikov_cochain_type(&name, if gauge_witness { 2 } else { 3 })?;
+                (
+                    ty,
+                    PostnikovAction::Gauge(post, gauge_witness, Box::new([a, b])),
+                )
+            }
+            Expression::Vertical(inputs) | Expression::Horizontal(inputs) => {
+                let [a, b] = *inputs;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let op = if horizontal {
+                    "rvPostnikovHorizontal"
+                } else {
+                    "rvPostnikovVertical"
+                };
+                let Kind::PostnikovCell(name) = self.model.kind(a.ty) else {
+                    return Err(self.invalid_operand(&a, op, "a Postnikov cell"));
+                };
+                let post = self.model.postnikov(&Label {
+                    text: name.to_string(),
+                    span: a.span,
+                })?;
+                self.require_type(a.ty, &b, op)?;
+                (
+                    a.ty,
+                    PostnikovAction::Compose(post, horizontal, Box::new([a, b])),
+                )
+            }
+            Expression::Associator(tuple, input) => {
+                let input = self.expr(*input)?;
+                let op = "rvPostnikovAssoc";
+                let post = self.postnikov_cochain(&input, 3, op)?;
+                let name = self.postnikov_operand(&input, op)?;
+                let ty = self.model.postnikov_cell_type(&name)?;
+                (
+                    ty,
+                    PostnikovAction::Associator(post, tuple, Box::new(input)),
+                )
+            }
+        };
+        Ok((ty, TypedForm::Postnikov(action)))
     }
 
     fn ks_nomizu_expression(

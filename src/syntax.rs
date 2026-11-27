@@ -70,6 +70,9 @@ pub(crate) struct ParsedType {
 
 pub(crate) enum TypeForm {
     Name(Label),
+    FiniteGroup(Label),
+    PostnikovCochain(Label, usize),
+    PostnikovCell(Label),
     SetNat(Label, Label),
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
@@ -718,6 +721,8 @@ pub(crate) struct MapGenerator {
 }
 
 pub(crate) enum ExprForm {
+    Crossed(Box<crate::rv_crossed::Expression>),
+    Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
     SetTopology(
         crate::set_topology::Operation,
         Label,
@@ -1159,6 +1164,8 @@ pub(crate) struct Statement {
 }
 
 pub(crate) enum StatementForm {
+    Crossed(Box<crate::rv_crossed::Command>),
+    Postnikov(Box<crate::rv_crossed::postnikov::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3268,6 +3275,236 @@ impl<'src> Parser<'src> {
             bounds: [d, e],
             inputs,
         })
+    }
+
+    fn finite_table(&mut self) -> Result<Vec<Vec<usize>>> {
+        self.expect(Token::LBrace)?;
+        let mut rows = Vec::new();
+        while self.token() != Token::RBrace {
+            self.expect(Token::LBrace)?;
+            rows.push(self.unsigned_list(Token::RBrace)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rows)
+    }
+
+    fn crossed_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvgroup" => {
+                let name = self.label()?;
+                if self.eat(Token::LBracket)? {
+                    let n = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    Command::Cyclic(name, n)
+                } else {
+                    Command::Group(name, self.finite_table()?)
+                }
+            }
+            "rvcrossed" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let h = self.label()?;
+                self.expect(Token::Comma)?;
+                let e = self.label()?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let boundary = self.unsigned_list(Token::RBrace)?;
+                let action = self.finite_table()?;
+                Command::Crossed {
+                    name,
+                    h,
+                    e,
+                    boundary,
+                    action,
+                }
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let command = if operation == "rvCrossedQuotientMul" {
+                    self.expect(Token::Comma)?;
+                    let g = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    Command::QuotientMul(name, g, self.number()?.0)
+                } else {
+                    Command::Data(name)
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::Crossed(Box::new(command)))
+    }
+
+    fn postnikov_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::postnikov::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvpostnikov" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let crossed = self.label()?;
+                self.expect(Token::Comma)?;
+                let generator = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Declare(name, crossed, generator)
+            }
+            "rvPostnikovData" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Data(name)
+            }
+            "rvPostnikovClass" => Command::Class(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let tuple = self.unsigned_list(Token::RBracket)?;
+                Command::Coefficient(tuple, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn crossed_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_crossed::Expression;
+        let (operation, depth) = match operation {
+            "rvGroupMul" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (Expression::Multiply(Box::new(pair)), depth)
+            }
+            "rvGroupInv" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Inverse(Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                match operation {
+                    "rvGroupElem" => {
+                        self.expect(Token::Comma)?;
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        (Expression::Element(name, index), 0)
+                    }
+                    "rvCrossedAssoc" => {
+                        let mut tuple = [0; 3];
+                        for entry in &mut tuple {
+                            self.expect(Token::Comma)?;
+                            *entry = self.number()?.0;
+                        }
+                        self.expect(Token::RBracket)?;
+                        (Expression::Associator(name, tuple), 0)
+                    }
+                    "rvCrossedAct" => {
+                        self.expect(Token::RBracket)?;
+                        let pair = self.paren_pair(nest)?;
+                        let depth = 1 + pair[0].depth.max(pair[1].depth);
+                        (Expression::Act(name, Box::new(pair)), depth)
+                    }
+                    "rvCrossedKernelAct" => {
+                        self.expect(Token::Comma)?;
+                        let g = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = 1 + input.depth;
+                        (Expression::KernelAct(name, g, Box::new(input)), depth)
+                    }
+                    _ => {
+                        self.expect(Token::RBracket)?;
+                        let input = self.paren_expr(nest)?;
+                        let depth = 1 + input.depth;
+                        (Expression::Boundary(name, Box::new(input)), depth)
+                    }
+                }
+            }
+        };
+        expr(span, ExprForm::Crossed(Box::new(operation)), depth)
+    }
+
+    fn postnikov_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_crossed::postnikov::Expression;
+        let (operation, depth) = match operation {
+            "rvPostnikovCoboundary" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Coboundary(Box::new(input)), depth)
+            }
+            "rvPostnikovGauge"
+            | "rvPostnikovGaugeWitness"
+            | "rvPostnikovVertical"
+            | "rvPostnikovHorizontal" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                let pair = Box::new(pair);
+                let expression = match operation {
+                    "rvPostnikovGauge" => Expression::Gauge(pair),
+                    "rvPostnikovGaugeWitness" => Expression::GaugeWitness(pair),
+                    "rvPostnikovVertical" => Expression::Vertical(pair),
+                    _ => Expression::Horizontal(pair),
+                };
+                (expression, depth)
+            }
+            "rvPostnikovAssoc" => {
+                self.expect(Token::LBracket)?;
+                let tuple = self
+                    .unsigned_list(Token::RBracket)?
+                    .try_into()
+                    .map_err(|_| Error::new(span, "Postnikov associator requires three objects"))?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Associator(tuple, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let expression = match operation {
+                    "rvPostnikovK" => {
+                        self.expect(Token::RBracket)?;
+                        Expression::Canonical(name)
+                    }
+                    "rvPostnikovCochain" => {
+                        self.expect(Token::Comma)?;
+                        let degree = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        Expression::Literal(name, degree, self.unsigned_list(Token::RBrace)?)
+                    }
+                    "rvPostnikovLifted" => {
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        let section = self.unsigned_list(Token::RBrace)?;
+                        Expression::FromChoices(name, section, self.finite_table()?)
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let g = self.number()?.0;
+                        self.expect(Token::Comma)?;
+                        let value = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        Expression::Cell(name, g, value)
+                    }
+                };
+                (expression, 0)
+            }
+        };
+        expr(span, ExprForm::Postnikov(Box::new(operation)), depth)
     }
 
     fn ks_nomizu_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -8858,6 +9095,12 @@ impl<'src> Parser<'src> {
                     0,
                 )?))
             }
+            Token::Word(
+                op @ ("rvgroup" | "rvcrossed" | "rvCrossedData" | "rvCrossedQuotientMul"),
+            ) => self.crossed_statement(op)?,
+            Token::Word(
+                op @ ("rvpostnikov" | "rvPostnikovData" | "rvPostnikovClass" | "rvPostnikovCoeff"),
+            ) => self.postnikov_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -12540,6 +12783,23 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if matches!(
+            name.text.as_str(),
+            "RVGroup" | "RVPostnikovCochain" | "RVPostnikovCell"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            let form = match name.text.as_str() {
+                "RVGroup" => TypeForm::FiniteGroup(label),
+                "RVPostnikovCell" => TypeForm::PostnikovCell(label),
+                _ => {
+                    self.expect(Token::Comma)?;
+                    TypeForm::PostnikovCochain(label, self.number()?.0)
+                }
+            };
+            self.expect(Token::RParen)?;
+            return ty(span, form, 0);
+        }
         if name.text == "RVQZ" {
             return ty(span, TypeForm::QZ, 0);
         }
@@ -15034,6 +15294,38 @@ impl<'src> Parser<'src> {
                         .max()
                         .unwrap_or(0);
                     return expr(span, ExprForm::KSLink(Box::new(spec)), depth);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvGroupElem"
+                        | "rvCrossedBoundary"
+                        | "rvCrossedAct"
+                        | "rvCrossedKernelAct"
+                        | "rvCrossedAssoc"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvGroupMul" | "rvGroupInv")
+                        && self.token() == Token::LParen)
+                {
+                    return self.crossed_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvPostnikovCochain"
+                        | "rvPostnikovK"
+                        | "rvPostnikovLifted"
+                        | "rvPostnikovCell"
+                        | "rvPostnikovAssoc"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvPostnikovCoboundary"
+                            | "rvPostnikovGauge"
+                            | "rvPostnikovGaugeWitness"
+                            | "rvPostnikovVertical"
+                            | "rvPostnikovHorizontal"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.postnikov_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

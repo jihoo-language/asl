@@ -125,6 +125,7 @@ mod rv_bar_page;
 mod rv_barcobar;
 mod rv_cartier_arithmetic;
 mod rv_conformal;
+mod rv_crossed;
 mod rv_crystal;
 mod rv_curve;
 mod rv_cyclic_homology;
