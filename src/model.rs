@@ -26,6 +26,7 @@ use crate::error::{Error, Result};
 use crate::hw_algebra::Matrix as HWMatrix;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
+use crate::hyperelliptic_chart::Chart;
 use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::jet_hom;
 use crate::jet_page;
@@ -583,6 +584,7 @@ pub(crate) struct Model {
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
+    jacobian_charts: HashMap<String, Rc<Chart>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -674,6 +676,7 @@ impl Model {
             elliptic_isogenies: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
+            jacobian_charts: HashMap::new(),
             richelot_isogenies: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -3461,6 +3464,32 @@ impl Model {
                     format!("unknown unramified hyperelliptic curve '{}'", name.text),
                 )
             })
+    }
+
+    pub(crate) fn define_jacobian_chart(
+        &mut self,
+        target: Label,
+        source: &Label,
+        branch: ECScalar,
+    ) -> Result<()> {
+        let curve = self.hww_curve(source)?;
+        let (chart, polynomial) = Chart::build(self, source.text.as_str().into(), &curve, branch)
+            .map_err(|error| error.at(source.span))?;
+        let ring = Label {
+            text: curve.grade.ring.to_string(),
+            span: source.span,
+        };
+        let name = target.text.clone();
+        self.define_hww_curve(target, &ring, polynomial)?;
+        self.jacobian_charts.insert(name, Rc::new(chart));
+        Ok(())
+    }
+
+    pub(crate) fn jacobian_chart(&self, name: &Label) -> Result<Rc<Chart>> {
+        self.jacobian_charts
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown Jacobian chart '{}'", name.text)))
     }
 
     pub(crate) fn define_richelot(

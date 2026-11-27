@@ -34,6 +34,7 @@ mod error;
 mod hw_algebra;
 mod hw_closed;
 mod hyperelliptic;
+mod hyperelliptic_chart;
 mod hyperelliptic_graph;
 mod hyperelliptic_jacobian;
 mod integer_smith;

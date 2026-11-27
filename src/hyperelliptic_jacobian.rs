@@ -5,6 +5,7 @@ use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
+use crate::hyperelliptic_chart::Direction;
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::prime_linear::{Basis, Coordinate};
@@ -15,6 +16,7 @@ pub(crate) mod point_halving;
 
 pub(crate) enum Command {
     Base(Label, Label, Label),
+    Chart(Label, Label, Box<ParsedExpr>),
     Count(Label, bool),
     Order(Box<ParsedExpr>),
     Compose(Box<[ParsedExpr; 2]>),
@@ -23,6 +25,7 @@ pub(crate) enum Command {
 pub(crate) enum Expression {
     Literal(Label, Vec<Vec<i128>>, Vec<Vec<i128>>),
     Point(Label, Box<[ParsedExpr; 2]>, Option<Vec<Vec<i128>>>),
+    Transport(Label, Direction, Box<ParsedExpr>),
     Apply(Operation, Box<ParsedExpr>),
     Pair(Pairing, Box<[ParsedExpr; 2]>),
 }

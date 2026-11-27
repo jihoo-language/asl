@@ -27,6 +27,7 @@ use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
+use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::{self, point_halving, Divisor};
 use crate::jet_hom;
 use crate::jet_page;
@@ -434,6 +435,12 @@ enum JacobianAction {
         Rc<hw_closed::Curve>,
         hyperelliptic_jacobian::Pairing,
         Box<[TypedExpr; 2]>,
+    ),
+    Transport(
+        Rc<Chart>,
+        ChartDirection,
+        Rc<hw_closed::Curve>,
+        Box<TypedExpr>,
     ),
 }
 
@@ -4492,6 +4499,23 @@ impl Engine {
                 self.model.define_hww_curve(target, &field, polynomial)?;
                 return Ok(None);
             }
+            Command::Chart(target, source, branch) => {
+                let curve = self.model.hww_curve(&source)?;
+                let field = Label {
+                    text: curve.grade.ring.to_string(),
+                    span: source.span,
+                };
+                let ty = self.model.rv_unram_type(&field)?;
+                let branch = self.checker().expr(*branch)?;
+                self.checker()
+                    .require_type(ty, &branch, "rvjacchart branch value")?;
+                let Value::RVUnram(branch) = self.eval(&branch)? else {
+                    unreachable!()
+                };
+                self.model
+                    .define_jacobian_chart(target, &source, branch.to_vec())?;
+                return Ok(None);
+            }
             Command::Count(name, enumerate) => {
                 let curve = self.model.jacobian_curve(&name.text)?;
                 if enumerate {
@@ -4555,6 +4579,14 @@ impl Engine {
                     Divisor::from_point(&mut self.model, curve, &x, y.to_vec())?
                 };
                 value.persist(&mut self.model, curve)
+            }
+            JacobianAction::Transport(chart, direction, target, input) => {
+                let Value::Jacobian(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                chart
+                    .transport(&mut self.model, *direction, target, &value)?
+                    .persist(&mut self.model, target)
             }
             JacobianAction::Apply(curve, operation, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17431,6 +17463,33 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::Jacobian(JacobianAction::Point(curve, Box::new([x, y]), root)),
+                ))
+            }
+            Expression::Transport(name, direction, input) => {
+                let chart = self.model.jacobian_chart(&name)?;
+                let (source, target) = match direction {
+                    ChartDirection::ToChart => (chart.source.clone(), name.text.as_str().into()),
+                    ChartDirection::ToSource => (name.text.as_str().into(), chart.source.clone()),
+                };
+                let expected = self
+                    .model
+                    .jacobian_type(source)
+                    .map_err(|error| error.at(name.span))?;
+                let curve = self
+                    .model
+                    .jacobian_curve(&target)
+                    .map_err(|error| error.at(name.span))?;
+                let ty = self.model.jacobian_type(target)?;
+                let input = self.expr(*input)?;
+                self.require_type(expected, &input, direction.name())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::Transport(
+                        chart,
+                        direction,
+                        curve,
+                        Box::new(input),
+                    )),
                 ))
             }
             Expression::Apply(operation, input) => {

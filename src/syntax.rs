@@ -2815,6 +2815,13 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 Command::Base(target, base, field)
             }
+            "rvjacchart" => {
+                let target = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Chart(target, source, Box::new(self.paren_expr(0)?))
+            }
             "rvJacCompose" => Command::Compose(Box::new(self.paren_pair(0)?)),
             "rvJacOrder" => Command::Order(Box::new(self.paren_expr(0)?)),
             _ => {
@@ -2901,6 +2908,22 @@ impl<'src> Parser<'src> {
                     None
                 };
                 (Expression::Point(curve, Box::new(xy), root), depth)
+            }
+            "rvJacRechart" | "rvJacUnchart" => {
+                use crate::hyperelliptic_chart::Direction;
+                let chart = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let direction = if name == "rvJacRechart" {
+                    Direction::ToChart
+                } else {
+                    Direction::ToSource
+                };
+                (
+                    Expression::Transport(chart, direction, Box::new(input)),
+                    depth,
+                )
             }
             _ => {
                 let operation = match name {
@@ -3358,7 +3381,7 @@ impl<'src> Parser<'src> {
             Token::Word("rvECCMCertify") => self.ec_cm_statement()?,
             Token::Word(
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
-                | "rvJacCompose"),
+                | "rvJacCompose" | "rvjacchart"),
             ) => self.jacobian_statement(command)?,
             Token::Word(command @ ("rvrichelot" | "rvrichelotdual" | "rvRichelotData")) => {
                 self.richelot_statement(command)?
@@ -8484,6 +8507,8 @@ impl<'src> Parser<'src> {
                         | "rvJacV"
                         | "rvJacExtend"
                         | "rvJacDescend"
+                        | "rvJacRechart"
+                        | "rvJacUnchart"
                         | "rvJacFrob"
                         | "rvJacWeilApply"
                 ) && self.token() == Token::LBracket)
