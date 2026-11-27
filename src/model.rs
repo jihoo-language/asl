@@ -349,6 +349,7 @@ pub(crate) enum Kind {
     CMQuotientLattice(Rc<str>),
     CMQuotientDual(Rc<str>),
     CMQuotientEnd(Rc<str>),
+    CMQuotientWedge(Rc<str>),
     CMMetaLift(Rc<str>),
     CMMetaAuto(Rc<str>),
     CMMetaMat(Rc<str>),
@@ -636,6 +637,7 @@ pub(crate) enum Value {
     CMTheta(cm_hom::fourier::theta::Point),
     CMQuotientCoordinates(cm_hom::fourier::theta::quotient::Vector),
     CMQuotientEnd(Rc<cm_hom::fourier::theta::quotient::order::Endomorphism>),
+    CMQuotientWedge(cm_hom::fourier::theta::quotient::torelli::Wedge),
     CMMetaLift(cm_hom::fourier::theta::metaplectic::Lift),
     CMMetaAuto(cm_hom::fourier::theta::metaplectic::Auto),
     CMMetaMat(cm_hom::fourier::theta::metaplectic::Matrix),
@@ -1845,7 +1847,8 @@ impl Model {
             | Kind::CMPolarDual(..)
             | Kind::CMQuotientLattice(..)
             | Kind::CMQuotientDual(..)
-            | Kind::CMQuotientEnd(..) => usize::MAX,
+            | Kind::CMQuotientEnd(..)
+            | Kind::CMQuotientWedge(..) => usize::MAX,
             Kind::CMThetaOp(..) | Kind::CMThetaSubgroup(..) => usize::MAX,
             Kind::CMHomCoordinate(..)
             | Kind::CMAbelianDiv(..)
@@ -2253,6 +2256,7 @@ impl Model {
                 | Kind::CMQuotientLattice(..)
                 | Kind::CMQuotientDual(..)
                 | Kind::CMQuotientEnd(..)
+                | Kind::CMQuotientWedge(..)
                 | Kind::CMThetaOp(..)
                 | Kind::CMThetaSubgroup(..)
                 | Kind::CMPeriod(..)
@@ -8621,6 +8625,7 @@ impl Model {
             | Kind::CMQuotientLattice(..)
             | Kind::CMQuotientDual(..)
             | Kind::CMQuotientEnd(..)
+            | Kind::CMQuotientWedge(..)
             | Kind::CMThetaOp(..)
             | Kind::CMThetaSubgroup(..)
             | Kind::CMPeriod(..)
@@ -9240,6 +9245,7 @@ impl Model {
             Kind::CMQuotientLattice(name) => out.push(&format!("RVCMQuotientLattice({name})")),
             Kind::CMQuotientDual(name) => out.push(&format!("RVCMQuotientDual({name})")),
             Kind::CMQuotientEnd(name) => out.push(&format!("RVCMQuotientEnd({name})")),
+            Kind::CMQuotientWedge(name) => out.push(&format!("RVCMQuotientWedge({name})")),
             Kind::CMTheta(name) => out.push(&format!("RVCMTheta({name})")),
             Kind::CMThetaOp(name) => out.push(&format!("RVCMThetaOp({name})")),
             Kind::CMThetaSubgroup(name) => out.push(&format!("RVCMThetaSubgroup({name})")),
@@ -9774,6 +9780,7 @@ impl Model {
             (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a == b),
             (Value::CMQuotientCoordinates(a), Value::CMQuotientCoordinates(b)) => Ok(a == b),
             (Value::CMQuotientEnd(a), Value::CMQuotientEnd(b)) => Ok(a == b),
+            (Value::CMQuotientWedge(a), Value::CMQuotientWedge(b)) => Ok(a == b),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a == b),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a == b),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a == b),
@@ -10250,6 +10257,7 @@ impl Model {
             (Value::CMMetaVec(a), Value::CMMetaVec(b)) => Ok(a.cmp(b)),
             (Value::CMQuotientCoordinates(a), Value::CMQuotientCoordinates(b)) => Ok(a.cmp(b)),
             (Value::CMQuotientEnd(a), Value::CMQuotientEnd(b)) => Ok(a.cmp(b)),
+            (Value::CMQuotientWedge(a), Value::CMQuotientWedge(b)) => Ok(a.cmp(b)),
             (Value::CMTheta(a), Value::CMTheta(b)) => Ok(a.cmp(b)),
             (Value::CMThetaOp(a), Value::CMThetaOp(b)) => Ok(a.cmp(b)),
             (Value::CMThetaSubgroup(a), Value::CMThetaSubgroup(b)) => Ok(a.cmp(b)),
@@ -10770,6 +10778,11 @@ impl Model {
                 | Kind::CMQuotientLattice(..)
                 | Kind::CMQuotientDual(..) => {
                     return Err(Error::plain("cannot enumerate a CM quotient lattice"));
+                }
+                Kind::CMQuotientWedge(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the CM quotient integral wedge lattice",
+                    ));
                 }
                 Kind::CMQuotientEnd(..) => {
                     return Err(Error::plain(
@@ -12866,6 +12879,10 @@ impl Model {
             Value::CMQuotientEnd(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{:?}}}", value.0))
+            }
+            Value::CMQuotientWedge(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{value:?}}}"))
             }
             Value::CMQuotientCoordinates(value) => {
                 self.write_type(out, ty, 0)?;

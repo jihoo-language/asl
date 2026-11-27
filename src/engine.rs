@@ -93,6 +93,7 @@ use crate::jacobian_level::cm_hom::fourier::period as cm_period;
 use crate::jacobian_level::cm_hom::fourier::theta as cm_theta;
 use crate::jacobian_level::cm_hom::fourier::theta::metaplectic as cm_meta;
 use crate::jacobian_level::cm_hom::fourier::theta::quotient as cm_quotient;
+use crate::jacobian_level::cm_hom::fourier::theta::quotient::torelli as cm_torelli;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -733,6 +734,10 @@ enum CMQuotientChart {
 }
 
 enum CMQuotientOperation {
+    WedgeBasis(Rc<cm_quotient::Quotient>, bool, usize),
+    WedgeRosati(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
+    WedgeNegate(Box<TypedExpr>),
+    Projector(Rc<cm_quotient::Quotient>, usize),
     EndomorphismBasis(Rc<cm_quotient::Quotient>, usize),
     EndomorphismFrobenius(Rc<cm_quotient::Quotient>),
     EndomorphismRosati(Rc<cm_quotient::Quotient>, Box<TypedExpr>),
@@ -8435,12 +8440,57 @@ impl Engine {
         }
     }
 
+    fn cm_torelli_statement(&mut self, statement: cm_torelli::Statement) -> Result<Option<String>> {
+        use cm_torelli::Statement;
+        let text = match statement {
+            Statement::Data(name) => self
+                .model
+                .cm_quotient(&name.text)?
+                .ns_report(&mut self.model)?,
+            Statement::Transcendental(name) => self
+                .model
+                .cm_quotient(&name.text)?
+                .transcendental_report(&mut self.model)?,
+            Statement::Frobenius(name) => self
+                .model
+                .cm_quotient(&name.text)?
+                .factor_frobenius_report(&mut self.model)?,
+            Statement::Torelli(name) => self
+                .model
+                .cm_quotient(&name.text)?
+                .torelli_report(&mut self.model)?,
+            Statement::Profiles(name) => {
+                let kernel = self.model.cm_theta(&name.text)?;
+                cm_torelli::profiles(&mut self.model, name, kernel)?
+            }
+            Statement::Pair(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let (_, quotient) = self.checker().cm_quotient_wedge(&left)?;
+                let right = self.checker().expr(right)?;
+                self.checker().require_type(
+                    left.ty,
+                    &right,
+                    "CM quotient wedge pairing argument",
+                )?;
+                let (Value::CMQuotientWedge(x), Value::CMQuotientWedge(y)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                format!("rvCMQuotientWedgePair = {}", quotient.wedge_pair(x, y)?)
+            }
+        };
+        Ok(Some(text))
+    }
+
     fn cm_quotient_statement(
         &mut self,
         statement: cm_quotient::Statement,
     ) -> Result<Option<String>> {
         use cm_quotient::Statement;
         let text = match statement {
+            Statement::Torelli(task) => return self.cm_torelli_statement(*task),
             Statement::Define(name, input) => {
                 let input = self.checker().expr(*input)?;
                 let (kernel_name, kernel) = self
@@ -9118,6 +9168,30 @@ impl Engine {
             Ok(x)
         };
         let x = match operation {
+            Op::WedgeBasis(quotient, transcendental, i) => {
+                return Ok(Value::CMQuotientWedge(quotient.wedge_basis(
+                    &mut self.model,
+                    *transcendental,
+                    *i,
+                )?));
+            }
+            Op::WedgeRosati(quotient, input) => {
+                let Value::CMQuotientWedge(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                return quotient.wedge_rosati(x)?.persist(&mut self.model);
+            }
+            Op::WedgeNegate(input) => {
+                let Value::CMQuotientWedge(x) = self.eval(input)? else {
+                    unreachable!()
+                };
+                return Ok(Value::CMQuotientWedge(cm_torelli::negate_wedge(x)?));
+            }
+            Op::Projector(quotient, i) => {
+                return quotient
+                    .torelli_projector(&mut self.model, *i)?
+                    .persist(&mut self.model);
+            }
             Op::EndomorphismBasis(quotient, index) => {
                 return quotient
                     .endomorphism_basis(&mut self.model, *index)?
@@ -13961,6 +14035,9 @@ impl Engine {
                         Value::CMQuotientCoordinates(a),
                         Value::CMQuotientCoordinates(b),
                     ) => Ok(Value::CMQuotientCoordinates(cm_quotient::add(a, b)?)),
+                    (BinaryOp::Add, Value::CMQuotientWedge(a), Value::CMQuotientWedge(b)) => {
+                        Ok(Value::CMQuotientWedge(cm_torelli::add_wedge(a, b)?))
+                    }
                     (BinaryOp::Add, Value::CMTheta(a), Value::CMTheta(b)) => {
                         let Kind::CMTheta(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -20958,6 +21035,9 @@ impl Checker<'_> {
             TypeForm::CMMetaAuto(name) => self.cm_meta_type(&name, Kind::CMMetaAuto),
             TypeForm::CMMetaMat(name) => self.cm_meta_type(&name, Kind::CMMetaMat),
             TypeForm::CMMetaVec(name) => self.cm_meta_type(&name, Kind::CMMetaVec),
+            TypeForm::CMQuotientWedge(name) => {
+                self.model.cm_quotient_type(&name, Kind::CMQuotientWedge)
+            }
             TypeForm::CMQuotientEnd(name) => {
                 self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)
             }
@@ -22260,6 +22340,7 @@ impl Checker<'_> {
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
                     Kind::CMPolarLattice(..) | Kind::CMPolarDual(..) | Kind::CMQuotientLattice(..)
                     | Kind::CMQuotientDual(..) => Value::CMQuotientCoordinates([0; 4]),
+                    Kind::CMQuotientWedge(..) => Value::CMQuotientWedge([0; 6]),
                     Kind::CMTheta(..) => Value::CMTheta([0; 4]),
                     Kind::CMCharge(..) => Value::CMCharge(cm_period::Charge::ZERO),
                     Kind::CMAbelianDiv(..) => Value::CMAbelianDiv(Rc::new(cm_abelian::Divisor::ZERO)),
@@ -25854,6 +25935,14 @@ impl Checker<'_> {
                         TypedForm::CMQuotient(Box::new(CMQuotientOperation::Negate(Box::new(
                             input,
                         )))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::CMQuotientWedge(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMQuotient(Box::new(CMQuotientOperation::WedgeNegate(
+                            Box::new(input),
+                        ))),
                     ));
                 }
                 if let Kind::CMTheta(name) = self.model.kind(input.ty) {
@@ -29887,6 +29976,7 @@ impl Checker<'_> {
                         | Kind::CMHomCycle(..)
                         | Kind::CMHomWedge(..)
                         | Kind::CMHomCoordinate(..)
+                        | Kind::CMQuotientWedge(..)
                         | Kind::CMTheta(..)
                         | Kind::CMPolarLattice(..)
                         | Kind::CMPolarDual(..)
@@ -38131,6 +38221,48 @@ impl Checker<'_> {
         ))
     }
 
+    fn cm_quotient_wedge(&self, input: &TypedExpr) -> Result<(Label, Rc<cm_quotient::Quotient>)> {
+        let Kind::CMQuotientWedge(name) = self.model.kind(input.ty) else {
+            return Err(Error::new(input.span, "expected a CM quotient wedge form"));
+        };
+        let label = Label {
+            text: name.to_string(),
+            span: input.span,
+        };
+        Ok((label, self.model.cm_quotient(name)?))
+    }
+
+    fn cm_torelli_expression(
+        &mut self,
+        expression: cm_torelli::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_torelli::Expression;
+        use CMQuotientOperation as Op;
+        let (ty, operation) = match expression {
+            Expression::Wedge(name, form) => {
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientWedge)?;
+                return Ok((ty, TypedForm::Constant(Value::CMQuotientWedge(form))));
+            }
+            Expression::Basis(transcendental, name, i) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientWedge)?;
+                (ty, Op::WedgeBasis(quotient, transcendental, i))
+            }
+            Expression::Rosati(input) => {
+                let input = self.expr(*input)?;
+                let (name, quotient) = self.cm_quotient_wedge(&input)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                (ty, Op::WedgeRosati(quotient, Box::new(input)))
+            }
+            Expression::Projector(name, i) => {
+                let quotient = self.model.cm_quotient(&name.text)?;
+                let ty = self.model.cm_quotient_type(&name, Kind::CMQuotientEnd)?;
+                (ty, Op::Projector(quotient, i))
+            }
+        };
+        Ok((ty, TypedForm::CMQuotient(Box::new(operation))))
+    }
+
     fn cm_quotient_expression(
         &mut self,
         expression: cm_quotient::Expression,
@@ -38138,6 +38270,7 @@ impl Checker<'_> {
         use cm_quotient::{Expression, Lattice, Map};
         use CMQuotientOperation as Op;
         let (ty, operation) = match expression {
+            Expression::Torelli(task) => return self.cm_torelli_expression(*task),
             Expression::Literal(lattice, name, vector) => {
                 let ty = match lattice {
                     Lattice::Base => self.model.cm_theta_type(&name, Kind::CMPolarLattice)?,

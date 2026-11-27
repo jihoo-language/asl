@@ -18,8 +18,10 @@ use crate::rv_unram::{add_mod, mul_mod};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod order;
+pub(crate) mod torelli;
 
 pub(crate) enum Statement {
+    Torelli(Box<torelli::Statement>),
     Define(Label, Box<ParsedExpr>),
     Data(Label),
     Order(Label),
@@ -31,6 +33,7 @@ pub(crate) enum Statement {
 }
 
 pub(crate) enum Expression {
+    Torelli(Box<torelli::Expression>),
     Literal(Lattice, Label, Vector),
     Map(Map, Label, Box<ParsedExpr>),
     Polarize(Box<ParsedExpr>),
@@ -73,6 +76,8 @@ pub(crate) struct Quotient {
     omega_numerator: Matrix,
     conductor: u64,
     centralizer: OnceCell<[order::Endomorphism; 8]>,
+    hodge: OnceCell<torelli::Hodge>,
+    splitting: OnceCell<torelli::Splitting>,
 }
 
 struct Frobenius {
@@ -150,6 +155,8 @@ impl Quotient {
             omega_numerator,
             conductor,
             centralizer: OnceCell::new(),
+            hodge: OnceCell::new(),
+            splitting: OnceCell::new(),
         })
     }
 

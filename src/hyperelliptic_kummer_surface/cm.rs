@@ -86,6 +86,50 @@ impl Form {
     }
 }
 
+pub(crate) fn reduce_binary(
+    model: &mut Model,
+    [a, b, c]: [i128; 3],
+) -> Result<([i128; 3], [[i128; 2]; 2])> {
+    let mut form = Form {
+        a: Magnitude::from_small(u128::try_from(a).map_err(|_| arithmetic())?),
+        b: Integer::from_i128(b),
+        c: Magnitude::from_small(u128::try_from(c).map_err(|_| arithmetic())?),
+    };
+    if a <= 0 || c <= 0 || form.discriminant()?.is_none() {
+        return Err(Error::plain(
+            "Gauss reduction needs a positive binary quadratic form",
+        ));
+    }
+    let zero = Integer::from_i128(0);
+    let one = Integer::from_i128(1);
+    let mut columns = [[one, zero], [zero, one]];
+    form.reduce(model, |_, change| {
+        match change {
+            BasisChange::Shear(q) => {
+                let [u, v] = &mut columns;
+                for (v, &u) in v.iter_mut().zip(u.iter()) {
+                    *v = v.add(q.multiply_wide(u)?)?;
+                }
+            }
+            BasisChange::Rotate => {
+                columns.swap(0, 1);
+                columns[1] = columns[1].map(Integer::negate);
+            }
+        }
+        Ok(())
+    })?;
+    let a = positive(form.a).signed().ok_or_else(arithmetic)?;
+    let b = form.b.signed().ok_or_else(arithmetic)?;
+    let c = positive(form.c).signed().ok_or_else(arithmetic)?;
+    let mut basis = [[0; 2]; 2];
+    for (row, coefficients) in basis.iter_mut().zip(columns) {
+        for (x, c) in row.iter_mut().zip(coefficients) {
+            *x = c.signed().ok_or_else(arithmetic)?;
+        }
+    }
+    Ok(([a, b, c], basis))
+}
+
 pub(crate) struct Reduced {
     basis: [Coordinates; 2],
     form: Form,

@@ -81,21 +81,7 @@ impl Quotient {
 
     fn rosati_pair(&self, map: Endomorphism) -> Result<(Matrix, i128)> {
         let alternating = self.form;
-        let [_, a, b, c] = alternating[0];
-        let [_, _, d, e] = alternating[1];
-        let f = alternating[2][3];
-        let pfaffian = Wide::<8>::product(a, f)
-            .add(Wide::product(b, e).negate())?
-            .add(Wide::product(c, d))?
-            .signed()
-            .ok_or_else(arithmetic)?;
-        let opposite = |x: i128| x.checked_neg().ok_or_else(arithmetic);
-        let adjugate = [
-            [0, opposite(f)?, e, opposite(d)?],
-            [f, 0, opposite(c)?, b],
-            [opposite(e)?, c, 0, opposite(a)?],
-            [d, opposite(b)?, a, 0],
-        ];
+        let (adjugate, pfaffian) = alternating_inverse(alternating)?;
         let right = multiply(transpose(map.0), alternating)?;
         let numerator = multiply(adjugate, right)?;
         let sign = pfaffian.signum();
@@ -141,9 +127,12 @@ impl Quotient {
 
 // Row Hermite reduction keeps the saturated Smith kernel and reduces its
 // coefficients before exposing the integral endomorphism basis.
-fn hermite_basis(model: &mut Model, rows: &mut [[i128; 16]; 8]) -> Result<()> {
+pub(super) fn hermite_basis<const N: usize, const R: usize>(
+    model: &mut Model,
+    rows: &mut [[i128; N]; R],
+) -> Result<()> {
     let mut rank = 0;
-    for column in 0..16 {
+    for column in 0..N {
         let Some(pivot) = (rank..rows.len()).find(|&i| rows[i][column] != 0) else {
             continue;
         };
@@ -171,7 +160,7 @@ fn hermite_basis(model: &mut Model, rows: &mut [[i128; 16]; 8]) -> Result<()> {
     Ok(())
 }
 
-fn positive_pivot(row: &mut [i128; 16], column: usize) -> Result<()> {
+fn positive_pivot(row: &mut [i128], column: usize) -> Result<()> {
     if row[column] < 0 {
         for x in &mut row[column..] {
             *x = x.checked_neg().ok_or_else(arithmetic)?;
@@ -180,13 +169,8 @@ fn positive_pivot(row: &mut [i128; 16], column: usize) -> Result<()> {
     Ok(())
 }
 
-fn reduce_row(
-    model: &mut Model,
-    row: &mut [i128; 16],
-    pivot: &[i128; 16],
-    column: usize,
-) -> Result<()> {
-    model.spend(16 - column)?;
+fn reduce_row(model: &mut Model, row: &mut [i128], pivot: &[i128], column: usize) -> Result<()> {
+    model.spend(row.len() - column)?;
     let q = row[column].div_euclid(pivot[column]);
     if q != 0 {
         for (x, &y) in row[column..].iter_mut().zip(&pivot[column..]) {
@@ -197,6 +181,25 @@ fn reduce_row(
         }
     }
     Ok(())
+}
+
+pub(super) fn alternating_inverse(alternating: Matrix) -> Result<(Matrix, i128)> {
+    let [_, a, b, c] = alternating[0];
+    let [_, _, d, e] = alternating[1];
+    let f = alternating[2][3];
+    let pfaffian = Wide::<8>::product(a, f)
+        .add(Wide::product(b, e).negate())?
+        .add(Wide::product(c, d))?
+        .signed()
+        .ok_or_else(arithmetic)?;
+    let opposite = |x: i128| x.checked_neg().ok_or_else(arithmetic);
+    let adjugate = [
+        [0, opposite(f)?, e, opposite(d)?],
+        [f, 0, opposite(c)?, b],
+        [opposite(e)?, c, 0, opposite(a)?],
+        [d, opposite(b)?, a, 0],
+    ];
+    Ok((adjugate, pfaffian))
 }
 
 impl Endomorphism {

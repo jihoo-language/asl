@@ -188,6 +188,7 @@ pub(crate) enum TypeForm {
     CMQuotientLattice(Label),
     CMQuotientDual(Label),
     CMQuotientEnd(Label),
+    CMQuotientWedge(Label),
     CMMetaLift(Label),
     CMMetaAuto(Label),
     CMMetaMat(Label),
@@ -3511,6 +3512,97 @@ impl<'src> Parser<'src> {
             span,
             ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Theta(Box::new(
                 Theta::Metaplectic(Box::new(operation)),
+            )))))),
+            depth,
+        )
+    }
+
+    fn cm_torelli_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                theta::{
+                    quotient::{torelli::Statement, Statement as Quotient},
+                    Statement as Theta,
+                },
+                Statement as Abelian,
+            },
+            Statement as Hom,
+        };
+        self.advance()?;
+        let operation = if command == "rvCMQuotientWedgePair" {
+            Statement::Pair(Box::new(self.paren_pair(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            match command {
+                "rvCMQuotientNS" => Statement::Data(name),
+                "rvCMQuotientTrans" => Statement::Transcendental(name),
+                "rvCMQuotientTorelli" => Statement::Torelli(name),
+                "rvCMQuotientFactorFrob" => Statement::Frobenius(name),
+                _ => Statement::Profiles(name),
+            }
+        };
+        let quotient = Quotient::Torelli(Box::new(operation));
+        let theta = Theta::Quotient(Box::new(quotient));
+        Ok(StatementForm::CMHom(Box::new(Hom::Fourier(Box::new(
+            Abelian::Theta(Box::new(theta)),
+        )))))
+    }
+
+    fn cm_torelli_expression(
+        &mut self,
+        command: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                theta::{
+                    quotient::{torelli::Expression, Expression as Quotient},
+                    Expression as Theta,
+                },
+                Expression as Abelian,
+            },
+            Expression as Hom,
+        };
+        let (operation, depth) = if command == "rvCMQuotientToRosati" {
+            let input = Box::new(self.paren_expr(nest)?);
+            let depth = input.depth + 1;
+            (Expression::Rosati(input), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            if command == "rvCMQuotientWedge" {
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let mut entries = [0; 6];
+                for (i, entry) in entries.iter_mut().enumerate() {
+                    if i != 0 {
+                        self.expect(Token::Comma)?;
+                    }
+                    *entry = self.signed_wide("a signed wedge coordinate", "CM quotient wedge")?;
+                }
+                self.expect(Token::RBrace)?;
+                (Expression::Wedge(name, entries), 0)
+            } else {
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                let expr = if command == "rvCMQuotientProjector" {
+                    Expression::Projector(name, i)
+                } else {
+                    Expression::Basis(command == "rvCMQuotientTransBasis", name, i)
+                };
+                (expr, 0)
+            }
+        };
+        let quotient = Quotient::Torelli(Box::new(operation));
+        let theta = Theta::Quotient(Box::new(quotient));
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Theta(Box::new(
+                theta,
             )))))),
             depth,
         )
@@ -15251,6 +15343,14 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                name @ ("rvCMQuotientNS"
+                | "rvCMQuotientTrans"
+                | "rvCMQuotientTorelli"
+                | "rvCMQuotientFactorFrob"
+                | "rvCMQuotientTorelliProfiles"
+                | "rvCMQuotientWedgePair"),
+            ) => self.cm_torelli_statement(name)?,
+            Token::Word(
                 name @ ("rvcmquotient"
                 | "rvCMQuotientData"
                 | "rvCMQuotientFrob"
@@ -19566,6 +19666,7 @@ impl<'src> Parser<'src> {
                 | "RVCMQuotientLattice"
                 | "RVCMQuotientDual"
                 | "RVCMQuotientEnd"
+                | "RVCMQuotientWedge"
         ) && self.eat(Token::LParen)?
         {
             let label = self.label()?;
@@ -19575,7 +19676,8 @@ impl<'src> Parser<'src> {
                 "RVCMPolarDual" => TypeForm::CMPolarDual(label),
                 "RVCMQuotientLattice" => TypeForm::CMQuotientLattice(label),
                 "RVCMQuotientDual" => TypeForm::CMQuotientDual(label),
-                _ => TypeForm::CMQuotientEnd(label),
+                "RVCMQuotientEnd" => TypeForm::CMQuotientEnd(label),
+                _ => TypeForm::CMQuotientWedge(label),
             };
             return ty(span, form, 0);
         }
@@ -22438,6 +22540,17 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMQuotientWedge"
+                        | "rvCMQuotientNSBasis"
+                        | "rvCMQuotientTransBasis"
+                        | "rvCMQuotientProjector"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvCMQuotientToRosati" && self.token() == Token::LParen)
+                {
+                    return self.cm_torelli_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
