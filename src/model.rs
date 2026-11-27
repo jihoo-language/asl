@@ -26,6 +26,7 @@ use crate::error::{Error, Result};
 use crate::hw_algebra::Matrix as HWMatrix;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
+use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -246,6 +247,7 @@ pub(crate) enum Kind {
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
     ECCurve(Rc<str>),
+    Jacobian(Rc<str>),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -408,6 +410,7 @@ pub(crate) enum Value {
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
     ECCurve(Rc<str>),
+    Jacobian(Rc<Divisor>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -942,6 +945,13 @@ impl Model {
             Kind::RVHyperArithmetic(..) | Kind::RVHyperCover(..) => usize::MAX,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
             Kind::ECCurve(..) | Kind::ECIso(..) => 1,
+            Kind::Jacobian(ref name) => {
+                if self.hw_closed_curves[name.as_ref()].grade.genus == 0 {
+                    1
+                } else {
+                    usize::MAX
+                }
+            }
             Kind::ECMap(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
@@ -1153,6 +1163,7 @@ impl Model {
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
                 | Kind::ECCurve(..)
+                | Kind::Jacobian(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3450,6 +3461,35 @@ impl Model {
             })
     }
 
+    pub(crate) fn jacobian_curve(&self, name: &str) -> Result<Rc<hw_closed::Curve>> {
+        let curve =
+            self.hw_closed_curves.get(name).cloned().ok_or_else(|| {
+                Error::plain(format!("unknown residue hyperelliptic curve '{name}'"))
+            })?;
+        hyperelliptic_jacobian::require_curve(&curve)?;
+        Ok(curve)
+    }
+
+    pub(crate) fn show_jacobian_composition(
+        &mut self,
+        pair: &Divisor,
+        quotient: &[ECScalar],
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push("rvJacCompose = u=")?;
+        self.write_ec_polynomial(&mut out, &pair.u)?;
+        out.push(", v=")?;
+        self.write_ec_polynomial(&mut out, &pair.v)?;
+        out.push(", norm quotient=")?;
+        self.write_ec_polynomial(&mut out, quotient)?;
+        Ok(out.string)
+    }
+
+    pub(crate) fn jacobian_type(&mut self, name: Rc<str>) -> Result<TypeId> {
+        self.jacobian_curve(&name)?;
+        self.inhabited_type(Kind::Jacobian(name), 0)
+    }
+
     pub(crate) fn hww_matrix_type(&mut self, grade: hw_closed::Grade) -> Result<TypeId> {
         let ring = self
             .rv_unram_named(&grade.ring)
@@ -4548,6 +4588,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::ECCurve(..)
+            | Kind::Jacobian(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5045,6 +5086,7 @@ impl Model {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
             Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
+            Kind::Jacobian(name) => out.push(&format!("RVJac({name})")),
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5321,6 +5363,7 @@ impl Model {
                 self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
                 Ok(a.polynomial == b.polynomial)
             }
+            (Value::Jacobian(a), Value::Jacobian(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -5643,6 +5686,7 @@ impl Model {
                 self.spend(a.polynomial.len().min(b.polynomial.len()) * a.polynomial[0].len())?;
                 Ok(a.polynomial.cmp(&b.polynomial))
             }
+            (Value::Jacobian(a), Value::Jacobian(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -5937,6 +5981,10 @@ impl Model {
                 }
                 Kind::ECCurve(ref name) => vec![Value::ECCurve(name.clone())],
                 Kind::ECIso(ref name) => vec![Value::ECIso(name.clone())],
+                Kind::Jacobian(ref name) => {
+                    let curve = self.jacobian_curve(name)?;
+                    hyperelliptic_jacobian::elements(self, &curve, MAX_ELEMENTS)?
+                }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
                         "an elliptic rational morphism type cannot be enumerated",
@@ -7333,6 +7381,14 @@ impl Model {
                 self.write_type(out, ty, 0)?;
                 let curve = self.ec_curve(name)?;
                 out.push(&format!("{{a={:?}, b={:?}}}", curve.a, curve.b))
+            }
+            Value::Jacobian(divisor) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{u=")?;
+                self.write_ec_polynomial(out, &divisor.u)?;
+                out.push(", v=")?;
+                self.write_ec_polynomial(out, &divisor.v)?;
+                out.push("}")
             }
             Value::ECMap(map) => {
                 self.write_type(out, ty, 0)?;

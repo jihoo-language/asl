@@ -122,6 +122,7 @@ pub(crate) enum TypeForm {
     RVCTResidue(usize, usize),
     RVFusion(usize, usize),
     RVCyclo(usize),
+    Jacobian(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -958,6 +959,7 @@ pub(crate) enum ExprForm {
     EllipticCM(Box<crate::elliptic_cm_recognition::Expression>),
     EllipticLocal(Box<crate::elliptic_local::Expression>),
     HasseWitt(Box<crate::hyperelliptic::Expression>),
+    Jacobian(Box<crate::hyperelliptic_jacobian::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1130,6 +1132,7 @@ pub(crate) enum StatementForm {
     EllipticCM(Box<crate::elliptic_cm_recognition::Command>),
     EllipticLocal(Box<crate::elliptic_local::Command>),
     HasseWitt(Box<crate::hyperelliptic::Command>),
+    Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     HWWClosed(Box<crate::hw_closed::Command>),
     Legendre(crate::legendre::Query),
     UnramRing(Label, usize, usize, Vec<i128>),
@@ -2798,6 +2801,81 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::HasseWitt(Box::new(expression)), depth)
     }
 
+    fn jacobian_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_jacobian::Command;
+        self.advance()?;
+        let command = match name {
+            "rvjacbase" => {
+                let target = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                self.expect(Token::Comma)?;
+                let field = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Base(target, base, field)
+            }
+            "rvJacCompose" => Command::Compose(Box::new(self.paren_pair(0)?)),
+            "rvJacOrder" => Command::Order(Box::new(self.paren_expr(0)?)),
+            _ => {
+                self.expect(Token::LBracket)?;
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Count(curve, name == "rvJacEnumerate")
+            }
+        };
+        Ok(StatementForm::Jacobian(Box::new(command)))
+    }
+
+    fn jacobian_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_jacobian::{Expression, Operation};
+        self.expect(Token::LBracket)?;
+        let (expression, depth) = match name {
+            "rvjac" => {
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                let coefficient = |parser: &mut Self| {
+                    parser.signed_tuple(
+                        "a signed residue coordinate",
+                        "Mumford coefficient coordinate",
+                    )
+                };
+                let u = self.set_named_rows(coefficient)?;
+                let v = self.set_named_rows(coefficient)?;
+                (Expression::Literal(curve, u, v), 0)
+            }
+            "rvJacPoint" => {
+                let curve = self.label()?;
+                self.expect(Token::RBracket)?;
+                let xy = self.paren_pair(nest)?;
+                let depth = 1 + xy[0].depth.max(xy[1].depth);
+                (Expression::Point(curve, Box::new(xy)), depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvJacScale" => Operation::Scale(
+                        self.signed_wide("an integer multiple", "Jacobian scalar")?,
+                    ),
+                    "rvJacU" | "rvJacV" => {
+                        Operation::Coefficient(name == "rvJacV", self.number()?.0)
+                    }
+                    "rvJacExtend" => Operation::Extend(self.label()?),
+                    "rvJacDescend" => Operation::Descend(self.label()?),
+                    "rvJacWeilApply" => Operation::Weil(self.label()?),
+                    _ => {
+                        let base = self.label()?;
+                        self.expect(Token::Comma)?;
+                        Operation::Frobenius(base, self.number()?.0)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Apply(operation, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::Jacobian(Box::new(expression)), depth)
+    }
+
     fn hww_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hw_closed::{Command, Query};
         self.advance()?;
@@ -3226,6 +3304,10 @@ impl<'src> Parser<'src> {
                 StatementForm::ECMapReport(report, Box::new(self.paren_expr(0)?))
             }
             Token::Word("rvECCMCertify") => self.ec_cm_statement()?,
+            Token::Word(
+                command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
+                | "rvJacCompose"),
+            ) => self.jacobian_statement(command)?,
             Token::Eof => return Ok(None),
             Token::Word(
                 command @ ("settopology"
@@ -6464,6 +6546,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
+        if name.text == "RVJac" && self.eat(Token::LParen)? {
+            let curve = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Jacobian(curve), 0);
+        }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
             self.expect(Token::RParen)?;
@@ -8331,6 +8418,21 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.ec_map_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvjac"
+                        | "rvJacPoint"
+                        | "rvJacScale"
+                        | "rvJacU"
+                        | "rvJacV"
+                        | "rvJacExtend"
+                        | "rvJacDescend"
+                        | "rvJacFrob"
+                        | "rvJacWeilApply"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.jacobian_expression(&name.text, name.span, nest);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;

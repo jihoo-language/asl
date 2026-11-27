@@ -78,7 +78,9 @@ impl Field<'_> {
 
     pub(crate) fn check_polynomial(self, len: usize) -> Result<()> {
         if len.saturating_mul(self.cells()) > crate::complex::MAX_PIVOT_CELLS {
-            return Err(Error::plain("isogeny polynomial exceeds the storage limit"));
+            return Err(Error::plain(
+                "finite-field polynomial exceeds the storage limit",
+            ));
         }
         Ok(())
     }
@@ -306,6 +308,41 @@ pub(crate) fn coprime(
     b: Polynomial,
 ) -> Result<bool> {
     Ok(gcd(model, field, a, b)?.len() == 1)
+}
+
+// The returned gcd is monic and equals left·a+right·b.
+pub(crate) fn bezout(
+    model: &mut Model,
+    field: Field<'_>,
+    a: &[Scalar],
+    b: &[Scalar],
+) -> Result<(Polynomial, Polynomial, Polynomial)> {
+    model.spend(a.len() + b.len())?;
+    let (mut r0, mut r1) = (a.to_vec(), b.to_vec());
+    let (mut a0, mut a1) = (vec![field.one()], Vec::new());
+    let (mut b0, mut b1) = (Vec::new(), vec![field.one()]);
+    while !r1.is_empty() {
+        let (quotient, remainder) = divide(model, field, r0, &r1)?;
+        let next_a = multiply(model, field, &quotient, &a1)?;
+        let next_a = sum(model, field, &a0, &next_a, true)?;
+        let next_b = multiply(model, field, &quotient, &b1)?;
+        let next_b = sum(model, field, &b0, &next_b, true)?;
+        (r0, r1) = (r1, remainder);
+        (a0, a1) = (a1, next_a);
+        (b0, b1) = (b1, next_b);
+    }
+    let leading = r0
+        .last()
+        .ok_or_else(|| Error::plain("Bézout gcd of two zero polynomials"))?;
+    if *leading == field.one() {
+        return Ok((r0, a0, b0));
+    }
+    let inverse = field.inverse_unit(model, leading)?;
+    Ok((
+        scale(model, field, &r0, &inverse)?,
+        scale(model, field, &a0, &inverse)?,
+        scale(model, field, &b0, &inverse)?,
+    ))
 }
 
 pub(crate) fn inverse_mod(

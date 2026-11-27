@@ -27,6 +27,7 @@ use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
+use crate::hyperelliptic_jacobian::{self, Divisor};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -413,6 +414,20 @@ enum LogicAction {
     ),
 }
 
+enum JacobianOperation {
+    Scale(i128),
+    Coefficient(bool, usize),
+    Extend(Rc<hw_closed::Curve>),
+    Descend(Rc<hw_closed::Curve>),
+    Frobenius(Rc<hw_closed::Curve>, usize),
+    Weil(Rc<hw_closed::Curve>),
+}
+
+enum JacobianAction {
+    Point(Rc<hw_closed::Curve>, Box<[TypedExpr; 2]>),
+    Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -482,6 +497,7 @@ enum TypedForm {
     ECMapChart(Rc<str>, Rc<str>, Box<TypedExpr>),
     ECUnary(elliptic::Unary, Box<TypedExpr>),
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
+    Jacobian(JacobianAction),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1444,6 +1460,7 @@ impl Engine {
                     format!("khKappa[{}] = {kappa}", name.text)
                 }
             },
+            StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::HWWClosed(command) => return self.hww_command(*command),
             StatementForm::EllipticCM(command) => {
                 let ec_cm::Command::Certify(family, input) = *command;
@@ -4451,6 +4468,111 @@ impl Engine {
         ))
     }
 
+    fn jacobian_command(
+        &mut self,
+        command: hyperelliptic_jacobian::Command,
+    ) -> Result<Option<String>> {
+        use hyperelliptic_jacobian::Command;
+        let report = match command {
+            Command::Base(target, base, field) => {
+                let base = self.model.jacobian_curve(&base.text)?;
+                let ring = self.model.rv_unram(&field)?;
+                let polynomial =
+                    hyperelliptic_jacobian::coefficients_over(&mut self.model, &base, &ring)?;
+                self.model.define_hww_curve(target, &field, polynomial)?;
+                return Ok(None);
+            }
+            Command::Count(name, enumerate) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                if enumerate {
+                    let value = hyperelliptic_jacobian::count_pairs(&mut self.model, &curve)?;
+                    format!("rvJacEnumerate[{}] = {value}", name.text)
+                } else {
+                    let value = hyperelliptic_jacobian::cardinality(&mut self.model, &curve)?;
+                    format!("rvJacCount[{}] = {value}", name.text)
+                }
+            }
+            Command::Compose(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.checker().expr(left)?;
+                let right = self.checker().expr(right)?;
+                self.checker()
+                    .require_type(left.ty, &right, "rvJacCompose right factor")?;
+                let Kind::Jacobian(name) = self.model.kind(left.ty) else {
+                    return Err(Error::new(
+                        left.span,
+                        "rvJacCompose requires RVJac divisor classes",
+                    ));
+                };
+                let curve = self.model.jacobian_curve(name)?;
+                let (Value::Jacobian(left), Value::Jacobian(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let combined = left.compose(&mut self.model, &curve, &right)?;
+                let quotient = combined.norm_quotient(&mut self.model, &curve)?;
+                self.model.show_jacobian_composition(&combined, &quotient)?
+            }
+            Command::Order(input) => {
+                let input = self.checker().expr(*input)?;
+                let Kind::Jacobian(name) = self.model.kind(input.ty) else {
+                    return Err(Error::new(
+                        input.span,
+                        "rvJacOrder requires an RVJac divisor class",
+                    ));
+                };
+                let curve = self.model.jacobian_curve(name)?;
+                let Value::Jacobian(divisor) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                format!("rvJacOrder = {}", divisor.order(&mut self.model, &curve)?)
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
+        match action {
+            JacobianAction::Point(curve, xy) => {
+                let [x, y] = xy.as_ref();
+                let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
+                    unreachable!()
+                };
+                let value = Divisor::from_point(&mut self.model, curve, &x, y.to_vec())?;
+                value.persist(&mut self.model, curve)
+            }
+            JacobianAction::Apply(curve, operation, input) => {
+                let Value::Jacobian(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let (output, target) = match operation {
+                    JacobianOperation::Coefficient(v, k) => {
+                        return rv_unram::persist(&mut self.model, value.coefficient(curve, *v, *k))
+                    }
+                    JacobianOperation::Scale(-1) => (value.negate(&mut self.model, curve)?, curve),
+                    JacobianOperation::Scale(n) => {
+                        (value.scale(&mut self.model, curve, *n)?, curve)
+                    }
+                    JacobianOperation::Extend(target) => {
+                        (value.extend(&mut self.model, curve, target)?, target)
+                    }
+                    JacobianOperation::Descend(base) => {
+                        (value.descend(&mut self.model, curve, base)?, base)
+                    }
+                    JacobianOperation::Frobenius(base, power) => (
+                        value.frobenius(&mut self.model, base, curve, *power)?,
+                        curve,
+                    ),
+                    JacobianOperation::Weil(base) => {
+                        (value.weil(&mut self.model, base, curve)?, curve)
+                    }
+                };
+                output.persist(&mut self.model, target)
+            }
+        }
+    }
+
     fn hww_command(&mut self, command: hw_closed::Command) -> Result<Option<String>> {
         match command {
             hw_closed::Command::Define(name, ring, coefficients) => {
@@ -5061,6 +5183,14 @@ impl Engine {
                             family.multiply(&mut self.model, exponent, a, b)?
                         };
                         legendre_cm::persist(&mut self.model, value)
+                    }
+                    (BinaryOp::Add, Value::Jacobian(a), Value::Jacobian(b)) => {
+                        let Kind::Jacobian(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let curve = self.model.jacobian_curve(name)?;
+                        let sum = a.add(&mut self.model, &curve, &b)?;
+                        sum.persist(&mut self.model, &curve)
                     }
                     (BinaryOp::Add, Value::ECPoint(a), Value::ECPoint(b)) => {
                         let Kind::ECPoint(name) = self.model.kind(expr.ty) else {
@@ -6314,6 +6444,7 @@ impl Engine {
                 let m = hw_algebra::multiply(&mut self.model, ring, &a, &b)?;
                 hyperelliptic::persist_matrix(&mut self.model, m)
             }
+            TypedForm::Jacobian(action) => self.eval_jacobian(action),
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -8639,6 +8770,7 @@ impl Checker<'_> {
                 let ring = Residues::checked(self.model, p, s)?;
                 self.model.hw_scalar_type(ring)
             }
+            TypeForm::Jacobian(name) => self.model.jacobian_type(name.text.into()),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -9701,6 +9833,10 @@ impl Checker<'_> {
                         hw_closed::zero(self.model,&ring,grade.genus)?
                     }
                     Kind::HWScalar(_)=>Value::HWScalar(0),
+                    Kind::Jacobian(name) => {
+                        let curve = self.model.jacobian_curve(name)?;
+                        Divisor::zero(&curve).persist(self.model, &curve)?
+                    }
                     Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
                     Kind::ECMap(source,target)=>{
                         ec_morphism::persist(self.model,Morphism::zero(source.clone(),target.clone()))?
@@ -11771,6 +11907,7 @@ impl Checker<'_> {
             ExprForm::EllipticCM(expression) => self.ec_cm_expression(*expression),
             ExprForm::EllipticLocal(expression) => self.ec_local_expression(*expression),
             ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
+            ExprForm::Jacobian(expression) => self.jacobian_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -12505,6 +12642,17 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if let Kind::Jacobian(name) = self.model.kind(input.ty) {
+                    let curve = self.model.jacobian_curve(name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::Jacobian(JacobianAction::Apply(
+                            curve,
+                            JacobianOperation::Scale(-1),
+                            Box::new(input),
+                        )),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::ECPoint(..)) {
@@ -16161,6 +16309,7 @@ impl Checker<'_> {
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::Jacobian(..)
                         | Kind::ECPoint(..)
                         | Kind::HWMatrix(..)
                         | Kind::HWWMatrix(..)
@@ -17209,6 +17358,97 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Constant(value)))
+    }
+
+    fn jacobian_expression(
+        &mut self,
+        expression: hyperelliptic_jacobian::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use hyperelliptic_jacobian::{Expression, Operation};
+        match expression {
+            Expression::Literal(name, u, v) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                let make = |model: &mut Model, coefficients: Vec<Vec<i128>>| -> Result<_> {
+                    coefficients
+                        .into_iter()
+                        .map(|c| curve.ring.literal(model, c))
+                        .collect()
+                };
+                let u = make(self.model, u)?;
+                let v = make(self.model, v)?;
+                let divisor = Divisor::new(self.model, &curve, u, v)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(divisor.persist(self.model, &curve)?),
+                ))
+            }
+            Expression::Point(name, xy) => {
+                let curve = self.model.jacobian_curve(&name.text)?;
+                let field = Label {
+                    text: curve.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let coefficient = self.model.rv_unram_type(&field)?;
+                let [x, y] = *xy;
+                let x = self.expr(x)?;
+                let y = self.expr(y)?;
+                self.require_type(coefficient, &x, "rvJacPoint coordinate")?;
+                self.require_type(coefficient, &y, "rvJacPoint coordinate")?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::Point(curve, Box::new([x, y]))),
+                ))
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                let Kind::Jacobian(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "Jacobian operation",
+                        "an RVJac divisor class",
+                    ));
+                };
+                let curve = self.model.jacobian_curve(name)?;
+                let extends = matches!(&operation, Operation::Extend(_));
+                let (ty, operation) = match operation {
+                    Operation::Scale(n) => (input.ty, JacobianOperation::Scale(n)),
+                    Operation::Coefficient(v, k) => {
+                        let field = Label {
+                            text: curve.grade.ring.to_string(),
+                            span: input.span,
+                        };
+                        (
+                            self.model.rv_unram_type(&field)?,
+                            JacobianOperation::Coefficient(v, k),
+                        )
+                    }
+                    Operation::Extend(target) | Operation::Descend(target) => {
+                        let target_curve = self.model.jacobian_curve(&target.text)?;
+                        let ty = self.model.jacobian_type(target.text.into())?;
+                        let action = if extends {
+                            JacobianOperation::Extend(target_curve)
+                        } else {
+                            JacobianOperation::Descend(target_curve)
+                        };
+                        (ty, action)
+                    }
+                    Operation::Frobenius(base, k) => (
+                        input.ty,
+                        JacobianOperation::Frobenius(self.model.jacobian_curve(&base.text)?, k),
+                    ),
+                    Operation::Weil(base) => (
+                        input.ty,
+                        JacobianOperation::Weil(self.model.jacobian_curve(&base.text)?),
+                    ),
+                };
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::Apply(curve, operation, Box::new(input))),
+                ))
+            }
+        }
     }
 
     fn hww_operand(

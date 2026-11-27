@@ -224,7 +224,11 @@ impl Curve {
         Ok((q, trace))
     }
 
-    fn weil(&self, model: &mut Model) -> Result<&[i128]> {
+    pub(crate) fn polynomial(&self) -> &[Coefficient] {
+        &self.polynomial
+    }
+
+    pub(crate) fn weil(&self, model: &mut Model) -> Result<&[i128]> {
         if let Some(polynomial) = self.weil.get() {
             return Ok(polynomial);
         }
