@@ -13,6 +13,7 @@ use super::postnikov::{Cochain, Postnikov};
 pub(crate) mod boundaries;
 pub(crate) mod braid;
 mod characters;
+pub(crate) mod defects;
 pub(crate) mod fusion_symbols;
 mod representations;
 
@@ -134,7 +135,7 @@ impl Double {
         let mut flux_offsets = Vec::with_capacity(n + 1);
         for g in 0..n {
             flux_offsets.push(simples.len());
-            let alpha = characters::transgress(model, &group, post, k, g)?;
+            let alpha = characters::transgress(model, &group, post, k, g, exponent)?;
             let radical = characters::radical(model, &alpha)?;
             if !radical.contains(&g) {
                 return Err(Error::plain("flux is missing from its commutator radical"));
@@ -144,10 +145,9 @@ impl Double {
                     "twisted double exceeds its simple-sector limit of 256",
                 ));
             }
-            let sectors =
-                characters::extend(model, &group, g, &alpha, &radical, post.prime, exponent)?;
+            let sectors = characters::extend(model, &group, g, &alpha, &radical, conductor)?;
             representations.extend(representations::induce_all(
-                model, &group, &alpha, &radical, &sectors, post.prime, exponent,
+                model, &group, &alpha, &radical, &sectors, conductor,
             )?);
             simples.extend(sectors);
         }

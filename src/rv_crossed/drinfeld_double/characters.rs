@@ -1,6 +1,5 @@
 use crate::error::{Error, Result};
 use crate::model::Model;
-use crate::odd_cobar::Prime;
 
 use super::super::path_integral::Quotient;
 use super::super::postnikov::{Cochain, Postnikov};
@@ -28,7 +27,8 @@ pub(super) fn transgress(
     post: &Postnikov,
     k: &Cochain,
     g: usize,
-) -> Result<Vec<Vec<u32>>> {
+    exponent: usize,
+) -> Result<Vec<Vec<usize>>> {
     let n = group.order();
     let p = post.prime;
     let mut alpha = vec![vec![0; n]; n];
@@ -37,27 +37,42 @@ pub(super) fn transgress(
             let a = post.coefficient(model, k, &[g, x, y])?;
             let b = post.coefficient(model, k, &[x, y, g])?;
             let c = post.coefficient(model, k, &[x, g, y])?;
-            *value = p.add(p.add(a, b), p.negate(c));
+            *value = exponent * p.add(p.add(a, b), p.negate(c)) as usize;
         }
     }
+    verify_multiplier(model, group, &alpha, exponent * p.get() as usize)?;
+    Ok(alpha)
+}
+
+pub(super) fn verify_multiplier(
+    model: &mut Model,
+    group: &Quotient,
+    alpha: &[Vec<usize>],
+    conductor: usize,
+) -> Result<()> {
+    let n = group.order();
     model.spend(n * n * n)?;
+    if (0..n).any(|i| alpha[i][0] != 0 || alpha[0][i] != 0) {
+        return Err(Error::plain("projective multiplier must be normalized"));
+    }
     for x in 0..n {
         for y in 0..n {
             let xy = group.mul(x, y);
             for z in 0..n {
-                if p.add(alpha[x][y], alpha[xy][z]) != p.add(alpha[y][z], alpha[x][group.mul(y, z)])
+                if (alpha[x][y] + alpha[xy][z]) % conductor
+                    != (alpha[y][z] + alpha[x][group.mul(y, z)]) % conductor
                 {
                     return Err(Error::plain(
-                        "transgressed double multiplier fails its 2-cocycle equation",
+                        "projective multiplier fails its 2-cocycle equation",
                     ));
                 }
             }
         }
     }
-    Ok(alpha)
+    Ok(())
 }
 
-pub(super) fn radical(model: &mut Model, alpha: &[Vec<u32>]) -> Result<Vec<usize>> {
+pub(super) fn radical(model: &mut Model, alpha: &[Vec<usize>]) -> Result<Vec<usize>> {
     let n = alpha.len();
     model.spend(n * n)?;
     Ok((0..n)
@@ -69,12 +84,10 @@ pub(super) fn extend(
     model: &mut Model,
     group: &Quotient,
     flux: usize,
-    alpha: &[Vec<u32>],
+    alpha: &[Vec<usize>],
     radical: &[usize],
-    prime: Prime,
-    exponent: usize,
+    conductor: usize,
 ) -> Result<Vec<Simple>> {
-    let conductor = exponent * prime.get() as usize;
     let n = group.order();
     let square = n / radical.len();
     let dimension = square.isqrt();
@@ -90,9 +103,9 @@ pub(super) fn extend(
     let mut characters = vec![initial];
     for &r in radical.iter().skip(1) {
         if !known.contains(&r) {
-            let extension = Extension::new(group, alpha, &known, r, prime);
+            let extension = Extension::new(group, alpha, &known, r, conductor);
             model.spend(1 + characters.len() * extension.powers.len() * (1 + n))?;
-            characters = extension.characters(alpha, &known, characters, exponent, conductor)?;
+            characters = extension.characters(alpha, &known, characters, conductor)?;
             known = extension.cosets.into_iter().flatten().collect();
         }
     }
@@ -108,7 +121,7 @@ pub(super) fn extend(
                 let a = phases[x].expect("radical character support");
                 let b = phases[y].expect("radical character support");
                 let xy = phases[group.mul(x, y)].expect("radical is a subgroup");
-                if (a + b) % conductor != (xy + exponent * alpha[x][y] as usize) % conductor {
+                if (a + b) % conductor != (xy + alpha[x][y]) % conductor {
                     return Err(Error::plain(
                         "double central character fails a projective product",
                     ));
@@ -130,26 +143,26 @@ pub(super) fn extend(
 // first power back in that subgroup, each character has precisely m lifts.
 pub(super) struct Extension {
     powers: Vec<usize>,
-    carries: Vec<u32>,
+    carries: Vec<usize>,
     cosets: Vec<Vec<usize>>,
     return_to: usize,
-    total_carry: u32,
+    total_carry: usize,
 }
 
 impl Extension {
     pub(super) fn new(
         group: &Quotient,
-        alpha: &[Vec<u32>],
+        alpha: &[Vec<usize>],
         known: &[usize],
         r: usize,
-        p: Prime,
+        conductor: usize,
     ) -> Self {
         let mut powers = vec![0];
         let mut carries = vec![0];
         let mut current = 0;
         let mut carry = 0;
         loop {
-            carry = p.add(carry, alpha[current][r]);
+            carry = (carry + alpha[current][r]) % conductor;
             current = group.mul(current, r);
             if known.contains(&current) {
                 break;
@@ -176,17 +189,16 @@ impl Extension {
 
     fn characters(
         &self,
-        alpha: &[Vec<u32>],
+        alpha: &[Vec<usize>],
         known: &[usize],
         previous: Vec<Vec<Option<usize>>>,
-        exponent: usize,
         conductor: usize,
     ) -> Result<Vec<Vec<Option<usize>>>> {
         let m = self.powers.len();
         let mut result = Vec::with_capacity(m * previous.len());
         for phases in previous {
             for choice in 0..m {
-                result.push(self.lift(alpha, known, &phases, exponent, conductor, choice)?);
+                result.push(self.lift(alpha, known, &phases, conductor, choice)?);
             }
         }
         Ok(result)
@@ -194,16 +206,15 @@ impl Extension {
 
     pub(super) fn lift(
         &self,
-        alpha: &[Vec<u32>],
+        alpha: &[Vec<usize>],
         known: &[usize],
         phases: &[Option<usize>],
-        exponent: usize,
         conductor: usize,
         choice: usize,
     ) -> Result<Vec<Option<usize>>> {
         let m = self.powers.len();
         let rhs = (phases[self.return_to].expect("power lies in known subgroup")
-            + exponent * self.total_carry as usize)
+            + self.total_carry)
             % conductor;
         if !conductor.is_multiple_of(m) || !rhs.is_multiple_of(m) {
             return Err(Error::plain(
@@ -215,7 +226,7 @@ impl Extension {
         for (&x, coset) in known.iter().zip(&self.cosets) {
             let phase = phases[x].expect("known subgroup");
             for (j, &xy) in coset.iter().enumerate() {
-                let correction = exponent * (self.carries[j] + alpha[x][self.powers[j]]) as usize;
+                let correction = self.carries[j] + alpha[x][self.powers[j]];
                 lifted[xy] =
                     Some((phase + j * generator_phase + conductor * 2 - correction) % conductor);
             }

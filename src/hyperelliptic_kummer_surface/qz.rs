@@ -108,6 +108,10 @@ impl Scalar {
         Ok(Value::QZ(self))
     }
 
+    pub(crate) fn root_order(self) -> Option<u128> {
+        self.denominator.small()
+    }
+
     pub(crate) fn root_index(self, order: usize) -> Option<usize> {
         let denominator = self.denominator.small()?;
         let order = order as u128;

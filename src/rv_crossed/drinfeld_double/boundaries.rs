@@ -124,6 +124,11 @@ impl Boundary {
         }
     }
 
+    pub(super) fn members(&self) -> Result<&[usize]> {
+        self.parts()?;
+        Ok(&self.subgroup.members)
+    }
+
     pub(crate) fn cochain(&self, [g, h]: [usize; 2]) -> Result<Scalar> {
         self.subgroup.mu(self.parts()?.0, g, h)
     }

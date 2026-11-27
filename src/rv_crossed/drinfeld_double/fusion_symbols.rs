@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
@@ -6,7 +6,7 @@ use crate::model::{Model, Value};
 use crate::rv_lens;
 use crate::syntax::Label;
 
-use super::{negate_phase, Double};
+use super::{negate_phase, representations, Double};
 
 mod coherence;
 mod matrix;
@@ -191,63 +191,29 @@ impl<'a> Work<'a> {
                 maps: Vec::new(),
             });
         }
-        let n = d.group.order();
-        let order = d.conductor;
-        let size = rows * cols;
-        self.field.model.spend(3 * n * size)?;
-        let tensor = (0..n)
-            .map(|x| {
-                let (a, b) = (
-                    &d.representations[a].action[x],
-                    &d.representations[b].action[x],
-                );
-                let phase = d.tensor_phase(x, a0.flux, b0.flux);
-                a.iter()
-                    .flat_map(|a| {
-                        b.iter().map(move |b| {
-                            (
-                                a.target * b0.dimension + b.target,
-                                (phase + a.phase + b.phase) % order,
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
+        let phases = (0..d.group.order())
+            .map(|x| d.tensor_phase(x, a0.flux, b0.flux))
             .collect::<Vec<_>>();
-        let mut phases = vec![None; size];
+        let tensor = representations::tensor_action(
+            self.field.model,
+            &d.representations[a].action,
+            &d.representations[b].action,
+            &phases,
+            d.conductor,
+        )?;
+        let orbits = representations::intertwiner_orbits(
+            self.field.model,
+            &tensor,
+            &d.representations[c].action,
+            d.conductor,
+        )?;
         let mut maps = Vec::new();
-        for root in 0..size {
-            if phases[root].is_some() {
-                continue;
+        for orbit in orbits {
+            let mut matrix = Matrix::zero(rows, cols)?;
+            for (i, phase) in orbit {
+                matrix.set(i / cols, i % cols, self.field.phase(phase)?);
             }
-            let mut orbit = Vec::new();
-            let mut pending = VecDeque::from([root]);
-            phases[root] = Some(0);
-            let mut consistent = true;
-            while let Some(i) = pending.pop_front() {
-                orbit.push(i);
-                let (r, s) = (i / cols, i % cols);
-                let v = phases[i].expect("known intertwiner phase");
-                for (x, action) in tensor.iter().enumerate() {
-                    let (r1, p) = action[r];
-                    let b = d.representations[c].action[x][s];
-                    let j = r1 * cols + b.target;
-                    let w = (v + p + order - b.phase) % order;
-                    if let Some(existing) = phases[j] {
-                        consistent &= existing == w;
-                    } else {
-                        phases[j] = Some(w);
-                        pending.push_back(j);
-                    }
-                }
-            }
-            if consistent {
-                let mut matrix = Matrix::zero(rows, cols)?;
-                for i in orbit {
-                    matrix.set(i / cols, i % cols, self.field.phase(phases[i].unwrap())?);
-                }
-                maps.push(matrix);
-            }
+            maps.push(matrix);
         }
         if maps.len() as i128 != expected {
             return Err(Error::plain(

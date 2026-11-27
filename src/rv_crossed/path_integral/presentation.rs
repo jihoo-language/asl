@@ -31,6 +31,40 @@ impl Quotient {
         Ok(Self { products, inverses })
     }
 
+    pub(in crate::rv_crossed) fn restrict(
+        &self,
+        model: &mut Model,
+        members: &[usize],
+    ) -> Result<Self> {
+        model.spend(members.len() * members.len())?;
+        let products = members
+            .iter()
+            .map(|&x| {
+                members
+                    .iter()
+                    .map(|&y| {
+                        members
+                            .binary_search(&self.mul(x, y))
+                            .map_err(|_| Error::plain("restricted group is not closed"))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let inverses = members
+            .iter()
+            .map(|&x| {
+                members
+                    .binary_search(&self.inv(x))
+                    .map_err(|_| Error::plain("restricted group lacks an inverse"))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self { products, inverses })
+    }
+
+    pub(in crate::rv_crossed) fn inv(&self, a: usize) -> usize {
+        self.inverses[a]
+    }
+
     pub(in crate::rv_crossed) fn order(&self) -> usize {
         self.inverses.len()
     }

@@ -210,6 +210,7 @@ pub(crate) enum Kind {
     FiniteGroup(Rc<str>),
     PostnikovCochain(Rc<str>, usize),
     DoubleSector(Rc<str>),
+    DoubleDefect(Rc<str>),
     DoubleBraid(Rc<str>, dd::braid::Colors, dd::braid::Colors),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
@@ -489,6 +490,7 @@ pub(crate) enum Value {
     GroupElement(usize),
     PostnikovCochain(Rc<postnikov::Cochain>),
     DoubleSector(Rc<dd::Sector>),
+    DoubleDefect(usize),
     DoubleBraid(Rc<dd::braid::Operator>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
@@ -709,6 +711,7 @@ pub(crate) struct Model {
     dw_integrals: HashMap<Rc<str>, Rc<dw::Integral>>,
     drinfeld_doubles: HashMap<Rc<str>, Rc<dd::Double>>,
     double_boundaries: HashMap<Rc<str>, Rc<dd::boundaries::Boundary>>,
+    double_defects: HashMap<Rc<str>, Rc<dd::defects::Category>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -874,6 +877,7 @@ impl Model {
             dw_integrals: HashMap::new(),
             drinfeld_doubles: HashMap::new(),
             double_boundaries: HashMap::new(),
+            double_defects: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1127,6 +1131,38 @@ impl Model {
         self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn define_double_defects(
+        &mut self,
+        name: Label,
+        data: dd::defects::Category,
+    ) -> Result<()> {
+        if self.double_defects.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                "double defect category is already defined",
+            ));
+        }
+        self.double_defects.insert(name.text.into(), Rc::new(data));
+        Ok(())
+    }
+
+    pub(crate) fn double_defects(&self, name: &Label) -> Result<Rc<dd::defects::Category>> {
+        self.double_defects
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown double defect category '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn double_defect_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.double_defects(name)?;
+        self.inhabited_type(Kind::DoubleDefect(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn define_double_boundary(
         &mut self,
         name: Label,
@@ -1311,6 +1347,7 @@ impl Model {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::FiniteGroup(ref name) => self.finite_groups[name.as_ref()].order(),
+            Kind::DoubleDefect(ref name) => self.double_defects[name.as_ref()].count(),
             Kind::PostnikovCochain(ref name, degree) => {
                 let post = &self.postnikov_systems[name.as_ref()];
                 (post.prime.get() as usize).saturating_pow(post.size(degree) as u32)
@@ -1907,6 +1944,7 @@ impl Model {
                 | Kind::FiniteGroup(..)
                 | Kind::PostnikovCochain(..)
                 | Kind::DoubleSector(..)
+                | Kind::DoubleDefect(..)
                 | Kind::DoubleBraid(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
@@ -7482,6 +7520,7 @@ impl Model {
             | Kind::FiniteGroup(..)
             | Kind::PostnikovCochain(..)
             | Kind::DoubleSector(..)
+            | Kind::DoubleDefect(..)
             | Kind::DoubleBraid(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
@@ -7665,6 +7704,7 @@ impl Model {
             Kind::DoubleBraid(name, [a, b, c], [d, e, f]) => {
                 out.push(&format!("RVDoubleBraid({name},{a},{b},{c},{d},{e},{f})"))
             }
+            Kind::DoubleDefect(name) => out.push(&format!("RVDoubleDefect({name})")),
             Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
             Kind::PostnikovCochain(name, degree) => {
                 out.push(&format!("RVPostnikovCochain({name},{degree})"))
@@ -8317,6 +8357,7 @@ impl Model {
                 self.spend(a.0.len())?;
                 Ok(a == b)
             }
+            (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a == b),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a == b)
@@ -8661,6 +8702,7 @@ impl Model {
                 self.spend(a.0.len())?;
                 Ok(a.cmp(b))
             }
+            (Value::DoubleDefect(a), Value::DoubleDefect(b)) => Ok(a.cmp(b)),
             (Value::DoubleSector(a), Value::DoubleSector(b)) => {
                 self.spend(a.0.len().min(b.0.len()))?;
                 Ok(a.cmp(b))
@@ -9614,6 +9656,12 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate a double braid operator type",
                     ));
+                }
+                Kind::DoubleDefect(ref name) => {
+                    let size = self.double_defects[name.as_ref()].count();
+                    self.check_element_limit(size)?;
+                    self.allocate(size)?;
+                    (0..size).map(Value::DoubleDefect).collect()
                 }
                 Kind::DoubleSector(..) => {
                     return Err(Error::plain("cannot enumerate a virtual fusion lattice"));
@@ -10593,6 +10641,10 @@ impl Model {
                     out.push(&format!("{}:{}", image.target, image.phase))?;
                 }
                 out.push("}")
+            }
+            Value::DoubleDefect(index) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{index}}}"))
             }
             Value::DoubleSector(sector) => {
                 self.spend(sector.0.len())?;

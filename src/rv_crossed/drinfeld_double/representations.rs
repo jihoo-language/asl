@@ -1,8 +1,8 @@
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
 use crate::model::Model;
-use crate::odd_cobar::Prime;
 use crate::rv_cyclotomic;
 
 use super::characters::Extension;
@@ -20,6 +20,14 @@ pub(super) struct Irrep {
 }
 
 impl Irrep {
+    pub(super) fn isotropic(&self) -> &[usize] {
+        &self.basis.subgroup
+    }
+
+    pub(super) fn representatives(&self) -> &[usize] {
+        &self.basis.representatives
+    }
+
     pub(super) fn data(&self, name: &str, i: usize) -> String {
         format!(
             "rvDoubleRepData[{name},{i}] = isotropic={:?}, coset_representatives={:?}, dimension={}",
@@ -48,20 +56,18 @@ struct InductionBasis {
 pub(super) fn induce_all(
     model: &mut Model,
     group: &Quotient,
-    alpha: &[Vec<u32>],
+    alpha: &[Vec<usize>],
     radical: &[usize],
     simples: &[Simple],
-    p: Prime,
-    exponent: usize,
+    conductor: usize,
 ) -> Result<Vec<Irrep>> {
     let n = group.order();
-    let conductor = p.get() as usize * exponent;
     let mut subgroup = radical.to_vec();
     let mut extensions = Vec::new();
     model.spend(n * n)?;
     for x in 1..n {
         if !subgroup.contains(&x) && subgroup.iter().all(|&y| alpha[x][y] == alpha[y][x]) {
-            let step = Extension::new(group, alpha, &subgroup, x, p);
+            let step = Extension::new(group, alpha, &subgroup, x, conductor);
             let next = step.subgroup();
             extensions.push((subgroup, step));
             subgroup = next;
@@ -100,13 +106,13 @@ pub(super) fn induce_all(
         let mut eta = simple.phases.clone();
         for (known, step) in &extensions {
             model.spend(n)?;
-            eta = step.lift(alpha, known, &eta, exponent, conductor, 0)?;
+            eta = step.lift(alpha, known, &eta, conductor, 0)?;
         }
         model.spend(basis.subgroup.len() * basis.subgroup.len())?;
         for &x in &basis.subgroup {
             for &y in &basis.subgroup {
                 if (eta[x].unwrap() + eta[y].unwrap()) % conductor
-                    != (eta[group.mul(x, y)].unwrap() + exponent * alpha[x][y] as usize) % conductor
+                    != (eta[group.mul(x, y)].unwrap() + alpha[x][y]) % conductor
                 {
                     return Err(Error::plain(
                         "maximal isotropic character fails a projective product",
@@ -124,8 +130,8 @@ pub(super) fn induce_all(
                         let next_rep = basis.representatives[target];
                         let phase = (eta[l].expect("induced character is defined on L")
                             + conductor
-                            + exponent * alpha[x][t] as usize
-                            - exponent * alpha[next_rep][l] as usize)
+                            + alpha[x][t]
+                            - alpha[next_rep][l])
                             % conductor;
                         Image { target, phase }
                     })
@@ -136,7 +142,7 @@ pub(super) fn induce_all(
             basis: basis.clone(),
             action,
         };
-        verify(model, group, alpha, simple, &irrep, exponent, conductor)?;
+        verify(model, group, alpha, simple, &irrep, conductor)?;
         model.allocate(5 + 3 * n + 2 * n * simple.dimension)?;
         answer.push(irrep);
     }
@@ -146,29 +152,14 @@ pub(super) fn induce_all(
 fn verify(
     model: &mut Model,
     group: &Quotient,
-    alpha: &[Vec<u32>],
+    alpha: &[Vec<usize>],
     simple: &Simple,
     irrep: &Irrep,
-    exponent: usize,
     conductor: usize,
 ) -> Result<()> {
-    let n = group.order();
-    model.spend(n * n * simple.dimension + n * simple.dimension)?;
+    verify_action(model, group, alpha, &irrep.action, conductor)?;
+    model.spend(group.order() * simple.dimension)?;
     for (x, row) in irrep.action.iter().enumerate() {
-        for (y, second) in irrep.action.iter().enumerate() {
-            let product = &irrep.action[group.mul(x, y)];
-            let multiplier = exponent * alpha[x][y] as usize;
-            for (b, c) in second.iter().zip(product) {
-                let a = row[b.target];
-                if a.target != c.target
-                    || (a.phase + b.phase) % conductor != (c.phase + multiplier) % conductor
-                {
-                    return Err(Error::plain(
-                        "induced matrices fail the twisted projective representation law",
-                    ));
-                }
-            }
-        }
         if let Some(phase) = simple.phases[x] {
             if row
                 .iter()
@@ -194,4 +185,103 @@ fn verify(
         }
     }
     Ok(())
+}
+
+pub(super) fn verify_action(
+    model: &mut Model,
+    group: &Quotient,
+    alpha: &[Vec<usize>],
+    action: &[Vec<Image>],
+    conductor: usize,
+) -> Result<()> {
+    let n = group.order();
+    model.spend(n * n * action[0].len())?;
+    for (x, row) in action.iter().enumerate() {
+        for (y, second) in action.iter().enumerate() {
+            let product = &action[group.mul(x, y)];
+            let multiplier = alpha[x][y];
+            for (b, c) in second.iter().zip(product) {
+                let a = row[b.target];
+                if a.target != c.target
+                    || (a.phase + b.phase) % conductor != (c.phase + multiplier) % conductor
+                {
+                    return Err(Error::plain(
+                        "induced matrices fail the twisted projective representation law",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn tensor_action(
+    model: &mut Model,
+    left: &[Vec<Image>],
+    right: &[Vec<Image>],
+    phases: &[usize],
+    conductor: usize,
+) -> Result<Vec<Vec<Image>>> {
+    let width = right[0].len();
+    model.spend(left.len() * left[0].len() * width)?;
+    Ok(left
+        .iter()
+        .zip(right)
+        .zip(phases)
+        .map(|((a, b), &phase)| {
+            a.iter()
+                .flat_map(|a| {
+                    b.iter().map(move |b| Image {
+                        target: a.target * width + b.target,
+                        phase: (phase + a.phase + b.phase) % conductor,
+                    })
+                })
+                .collect()
+        })
+        .collect())
+}
+
+pub(super) type IntertwinerOrbit = Vec<(usize, usize)>;
+
+pub(super) fn intertwiner_orbits(
+    model: &mut Model,
+    tensor: &[Vec<Image>],
+    source: &[Vec<Image>],
+    conductor: usize,
+) -> Result<Vec<IntertwinerOrbit>> {
+    let rows = tensor[0].len();
+    let cols = source[0].len();
+    let size = rows * cols;
+    model.spend(3 * tensor.len() * size)?;
+    let mut phases = vec![None; size];
+    let mut orbits = Vec::new();
+    for root in 0..size {
+        if phases[root].is_some() {
+            continue;
+        }
+        let mut orbit = Vec::new();
+        let mut pending = VecDeque::from([root]);
+        phases[root] = Some(0);
+        let mut consistent = true;
+        while let Some(i) = pending.pop_front() {
+            let (row, column) = (i / cols, i % cols);
+            let v = phases[i].expect("known intertwiner phase");
+            orbit.push((i, v));
+            for (a, b) in tensor.iter().zip(source) {
+                let (a, b) = (a[row], b[column]);
+                let j = a.target * cols + b.target;
+                let w = (v + a.phase + conductor - b.phase) % conductor;
+                if let Some(existing) = phases[j] {
+                    consistent &= existing == w;
+                } else {
+                    phases[j] = Some(w);
+                    pending.push_back(j);
+                }
+            }
+        }
+        if consistent {
+            orbits.push(orbit);
+        }
+    }
+    Ok(orbits)
 }

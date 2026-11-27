@@ -802,6 +802,17 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+enum DoubleDefectAction {
+    Entry(Rc<dd::defects::Category>, [usize; 3], Box<TypedExpr>),
+    Character(Rc<dd::defects::Category>, usize, Box<TypedExpr>),
+    Opposite(
+        Rc<dd::defects::Category>,
+        Rc<dd::defects::Category>,
+        Rc<dd::Double>,
+        Box<TypedExpr>,
+    ),
+}
+
 enum DoubleBraidAction {
     Inverse(usize, Box<TypedExpr>),
     Compose(usize, Box<[TypedExpr; 2]>),
@@ -828,6 +839,7 @@ enum TypedForm {
     Postnikov(PostnikovAction),
     Double(DoubleAction),
     DoubleBraid(DoubleBraidAction),
+    DoubleDefect(DoubleDefectAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2538,6 +2550,7 @@ impl Engine {
             StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
             StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::DoubleBraid(command) => return self.double_braid_command(*command),
+            StatementForm::DoubleDefect(command) => return self.double_defect_command(*command),
             StatementForm::DoubleBoundary(command) => {
                 return self.double_boundary_command(*command)
             }
@@ -8658,6 +8671,120 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn double_defect_command(&mut self, command: dd::defects::Command) -> Result<Option<String>> {
+        use dd::defects::Command;
+        let result = match command {
+            Command::Fuse(args) => self.double_defect_fusion(*args, None)?,
+            Command::Projector(entry, args) => self.double_defect_fusion(*args, Some(entry))?,
+            Command::Declare(name, [left, right]) => {
+                let boundaries = [
+                    self.model.double_boundary(&left)?,
+                    self.model.double_boundary(&right)?,
+                ];
+                let bulk = Label {
+                    text: boundaries[0].double_name.to_string(),
+                    span: left.span,
+                };
+                let double = self.model.drinfeld_double(&bulk)?;
+                let boundaries_names = [left.text.into(), right.text.into()];
+                let category = dd::defects::Category::new(
+                    &mut self.model,
+                    &double,
+                    boundaries_names,
+                    boundaries,
+                )?;
+                self.model.define_double_defects(name, category)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self.model.double_defects(&name)?.data(&name.text),
+            Command::Coset(name, index) => self
+                .model
+                .double_defects(&name)?
+                .coset_report(&name.text, index)?,
+            Command::Simple(name, index) => self
+                .model
+                .double_defects(&name)?
+                .simple_report(&name.text, index)?,
+            Command::Phase(x, input) => {
+                let typed = self.checker().expr(*input)?;
+                let category = self
+                    .checker()
+                    .double_defect_operand(&typed, "rvDoubleDefectPhase")?;
+                let index = self.eval_defect_index(&typed)?;
+                let phase = category
+                    .phase(index, x)?
+                    .map_or_else(|| "outside radical".into(), |p| p.to_string());
+                format!("rvDoubleDefectPhase[{x}] = {phase}")
+            }
+            Command::Image(key @ [x, column], input) => {
+                let typed = self.checker().expr(*input)?;
+                let category = self
+                    .checker()
+                    .double_defect_operand(&typed, "rvDoubleDefectRep")?;
+                let index = self.eval_defect_index(&typed)?;
+                let image = category.image(index, key)?;
+                format!(
+                    "rvDoubleDefectRep[{x},{column}] = target={}, phase={}",
+                    image.target, image.phase
+                )
+            }
+        };
+        Ok(Some(result))
+    }
+
+    fn double_defect_fusion(
+        &mut self,
+        [a, b]: [ParsedExpr; 2],
+        entry: Option<[usize; 3]>,
+    ) -> Result<String> {
+        let (a, b) = (self.checker().expr(a)?, self.checker().expr(b)?);
+        let category = self
+            .checker()
+            .double_defect_operand(&a, "rvDoubleDefectFuse")?;
+        self.checker()
+            .require_type(a.ty, &b, "rvDoubleDefectFuse")?;
+        let bulk = Label {
+            text: category.boundaries[0].double_name.to_string(),
+            span: a.span,
+        };
+        let double = self.model.drinfeld_double(&bulk)?;
+        let indices = [self.eval_defect_index(&a)?, self.eval_defect_index(&b)?];
+        if let Some(entry) = entry {
+            category.projector(&mut self.model, &double, indices, entry)
+        } else {
+            category.self_fusion(&mut self.model, &double, indices)
+        }
+    }
+
+    fn eval_defect_index(&mut self, input: &TypedExpr) -> Result<usize> {
+        let Value::DoubleDefect(index) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(index)
+    }
+
+    fn eval_double_defect(&mut self, action: &DoubleDefectAction) -> Result<Value> {
+        match action {
+            DoubleDefectAction::Entry(category, key, input) => {
+                let index = self.eval_defect_index(input)?;
+                category.entry(&mut self.model, index, *key)
+            }
+            DoubleDefectAction::Character(category, x, input) => {
+                let index = self.eval_defect_index(input)?;
+                category.character(&mut self.model, index, *x)
+            }
+            DoubleDefectAction::Opposite(source, target, double, input) => {
+                let index = self.eval_defect_index(input)?;
+                Ok(Value::DoubleDefect(source.opposite(
+                    &mut self.model,
+                    double,
+                    target,
+                    index,
+                )?))
+            }
+        }
+    }
+
     fn double_boundary_command(
         &mut self,
         command: dd::boundaries::Command,
@@ -13478,6 +13605,7 @@ impl Engine {
             TypedForm::Postnikov(action) => self.eval_postnikov(action),
             TypedForm::Double(action) => self.eval_double(action),
             TypedForm::DoubleBraid(action) => self.eval_double_braid(action),
+            TypedForm::DoubleDefect(action) => self.eval_double_defect(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -17362,6 +17490,7 @@ impl Checker<'_> {
             TypeForm::FlatCochain(name, degree) => self.model.flat_cochain_type(&name, degree),
             TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
             TypeForm::DoubleSector(name) => self.model.double_sector_type(&name),
+            TypeForm::DoubleDefect(name) => self.model.double_defect_type(&name),
             TypeForm::DoubleBraid(name, source, target) => {
                 self.model.double_braid_type(&name, source, target)
             }
@@ -18217,6 +18346,7 @@ impl Checker<'_> {
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
             ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
             ExprForm::DoubleBraid(expression) => self.double_braid_expression(*expression),
+            ExprForm::DoubleDefect(expression) => self.double_defect_expression(*expression),
             ExprForm::DoubleBoundary(expression) => self.double_boundary_expression(*expression),
             ExprForm::DoubleFusion(expression) => self.double_fusion_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
@@ -30023,6 +30153,88 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Flat(action)))
+    }
+
+    fn double_defect_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<dd::defects::Category>> {
+        let Kind::DoubleDefect(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "a double boundary defect simple"));
+        };
+        self.model.double_defects(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn double_defect_expression(
+        &mut self,
+        expression: dd::defects::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use dd::defects::Expression;
+        match expression {
+            Expression::Basis(name, index) => {
+                let category = self.model.double_defects(&name)?;
+                category.check_index(index)?;
+                let ty = self.model.double_defect_type(&name)?;
+                Ok((ty, TypedForm::Constant(Value::DoubleDefect(index))))
+            }
+            Expression::Theta(name, key) => {
+                let category = self.model.double_defects(&name)?;
+                let ty = self.model.qz_type()?;
+                let phase = category.theta(self.model, key)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(phase)))
+            }
+            Expression::Entry(key, input) => {
+                let input = self.expr(*input)?;
+                let category = self.double_defect_operand(&input, "rvDoubleDefectEntry")?;
+                let ty = self.model.cyclotomic_rational_type(category.conductor)?;
+                Ok((
+                    ty,
+                    TypedForm::DoubleDefect(DoubleDefectAction::Entry(
+                        category,
+                        key,
+                        Box::new(input),
+                    )),
+                ))
+            }
+            Expression::Character(x, input) => {
+                let input = self.expr(*input)?;
+                let category = self.double_defect_operand(&input, "rvDoubleDefectCharacter")?;
+                let ty = self.model.cyclotomic_rational_type(category.conductor)?;
+                Ok((
+                    ty,
+                    TypedForm::DoubleDefect(DoubleDefectAction::Character(
+                        category,
+                        x,
+                        Box::new(input),
+                    )),
+                ))
+            }
+            Expression::Opposite(name, input) => {
+                let input = self.expr(*input)?;
+                let source = self.double_defect_operand(&input, "rvDoubleDefectOpposite")?;
+                let target = self.model.double_defects(&name)?;
+                source.check_opposite(&target)?;
+                let bulk = Label {
+                    text: source.boundaries[0].double_name.to_string(),
+                    span: input.span,
+                };
+                let double = self.model.drinfeld_double(&bulk)?;
+                let ty = self.model.double_defect_type(&name)?;
+                Ok((
+                    ty,
+                    TypedForm::DoubleDefect(DoubleDefectAction::Opposite(
+                        source,
+                        target,
+                        double,
+                        Box::new(input),
+                    )),
+                ))
+            }
+        }
     }
 
     fn double_boundary_expression(

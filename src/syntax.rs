@@ -75,6 +75,7 @@ pub(crate) enum TypeForm {
     FiniteGroup(Label),
     PostnikovCochain(Label, usize),
     DoubleSector(Label),
+    DoubleDefect(Label),
     DoubleBraid(Label, [usize; 3], [usize; 3]),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
@@ -758,6 +759,7 @@ pub(crate) enum ExprForm {
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Expression>),
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Expression>),
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Expression>),
+    DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1241,6 +1243,7 @@ pub(crate) enum StatementForm {
     DoubleBraid(Box<crate::rv_crossed::drinfeld_double::braid::Command>),
     DoubleFusion(Box<crate::rv_crossed::drinfeld_double::fusion_symbols::Command>),
     DoubleBoundary(Box<crate::rv_crossed::drinfeld_double::boundaries::Command>),
+    DoubleDefect(Box<crate::rv_crossed::drinfeld_double::defects::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -4103,6 +4106,115 @@ impl<'src> Parser<'src> {
             *i = self.number()?.0;
         }
         Ok(indices)
+    }
+
+    fn double_defect_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::defects::Command;
+        self.advance()?;
+        if operation == "rvDoubleDefectFuse" {
+            let args = Box::new(self.paren_pair(0)?);
+            return Ok(StatementForm::DoubleDefect(Box::new(Command::Fuse(args))));
+        }
+        if operation == "rvDoubleDefectFusionProjector" {
+            self.expect(Token::LBracket)?;
+            let c = self.number()?.0;
+            let [r, s] = self.following_indices()?;
+            self.expect(Token::RBracket)?;
+            let args = Box::new(self.paren_pair(0)?);
+            return Ok(StatementForm::DoubleDefect(Box::new(Command::Projector(
+                [c, r, s],
+                args,
+            ))));
+        }
+        let command = if operation == "rvdoubledefects" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let a = self.label()?;
+            self.expect(Token::Comma)?;
+            let b = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Declare(name, [a, b])
+        } else {
+            self.expect(Token::LBracket)?;
+            match operation {
+                "rvDoubleDefectPhase" | "rvDoubleDefectRep" => {
+                    let x = self.number()?.0;
+                    let column = (operation == "rvDoubleDefectRep")
+                        .then(|| self.following_indices::<1>())
+                        .transpose()?;
+                    self.expect(Token::RBracket)?;
+                    let input = Box::new(self.paren_expr(0)?);
+                    if let Some([column]) = column {
+                        Command::Image([x, column], input)
+                    } else {
+                        Command::Phase(x, input)
+                    }
+                }
+                _ => {
+                    let name = self.label()?;
+                    let command = if operation == "rvDoubleDefectData" {
+                        Command::Data(name)
+                    } else {
+                        let [index] = self.following_indices()?;
+                        if operation == "rvDoubleDefectCoset" {
+                            Command::Coset(name, index)
+                        } else {
+                            Command::Simple(name, index)
+                        }
+                    };
+                    self.expect(Token::RBracket)?;
+                    command
+                }
+            }
+        };
+        Ok(StatementForm::DoubleDefect(Box::new(command)))
+    }
+
+    fn double_defect_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::defects::Expression;
+        self.expect(Token::LBracket)?;
+        let (expression, depth) = match operation {
+            "rvDoubleDefectEntry" | "rvDoubleDefectCharacter" => {
+                let x = self.number()?.0;
+                let coords = (operation == "rvDoubleDefectEntry")
+                    .then(|| self.following_indices::<2>())
+                    .transpose()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let input = Box::new(input);
+                let expression = if let Some([r, c]) = coords {
+                    Expression::Entry([x, r, c], input)
+                } else {
+                    Expression::Character(x, input)
+                };
+                (expression, depth)
+            }
+            _ => {
+                let name = self.label()?;
+                if operation == "rvDoubleDefectOpposite" {
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    (Expression::Opposite(name, Box::new(input)), depth)
+                } else {
+                    let expression = if operation == "rvDoubleDefectBasis" {
+                        let [index] = self.following_indices()?;
+                        Expression::Basis(name, index)
+                    } else {
+                        Expression::Theta(name, self.following_indices()?)
+                    };
+                    self.expect(Token::RBracket)?;
+                    (expression, 0)
+                }
+            }
+        };
+        expr(span, ExprForm::DoubleDefect(Box::new(expression)), depth)
     }
 
     fn double_boundary_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -11833,6 +11945,16 @@ impl<'src> Parser<'src> {
                 | "rvDoubleBoundaryCycle"
                 | "rvDoubleAnnulus"),
             ) => self.double_boundary_statement(op)?,
+            Token::Word(
+                op @ ("rvdoubledefects"
+                | "rvDoubleDefectData"
+                | "rvDoubleDefectCoset"
+                | "rvDoubleDefectSimple"
+                | "rvDoubleDefectPhase"
+                | "rvDoubleDefectRep"
+                | "rvDoubleDefectFuse"
+                | "rvDoubleDefectFusionProjector"),
+            ) => self.double_defect_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -15986,6 +16108,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVDoubleDefect" && self.eat(Token::LParen)? {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::DoubleDefect(label), 0);
+        }
         if name.text == "RVDoubleBraid" && self.eat(Token::LParen)? {
             let label = self.label()?;
             let source = self.following_indices()?;
@@ -18850,6 +18977,17 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.double_boundary_expression(&name.text, span);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDoubleDefectBasis"
+                        | "rvDoubleDefectTheta"
+                        | "rvDoubleDefectEntry"
+                        | "rvDoubleDefectCharacter"
+                        | "rvDoubleDefectOpposite"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.double_defect_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
