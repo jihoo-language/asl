@@ -2863,11 +2863,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::LBracket)?;
             let basis = self.label()?;
             self.expect(Token::Comma)?;
-            let base = self.label()?;
-            self.expect(Token::Comma)?;
-            let power = self.number()?.0;
-            self.expect(Token::RBracket)?;
-            Command::Frobenius(basis, base, power)
+            let endpoint = self.label()?;
+            if name == "rvJacRichelotMatrix" {
+                self.expect(Token::RBracket)?;
+                Command::RichelotMatrix(basis, endpoint)
+            } else {
+                self.expect(Token::Comma)?;
+                let power = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Frobenius(basis, endpoint, power)
+            }
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
     }
@@ -3583,9 +3588,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
-            Token::Word(command @ ("rvjactorsionbasis" | "rvJacTorsionFrob")) => {
-                self.jacobian_level_statement(command)?
-            }
+            Token::Word(
+                command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
+            ) => self.jacobian_level_statement(command)?,
             Token::Word(
                 command @ ("rvrichelot" | "rvrichelotdual" | "rvrichelotdescend" | "rvRichelotData"
                 | "rvRichelotDescent"),

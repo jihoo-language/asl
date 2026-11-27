@@ -4717,6 +4717,17 @@ impl Engine {
                     &name.text, &base.text, power, &result,
                 )?))
             }
+            Command::RichelotMatrix(source, target) => {
+                let source_basis = self.model.jacobian_level(&source)?;
+                let target_basis = self.model.jacobian_level(&target)?;
+                let result =
+                    source_basis.richelot_matrix(&mut self.model, &target_basis, target.span)?;
+                Ok(Some(self.model.show_jacobian_richelot_matrix(
+                    &source.text,
+                    &target.text,
+                    &result,
+                )?))
+            }
         }
     }
 

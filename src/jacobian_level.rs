@@ -12,9 +12,12 @@ use crate::odd_cobar::Prime;
 use crate::rv_unram::{mul_mod, Ring};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod richelot;
+
 pub(crate) enum Command {
     Define(Label, Label, usize, Box<ParsedExpr>, Vec<ParsedExpr>),
     Frobenius(Label, Label, usize),
+    RichelotMatrix(Label, Label),
 }
 
 pub(crate) struct Basis {
@@ -22,6 +25,7 @@ pub(crate) struct Basis {
     pub(crate) prime: Prime,
     curve: Rc<Curve>,
     generators: Box<[Rc<Divisor>]>,
+    root: Scalar,
     logarithm: Logarithm,
 }
 
@@ -79,13 +83,14 @@ impl Basis {
                 }
             }
         }
-        model.allocate(8 + curve_name.len() + generators.len())?;
+        model.allocate(9 + curve_name.len() + generators.len() + root.len())?;
         let logarithm = Logarithm::new(model, &curve.ring, order, root)?;
         Ok(Self {
             curve_name,
             prime,
             curve,
             generators: generators.into_boxed_slice(),
+            root: root.to_vec(),
             logarithm,
         })
     }
@@ -117,26 +122,27 @@ impl Basis {
             .evaluate(model, &self.curve.ring, order, value)
     }
 
-    pub(crate) fn frobenius(
+    /// Express images of `source` generators in this basis, checking every
+    /// column by recombining the actual divisor classes on the target curve.
+    pub(crate) fn action_matrix(
         &self,
         model: &mut Model,
-        base: &Curve,
-        power: usize,
-    ) -> Result<Frobenius> {
+        source: &Self,
+        mut image_of: impl FnMut(&mut Model, &Divisor) -> Result<Divisor>,
+    ) -> Result<Matrix<u64>> {
         let curve = &self.curve;
-        let genus = curve.grade.genus;
         let width = self.len();
-        let order = u64::from(self.prime.get());
+        if width != source.len() || self.prime != source.prime {
+            return Err(Error::plain(
+                "Jacobian torsion action requires bases of equal rank and prime level",
+            ));
+        }
         let ring = Residues::new(self.prime, 1)?;
         let cells = ring.matrix_size(width)?;
         model.spend(cells)?;
         let mut entries = vec![0; cells];
-        if width == 0 {
-            // Even an empty basis requires a valid base extension.
-            Divisor::zero(curve).frobenius(model, base, curve, power)?;
-        }
-        for (column, generator) in self.generators.iter().enumerate() {
-            let image = generator.frobenius(model, base, curve, power)?;
+        for (column, generator) in source.generators.iter().enumerate() {
+            let image = image_of(model, generator)?;
             let mut reconstruction = Divisor::zero(curve);
             for (row, basis_element) in self.generators.iter().enumerate() {
                 let coefficient = self.coordinate_of_torsion(model, &image, row)?;
@@ -148,14 +154,38 @@ impl Basis {
             }
             if !reconstruction.compare(model, &image)?.is_eq() {
                 return Err(Error::plain(
-                    "Jacobian torsion Frobenius column failed to reconstruct its divisor class",
+                    "Jacobian torsion matrix column failed to reconstruct its divisor class",
                 ));
             }
         }
-        let matrix = Matrix::from_entries(width, entries)?;
+        Matrix::from_entries(width, entries)
+    }
+
+    pub(crate) fn frobenius(
+        &self,
+        model: &mut Model,
+        base: &Curve,
+        power: usize,
+    ) -> Result<Frobenius> {
+        let curve = &self.curve;
+        if self.len() == 0 {
+            // Even an empty basis requires a valid base extension.
+            Divisor::zero(curve).frobenius(model, base, curve, power)?;
+        }
+        let matrix = self.action_matrix(model, self, |model, generator| {
+            generator.frobenius(model, base, curve, power)
+        })?;
+        let order = u64::from(self.prime.get());
         let q = power_mod(model, base.ring.prime(), base.ring.degree(), order)?;
         let multiplier = power_mod(model, q, power, order)?;
-        verify_similitude(model, self.prime, genus, multiplier as u32, &matrix)?;
+        verify_similitude(
+            model,
+            self.prime,
+            curve.grade.genus,
+            multiplier as u32,
+            &matrix,
+        )?;
+        let ring = Residues::new(self.prime, 1)?;
         let characteristic = hw_algebra::characteristic(model, &ring, &matrix)?;
         Ok(Frobenius {
             matrix,
@@ -248,7 +278,7 @@ fn power_mod(model: &mut Model, mut value: u64, mut power: usize, modulus: u64) 
     Ok(result)
 }
 
-fn verify_similitude(
+pub(crate) fn verify_similitude(
     model: &mut Model,
     prime: Prime,
     genus: usize,
@@ -274,7 +304,7 @@ fn verify_similitude(
             let expected = if j == i + genus { multiplier } else { 0 };
             if pair != expected {
                 return Err(Error::plain(
-                    "Jacobian torsion Frobenius failed its symplectic similitude check",
+                    "Jacobian torsion matrix failed its symplectic similitude check",
                 ));
             }
         }

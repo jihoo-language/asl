@@ -3544,9 +3544,37 @@ impl Model {
         let mut out = Text::new(MAX_SHOWN_BYTES);
         let multiplier = result.multiplier;
         out.push(&format!(
-            "rvJacTorsionFrob[{basis}, {base}, {power}] = multiplier={multiplier}, matrix=["
+            "rvJacTorsionFrob[{basis}, {base}, {power}] = multiplier={multiplier}, matrix="
         ))?;
-        let matrix = &result.matrix;
+        self.write_jacobian_level_matrix(&mut out, &result.matrix)?;
+        self.spend(result.characteristic.len())?;
+        out.push(&format!(", characteristic={:?}", result.characteristic))?;
+        Ok(out.string)
+    }
+
+    pub(crate) fn show_jacobian_richelot_matrix(
+        &mut self,
+        source: &str,
+        target: &str,
+        result: &crate::jacobian_level::richelot::Report,
+    ) -> Result<String> {
+        let mut out = Text::new(MAX_SHOWN_BYTES);
+        out.push(&format!(
+            "rvJacRichelotMatrix[{source}, {target}] = level={}, root exponent={}, multiplier={}, rank={}, column-action matrix=",
+            result.prime.get(), result.root_exponent, result.multiplier, result.rank,
+        ))?;
+        self.write_jacobian_level_matrix(&mut out, &result.matrix)?;
+        out.push(", column-action adjoint=")?;
+        self.write_jacobian_level_matrix(&mut out, &result.adjoint)?;
+        Ok(out.string)
+    }
+
+    fn write_jacobian_level_matrix(
+        &mut self,
+        out: &mut Text,
+        matrix: &HWMatrix<u64>,
+    ) -> Result<()> {
+        out.push("[")?;
         for (index, row) in matrix.entries().chunks(matrix.size().max(1)).enumerate() {
             self.spend(1 + row.len())?;
             if index != 0 {
@@ -3554,9 +3582,7 @@ impl Model {
             }
             out.push(&format!("{row:?}"))?;
         }
-        self.spend(result.characteristic.len())?;
-        out.push(&format!("], characteristic={:?}", result.characteristic))?;
-        Ok(out.string)
+        out.push("]")
     }
 
     pub(crate) fn define_richelot(
