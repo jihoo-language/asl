@@ -40,7 +40,7 @@ impl Order {
         Ok(Self { discriminant })
     }
 
-    fn magnitude(self) -> Magnitude {
+    pub(super) fn magnitude(self) -> Magnitude {
         Magnitude::from_small(self.discriminant.unsigned_abs())
     }
 
@@ -282,7 +282,7 @@ impl Order {
 }
 
 impl Class {
-    fn from_reduced(form: Form) -> Result<Self> {
+    pub(super) fn from_reduced(form: Form) -> Result<Self> {
         Ok(Self([
             form.a.signed(false).ok_or_else(arithmetic)?,
             form.b.signed().ok_or_else(arithmetic)?,

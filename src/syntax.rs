@@ -994,6 +994,7 @@ pub(crate) enum ExprForm {
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
+    CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1203,6 +1204,7 @@ pub(crate) enum StatementForm {
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
     HilbertTautological(Box<crate::hyperelliptic_kummer_surface::nakajima::tautological::Command>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
+    CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3343,6 +3345,45 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn cm_neighbor_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::cm_neighbors::Statement;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let ell = self.number()?.0;
+        let address = if name == "rvCMNeighborData" {
+            self.expect(Token::Comma)?;
+            Some(self.number()?.0)
+        } else {
+            None
+        };
+        self.expect(Token::RBracket)?;
+        let input = Box::new(self.paren_expr(0)?);
+        let statement = match address {
+            Some(address) => Statement::Address(ell, address, input),
+            None if name == "rvCMNeighborCounts" => Statement::Counts(ell, input),
+            None => Statement::Neighbors(ell, input),
+        };
+        Ok(StatementForm::CMNeighbors(statement))
+    }
+
+    fn cm_neighbor_expression(&mut self, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::cm_neighbors::Expression;
+        self.expect(Token::LBracket)?;
+        let target = self.label()?;
+        self.expect(Token::Comma)?;
+        let ell = self.number()?.0;
+        self.expect(Token::Comma)?;
+        let address = self.number()?.0;
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(nest)?;
+        let depth = input.depth + 1;
+        expr(
+            span,
+            ExprForm::CMNeighbor(Expression(target, ell, address, Box::new(input))),
+            depth,
+        )
     }
 
     fn cm_class_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -5830,6 +5871,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
+                self.cm_neighbor_statement(name)?
+            }
             Token::Word(
                 name @ ("rvcmorder" | "rvCMClassOrder" | "rvCMClassGroup" | "rvCMSameGenus"),
             ) => self.cm_class_statement(name)?,
@@ -11270,6 +11314,9 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.k3_period_expression(&name.text, span, nest);
+                }
+                if name.text == "rvCMNeighbor" && self.token() == Token::LBracket {
+                    return self.cm_neighbor_expression(span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

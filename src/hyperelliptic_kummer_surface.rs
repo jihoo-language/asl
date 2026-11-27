@@ -13,6 +13,7 @@ use crate::syntax::{Label, ParsedExpr};
 pub(crate) mod arithmetic;
 pub(crate) mod clifford;
 pub(crate) mod cm;
+pub(crate) mod cm_neighbors;
 pub(crate) mod cm_ring;
 pub(crate) mod dynamics;
 pub(crate) mod enriques;

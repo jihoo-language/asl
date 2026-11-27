@@ -33,6 +33,7 @@ use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::clifford;
+use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai::{
@@ -688,6 +689,7 @@ enum TypedForm {
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     CMClass(cm_ring::Order, CMClassAction),
+    CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
     AbMukaiNegate(Box<TypedExpr>),
@@ -1824,6 +1826,9 @@ impl Engine {
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::K3Period(command) => return self.k3_period_statement(*command),
             StatementForm::CMClass(command) => return self.cm_class_statement(*command),
+            StatementForm::CMNeighbors(command) => {
+                return self.cm_neighbor_statement(command).map(Some)
+            }
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
@@ -4935,6 +4940,28 @@ impl Engine {
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
             }
+        }
+    }
+
+    fn cm_neighbor_statement(&mut self, statement: cm_neighbors::Statement) -> Result<String> {
+        use cm_neighbors::Statement;
+        let counts = matches!(&statement, Statement::Counts(..));
+        let (ell, address, input) = match statement {
+            Statement::Address(ell, address, input) => (ell, Some(address), input),
+            Statement::Neighbors(ell, input) | Statement::Counts(ell, input) => (ell, None, input),
+        };
+        let checker = &mut self.checker();
+        let input = checker.expr(*input)?;
+        let source = checker.cm_class_operand(&input, "CM neighbor query")?;
+        let ell = cm_neighbors::prime(checker.model, ell)?;
+        let Value::CMClass(class) = self.eval(&input)? else {
+            unreachable!()
+        };
+        if let Some(address) = address {
+            let address = cm_neighbors::check_address(ell, address)?;
+            cm_neighbors::address_report(&mut self.model, source, class, ell, address)
+        } else {
+            cm_neighbors::neighbors_report(&mut self.model, source, class, ell, !counts)
         }
     }
 
@@ -8673,6 +8700,19 @@ impl Engine {
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
+            TypedForm::CMNeighbor(source, target, ell, address, input) => {
+                let Value::CMClass(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::CMClass(cm_neighbors::target(
+                    &mut self.model,
+                    *source,
+                    class,
+                    *ell,
+                    *address,
+                    *target,
+                )?))
+            }
             TypedForm::K3AutoDiv(word, input) => {
                 let Value::KummerDiv(divisor) = self.eval(input)? else {
                     unreachable!()
@@ -14312,6 +14352,19 @@ impl Checker<'_> {
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
+            ExprForm::CMNeighbor(expression) => {
+                let cm_neighbors::Expression(target, ell, address, input) = expression;
+                let input = self.expr(*input)?;
+                let source = self.cm_class_operand(&input, "rvCMNeighbor")?;
+                let ty = self.model.cm_class_type(&target)?;
+                let target = self.model.cm_ring_order(&target)?;
+                let ell = cm_neighbors::prime(self.model, ell)?;
+                let address = cm_neighbors::check_address(ell, address)?;
+                Ok((
+                    ty,
+                    TypedForm::CMNeighbor(source, target, ell, address, Box::new(input)),
+                ))
+            }
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
