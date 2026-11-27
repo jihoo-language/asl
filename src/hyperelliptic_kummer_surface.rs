@@ -11,6 +11,7 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod arithmetic;
+pub(crate) mod hilbert;
 pub(crate) mod k3;
 pub(crate) mod resolution;
 

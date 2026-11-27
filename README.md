@@ -1266,6 +1266,12 @@ By Tate's theorem for divisors on abelian varieties and the sixteen exceptional 
 
 When the geometric rank is 22, the report also gives the Artin invariant $\sigma$ and the geometric Néron–Severi discriminant $-p^{2\sigma}$. The invariant is 1 for a superspecial Jacobian, detected by the zero Cartier–Manin matrix in this rank, and 2 otherwise. When the finite-field rank is also 22, the two discriminants agree and the calculation verifies that the resulting Brauer order is a positive integer square. The example gives geometric discriminants $-25$ and $-81$, and exhibits a rank jump and a nontrivial Brauer order. [Supersingular Kummer surfaces, §6](https://arxiv.org/abs/1403.7894) · [Artin–Tate example](examples/hyperelliptic-kummer-artin-tate.asl)
 
+#### Hilbert schemes of points on the resolved Kummer K3
+
+For the resolution $S$ associated to `C`, `rvKummerHilbPoints[C,n,r];` counts points of the Hilbert scheme $S^{[n]}$ over $\mathbb F_{q^r}$. `rvKummerHilbTrace[C,n,r,i];` gives the signed trace of $F^r$ on $H^i(S^{[n]})$. `rvKummerHilbBetti[n,i];` gives the universal Betti number for a K3 Hilbert scheme. The length satisfies $n\ge0$ and the extension degree satisfies $r\ge1$. Length zero gives a point, $H^0$ has trace and Betti number one, and odd degrees and degrees above $4n$ give zero.
+
+The arithmetic Göttsche–Nakajima decomposition uses surface cohomology in degree $b$ for each length $m\ge1$. Its Hilbert-scheme degree is $b+2(m-1)$ and its Frobenius eigenvalues acquire the factor $q^{m-1}$. ASL computes exact Newton recurrences from these data and the resolved Kummer Frobenius traces. Point counts and Betti numbers use the unsigned 128-bit range, traces use the signed 128-bit range, and exact intermediates are checked at 512 bits with the usual work and storage limits. The example gives point counts 327 and 4,480 at lengths two and three over $\mathbb F_3$. [Kummer Hilbert-scheme example](examples/hyperelliptic-kummer-hilbert.asl)
+
 #### Richelot isogeny targets
 
 `rvrichelot D[C]{G1}{G2}{G3};` registers a genus-two Richelot target over the same named odd finite field as `C`. The source curve has precision one and a smooth quintic or sextic equation $y^2=f(x)$. Each brace lists the coefficients of one factor as bracketed signed field coordinates in ascending degree, as in `rvjac`. The product must equal $f$ exactly. Each factor is quadratic, with one linear factor allowed for a quintic. The linear factor accounts for the branch point at infinity.

@@ -1546,6 +1546,9 @@ impl Engine {
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::KummerK3(command) => return command.execute(&mut self.model).map(Some),
+            StatementForm::KummerHilbert(command) => {
+                return command.execute(&mut self.model).map(Some)
+            }
             StatementForm::JacobianLevel(command) => return self.jacobian_level_command(*command),
             StatementForm::Richelot(command) => return command.execute(&mut self.model),
             StatementForm::Bielliptic(command) => {

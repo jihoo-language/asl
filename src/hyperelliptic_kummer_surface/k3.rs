@@ -7,6 +7,7 @@ use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
 use crate::model::Model;
 use crate::rv_ore::gcd;
+use crate::rv_qp_quad::Wide;
 use crate::syntax::Label;
 
 mod artin_tate;
@@ -49,7 +50,7 @@ impl Command {
     }
 }
 
-fn node_orbits(model: &mut Model, curve: &Curve, q: u64) -> Result<Vec<usize>> {
+pub(super) fn node_orbits(model: &mut Model, curve: &Curve, q: u64) -> Result<Vec<usize>> {
     let field = Field { ring: &curve.ring };
     let polynomial = curve.polynomial();
     model.spend(polynomial.len() * field.cells())?;
@@ -152,10 +153,7 @@ fn point_counts(
         .checked_mul(field_order)
         .ok_or_else(point_overflow)?;
     let trace = exterior_trace(model, weil, exponent as usize)?;
-    let nodes: usize = orbits
-        .iter()
-        .filter(|&&d| degree.is_multiple_of(d as u128))
-        .sum();
+    let nodes = fixed_nodes(orbits, degree);
     let singular = square
         .checked_add_signed(1 + trace)
         .ok_or_else(point_overflow)?;
@@ -175,29 +173,65 @@ fn powered_weil_coefficients(
     degree: usize,
     overflow: fn() -> Error,
 ) -> Result<(i128, i128)> {
-    // Both callers bound r by checking the extension size first.
-    let mut traces = vec![0];
-    for exponent in 1..=2 * degree {
+    // Both callers bound the exponent by checking the extension size first.
+    let traces = h1_power_sums::<8>(model, weil, 2 * degree, overflow)?;
+    let first = traces[degree].signed().ok_or_else(overflow)?;
+    let second = exterior_power_sum(model, &traces, degree, overflow)?
+        .signed()
+        .ok_or_else(overflow)?;
+    Ok((first, second))
+}
+
+pub(super) fn fixed_nodes(orbits: &[usize], degree: u128) -> usize {
+    orbits
+        .iter()
+        .filter(|&&d| degree.is_multiple_of(d as u128))
+        .sum()
+}
+
+pub(super) fn h1_power_sums<const N: usize>(
+    model: &mut Model,
+    weil: &[i128],
+    degree: usize,
+    overflow: fn() -> Error,
+) -> Result<Vec<Wide<N>>> {
+    let mut traces = vec![Wide::from_i128(0)];
+    for exponent in 1..=degree {
         let terms = exponent.min(weil.len() - 1);
-        model.spend(terms)?;
-        let compute = || {
-            let mut trace = 0i128;
-            for i in 1..=terms {
-                let power = if i == exponent {
-                    exponent as i128
-                } else {
-                    traces[exponent - i]
-                };
-                trace = trace.checked_sub(weil[i].checked_mul(power)?)?;
-            }
-            Some(trace)
-        };
-        traces.push(compute().ok_or_else(overflow)?);
+        model.spend(terms * N)?;
+        let mut trace = Wide::from_i128(0);
+        for i in 1..=terms {
+            let power = if i == exponent {
+                Wide::from_i128(exponent as i128)
+            } else {
+                traces[exponent - i]
+            };
+            let term = power.multiply(weil[i]).map_err(|_| overflow())?;
+            trace = trace.add(term.negate()).map_err(|_| overflow())?;
+        }
+        traces.push(trace);
     }
+    Ok(traces)
+}
+
+pub(super) fn exterior_power_sum<const N: usize>(
+    model: &mut Model,
+    traces: &[Wide<N>],
+    degree: usize,
+    overflow: fn() -> Error,
+) -> Result<Wide<N>> {
     let sr = traces[degree];
     let s2r = traces[2 * degree];
-    let compute = || Some((sr, sr.checked_mul(sr)?.checked_sub(s2r)? / 2));
-    compute().ok_or_else(overflow)
+    let numerator = sr
+        .multiply_wide(sr)
+        .and_then(|square| square.add(s2r.negate()))
+        .map_err(|_| overflow())?;
+    let (magnitude, remainder) = numerator.magnitude.divide(model, 2)?;
+    debug_assert_eq!(remainder, 0);
+    Ok(Wide {
+        magnitude,
+        negative: numerator.negative,
+    })
 }
 
 // This list contains all cyclotomic polynomials of degree at most four.

@@ -1139,6 +1139,7 @@ pub(crate) enum StatementForm {
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
+    KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     JacobianLevel(Box<crate::jacobian_level::Command>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -2908,6 +2909,40 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::KummerK3(Box::new(Command(curve, query))))
     }
 
+    fn kummer_hilbert_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hilbert::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let command = if name == "rvKummerHilbBetti" {
+            let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
+            self.expect(Token::Comma)?;
+            let degree = self.wide_unsigned("cohomological degree")?;
+            Command::Betti(length, degree)
+        } else {
+            let curve = self.label()?;
+            self.expect(Token::Comma)?;
+            let length = self.wide_unsigned("Kummer Hilbert-scheme length")?;
+            self.expect(Token::Comma)?;
+            let span = self.span();
+            let extension = self.wide_unsigned("Kummer Hilbert-scheme extension degree")?;
+            if extension == 0 {
+                return Err(Error::new(
+                    span,
+                    "Kummer Hilbert-scheme extension degree must be positive",
+                ));
+            }
+            if name == "rvKummerHilbPoints" {
+                Command::Points(curve, length, extension)
+            } else {
+                self.expect(Token::Comma)?;
+                let degree = self.wide_unsigned("cohomological degree")?;
+                Command::Trace(curve, length, extension, degree)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KummerHilbert(Box::new(command)))
+    }
+
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::{BaseOperation, Expression, Operation};
         let (expression, depth) = if name == "rvKummer" {
@@ -3776,6 +3811,9 @@ impl<'src> Parser<'src> {
                 | "rvKummerK3Picard"
                 | "rvKummerK3ArtinTate"),
             ) => self.kummer_k3_statement(command)?,
+            Token::Word(
+                command @ ("rvKummerHilbPoints" | "rvKummerHilbTrace" | "rvKummerHilbBetti"),
+            ) => self.kummer_hilbert_statement(command)?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,
