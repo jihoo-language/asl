@@ -374,6 +374,17 @@ impl Recognition {
         self.coordinates.field_element(model, self.family)
     }
 
+    pub(crate) fn matches_order_element(
+        &self,
+        pi: crate::legendre_cm::Element,
+        element: crate::legendre_cm::Element,
+    ) -> Result<bool> {
+        let c = self.coordinates;
+        Ok(add(c.constant, multiply(c.frobenius, pi.constant)?)?
+            == multiply(c.denominator, element.constant)?
+            && multiply(c.frobenius, pi.generator)? == multiply(c.denominator, element.generator)?)
+    }
+
     pub(crate) fn report(&self, name: &str) -> String {
         format!(
             "rvECCMCertify[{name}] = degree={}, trace={}, trace_product={}, [D]alpha=[A]+[B]pi with (A,B,D)=({},{},{})",

@@ -8,6 +8,7 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod canonical;
+pub(crate) mod cycle;
 pub(crate) mod horizontal;
 
 type Integer = Wide<13>;

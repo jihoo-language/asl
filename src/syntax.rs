@@ -1028,6 +1028,7 @@ pub(crate) enum ExprForm {
     ECEndOrder(Box<crate::elliptic_end_order::Expression>),
     ECEndCanonical(Box<crate::elliptic_end_order::canonical::Expression>),
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Address>),
+    ECCMCycle(Box<crate::elliptic_end_order::cycle::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1264,6 +1265,7 @@ pub(crate) enum StatementForm {
     CMArtin(Box<crate::cm_artin::Statement>),
     ECEndOrder(Box<crate::elliptic_end_order::Statement>),
     ECHorizontal(Box<crate::elliptic_end_order::horizontal::Statement>),
+    ECCMCycle(Box<crate::elliptic_end_order::cycle::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3905,6 +3907,32 @@ impl<'src> Parser<'src> {
             ell,
             orientation == 1,
         ))
+    }
+
+    fn ec_cm_cycle_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::elliptic_end_order::cycle::Statement;
+        self.advance()?;
+        let command = if name == "rveccmcycle" {
+            let cycle = self.label()?;
+            self.expect(Token::LBracket)?;
+            let certificate = self.label()?;
+            Statement::Define(cycle, self.ec_horizontal_address(certificate)?)
+        } else {
+            self.expect(Token::LBracket)?;
+            let cycle = self.label()?;
+            let command = match name {
+                "rvECCMCycleData" => Statement::Data(cycle),
+                "rvECCMCycleStep" => {
+                    self.expect(Token::Comma)?;
+                    Statement::Step(cycle, self.number()?.0)
+                }
+                "rvECCMCycleVerify" => Statement::Verify(cycle),
+                _ => unreachable!(),
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::ECCMCycle(Box::new(command)))
     }
 
     fn ec_horizontal_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -7547,6 +7575,10 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rveccmhorizontal" | "rvECCMHorizontalData")) => {
                 self.ec_horizontal_statement(name)?
             }
+            Token::Word(
+                name
+                @ ("rveccmcycle" | "rvECCMCycleData" | "rvECCMCycleStep" | "rvECCMCycleVerify"),
+            ) => self.ec_cm_cycle_statement(name)?,
             Token::Word(
                 name @ ("rvCMArtinPrime" | "rvCMArtinOrbit" | "rvCMArtinFactors" | "rvCMArtinLift"),
             ) => self.cm_artin_statement(name)?,
@@ -13248,6 +13280,23 @@ impl<'src> Parser<'src> {
                     let certificate = self.label()?;
                     let address = self.ec_horizontal_address(certificate)?;
                     return expr(span, ExprForm::ECHorizontal(Box::new(address)), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvECCMCycleApply" | "rvECCMCycleElement"
+                ) && self.eat(Token::LBracket)?
+                {
+                    use crate::elliptic_end_order::cycle::Expression;
+                    let cycle = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let (expression, depth) = if name.text == "rvECCMCycleApply" {
+                        let input = self.paren_expr(nest)?;
+                        let depth = input.depth + 1;
+                        (Expression::Apply(cycle, Box::new(input)), depth)
+                    } else {
+                        (Expression::Element(cycle), 0)
+                    };
+                    return expr(span, ExprForm::ECCMCycle(Box::new(expression)), depth);
                 }
                 if (matches!(
                     name.text.as_str(),

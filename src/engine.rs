@@ -25,6 +25,7 @@ use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_end_order;
 use crate::elliptic_end_order::canonical as ec_canonical;
+use crate::elliptic_end_order::cycle as ec_cm_cycle;
 use crate::elliptic_end_order::horizontal as ec_horizontal;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
@@ -779,6 +780,7 @@ enum TypedForm {
     EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
     ECEnd(ECEndAction),
     ECEndCanonical(ec_canonical::Lift, ECEndCanonicalAction),
+    ECCMCycleApply(Rc<ec_cm_cycle::Cycle>, Box<TypedExpr>),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -2028,6 +2030,7 @@ impl Engine {
             StatementForm::CMArtin(command) => return self.cm_artin_statement(*command).map(Some),
             StatementForm::ECEndOrder(command) => return self.ec_end_order_statement(*command),
             StatementForm::ECHorizontal(command) => return self.ec_horizontal_statement(*command),
+            StatementForm::ECCMCycle(command) => return self.ec_cm_cycle_statement(*command),
             StatementForm::CMNeighbors(command) => {
                 return self.cm_neighbor_statement(command).map(Some)
             }
@@ -5160,6 +5163,30 @@ impl Engine {
                 let primary = state.is_primary(&mut self.model, length)?;
                 Ok(format!("rvNakajimaIsPrimary = {primary}"))
             }
+        }
+    }
+
+    fn ec_cm_cycle_statement(
+        &mut self,
+        statement: ec_cm_cycle::Statement,
+    ) -> Result<Option<String>> {
+        use ec_cm_cycle::Statement;
+        match statement {
+            Statement::Define(name, address) => {
+                self.model.define_ec_cm_cycle(name, address)?;
+                Ok(None)
+            }
+            Statement::Data(name) => self.model.ec_cm_cycle(&name)?.report(&name.text).map(Some),
+            Statement::Step(name, index) => self
+                .model
+                .ec_cm_cycle(&name)?
+                .step(&name.text, index)
+                .map(Some),
+            Statement::Verify(name) => self
+                .model
+                .ec_cm_cycle(&name)?
+                .verify_expanded(&mut self.model, &name.text)
+                .map(Some),
         }
     }
 
@@ -9847,6 +9874,13 @@ impl Engine {
             }
             TypedForm::ECEnd(action) => self.eval_ec_end(action),
             TypedForm::ECEndCanonical(lift, action) => self.eval_ec_end_canonical(lift, action),
+            TypedForm::ECCMCycleApply(cycle, input) => {
+                let Value::ECPoint(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let result = cycle.apply(&mut self.model, point.as_ref().clone())?;
+                elliptic::persist_point(&mut self.model, result)
+            }
             TypedForm::CMClassPolynomialEval(polynomial, field, input) => {
                 let Value::RVUnram(input) = self.eval(input)? else {
                     unreachable!()
@@ -15806,6 +15840,23 @@ impl Checker<'_> {
             ExprForm::CMArtin(expression) => self.cm_artin_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
             ExprForm::ECEndCanonical(expression) => self.ec_end_canonical_expression(*expression),
+            ExprForm::ECCMCycle(expression) => match *expression {
+                ec_cm_cycle::Expression::Apply(name, input) => {
+                    let cycle = self.model.ec_cm_cycle(&name)?;
+                    let input = self.expr(*input)?;
+                    let ty = self
+                        .model
+                        .ec_curve_type(Rc::clone(&cycle.curve_name), true)?;
+                    self.require_type(ty, &input, "CM isogeny cycle argument")?;
+                    Ok((ty, TypedForm::ECCMCycleApply(cycle, Box::new(input))))
+                }
+                ec_cm_cycle::Expression::Element(name) => {
+                    let cycle = self.model.ec_cm_cycle(&name)?;
+                    let ty = self.model.ec_end_order_type(&cycle.certificate_name)?;
+                    let value = elliptic_end_order::persist(self.model, cycle.element)?;
+                    Ok((ty, TypedForm::Constant(value)))
+                }
+            },
             ExprForm::ECHorizontal(address) => {
                 let action = ec_horizontal::Action::new(self.model, &address)?;
                 let kernel = action.kernel(self.model)?;

@@ -19,7 +19,8 @@ pub(crate) enum Statement {
 
 pub(crate) struct Action {
     pub(crate) certificate: Rc<Certificate>,
-    curve: Rc<Curve>,
+    pub(super) curve: Rc<Curve>,
+    pub(super) ideal: PrimeIdeal,
     pub(crate) ell: u64,
     lambda: u64,
     other: u64,
@@ -56,6 +57,7 @@ impl Action {
         Ok(Self {
             certificate,
             curve,
+            ideal,
             ell,
             lambda: lambda as u64,
             other: other as u64,
@@ -64,23 +66,33 @@ impl Action {
     }
 
     pub(crate) fn report(&self, model: &mut Model, address: &Address) -> Result<String> {
-        let (kernel, x_degree) = self.kernel_with_degree(model)?;
+        let (kernel, x_degree) = self.kernel_with_degree(model, &self.curve)?;
         Ok(format!(
             "rvECCMHorizontalData[{},{},{}] = curve={}, eigenvalue={}, other_eigenvalue={}, x_candidate_degree={x_degree}, kernel={:?}",
-            address.0.text, self.ell, usize::from(address.2),
-            self.certificate.curve_name(), self.lambda, self.other, kernel.polynomial,
+            address.0.text,
+            self.ell,
+            usize::from(address.2),
+            self.certificate.curve_name(),
+            self.lambda,
+            self.other,
+            kernel.polynomial,
         ))
     }
 
     pub(crate) fn kernel(&self, model: &mut Model) -> Result<Kernel> {
-        self.kernel_with_degree(model).map(|(kernel, _)| kernel)
+        self.kernel_on(model, &self.curve)
     }
 
-    fn kernel_with_degree(&self, model: &mut Model) -> Result<(Kernel, usize)> {
-        let field = self.curve.field();
+    pub(super) fn kernel_on(&self, model: &mut Model, curve: &Curve) -> Result<Kernel> {
+        self.kernel_with_degree(model, curve)
+            .map(|(kernel, _)| kernel)
+    }
+
+    fn kernel_with_degree(&self, model: &mut Model, curve: &Curve) -> Result<(Kernel, usize)> {
+        let field = curve.field();
         let ell = self.ell;
         let size = (ell - 1) as usize / 2;
-        let psi = elliptic::division_polynomial(model, &self.curve, ell)?;
+        let psi = elliptic::division_polynomial(model, curve, ell)?;
         // Evaluate [lambda] with its smaller absolute representative. The
         // sign is invisible in x and must be restored in the y multiplier.
         let negative = self.lambda > ell / 2;
@@ -90,7 +102,7 @@ impl Action {
             self.lambda
         };
         let (x_num, x_den) =
-            DivisionPolynomials::new(model, &self.curve, Some(&psi))?.x_image(model, n)?;
+            DivisionPolynomials::new(model, curve, Some(&psi))?.x_image(model, n)?;
         let x = field.polynomial(&[0, 1]);
         let x_frobenius = poly::power_mod(model, field, &x, self.q, &psi)?;
         let x_equation = equation(model, field, &psi, &x_frobenius, &x_num, &x_den)?;
@@ -98,19 +110,14 @@ impl Action {
         let x_degree = candidate.len() - 1;
         if x_degree < size
             || !poly::coprime(model, field, candidate.clone(), x_den)?
-            || !poly::coprime(
-                model,
-                field,
-                candidate.clone(),
-                self.curve.polynomial().to_vec(),
-            )?
+            || !poly::coprime(model, field, candidate.clone(), curve.polynomial().to_vec())?
         {
             return Err(Error::plain(
                 "CM horizontal x equation has inconsistent degree or poles",
             ));
         }
-        let (mut y_num, y_den) = DivisionPolynomials::new(model, &self.curve, Some(&candidate))?
-            .y_multiplier(model, n)?;
+        let (mut y_num, y_den) =
+            DivisionPolynomials::new(model, curve, Some(&candidate))?.y_multiplier(model, n)?;
         if negative {
             y_num = poly::scale(model, field, &y_num, &field.signed(-1))?;
         }
@@ -124,7 +131,7 @@ impl Action {
         let y_frobenius = poly::power_mod(
             model,
             field,
-            self.curve.polynomial(),
+            curve.polynomial(),
             (self.q - 1) / 2,
             &candidate,
         )?;
@@ -135,10 +142,7 @@ impl Action {
                 "signed CM horizontal equations failed the expected kernel degree",
             ));
         }
-        Ok((
-            Kernel::new(model, &self.curve, ell as usize, kernel)?,
-            x_degree,
-        ))
+        Ok((Kernel::new(model, curve, ell as usize, kernel)?, x_degree))
     }
 
     pub(crate) fn check_quotient(

@@ -656,6 +656,7 @@ pub(crate) struct Model {
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
     elliptic_curves: HashMap<Rc<str>, Rc<EllipticCurve>>,
     elliptic_end_orders: HashMap<String, Rc<crate::elliptic_end_order::Certificate>>,
+    ec_cm_cycles: HashMap<String, Rc<crate::elliptic_end_order::cycle::Cycle>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
@@ -780,6 +781,7 @@ impl Model {
             rv_witt_covers: HashMap::new(),
             elliptic_curves: HashMap::new(),
             elliptic_end_orders: HashMap::new(),
+            ec_cm_cycles: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
             hyperelliptic: HashMap::new(),
@@ -3464,6 +3466,31 @@ impl Model {
             .get(name)
             .cloned()
             .ok_or_else(|| Error::plain(format!("unknown cyclic isogeny '{name}'")))
+    }
+
+    pub(crate) fn define_ec_cm_cycle(
+        &mut self,
+        name: Label,
+        address: crate::elliptic_end_order::horizontal::Address,
+    ) -> Result<()> {
+        if self.ec_cm_cycles.contains_key(&name.text) {
+            return Err(Error::new(name.span, "CM isogeny cycle is already defined"));
+        }
+        let cycle = crate::elliptic_end_order::cycle::Cycle::new(self, &name, address)?;
+        self.ec_cm_cycles.insert(name.text, Rc::new(cycle));
+        Ok(())
+    }
+
+    pub(crate) fn ec_cm_cycle(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<crate::elliptic_end_order::cycle::Cycle>> {
+        self.ec_cm_cycles.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown CM isogeny cycle '{}'", name.text),
+            )
+        })
     }
 
     pub(crate) fn define_ec_end_order(
