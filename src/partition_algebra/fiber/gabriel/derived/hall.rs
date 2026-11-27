@@ -9,7 +9,9 @@ use crate::syntax::ParsedExpr;
 
 use super::{Nakayama, Parameter, Path, State};
 
+pub(crate) mod extension;
 mod field;
+mod linear;
 pub(crate) mod stability;
 mod subspaces;
 use field::Field;

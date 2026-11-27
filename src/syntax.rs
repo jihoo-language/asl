@@ -143,6 +143,7 @@ pub(crate) enum TypeForm {
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
     RVPartitionFiber(crate::partition_algebra::fiber::Grade),
+    RVPartitionExtension(Label),
     RVPartitionHall(
         crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec,
         crate::partition_algebra::fiber::gabriel::derived::hall::Mode,
@@ -934,6 +935,7 @@ pub(crate) enum ExprForm {
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
     PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
+    PartitionExtension(Box<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression>),
     PartitionHall(Box<crate::partition_algebra::fiber::gabriel::derived::hall::Expression>),
     PartitionTau(Box<crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Expression>),
     PartitionExt(Box<crate::partition_algebra::fiber::gabriel::derived::Expression>),
@@ -1538,6 +1540,7 @@ pub(crate) enum StatementForm {
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
     PartitionFiberReport(crate::partition_algebra::fiber::Report),
+    PartitionExtensionReport(crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report),
     PartitionHallReport(crate::partition_algebra::fiber::gabriel::derived::hall::Report),
     PartitionTauReport(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Report),
     PartitionExtReport(crate::partition_algebra::fiber::gabriel::derived::Report),
@@ -9881,6 +9884,42 @@ impl<'src> Parser<'src> {
         Ok(indices)
     }
 
+    fn partition_extension_name(&mut self) -> Result<Label> {
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        self.expect(Token::RBracket)?;
+        Ok(name)
+    }
+
+    fn partition_extension_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression;
+        let (operation, depth) = if name == "rvPartitionExtensionMiddle" {
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Middle(Box::new(input)), depth)
+        } else {
+            let space = self.partition_extension_name()?;
+            (
+                Expression::Coordinates(
+                    space,
+                    self.partition_labels(false)?,
+                    name == "rvPartitionExtensionCocycle",
+                ),
+                0,
+            )
+        };
+        expr(
+            span,
+            ExprForm::PartitionExtension(Box::new(operation)),
+            depth,
+        )
+    }
+
     fn partition_hall_key(
         &mut self,
     ) -> Result<crate::partition_algebra::fiber::gabriel::derived::hall::KeySpec> {
@@ -14610,6 +14649,37 @@ impl<'src> Parser<'src> {
                 StatementForm::DelignePathReport(report)
             }
             Token::Word(
+                name @ ("rvpartitionextensions"
+                | "rvPartitionExtensionGroupoid"
+                | "rvPartitionExtensionDistribution"
+                | "rvPartitionExtensionCoboundary"
+                | "rvPartitionExtensionLift"
+                | "rvPartitionHallHom"
+                | "rvPartitionHallAut"),
+            ) => {
+                use crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report;
+                self.advance()?;
+                let report = match name {
+                    "rvpartitionextensions" => {
+                        Report::Declare(self.label()?, Box::new(self.paren_pair(0)?))
+                    }
+                    "rvPartitionExtensionGroupoid" => {
+                        Report::Groupoid(self.partition_extension_name()?)
+                    }
+                    "rvPartitionExtensionDistribution" => {
+                        Report::Distribution(self.partition_extension_name()?)
+                    }
+                    "rvPartitionExtensionCoboundary" => Report::Boundary(
+                        self.partition_extension_name()?,
+                        self.partition_labels(false)?,
+                    ),
+                    "rvPartitionExtensionLift" => Report::Lift(Box::new(self.paren_expr(0)?)),
+                    "rvPartitionHallHom" => Report::Hom(Box::new(self.paren_pair(0)?)),
+                    _ => Report::Automorphisms(Box::new(self.paren_expr(0)?)),
+                };
+                StatementForm::PartitionExtensionReport(report)
+            }
+            Token::Word(
                 name @ ("rvPartitionHallCoefficient"
                 | "rvPartitionHallFlag"
                 | "rvPartitionHallTerm"
@@ -17836,6 +17906,11 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if name.text == "RVPartitionExtension" && self.eat(Token::LParen)? {
+            let space = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVPartitionExtension(space), 0);
         }
         if matches!(
             name.text.as_str(),
@@ -22979,6 +23054,14 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionExtension"
+                        | "rvPartitionExtensionCocycle"
+                        | "rvPartitionExtensionMiddle"
+                ) {
+                    return self.partition_extension_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

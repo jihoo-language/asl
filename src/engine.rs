@@ -1036,6 +1036,8 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionExtensionMiddle(Box<TypedExpr>),
+    PartitionExtensionNegate(Box<TypedExpr>),
     PartitionHallBasis(Box<TypedExpr>),
     PartitionHallProduct(Box<[TypedExpr; 2]>),
     PartitionHallNegate(Box<TypedExpr>),
@@ -2473,6 +2475,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionExtensionReport(report) => {
+                return self.partition_extension_report(report);
             }
             StatementForm::PartitionHallReport(report) => {
                 return self.partition_hall_report(report).map(Some);
@@ -11649,6 +11654,82 @@ impl Engine {
         }
     }
 
+    fn partition_extension_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::gabriel::derived::hall::extension::Report,
+    ) -> Result<Option<String>> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::{extension::Report, Mode};
+        if let Report::Declare(name, inputs) = report {
+            let [m, n] = *inputs;
+            let m = self.checker().expr(m)?;
+            let n = self.checker().expr(n)?;
+            let key = self.checker().partition_hall_operand(&m, Mode::Module)?;
+            self.checker()
+                .partition_hall_same_key(&n, Mode::Module, &key)?;
+            let m = self.eval_partition_hall(&m)?;
+            let n = self.eval_partition_hall(&n)?;
+            self.model.define_partition_extension(name, &m, &n)?;
+            return Ok(None);
+        }
+        match report {
+            Report::Groupoid(name) => self
+                .model
+                .partition_extension(&name.text)?
+                .groupoid_report(&mut self.model),
+            Report::Distribution(name) => self
+                .model
+                .partition_extension(&name.text)?
+                .distribution_report(&mut self.model),
+            Report::Boundary(name, values) => self
+                .model
+                .partition_extension(&name.text)?
+                .boundary_report(&mut self.model, values),
+            Report::Lift(input) => {
+                let input = self.checker().expr(*input)?;
+                let name = self.checker().partition_extension_operand(&input)?;
+                let value = self.eval_partition_extension(&input)?;
+                self.model
+                    .partition_extension(&name)?
+                    .lift_report(&mut self.model, &value)
+            }
+            Report::Hom(inputs) => {
+                let [m, n] = *inputs;
+                let m = self.checker().expr(m)?;
+                let n = self.checker().expr(n)?;
+                let key = self.checker().partition_hall_operand(&m, Mode::Module)?;
+                self.checker()
+                    .partition_hall_same_key(&n, Mode::Module, &key)?;
+                let m = self.eval_partition_hall(&m)?;
+                let n = self.eval_partition_hall(&n)?;
+                self.model
+                    .partition_hall(&key)?
+                    .hom_report(&mut self.model, &m, &n)
+            }
+            Report::Automorphisms(input) => {
+                let input = self.checker().expr(*input)?;
+                let key = self
+                    .checker()
+                    .partition_hall_operand(&input, Mode::Module)?;
+                let value = self.eval_partition_hall(&input)?;
+                self.model
+                    .partition_hall(&key)?
+                    .automorphism_report(&mut self.model, &value)
+            }
+            Report::Declare(..) => unreachable!(),
+        }
+        .map(Some)
+    }
+
+    fn eval_partition_extension(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Class>> {
+        let Value::RVPartitionExtension(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn partition_hall_report(
         &mut self,
         report: crate::partition_algebra::fiber::gabriel::derived::hall::Report,
@@ -12905,6 +12986,15 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (
+                        BinaryOp::Add,
+                        Value::RVPartitionExtension(a),
+                        Value::RVPartitionExtension(b),
+                    ) => self
+                        .model
+                        .partition_extension(&a.space)?
+                        .add(&mut self.model, &a, &b)?
+                        .persist(&mut self.model),
                     (BinaryOp::Add, Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -16328,6 +16418,20 @@ impl Engine {
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionExtensionMiddle(input) => {
+                let value = self.eval_partition_extension(input)?;
+                self.model
+                    .partition_extension(&value.space)?
+                    .middle(&mut self.model, &value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionExtensionNegate(input) => {
+                let value = self.eval_partition_extension(input)?;
+                self.model
+                    .partition_extension(&value.space)?
+                    .negate(&mut self.model, &value)?
+                    .persist(&mut self.model)
+            }
             TypedForm::PartitionHallBasis(input) => self
                 .eval_partition_hall(input)?
                 .as_basis()
@@ -19000,6 +19104,7 @@ impl Checker<'_> {
             TypeForm::RVPartitionExt(grade) => self.model.partition_ext_type(grade),
             TypeForm::RVPartitionHom(grade) => self.model.partition_hom_type(grade),
             TypeForm::RVPartitionTau(grade) => self.model.partition_tau_type(grade),
+            TypeForm::RVPartitionExtension(name) => self.model.partition_extension_type(&name.text),
             TypeForm::RVPartitionHall(spec, mode) => {
                 let key = spec.resolve(self.model)?;
                 self.model.partition_hall_type(
@@ -20147,6 +20252,7 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionExtension(name) => self.model.partition_extension(name)?.zero().persist(self.model)?,
                     Kind::RVPartitionHall(grade) => crate::partition_algebra::fiber::gabriel::derived::hall::Record::zero(grade.clone()).persist(self.model)?,
                     Kind::RVPartitionHom(grade, _) => crate::partition_algebra::fiber::gabriel::derived::auslander::Map::zero(*grade).persist(self.model)?,
                     Kind::RVPartitionExt(grade, _) => Value::RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class::zero(*grade)),
@@ -22358,6 +22464,9 @@ impl Checker<'_> {
             ExprForm::PartitionHom(expression) => self.partition_hom_expression(*expression),
             ExprForm::PartitionTau(expression) => self.partition_tau_expression(*expression),
             ExprForm::PartitionHall(expression) => self.partition_hall_expression(*expression),
+            ExprForm::PartitionExtension(expression) => {
+                self.partition_extension_expression(*expression)
+            }
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -23665,6 +23774,12 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })) {
                     return Ok((input.ty, TypedForm::PartitionHallNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionExtension(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PartitionExtensionNegate(Box::new(input)),
+                    ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVPartitionHom(..)) {
                     return Ok((
@@ -27615,6 +27730,7 @@ impl Checker<'_> {
                         | Kind::RVPartitionFiber(..)
                         | Kind::RVPartitionExt(..)
                         | Kind::RVPartitionHom(..)
+                        | Kind::RVPartitionExtension(..)
                         | Kind::RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade { mode:crate::partition_algebra::fiber::gabriel::derived::hall::Mode::Algebra, .. })
                         | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
@@ -30193,6 +30309,43 @@ impl Checker<'_> {
                     TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
+        }
+    }
+
+    fn partition_extension_expression(
+        &mut self,
+        expression: crate::partition_algebra::fiber::gabriel::derived::hall::extension::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::{
+            extension::Expression, Grade, Mode,
+        };
+        match expression {
+            Expression::Coordinates(name, values, raw) => {
+                let space = self.model.partition_extension(&name.text)?;
+                let value = space.literal(self.model, values, raw)?;
+                let ty = self.model.partition_extension_type(&name.text)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Middle(input) => {
+                let input = self.expr(*input)?;
+                let name = self.partition_extension_operand(&input)?;
+                let key = self.model.partition_extension(&name)?.key().clone();
+                let ty = self.model.partition_hall_type(Grade {
+                    key,
+                    mode: Mode::Module,
+                })?;
+                Ok((ty, TypedForm::PartitionExtensionMiddle(Box::new(input))))
+            }
+        }
+    }
+
+    fn partition_extension_operand(&self, input: &TypedExpr) -> Result<Rc<str>> {
+        match self.model.kind(input.ty) {
+            Kind::RVPartitionExtension(name) => Ok(name.clone()),
+            _ => Err(Error::new(
+                input.span,
+                "partition extension operation requires an RVPartitionExtension class",
+            )),
         }
     }
 

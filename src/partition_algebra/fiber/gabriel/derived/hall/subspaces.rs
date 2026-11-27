@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use crate::error::{Error, Result};
 use crate::model::Model;
 
-use super::{arithmetic, Dims, Distribution, Field, Hall, Shape};
+use super::{arithmetic, Dims, Distribution, Hall, Shape};
 
 const SUBSPACE_LIMIT: u128 = 50_000;
-type Row = Vec<u32>;
+use super::linear::{Row, Span};
 
 pub(super) fn count(
     model: &mut Model,
@@ -87,6 +87,15 @@ struct Subspace {
     rows: Vec<Row>,
 }
 
+impl Subspace {
+    fn span(&self, width: usize) -> Span {
+        Span::from_rows(
+            width,
+            self.pivots.iter().copied().zip(self.rows.iter().cloned()),
+        )
+    }
+}
+
 struct Walk<'a> {
     hall: &'a Hall,
     geometry: Geometry,
@@ -131,7 +140,7 @@ impl Walk<'_> {
         for (source, vertex_paths) in self.geometry.paths.iter().enumerate() {
             if let Some(map) = vertex_paths.get(1).and_then(Option::as_ref) {
                 let (target, width) = (map.target, self.geometry.widths[map.target]);
-                let span = Span::from_subspace(width, &chosen[target]);
+                let span = chosen[target].span(width);
                 for row in &chosen[source].rows {
                     let image = map.image(row, width);
                     if span.reduce(model, field, image)?.iter().any(|&v| v != 0) {
@@ -160,7 +169,7 @@ impl Walk<'_> {
                     restricted.insert(model, field, map.image(row, width))?;
                 }
                 sub[source][k] = restricted.rank;
-                let mut quotient = Span::from_subspace(width, &chosen[t]);
+                let mut quotient = chosen[t].span(width);
                 for &axis in map.axis.iter().flatten() {
                     let mut unit = vec![0; width];
                     unit[axis] = 1;
@@ -177,7 +186,7 @@ impl Walk<'_> {
     }
 }
 
-fn classify(hall: &Hall, ranks: &[Vec<usize>]) -> Result<Shape> {
+pub(super) fn classify(hall: &Hall, ranks: &[Vec<usize>]) -> Result<Shape> {
     let failure =
         || Error::plain("partition Hall path ranks did not certify a uniserial decomposition");
     let mut parts = Vec::new();
@@ -274,58 +283,5 @@ impl Geometry {
             widths: axes.iter().map(Vec::len).collect(),
             paths,
         }
-    }
-}
-
-struct Span {
-    rows: Vec<Option<Row>>,
-    rank: usize,
-}
-
-impl Span {
-    fn new(width: usize) -> Self {
-        Self {
-            rows: vec![None; width],
-            rank: 0,
-        }
-    }
-
-    fn from_subspace(width: usize, sub: &Subspace) -> Self {
-        let mut span = Self::new(width);
-        for (&pivot, row) in sub.pivots.iter().zip(&sub.rows) {
-            span.rows[pivot] = Some(row.clone());
-        }
-        span.rank = sub.rows.len();
-        span
-    }
-
-    fn reduce(&self, model: &mut Model, field: &Field, mut row: Row) -> Result<Row> {
-        for (pivot, old) in self.rows.iter().enumerate() {
-            if let Some(old) = old {
-                let scalar = row[pivot];
-                if scalar == 0 {
-                    continue;
-                }
-                model.spend(row.len() - pivot)?;
-                for (x, &y) in row[pivot..].iter_mut().zip(&old[pivot..]) {
-                    *x = field.sub(*x, field.mul(scalar, y));
-                }
-            }
-        }
-        Ok(row)
-    }
-
-    fn insert(&mut self, model: &mut Model, field: &Field, row: Row) -> Result<()> {
-        let mut row = self.reduce(model, field, row)?;
-        if let Some(pivot) = row.iter().position(|&x| x != 0) {
-            let scale = field.inverse(model, row[pivot])?;
-            model.spend(row.len() - pivot)?;
-            for term in &mut row[pivot..] {
-                *term = field.mul(*term, scale);
-            }
-            self.rows[pivot] = Some(row);
-            self.rank += 1;
-        }
-        Ok(())
     }
 }

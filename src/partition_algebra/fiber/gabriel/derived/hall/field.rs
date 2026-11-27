@@ -130,6 +130,13 @@ impl Field {
         }
     }
 
+    pub(super) fn add(&self, a: u32, b: u32) -> u32 {
+        match self {
+            Self::Prime(p) => p.add(a, b),
+            Self::Table(t) => t.add[a as usize * t.q + b as usize],
+        }
+    }
+
     pub(super) fn mul(&self, a: u32, b: u32) -> u32 {
         match self {
             Self::Prime(p) => p.mul(a, b),

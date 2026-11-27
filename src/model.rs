@@ -296,6 +296,7 @@ pub(crate) enum Kind {
         crate::partition_algebra::fiber::gabriel::derived::auslander::Grade,
         bool,
     ),
+    RVPartitionExtension(Rc<str>),
     RVPartitionHall(crate::partition_algebra::fiber::gabriel::derived::hall::Grade),
     RVPartitionTau(
         crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Grade,
@@ -555,6 +556,9 @@ pub(crate) enum Value {
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
     RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
+    RVPartitionExtension(
+        Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Class>,
+    ),
     RVPartitionHall(Rc<crate::partition_algebra::fiber::gabriel::derived::hall::Record>),
     RVPartitionTau(crate::partition_algebra::fiber::gabriel::derived::auslander::tau::Record),
     RVPartitionExt(crate::partition_algebra::fiber::gabriel::derived::Class),
@@ -847,6 +851,10 @@ pub(crate) struct Model {
     karoubi_objects: HashMap<String, Rc<crate::partition_algebra::local::LocalAlgebra>>,
     deligne_square: Option<Rc<crate::partition_algebra::square::Square>>,
     deligne_towers: HashMap<usize, Rc<crate::partition_algebra::vacillating::Tower>>,
+    partition_extension_spaces: HashMap<
+        String,
+        Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Groupoid>,
+    >,
     partition_diagrams: HashMap<usize, Rc<crate::partition_algebra::fiber::DiagramTable>>,
     partition_fibers: HashMap<
         crate::partition_algebra::fiber::Parameter,
@@ -1019,6 +1027,7 @@ impl Model {
             karoubi_objects: HashMap::new(),
             deligne_square: None,
             deligne_towers: HashMap::new(),
+            partition_extension_spaces: HashMap::new(),
             partition_diagrams: HashMap::new(),
             partition_fibers: HashMap::new(),
             hilbert_strata: HashMap::new(),
@@ -1777,6 +1786,9 @@ impl Model {
             Kind::RVPartitionFiber(grade) if grade.is_zero_ring() => 1,
             Kind::RVPartitionExt(_, false) | Kind::RVPartitionHom(_, false) => 1,
             Kind::RVPartitionTau(_, count) => count,
+            Kind::RVPartitionExtension(ref name) => {
+                self.partition_extension_spaces[name.as_ref()].cardinality()
+            }
             Kind::RVQGr(..)
             | Kind::RVQGrP(..)
             | Kind::RVOre
@@ -1991,6 +2003,7 @@ impl Model {
                 | Kind::RVPartitionHom(..)
                 | Kind::RVPartitionTau(..)
                 | Kind::RVPartitionHall(..)
+                | Kind::RVPartitionExtension(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -4039,6 +4052,46 @@ impl Model {
 
     pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn define_partition_extension(
+        &mut self,
+        name: Label,
+        m: &crate::partition_algebra::fiber::gabriel::derived::hall::Record,
+        n: &crate::partition_algebra::fiber::gabriel::derived::hall::Record,
+    ) -> Result<()> {
+        use crate::partition_algebra::fiber::gabriel::derived::hall::extension::Groupoid;
+        if self.partition_extension_spaces.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "partition extension space '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let hall = self.partition_hall(&m.grade.key)?;
+        let space = Groupoid::new(self, name.text.as_str().into(), hall, m, n)?;
+        self.allocate(3 + name.text.len())?;
+        self.partition_extension_spaces
+            .insert(name.text, Rc::new(space));
+        Ok(())
+    }
+
+    pub(crate) fn partition_extension(
+        &self,
+        name: &str,
+    ) -> Result<Rc<crate::partition_algebra::fiber::gabriel::derived::hall::extension::Groupoid>>
+    {
+        self.partition_extension_spaces
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown partition extension space '{name}'")))
+    }
+
+    pub(crate) fn partition_extension_type(&mut self, name: &str) -> Result<TypeId> {
+        self.partition_extension(name)?;
+        self.inhabited_type(Kind::RVPartitionExtension(name.into()), 0)
     }
 
     pub(crate) fn partition_hall(
@@ -7846,6 +7899,7 @@ impl Model {
             | Kind::RVPartitionHom(..)
             | Kind::RVPartitionTau(..)
             | Kind::RVPartitionHall(..)
+            | Kind::RVPartitionExtension(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -8648,6 +8702,7 @@ impl Model {
             Kind::RVPartitionExt(grade, _) => out.push(&grade.render()),
             Kind::RVPartitionTau(grade, _) => out.push(&grade.render()),
             Kind::RVPartitionHall(grade) => out.push(&grade.render()),
+            Kind::RVPartitionExtension(name) => out.push(&format!("RVPartitionExtension({name})")),
             Kind::RVPartitionHom(grade, _) => out.push(&grade.render()),
             Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
@@ -9467,6 +9522,7 @@ impl Model {
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a.cmp(b)),
             (Value::RVPartitionTau(a), Value::RVPartitionTau(b)) => Ok(a.cmp(b)),
             (Value::RVPartitionHall(a), Value::RVPartitionHall(b)) => a.compare(self, b),
+            (Value::RVPartitionExtension(a), Value::RVPartitionExtension(b)) => a.compare(self, b),
             (Value::RVPartitionHom(a), Value::RVPartitionHom(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
@@ -10251,6 +10307,9 @@ impl Model {
                 Kind::RVOre => return Err(Error::plain("cannot enumerate an Ore operator ring")),
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
+                }
+                Kind::RVPartitionExtension(ref name) => {
+                    self.partition_extension(name)?.values(self)?
                 }
                 Kind::RVPartitionHall(..) => {
                     return Err(Error::plain(
@@ -12293,6 +12352,7 @@ impl Model {
             Value::RVPartitionExt(value) => out.push(&value.render()),
             Value::RVPartitionTau(value) => out.push(&value.render()),
             Value::RVPartitionHall(value) => out.push(&value.render()),
+            Value::RVPartitionExtension(value) => out.push(&value.render()),
             Value::RVPartitionHom(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
