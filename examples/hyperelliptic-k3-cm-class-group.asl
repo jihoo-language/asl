@@ -1,0 +1,44 @@
+rvunram F[3,1]{0,1};
+rvunram W[3,1]{1,0,1};
+let z = rvUnramElem[F]{};
+let o = rvUnramElem[F]{1};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+rvjacbase L[C,W];
+let zero = rvUnramElem[W]{};
+let one = rvUnramElem[W]{1};
+let i = rvUnramElem[W]{0,1};
+let r0 = rvJacPoint[L](zero,zero);
+let r1 = rvJacPoint[L](one,zero);
+let r2 = rvJacPoint[L](neg(one),zero);
+let ri = rvJacPoint[L](i,zero);
+rvjactorsionbasis B[L,2](neg(one)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),ri)};
+
+rvcmorder O[-23];
+rvcmorder C2[-20];
+rvcmorder V[-84];
+rvcmorder N[-63];
+let x = rvCMClass[O,2,1,3];
+let y = rvCMInverse(x);
+let identity = rvCMPrincipal[O];
+
+assert rvCMCompose(x,x) == y;
+assert rvCMCompose(x,y) == identity;
+assert rvCMPow[-2](x) == x;
+assert rvCMPow[3](x) == identity;
+assert rvCMClass[O,2,5,6] == x;
+rvCMClassOrder(x);
+rvCMSameGenus(x,y);
+rvCMClassGroup[O];
+rvCMClassGroup[C2];
+rvCMClassGroup[V];
+rvCMClassGroup[N];
+rvCMSameGenus(rvCMPrincipal[N],rvCMClass[N,2,1,8]);
+rvCMSameGenus(rvCMPrincipal[N],rvCMClass[N,4,1,4]);
+
+let u = rvK3Lattice[B]{[0,2,0,0,4,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]};
+let v = rvK3Lattice[B]{[2,0,0,0,2,-6],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]};
+rvk3period P(u,v);
+rvk3period Conjugate(u,neg(v));
+assert rvK3CMClass[O,P] == x;
+assert rvK3CMClass[O,Conjugate] == y;
+show rvK3CMClass[O,P];

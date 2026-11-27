@@ -33,6 +33,7 @@ use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::clifford;
+use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
@@ -592,6 +593,12 @@ enum SpinorAction {
     Act(u8, Box<[TypedExpr; 2]>),
 }
 
+enum CMClassAction {
+    Compose(Box<[TypedExpr; 2]>),
+    Inverse(Box<TypedExpr>),
+    Power(i128, Box<TypedExpr>),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -680,6 +687,7 @@ enum TypedForm {
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
+    CMClass(cm_ring::Order, CMClassAction),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
     AbMukaiNegate(Box<TypedExpr>),
@@ -1815,6 +1823,7 @@ impl Engine {
             StatementForm::OG10(command) => return self.og10_command(*command).map(Some),
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::K3Period(command) => return self.k3_period_statement(*command),
+            StatementForm::CMClass(command) => return self.cm_class_statement(*command),
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
@@ -4929,6 +4938,48 @@ impl Engine {
         }
     }
 
+    fn cm_class_statement(&mut self, statement: cm_ring::Statement) -> Result<Option<String>> {
+        use cm_ring::Statement;
+        let report = match statement {
+            Statement::Define(name, discriminant) => {
+                self.model.define_cm_ring_order(name, discriminant)?;
+                return Ok(None);
+            }
+            Statement::Group(name) => self.model.cm_ring_order(&name)?.group_report(
+                &mut self.model,
+                &name.text,
+                cm_ring::GROUP_LIMIT,
+            )?,
+            Statement::Order(input) => {
+                let checker = &mut self.checker();
+                let input = checker.expr(*input)?;
+                let order = checker.cm_class_operand(&input, "rvCMClassOrder")?;
+                let Value::CMClass(input) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let result = order.class_order(&mut self.model, input)?;
+                format!("rvCMClassOrder = {result}")
+            }
+            Statement::SameGenus(inputs) => {
+                let [left, right] = *inputs;
+                let checker = &mut self.checker();
+                let left = checker.expr(left)?;
+                let order = checker.cm_class_operand(&left, "rvCMSameGenus")?;
+                let right = checker.expr(right)?;
+                checker.require_type(left.ty, &right, "rvCMSameGenus right argument")?;
+                let (Value::CMClass(left), Value::CMClass(right)) =
+                    (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                let result =
+                    order.same_genus(&mut self.model, left, right, cm_ring::GROUP_LIMIT)?;
+                format!("rvCMSameGenus = {result}")
+            }
+        };
+        Ok(Some(report))
+    }
+
     fn k3_period_statement(&mut self, command: k3_period::Statement) -> Result<Option<String>> {
         use k3_period::Statement;
         match command {
@@ -5972,6 +6023,33 @@ impl Engine {
         };
         let value = spinor.coefficient(&mut self.model, index)?;
         Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
+    }
+
+    fn eval_cm_class(&mut self, order: cm_ring::Order, action: &CMClassAction) -> Result<Value> {
+        let result = match action {
+            CMClassAction::Compose(inputs) => {
+                let [left, right] = inputs.as_ref();
+                let (Value::CMClass(left), Value::CMClass(right)) =
+                    (self.eval(left)?, self.eval(right)?)
+                else {
+                    unreachable!()
+                };
+                order.compose(&mut self.model, left, right)?
+            }
+            CMClassAction::Inverse(input) | CMClassAction::Power(_, input) => {
+                let Value::CMClass(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                match action {
+                    CMClassAction::Inverse(_) => order.inverse(&mut self.model, input)?,
+                    CMClassAction::Power(power, _) => {
+                        order.signed_power(&mut self.model, *power, input)?
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        };
+        Ok(Value::CMClass(result))
     }
 
     fn eval_spinor(&mut self, action: &SpinorAction) -> Result<Value> {
@@ -8594,6 +8672,7 @@ impl Engine {
             }
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
+            TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
             TypedForm::K3AutoDiv(word, input) => {
                 let Value::KummerDiv(divisor) = self.eval(input)? else {
                     unreachable!()
@@ -10981,6 +11060,7 @@ impl Checker<'_> {
             }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::CMOrder(name, exponent) => self.model.cm_order_type(&name, exponent),
+            TypeForm::CMClass(name) => self.model.cm_class_type(&name),
             TypeForm::HWMatrix(p, g, s) => {
                 let ring = Residues::checked(self.model, p, s)?;
                 self.model.hw_matrix_type(ring, g)
@@ -14231,6 +14311,7 @@ impl Checker<'_> {
             ExprForm::OG6(expression) => self.og6_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
+            ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
             ExprForm::K3AutoDiv(expression) => {
                 let kummer_surface::dynamics::Expression(name, input) = *expression;
@@ -20504,6 +20585,72 @@ impl Checker<'_> {
             Ok(name)
         } else {
             Err(self.invalid_operand(input, operation, "an RVK3Lattice vector"))
+        }
+    }
+
+    fn cm_class_operand(&self, input: &TypedExpr, operation: &str) -> Result<cm_ring::Order> {
+        let Kind::CMClass(order) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVCMClass element"));
+        };
+        self.model.cm_ring_order(&Label {
+            text: order.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn cm_class_expression(
+        &mut self,
+        expression: cm_ring::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_ring::Expression;
+        match expression {
+            Expression::Literal(name, coefficients) => {
+                let ty = self.model.cm_class_type(&name)?;
+                let value = self
+                    .model
+                    .cm_ring_order(&name)?
+                    .class(self.model, coefficients)?;
+                Ok((ty, TypedForm::Constant(Value::CMClass(value))))
+            }
+            Expression::Principal(name) => {
+                let ty = self.model.cm_class_type(&name)?;
+                let value = self.model.cm_ring_order(&name)?.principal();
+                Ok((ty, TypedForm::Constant(Value::CMClass(value))))
+            }
+            Expression::Period(name, period) => {
+                let ty = self.model.cm_class_type(&name)?;
+                let order = self.model.cm_ring_order(&name)?;
+                let form = self.model.k3_period(&period)?.cm_form(self.model)?;
+                let value = order.period_class(self.model, &form)?;
+                Ok((ty, TypedForm::Constant(Value::CMClass(value))))
+            }
+            Expression::Compose(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let order = self.cm_class_operand(&left, "rvCMCompose")?;
+                let right = self.expr(right)?;
+                self.require_type(left.ty, &right, "rvCMCompose right argument")?;
+                Ok((
+                    left.ty,
+                    TypedForm::CMClass(order, CMClassAction::Compose(Box::new([left, right]))),
+                ))
+            }
+            Expression::Inverse(input) => {
+                let input = self.expr(*input)?;
+                let order = self.cm_class_operand(&input, "rvCMInverse")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CMClass(order, CMClassAction::Inverse(Box::new(input))),
+                ))
+            }
+            Expression::Power(power, input) => {
+                let input = self.expr(*input)?;
+                let order = self.cm_class_operand(&input, "rvCMPow")?;
+                Ok((
+                    input.ty,
+                    TypedForm::CMClass(order, CMClassAction::Power(power, Box::new(input))),
+                ))
+            }
         }
     }
 

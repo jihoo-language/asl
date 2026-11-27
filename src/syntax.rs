@@ -163,6 +163,7 @@ pub(crate) enum TypeForm {
     Khovanov(Label, crate::khovanov::Grade, crate::khovanov::Form),
     KhovanovMod(Label, usize, Option<usize>, crate::khovanov::Grade, i64),
     CMOrder(Label, usize),
+    CMClass(Label),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -992,6 +993,7 @@ pub(crate) enum ExprForm {
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
+    CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -1200,6 +1202,7 @@ pub(crate) enum StatementForm {
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
     HilbertTautological(Box<crate::hyperelliptic_kummer_surface::nakajima::tautological::Command>),
+    CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
@@ -3340,6 +3343,77 @@ impl<'src> Parser<'src> {
             command
         };
         Ok(StatementForm::K3Automorphism(Box::new(command)))
+    }
+
+    fn cm_class_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::cm_ring::Statement;
+        self.advance()?;
+        let statement = match name {
+            "rvcmorder" => {
+                let order = self.label()?;
+                self.expect(Token::LBracket)?;
+                let discriminant =
+                    self.signed_wide("a negative discriminant", "CM order discriminant")?;
+                self.expect(Token::RBracket)?;
+                Statement::Define(order, discriminant)
+            }
+            "rvCMClassGroup" => {
+                self.expect(Token::LBracket)?;
+                let order = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Group(order)
+            }
+            "rvCMClassOrder" => Statement::Order(Box::new(self.paren_expr(0)?)),
+            _ => Statement::SameGenus(Box::new(self.paren_pair(0)?)),
+        };
+        Ok(StatementForm::CMClass(Box::new(statement)))
+    }
+
+    fn cm_class_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::cm_ring::Expression;
+        let (expression, depth) = match name {
+            "rvCMClass" | "rvCMPrincipal" | "rvK3CMClass" => {
+                self.expect(Token::LBracket)?;
+                let order = self.label()?;
+                let expression = match name {
+                    "rvCMClass" => {
+                        let mut coefficients = [0; 3];
+                        for coefficient in &mut coefficients {
+                            self.expect(Token::Comma)?;
+                            *coefficient = self
+                                .signed_wide("a signed form coefficient", "CM class coefficient")?;
+                        }
+                        Expression::Literal(order, coefficients)
+                    }
+                    "rvK3CMClass" => {
+                        self.expect(Token::Comma)?;
+                        Expression::Period(order, self.label()?)
+                    }
+                    _ => Expression::Principal(order),
+                };
+                self.expect(Token::RBracket)?;
+                (expression, 0)
+            }
+            "rvCMPow" => {
+                self.expect(Token::LBracket)?;
+                let power = self.signed_wide("a signed exponent", "CM class exponent")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Power(power, Box::new(input)), depth)
+            }
+            "rvCMInverse" => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Inverse(Box::new(input)), depth)
+            }
+            _ => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Compose(Box::new(inputs)), depth)
+            }
+        };
+        expr(span, ExprForm::CMClass(Box::new(expression)), depth)
     }
 
     fn k3_period_statement(&mut self, command: &str) -> Result<StatementForm> {
@@ -5756,6 +5830,9 @@ impl<'src> Parser<'src> {
             }
             Token::Word("rvCliffordCoeff") => self.clifford_coefficient_statement()?,
             Token::Word("rvK3SpinCoeff") => self.spinor_coefficient_statement()?,
+            Token::Word(
+                name @ ("rvcmorder" | "rvCMClassOrder" | "rvCMClassGroup" | "rvCMSameGenus"),
+            ) => self.cm_class_statement(name)?,
             Token::Word(name @ ("rvNakajimaPrimaryDim" | "rvNakajimaIsPrimary")) => {
                 self.nakajima_primary_statement(name)?
             }
@@ -9052,6 +9129,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if name.text == "RVCMClass" && self.eat(Token::LParen)? {
+            let order = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CMClass(order), 0);
+        }
         if matches!(
             name.text.as_str(),
             "RVECCurve" | "RVECPoint" | "RVECKernel" | "RVECIso"
@@ -11188,6 +11270,15 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.k3_period_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMClass" | "rvCMPrincipal" | "rvK3CMClass" | "rvCMPow"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvCMCompose" | "rvCMInverse")
+                        && self.token() == Token::LParen)
+                {
+                    return self.cm_class_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

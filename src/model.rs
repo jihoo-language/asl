@@ -35,7 +35,7 @@ use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Po
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
 };
-use crate::hyperelliptic_kummer_surface::{clifford, rational_sparse, spinor};
+use crate::hyperelliptic_kummer_surface::{clifford, cm_ring, rational_sparse, spinor};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -295,6 +295,7 @@ pub(crate) enum Kind {
     LeeDual(Rc<str>, i64),
     Khovanov(Rc<str>, khovanov::Grade, KhForm),
     CMOrder(legendre_cm::Grade),
+    CMClass(Rc<str>),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -476,6 +477,7 @@ pub(crate) enum Value {
     KhChain(khovanov::Chain),
     KhClass(khovanov::Class),
     CMOrder(legendre_cm::Element),
+    CMClass(cm_ring::Class),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -635,6 +637,7 @@ pub(crate) struct Model {
     k3_mordell: HashMap<String, Rc<mordell::Mordell>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
+    cm_ring_orders: HashMap<String, cm_ring::Order>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
     og6_lattices: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>>,
@@ -743,6 +746,7 @@ impl Model {
             k3_mordell: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
+            cm_ring_orders: HashMap::new(),
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
@@ -1039,6 +1043,7 @@ impl Model {
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()].count(),
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
+            Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
             Kind::K3Lattice(..)
             | Kind::Mukai(..)
@@ -1303,6 +1308,7 @@ impl Model {
                 | Kind::RVStableTree(..)
                 | Kind::RVStableMarks(..)
                 | Kind::CMOrder(..)
+                | Kind::CMClass(..)
                 | Kind::RVWzw(..)
                 | Kind::Lee(..)
                 | Kind::LeeDual(..)
@@ -4694,6 +4700,31 @@ impl Model {
         self.inhabited_type(Kind::CMOrder(grade), 0)
     }
 
+    pub(crate) fn define_cm_ring_order(&mut self, name: Label, discriminant: i128) -> Result<()> {
+        if self.cm_ring_orders.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("CM ring order '{}' is already defined", name.text),
+            ));
+        }
+        let order = cm_ring::Order::new(discriminant)?;
+        self.allocate(5 + name.text.len())?;
+        self.cm_ring_orders.insert(name.text, order);
+        Ok(())
+    }
+
+    pub(crate) fn cm_ring_order(&self, name: &Label) -> Result<cm_ring::Order> {
+        self.cm_ring_orders
+            .get(&name.text)
+            .copied()
+            .ok_or_else(|| Error::new(name.span, format!("unknown CM ring order '{}'", name.text)))
+    }
+
+    pub(crate) fn cm_class_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cm_ring_order(name)?;
+        self.inhabited_type(Kind::CMClass(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn register_rv_phodge_quad(
         &mut self,
         name: Label,
@@ -5389,6 +5420,7 @@ impl Model {
             | Kind::CMOrder(..)
             | Kind::RVWzw(..)
             | Kind::Lee(..)
+            | Kind::CMClass(..)
             | Kind::LeeDual(..)
             | Kind::Khovanov(..)
             | Kind::RvTl(..)
@@ -5866,6 +5898,7 @@ impl Model {
             Kind::CMOrder(grade) => {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
+            Kind::CMClass(name) => out.push(&format!("RVCMClass({name})")),
             Kind::ECCurve(name) => out.push(&format!("RVECCurve({name})")),
             Kind::Jacobian(name) => out.push(&format!("RVJac({name})")),
             Kind::Kummer(name) => out.push(&format!("RVKummer({name})")),
@@ -6148,6 +6181,7 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left == right),
+            (Value::CMClass(left), Value::CMClass(right)) => Ok(left == right),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
                 Ok(a == b)
@@ -6491,6 +6525,7 @@ impl Model {
                 }
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left.cmp(right)),
+            (Value::CMClass(left), Value::CMClass(right)) => Ok(left.cmp(right)),
             (Value::HWMatrix(a), Value::HWMatrix(b)) => {
                 self.spend(a.entries().len().min(b.entries().len()))?;
                 Ok(a.entries().cmp(b.entries()))
@@ -6812,6 +6847,11 @@ impl Model {
                 Kind::CMOrder(..) => {
                     return Err(Error::plain("cannot enumerate an integral CM order"));
                 }
+                Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()]
+                    .elements(self, MAX_ELEMENTS)?
+                    .into_iter()
+                    .map(Value::CMClass)
+                    .collect(),
                 Kind::HWScalar(ring) => {
                     let size = ring.count(1);
                     self.check_element_limit(size)?;
@@ -8408,6 +8448,10 @@ impl Model {
                 let (r, wedge, s) = vector.coordinates();
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{r={r}, wedge={wedge:?}, s={s}, k={k}}}"))
+            }
+            Value::CMClass(class) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{:?}", class.0))
             }
             Value::OG10(class) => {
                 let (vector, k) = class.coordinates();
