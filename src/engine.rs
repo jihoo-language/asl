@@ -135,7 +135,9 @@ use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
 use crate::rv_conformal;
-use crate::rv_crossed::{self, dijkgraaf_witten as dw, flat, path_integral, postnikov};
+use crate::rv_crossed::{
+    self, dijkgraaf_witten as dw, drinfeld_double as dd, flat, path_integral, postnikov,
+};
 use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
@@ -761,6 +763,12 @@ enum FlatAction {
     LiftDifference(Rc<flat::Flat>, Box<[TypedExpr; 3]>),
 }
 
+enum DoubleAction {
+    Scale(i128, Box<TypedExpr>),
+    Dual(Rc<dd::Double>, Box<TypedExpr>),
+    Fuse(Rc<dd::Double>, Box<[TypedExpr; 2]>),
+}
+
 enum PostnikovAction {
     Neg(Rc<postnikov::Postnikov>, Box<TypedExpr>),
     Coboundary(Rc<postnikov::Postnikov>, Box<TypedExpr>),
@@ -772,6 +780,7 @@ enum PostnikovAction {
 enum TypedForm {
     Crossed(CrossedAction),
     Postnikov(PostnikovAction),
+    Double(DoubleAction),
     Flat(FlatAction),
     SetLogic(LogicAction, Vec<TypedExpr>),
     SetReflectExtend {
@@ -2417,6 +2426,7 @@ impl Engine {
             StatementForm::Postnikov(command) => return self.postnikov_command(*command),
             StatementForm::Flat(command) => return self.flat_command(*command),
             StatementForm::DijkgraafWitten(command) => return self.dw_command(*command),
+            StatementForm::DrinfeldDouble(command) => return self.double_command(*command),
             StatementForm::HomotopyIntegral(command) => {
                 return self.homotopy_integral_command(*command)
             }
@@ -7791,6 +7801,72 @@ impl Engine {
         Ok(Some(report))
     }
 
+    fn double_command(&mut self, command: dd::Command) -> Result<Option<String>> {
+        use dd::Command;
+        let report = match command {
+            Command::Declare(name, post, input) => {
+                let input = self.checker().expr(*input)?;
+                let ty = self.model.postnikov_cochain_type(&post, 3)?;
+                self.checker().require_type(ty, &input, "rvdouble")?;
+                let post = self.model.postnikov(&post)?;
+                let k = self.eval_postnikov_cochain(&input)?;
+                let double = dd::Double::new(&mut self.model, &post, &k)?;
+                self.model.define_double(name, double)?;
+                return Ok(None);
+            }
+            Command::Data(name) => self.model.drinfeld_double(&name)?.data(&name.text),
+            Command::Sector(name, i) => self
+                .model
+                .drinfeld_double(&name)?
+                .sector_report(&name.text, i)?,
+            Command::Phase(name, [i, x]) => {
+                let value = self
+                    .model
+                    .drinfeld_double(&name)?
+                    .phase(i, x)?
+                    .map_or_else(|| "outside radical".to_owned(), |x| x.to_string());
+                format!("rvDoublePhase[{},{i},{x}] = {value}", name.text)
+            }
+            Command::Coefficient(i, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .double_operand(&input, "rvDoubleCoeff")?
+                    .check_index(i)?;
+                let value = self.eval_double_sector(&input)?.coefficient(i);
+                format!("rvDoubleCoeff[{i}] = {value}")
+            }
+        };
+        Ok(Some(report))
+    }
+
+    fn eval_double_sector(&mut self, input: &TypedExpr) -> Result<Rc<dd::Sector>> {
+        let Value::DoubleSector(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
+    fn eval_double(&mut self, action: &DoubleAction) -> Result<Value> {
+        let result = match action {
+            DoubleAction::Scale(k, input) => {
+                let input = self.eval_double_sector(input)?;
+                input.scale(&mut self.model, *k)?
+            }
+            DoubleAction::Dual(double, input) => {
+                let input = self.eval_double_sector(input)?;
+                double.dual(&mut self.model, &input)?
+            }
+            DoubleAction::Fuse(double, inputs) => {
+                let (a, b) = (
+                    self.eval_double_sector(&inputs[0])?,
+                    self.eval_double_sector(&inputs[1])?,
+                );
+                double.fuse(&mut self.model, &a, &b)?
+            }
+        };
+        result.persist(&mut self.model)
+    }
+
     fn dw_command(&mut self, command: dw::Command) -> Result<Option<String>> {
         use dw::Command;
         let report = match command {
@@ -10039,6 +10115,9 @@ impl Engine {
                     (BinaryOp::Add, Value::KSNomizu(a), Value::KSNomizu(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::DoubleSector(a), Value::DoubleSector(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::PostnikovCochain(a), Value::PostnikovCochain(b)) => {
                         let Kind::PostnikovCochain(name, _) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -12036,6 +12115,7 @@ impl Engine {
             TypedForm::KSNomizu(action) => self.eval_ks_nomizu(action, expr.span),
             TypedForm::Crossed(action) => self.eval_crossed(action),
             TypedForm::Postnikov(action) => self.eval_postnikov(action),
+            TypedForm::Double(action) => self.eval_double(action),
             TypedForm::Flat(action) => self.eval_flat(action),
             TypedForm::KSEnd(action) => self.eval_ks_end(action, expr.span),
             TypedForm::KSLink(action) => self
@@ -15319,6 +15399,7 @@ impl Checker<'_> {
             }
             TypeForm::FlatCochain(name, degree) => self.model.flat_cochain_type(&name, degree),
             TypeForm::PostnikovCell(name) => self.model.postnikov_cell_type(&name),
+            TypeForm::DoubleSector(name) => self.model.double_sector_type(&name),
             TypeForm::KSEnd(name) => self.model.ks_end_type(&name),
             TypeForm::QZ => self.model.qz_type(),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
@@ -16145,6 +16226,7 @@ impl Checker<'_> {
                 Ok((ty, TypedForm::Constant(Value::RVCycloQ(data.value.clone()))))
             }
             ExprForm::Postnikov(expression) => self.postnikov_expression(*expression),
+            ExprForm::DrinfeldDouble(expression) => self.double_expression(*expression),
             ExprForm::Flat(expression) => self.flat_expression(*expression),
             ExprForm::SetJUnit(name, inverse) => {
                 let reflection = self.model.set_sheafification(&name.text)?;
@@ -16422,6 +16504,7 @@ impl Checker<'_> {
                     Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::KSNomizu(..) => nomizu::Cochain::zero().persist(self.model)?,
                     Kind::PostnikovCochain(..) => postnikov::Cochain::zero().persist(self.model)?,
+                    Kind::DoubleSector(..) => dd::Sector(Vec::new()).persist(self.model)?,
                     Kind::FlatCochain(..) => flat::persist(self.model, postnikov::Cochain::zero())?,
                     Kind::KSEnd(..) => ks_projector::End::zero().persist(self.model)?,
                     Kind::QZ => qz::Scalar::zero().persist(self.model)?,
@@ -19608,6 +19691,12 @@ impl Checker<'_> {
                             FlatUnary::Neg,
                             Box::new(input),
                         )),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::DoubleSector(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::Double(DoubleAction::Scale(-1, Box::new(input))),
                     ));
                 }
                 if let Kind::PostnikovCochain(name, _) = self.model.kind(input.ty) {
@@ -23552,6 +23641,7 @@ impl Checker<'_> {
                         | Kind::KSExterior(..)
                         | Kind::KSNomizu(..)
                         | Kind::PostnikovCochain(..)
+                        | Kind::DoubleSector(..)
                         | Kind::FlatCochain(..)
                         | Kind::KSEnd(..)
                         | Kind::QZ
@@ -27229,6 +27319,83 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::Flat(action)))
+    }
+
+    fn double_operand(&self, input: &TypedExpr, op: &str) -> Result<Rc<dd::Double>> {
+        let Kind::DoubleSector(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, op, "a twisted double fusion value"));
+        };
+        self.model.drinfeld_double(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn double_expression(&mut self, expression: dd::Expression) -> Result<(TypeId, TypedForm)> {
+        use dd::Expression;
+        let (ty, action) = match expression {
+            Expression::Basis(name, i) => {
+                let ty = self.model.double_sector_type(&name)?;
+                self.model.drinfeld_double(&name)?.check_index(i)?;
+                let value = dd::Sector(vec![(i, 1)]).persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Simple(name, flux, phases) => {
+                let ty = self.model.double_sector_type(&name)?;
+                let i = self
+                    .model
+                    .drinfeld_double(&name)?
+                    .lookup(self.model, flux, &phases)?;
+                let value = dd::Sector(vec![(i, 1)]).persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Linear(name, dense) => {
+                let ty = self.model.double_sector_type(&name)?;
+                let value = self
+                    .model
+                    .drinfeld_double(&name)?
+                    .linear(self.model, dense)?
+                    .persist(self.model)?;
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::Scale(k, input) => {
+                let input = self.expr(*input)?;
+                self.double_operand(&input, "rvDoubleScale")?;
+                (input.ty, DoubleAction::Scale(k, Box::new(input)))
+            }
+            Expression::Dual(input) => {
+                let input = self.expr(*input)?;
+                let double = self.double_operand(&input, "rvDoubleDual")?;
+                (input.ty, DoubleAction::Dual(double, Box::new(input)))
+            }
+            Expression::Fuse(inputs) => {
+                let [a, b] = *inputs;
+                let (a, b) = (self.expr(a)?, self.expr(b)?);
+                let double = self.double_operand(&a, "rvDoubleFuse")?;
+                self.require_type(a.ty, &b, "rvDoubleFuse")?;
+                (a.ty, DoubleAction::Fuse(double, Box::new([a, b])))
+            }
+            other => {
+                let value_op = match &other {
+                    Expression::S(name, ..)
+                    | Expression::T(name, ..)
+                    | Expression::Character(name, ..)
+                    | Expression::Lens(name, ..) => name,
+                    _ => unreachable!(),
+                };
+                let double = self.model.drinfeld_double(value_op)?;
+                let ty = self.model.cyclotomic_rational_type(double.conductor)?;
+                let value = match other {
+                    Expression::S(_, [i, j]) => double.s_value(self.model, i, j)?,
+                    Expression::T(_, i) => double.t_value(self.model, i)?,
+                    Expression::Character(_, [i, x]) => double.character(self.model, i, x)?,
+                    Expression::Lens(_, m) => double.lens(self.model, m)?,
+                    _ => unreachable!(),
+                };
+                return Ok((ty, TypedForm::Constant(value)));
+            }
+        };
+        Ok((ty, TypedForm::Double(action)))
     }
 
     fn postnikov_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {

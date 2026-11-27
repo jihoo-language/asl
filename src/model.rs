@@ -91,7 +91,9 @@ use crate::rv_bar;
 use crate::rv_bar_dual;
 use crate::rv_bar_page;
 use crate::rv_barcobar;
-use crate::rv_crossed::{self, dijkgraaf_witten as dw, flat, path_integral, postnikov};
+use crate::rv_crossed::{
+    self, dijkgraaf_witten as dw, drinfeld_double as dd, flat, path_integral, postnikov,
+};
 use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
@@ -204,6 +206,7 @@ pub(crate) enum Kind {
     Space(String),
     FiniteGroup(Rc<str>),
     PostnikovCochain(Rc<str>, usize),
+    DoubleSector(Rc<str>),
     FlatCochain(Rc<str>, usize),
     PostnikovCell(Rc<str>),
     SetNat(Rc<str>, Rc<str>),
@@ -460,6 +463,7 @@ pub(crate) enum Value {
     Point(usize),
     GroupElement(usize),
     PostnikovCochain(Rc<postnikov::Cochain>),
+    DoubleSector(Rc<dd::Sector>),
     FlatCochain(Rc<postnikov::Cochain>),
     PostnikovCell(postnikov::Cell),
     Pair(Rc<(Value, Value)>),
@@ -662,6 +666,7 @@ pub(crate) struct Model {
     flat_backgrounds: HashMap<Rc<str>, Rc<flat::Flat>>,
     homotopy_integrals: HashMap<Rc<str>, Rc<path_integral::Integral>>,
     dw_integrals: HashMap<Rc<str>, Rc<dw::Integral>>,
+    drinfeld_doubles: HashMap<Rc<str>, Rc<dd::Double>>,
     postnikov_systems: HashMap<Rc<str>, Rc<postnikov::Postnikov>>,
     set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
@@ -810,6 +815,7 @@ impl Model {
             flat_backgrounds: HashMap::new(),
             homotopy_integrals: HashMap::new(),
             dw_integrals: HashMap::new(),
+            drinfeld_doubles: HashMap::new(),
             set_families: HashMap::new(),
             set_origins: HashMap::new(),
             set_recollements: HashMap::new(),
@@ -1049,6 +1055,27 @@ impl Model {
     pub(crate) fn postnikov_cell_type(&mut self, name: &Label) -> Result<TypeId> {
         self.postnikov(name)?;
         self.inhabited_type(Kind::PostnikovCell(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_double(&mut self, name: Label, data: dd::Double) -> Result<()> {
+        if self.drinfeld_doubles.contains_key(name.text.as_str()) {
+            return Err(Error::new(name.span, "twisted double is already defined"));
+        }
+        self.drinfeld_doubles
+            .insert(name.text.into(), Rc::new(data));
+        Ok(())
+    }
+
+    pub(crate) fn drinfeld_double(&self, name: &Label) -> Result<Rc<dd::Double>> {
+        self.drinfeld_doubles
+            .get(name.text.as_str())
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown twisted double '{}'", name.text)))
+    }
+
+    pub(crate) fn double_sector_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.drinfeld_double(name)?;
+        self.inhabited_type(Kind::DoubleSector(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_dw(&mut self, name: Label, data: dw::Integral) -> Result<()> {
@@ -1451,7 +1478,7 @@ impl Model {
             Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
             Kind::KSExterior(_, 0..=64) => usize::MAX,
             Kind::KSExterior(..) => 1,
-            Kind::KSNomizu(_, _, 0..=65) => usize::MAX,
+            Kind::KSNomizu(_, _, 0..=65) | Kind::DoubleSector(..) => usize::MAX,
             Kind::KSNomizu(..) => 1,
             Kind::KSEnd(..) => usize::MAX,
             Kind::QZ => usize::MAX,
@@ -1711,6 +1738,7 @@ impl Model {
                 | Kind::KSNomizu(..)
                 | Kind::FiniteGroup(..)
                 | Kind::PostnikovCochain(..)
+                | Kind::DoubleSector(..)
                 | Kind::FlatCochain(..)
                 | Kind::PostnikovCell(..)
                 | Kind::KSEnd(..)
@@ -6894,6 +6922,7 @@ impl Model {
             | Kind::KSNomizu(..)
             | Kind::FiniteGroup(..)
             | Kind::PostnikovCochain(..)
+            | Kind::DoubleSector(..)
             | Kind::FlatCochain(..)
             | Kind::PostnikovCell(..)
             | Kind::KSEnd(..)
@@ -7068,6 +7097,7 @@ impl Model {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
             Kind::FiniteGroup(name) => out.push(&format!("RVGroup({name})")),
+            Kind::DoubleSector(name) => out.push(&format!("RVDouble({name})")),
             Kind::PostnikovCochain(name, degree) => {
                 out.push(&format!("RVPostnikovCochain({name},{degree})"))
             }
@@ -7665,6 +7695,10 @@ impl Model {
             }
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a == b),
+            (Value::DoubleSector(a), Value::DoubleSector(b)) => {
+                self.spend(a.0.len().min(b.0.len()))?;
+                Ok(a == b)
+            }
             (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a == b),
             (Value::PostnikovCochain(a), Value::PostnikovCochain(b))
             | (Value::FlatCochain(a), Value::FlatCochain(b)) => {
@@ -7980,6 +8014,10 @@ impl Model {
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
             (Value::GroupElement(a), Value::GroupElement(b)) => Ok(a.cmp(b)),
+            (Value::DoubleSector(a), Value::DoubleSector(b)) => {
+                self.spend(a.0.len().min(b.0.len()))?;
+                Ok(a.cmp(b))
+            }
             (Value::PostnikovCell(a), Value::PostnikovCell(b)) => Ok(a.cmp(b)),
             (Value::PostnikovCochain(a), Value::PostnikovCochain(b))
             | (Value::FlatCochain(a), Value::FlatCochain(b)) => {
@@ -8826,6 +8864,9 @@ impl Model {
                     ));
                 }
                 Kind::KSExterior(..) => vec![ks_exterior::Form::zero().persist(self)?],
+                Kind::DoubleSector(..) => {
+                    return Err(Error::plain("cannot enumerate a virtual fusion lattice"));
+                }
                 Kind::KSNomizu(_, _, 0..=65) => {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kuga–Satake Nomizu cochain space",
@@ -9765,6 +9806,11 @@ impl Model {
             Value::PostnikovCell(cell) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", cell.object, cell.coordinate))
+            }
+            Value::DoubleSector(sector) => {
+                self.spend(sector.0.len())?;
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", sector.0))
             }
             Value::FlatCochain(cochain) | Value::PostnikovCochain(cochain) => {
                 self.write_type(out, ty, 0)?;

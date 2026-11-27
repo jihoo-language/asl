@@ -73,6 +73,7 @@ pub(crate) enum TypeForm {
     Name(Label),
     FiniteGroup(Label),
     PostnikovCochain(Label, usize),
+    DoubleSector(Label),
     FlatCochain(Label, usize),
     PostnikovCell(Label),
     SetNat(Label, Label),
@@ -733,6 +734,7 @@ pub(crate) struct MapGenerator {
 pub(crate) enum ExprForm {
     Crossed(Box<crate::rv_crossed::Expression>),
     Postnikov(Box<crate::rv_crossed::postnikov::Expression>),
+    DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Expression>),
     DWValue(Label),
     Flat(Box<crate::rv_crossed::flat::Expression>),
     SetTopology(
@@ -1189,6 +1191,7 @@ pub(crate) enum StatementForm {
     Flat(Box<crate::rv_crossed::flat::Command>),
     HomotopyIntegral(Box<crate::rv_crossed::path_integral::Command>),
     DijkgraafWitten(Box<crate::rv_crossed::dijkgraaf_witten::Command>),
+    DrinfeldDouble(Box<crate::rv_crossed::drinfeld_double::Command>),
     Space(Label, Vec<Vec<Label>>),
     SetFamily(
         Label,
@@ -3546,6 +3549,126 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::Postnikov(Box::new(command)))
+    }
+
+    fn double_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::rv_crossed::drinfeld_double::Command;
+        self.advance()?;
+        let command = if operation == "rvdouble" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let post = self.label()?;
+            self.expect(Token::RBracket)?;
+            Command::Declare(name, post, Box::new(self.paren_expr(0)?))
+        } else {
+            self.expect(Token::LBracket)?;
+            if operation == "rvDoubleCoeff" {
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Coefficient(index, Box::new(self.paren_expr(0)?))
+            } else {
+                let name = self.label()?;
+                let command = if operation == "rvDoubleData" {
+                    Command::Data(name)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let i = self.number()?.0;
+                    if operation == "rvDoubleSector" {
+                        Command::Sector(name, i)
+                    } else {
+                        self.expect(Token::Comma)?;
+                        Command::Phase(name, [i, self.number()?.0])
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                command
+            }
+        };
+        Ok(StatementForm::DrinfeldDouble(Box::new(command)))
+    }
+
+    fn double_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::rv_crossed::drinfeld_double::Expression;
+        let (operation, depth) = match operation {
+            "rvDoubleDual" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Dual(Box::new(input)), depth)
+            }
+            "rvDoubleFuse" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (Expression::Fuse(Box::new(pair)), depth)
+            }
+            "rvDoubleScale" => {
+                self.expect(Token::LBracket)?;
+                let k = self.signed_wide("a signed integer", "fusion scale")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(k, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let operation = match operation {
+                    "rvDoubleLinear" => {
+                        self.expect(Token::RBracket)?;
+                        self.expect(Token::LBrace)?;
+                        Expression::Linear(
+                            name,
+                            self.signed_list(
+                                Token::RBrace,
+                                "a signed integer",
+                                "fusion coefficient",
+                            )?,
+                        )
+                    }
+                    "rvDoubleLens" => {
+                        self.expect(Token::Comma)?;
+                        let power = self.signed_wide("a signed integer", "lens twist power")?;
+                        self.expect(Token::RBracket)?;
+                        Expression::Lens(name, power)
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let i = self.number()?.0;
+                        match operation {
+                            "rvDoubleSimple" => {
+                                self.expect(Token::RBracket)?;
+                                self.expect(Token::LBrace)?;
+                                Expression::Simple(name, i, self.unsigned_list(Token::RBrace)?)
+                            }
+                            "rvDoubleBasis" | "rvDoubleT" => {
+                                self.expect(Token::RBracket)?;
+                                if operation == "rvDoubleBasis" {
+                                    Expression::Basis(name, i)
+                                } else {
+                                    Expression::T(name, i)
+                                }
+                            }
+                            _ => {
+                                self.expect(Token::Comma)?;
+                                let j = self.number()?.0;
+                                self.expect(Token::RBracket)?;
+                                if operation == "rvDoubleS" {
+                                    Expression::S(name, [i, j])
+                                } else {
+                                    Expression::Character(name, [i, j])
+                                }
+                            }
+                        }
+                    }
+                };
+                (operation, 0)
+            }
+        };
+        expr(span, ExprForm::DrinfeldDouble(Box::new(operation)), depth)
     }
 
     fn dw_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -10060,6 +10183,10 @@ impl<'src> Parser<'src> {
             Token::Word(
                 op @ ("rvdw" | "rvdwcoeff" | "rvDWComponent" | "rvDWClass" | "rvDWPhase"),
             ) => self.dw_statement(op)?,
+            Token::Word(
+                op @ ("rvdouble" | "rvDoubleData" | "rvDoubleSector" | "rvDoublePhase"
+                | "rvDoubleCoeff"),
+            ) => self.double_statement(op)?,
             Token::Word("rvQZOrder") => {
                 self.advance()?;
                 StatementForm::QZOrder(Box::new(self.paren_expr(0)?))
@@ -13853,13 +13980,14 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "RVGroup" | "RVPostnikovCochain" | "RVPostnikovCell" | "RVFlatCochain"
+            "RVGroup" | "RVPostnikovCochain" | "RVPostnikovCell" | "RVFlatCochain" | "RVDouble"
         ) && self.eat(Token::LParen)?
         {
             let label = self.label()?;
             let form = match name.text.as_str() {
                 "RVGroup" => TypeForm::FiniteGroup(label),
                 "RVPostnikovCell" => TypeForm::PostnikovCell(label),
+                "RVDouble" => TypeForm::DoubleSector(label),
                 _ => {
                     self.expect(Token::Comma)?;
                     let degree = self.number()?.0;
@@ -16500,6 +16628,22 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.crossed_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvDoubleBasis"
+                        | "rvDoubleSimple"
+                        | "rvDoubleLinear"
+                        | "rvDoubleScale"
+                        | "rvDoubleS"
+                        | "rvDoubleT"
+                        | "rvDoubleCharacter"
+                        | "rvDoubleLens"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvDoubleFuse" | "rvDoubleDual")
+                        && self.token() == Token::LParen)
+                {
+                    return self.double_expression(&name.text, span, nest);
                 }
                 if name.text == "rvDWValue" && self.eat(Token::LBracket)? {
                     let name = self.label()?;
