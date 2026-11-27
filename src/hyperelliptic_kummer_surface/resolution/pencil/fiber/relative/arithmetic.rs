@@ -182,22 +182,23 @@ impl RelativeJacobian {
         let mut polynomial: Vec<_> = cross.into_iter().map(Integer::from_i128).collect();
         let node_orbits = k3::node_orbits(model, &pencil.curve, q)?;
         for length in [1, 1].into_iter().chain(node_orbits.iter().copied()) {
-            polynomial = multiply_cycle(model, &polynomial, q, length)?;
+            polynomial = multiply_cycle(model, &polynomial, i128::from(q), length)?;
         }
         if polynomial.len() != 23 {
             return Err(inconsistent_components());
         }
-        let ns_rank = root_multiplicity(model, &polynomial, q)?;
+        let ns_rank = root_multiplicity(model, &polynomial, i128::from(q))?;
         let component_cycles = local
             .iter()
             .flat_map(|place| place.action.cycles.iter().copied());
         let trivial_rank = 2 + component_cycles.clone().count();
         for length in [1, 1].into_iter().chain(component_cycles) {
-            polynomial = divide_cycle(model, &polynomial, q, length)?.ok_or_else(|| {
-                Error::plain("K3 pencil component factor did not divide H² exactly")
-            })?;
+            polynomial =
+                divide_cycle(model, &polynomial, i128::from(q), length)?.ok_or_else(|| {
+                    Error::plain("K3 pencil component factor did not divide H² exactly")
+                })?;
         }
-        let rank = root_multiplicity(model, &polynomial, q)?;
+        let rank = root_multiplicity(model, &polynomial, i128::from(q))?;
         let degree = polynomial.len() - 1;
         if ns_rank != rank + trivial_rank || conductor.checked_sub(4) != Some(degree) {
             return Err(Error::plain(
@@ -388,18 +389,21 @@ fn leading_residue(
 const LIMBS: usize = 48;
 type Integer = Wide<LIMBS>;
 
-fn cycle_power(q: u64, length: usize) -> Result<Integer> {
+fn cycle_power(q: i128, length: usize) -> Result<Integer> {
     if length == 0 || length > 22 {
         return Err(inconsistent_components());
     }
     (0..length).try_fold(Integer::from_i128(1), |power, _| {
-        power
-            .multiply(i128::from(q))
-            .map_err(|_| polynomial_overflow())
+        power.multiply(q).map_err(|_| polynomial_overflow())
     })
 }
 
-fn multiply_cycle(model: &mut Model, p: &[Integer], q: u64, length: usize) -> Result<Vec<Integer>> {
+fn multiply_cycle(
+    model: &mut Model,
+    p: &[Integer],
+    q: i128,
+    length: usize,
+) -> Result<Vec<Integer>> {
     let power = cycle_power(q, length)?;
     model.spend(p.len() * (LIMBS + LIMBS * LIMBS))?;
     let mut product = p.to_vec();
@@ -418,7 +422,7 @@ fn multiply_cycle(model: &mut Model, p: &[Integer], q: u64, length: usize) -> Re
 fn divide_cycle(
     model: &mut Model,
     p: &[Integer],
-    q: u64,
+    q: i128,
     length: usize,
 ) -> Result<Option<Vec<Integer>>> {
     if length >= p.len() {
@@ -445,7 +449,7 @@ fn divide_cycle(
     Ok(Some(quotient))
 }
 
-fn root_multiplicity(model: &mut Model, polynomial: &[Integer], q: u64) -> Result<usize> {
+fn root_multiplicity(model: &mut Model, polynomial: &[Integer], q: i128) -> Result<usize> {
     let mut polynomial = polynomial.to_vec();
     let mut rank = 0;
     while let Some(quotient) = divide_cycle(model, &polynomial, q, 1)? {

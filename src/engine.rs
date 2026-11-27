@@ -1973,6 +1973,33 @@ impl Engine {
                             .euler(&mut self.model, &pencil, &name.text, &parameter)
                             .map(Some)
                     }
+                    Command::LPower(name, degree) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil
+                            .l_power(&mut self.model, &name.text, degree)
+                            .map(Some)
+                    }
+                    Command::ArtinTateRatio(name, lower, upper) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        pencil
+                            .artin_tate_ratio(&mut self.model, &name.text, lower, upper)
+                            .map(Some)
+                    }
+                    Command::ShaPower(name, degree, inputs) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let ty = self.model.k3_pencil_section_type(&name)?;
+                        let mut generators = Vec::with_capacity(inputs.len());
+                        for input in inputs {
+                            generators.push(self.pencil_section_input(
+                                ty,
+                                input,
+                                "K3 pencil base-Sha certificate section",
+                            )?);
+                        }
+                        pencil
+                            .sha_power(&mut self.model, &name.text, degree, &generators)
+                            .map(Some)
+                    }
                     Command::LFunction(name) => {
                         let pencil = self.model.k3_pencil(&name)?;
                         let relative = pencil.relative(&mut self.model)?;

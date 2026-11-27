@@ -9,6 +9,7 @@ use super::{
 };
 
 mod factors;
+mod tower;
 
 struct BsdData {
     l_function: LFunction,
@@ -61,63 +62,32 @@ impl RelativeJacobian {
             ref places,
             ..
         } = l_function;
-        let powers = powers_of_q(q, polynomial.len() - 1)?;
-        let root_number = reciprocity(model, polynomial, &powers)?;
-        if root_number != if rank.is_multiple_of(2) { 1 } else { -1 } {
-            return Err(Error::plain(
-                "K3 pencil root number disagrees with central vanishing parity",
-            ));
-        }
-        let numerators = taylor_numerators(model, polynomial, &powers)?;
+        let CentralValue {
+            root_number,
+            numerators,
+            denominator,
+        } = central_value(model, polynomial, i128::from(q), rank)?;
         let numerator = numerators[rank];
-        if numerators[..rank].iter().any(|c| !c.is_zero())
-            || numerator.negative
-            || numerator.is_zero()
-        {
-            return Err(Error::plain(
-                "K3 pencil L polynomial failed its central order and positivity checks",
-            ));
-        }
-        let denominator = powers[polynomial.len() - 1];
 
         let (tamagawa, orbit_product, trivial_det) = trivial_lattice(model, pencil, places)?;
         let weil = pencil.curve.weil(model)?;
         let artin_tate = k3::artin_tate::data(model, q, weil, node_orbits, 1)?;
-        let special_with_q = numerator
-            .multiply(i128::from(q))
-            .map_err(|_| special_overflow())?;
-        let predicted = special_with_q
-            .multiply_wide(unsigned(orbit_product))
-            .map_err(|_| special_overflow())?;
-        let actual = denominator
-            .multiply_wide(unsigned(artin_tate.magnitude))
-            .map_err(|_| special_overflow())?;
-        if artin_tate.rank != ns_rank as u128 || !equal(predicted, actual) {
-            return Err(Error::plain(
-                "K3 pencil BSD and Artin–Tate products disagree",
-            ));
+        if artin_tate.rank != ns_rank as u128 {
+            return Err(Error::plain("K3 pencil BSD and Artin–Tate ranks disagree"));
         }
-
-        let quotient_denominator = denominator
-            .magnitude
-            .multiply_u128(tamagawa)
-            .ok_or_else(special_overflow)?;
-        let quotient = reduce_fraction(model, special_with_q.magnitude, quotient_denominator)?;
-        let artin_quotient = reduce_fraction(
+        let quotient = checked_bsd_quotient(
             model,
-            Natural::from_small(artin_tate.magnitude),
-            Natural::from_small(trivial_det),
+            i128::from(q),
+            numerator,
+            denominator,
+            (tamagawa, orbit_product, trivial_det),
+            artin_tate.magnitude,
         )?;
-        if quotient != artin_quotient {
-            return Err(Error::plain(
-                "K3 pencil BSD quotient failed the trivial-lattice comparison",
-            ));
-        }
         Ok(BsdData {
             l_function,
             root_number,
             numerators,
-            denominator: denominator.magnitude,
+            denominator,
             tamagawa,
             orbit_product,
             trivial_det,
@@ -125,6 +95,48 @@ impl RelativeJacobian {
             quotient,
         })
     }
+}
+
+fn checked_bsd_quotient(
+    model: &mut Model,
+    field_order: i128,
+    numerator: Integer,
+    denominator: Natural<LIMBS>,
+    (tamagawa, orbit_product, trivial_det): (u128, u128, u128),
+    artin_tate: u128,
+) -> Result<(u128, u128)> {
+    let special_with_q = numerator
+        .multiply(field_order)
+        .map_err(|_| special_overflow())?;
+    let predicted = special_with_q
+        .multiply_wide(unsigned(orbit_product))
+        .map_err(|_| special_overflow())?;
+    let actual = Integer {
+        magnitude: denominator,
+        negative: false,
+    }
+    .multiply_wide(unsigned(artin_tate))
+    .map_err(|_| special_overflow())?;
+    if !equal(predicted, actual) {
+        return Err(Error::plain(
+            "K3 pencil BSD and Artin–Tate products disagree",
+        ));
+    }
+    let quotient_denominator = denominator
+        .multiply_u128(tamagawa)
+        .ok_or_else(special_overflow)?;
+    let quotient = reduce_fraction(model, special_with_q.magnitude, quotient_denominator)?;
+    let artin_quotient = reduce_fraction(
+        model,
+        Natural::from_small(artin_tate),
+        Natural::from_small(trivial_det),
+    )?;
+    if quotient != artin_quotient {
+        return Err(Error::plain(
+            "K3 pencil BSD quotient failed the trivial-lattice comparison",
+        ));
+    }
+    Ok(quotient)
 }
 
 fn trivial_lattice(
@@ -258,14 +270,47 @@ fn component_determinant(model: &mut Model, kind: Kodaira, action: &Components) 
         })
 }
 
-fn powers_of_q(q: u64, degree: usize) -> Result<Vec<Integer>> {
+struct CentralValue {
+    root_number: i128,
+    numerators: Vec<Integer>,
+    denominator: Natural<LIMBS>,
+}
+
+fn central_value(
+    model: &mut Model,
+    polynomial: &[Integer],
+    field_order: i128,
+    rank: usize,
+) -> Result<CentralValue> {
+    let powers = powers_of_q(field_order, polynomial.len() - 1)?;
+    let root_number = reciprocity(model, polynomial, &powers)?;
+    if root_number != if rank.is_multiple_of(2) { 1 } else { -1 } {
+        return Err(Error::plain(
+            "K3 pencil root number disagrees with central vanishing parity",
+        ));
+    }
+    let numerators = taylor_numerators(model, polynomial, &powers)?;
+    let numerator = numerators[rank];
+    if numerators[..rank].iter().any(|c| !c.is_zero()) || numerator.negative || numerator.is_zero()
+    {
+        return Err(Error::plain(
+            "K3 pencil L polynomial failed its central order and positivity checks",
+        ));
+    }
+    let denominator = powers[polynomial.len() - 1].magnitude;
+    Ok(CentralValue {
+        root_number,
+        numerators,
+        denominator,
+    })
+}
+
+fn powers_of_q(q: i128, degree: usize) -> Result<Vec<Integer>> {
     let mut powers = Vec::with_capacity(degree + 1);
     let mut power = Integer::from_i128(1);
     powers.push(power);
     for _ in 0..degree {
-        power = power
-            .multiply(i128::from(q))
-            .map_err(|_| special_overflow())?;
+        power = power.multiply(q).map_err(|_| special_overflow())?;
         powers.push(power);
     }
     Ok(powers)

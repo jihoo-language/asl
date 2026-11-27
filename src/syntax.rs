@@ -6682,6 +6682,26 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
+            if matches!(
+                operation,
+                "rvK3PencilLPower" | "rvK3PencilArtinTateRatio" | "rvK3PencilShaPower"
+            ) {
+                self.expect(Token::Comma)?;
+                let degree = self.wide_unsigned("K3 pencil constant-field degree")?;
+                let upper = if operation == "rvK3PencilArtinTateRatio" {
+                    self.expect(Token::Comma)?;
+                    self.wide_unsigned("K3 pencil upper constant-field degree")?
+                } else {
+                    degree
+                };
+                self.expect(Token::RBracket)?;
+                let command = match operation {
+                    "rvK3PencilLPower" => Command::LPower(name, degree),
+                    "rvK3PencilArtinTateRatio" => Command::ArtinTateRatio(name, degree, upper),
+                    _ => Command::ShaPower(name, degree, self.set_named_rows(|p| p.expr(0))?),
+                };
+                return Ok(StatementForm::K3Pencil(Box::new(command)));
+            }
             self.expect(Token::RBracket)?;
             match operation {
                 "rvK3PencilFiber" => Command::Fiber(name, Box::new(self.paren_expr(0)?)),
@@ -8444,6 +8464,9 @@ impl<'src> Parser<'src> {
                 | "rvK3FiberReduction"
                 | "rvK3FiberEuler"
                 | "rvK3PencilLFunction"
+                | "rvK3PencilLPower"
+                | "rvK3PencilArtinTateRatio"
+                | "rvK3PencilShaPower"
                 | "rvK3PencilBSD"
                 | "rvK3PencilBSDFactors"
                 | "rvK3PencilSectionHeight"

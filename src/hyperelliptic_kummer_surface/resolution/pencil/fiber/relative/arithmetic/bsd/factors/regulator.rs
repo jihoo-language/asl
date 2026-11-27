@@ -24,6 +24,26 @@ impl Pencil {
         name: &str,
         generators: &[Rc<Section>],
     ) -> Result<String> {
+        self.regulator_result(model, name, generators)
+            .map(|(report, _)| report)
+    }
+
+    pub(crate) fn regulator_sha_order(
+        &self,
+        model: &mut Model,
+        generators: &[Rc<Section>],
+    ) -> Result<u128> {
+        self.regulator_result(model, "", generators)?.1.ok_or_else(|| {
+            Error::plain("K3 pencil Sha tower requires an exact base Sha order from the regulator certificate")
+        })
+    }
+
+    fn regulator_result(
+        &self,
+        model: &mut Model,
+        name: &str,
+        generators: &[Rc<Section>],
+    ) -> Result<(String, Option<u128>)> {
         let factors = Factors::new(model, self)?;
         let rank = factors.rank;
         if generators.len() != rank {
@@ -58,9 +78,9 @@ impl Pencil {
         );
         let maximum = gram.determinant.isqrt();
         if maximum > MAX_DIVISOR_SCAN {
-            return Ok(format!(
+            return Ok((format!(
                 "rvK3PencilRegulator[{name}] = {summary}, index candidates exceed divisor scan limit",
-            ));
+            ), None));
         }
         let candidates = index_candidates(model, &factors, gram.determinant, gamma, deficiency)?;
         let primes = odd_primes(model, &candidates)?;
@@ -85,6 +105,11 @@ impl Pencil {
             .filter(|(index, _)| excluded.iter().all(|&p| !index.is_multiple_of(p)))
             .collect();
         let indices: Vec<_> = candidates.iter().map(|&(index, _)| index).collect();
+        let exact_sha = if let [(_, sha)] = remaining.as_slice() {
+            Some(*sha)
+        } else {
+            None
+        };
         let report = match remaining.as_slice() {
             [] => return Err(inconsistent_lattice()),
             [(index, sha)] => {
@@ -110,10 +135,10 @@ impl Pencil {
                 )
             }
         };
-        Ok(format!(
+        Ok((format!(
             "rvK3PencilRegulator[{name}] = {summary}, arithmetic index candidates={indices:?}, good-fiber sieve=[{}], {report}",
             evidence.join("; "),
-        ))
+        ), exact_sha))
     }
 }
 
