@@ -31,6 +31,7 @@ use crate::hyperelliptic_chart::{Chart, Direction as ChartDirection};
 use crate::hyperelliptic_jacobian::point_halving::fiber::Fiber as PointHalfFiber;
 use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Divisor};
 use crate::hyperelliptic_kummer;
+use crate::hyperelliptic_kummer_surface::{self as kummer_surface, Point as KummerPoint};
 use crate::jacobian_level;
 use crate::jet_hom;
 use crate::jet_page;
@@ -464,6 +465,15 @@ enum JacobianAction {
     ),
 }
 
+enum KummerAction {
+    Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
+    Apply(
+        Rc<hw_closed::Curve>,
+        kummer_surface::Operation,
+        Box<TypedExpr>,
+    ),
+}
+
 enum ClosedWittAction {
     Unary(Rc<UnramRing>, hw_closed::Unary, Box<TypedExpr>),
     Reduce(Rc<UnramRing>, Box<TypedExpr>),
@@ -535,6 +545,7 @@ enum TypedForm {
     HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
     Jacobian(JacobianAction),
     JacobianLevelCoordinate(Rc<jacobian_level::Basis>, usize, Box<TypedExpr>),
+    Kummer(KummerAction),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -4864,6 +4875,41 @@ impl Engine {
         Ok([x, y])
     }
 
+    fn eval_kummer(&mut self, action: &KummerAction) -> Result<Value> {
+        use kummer_surface::Operation;
+        match action {
+            KummerAction::Coordinates(curve, inputs) => {
+                let mut coordinates = std::array::from_fn(|_| Vec::new());
+                for (coordinate, input) in coordinates.iter_mut().zip(inputs.iter()) {
+                    let Value::RVUnram(value) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    *coordinate = value.to_vec();
+                }
+                KummerPoint::new(&mut self.model, curve, coordinates)?.persist(&mut self.model)
+            }
+            KummerAction::Apply(curve, operation, input) => {
+                let input = self.eval(input)?;
+                match (operation, input) {
+                    (Operation::Project, Value::Jacobian(divisor)) => {
+                        KummerPoint::project(&mut self.model, curve, &divisor)?
+                            .persist(&mut self.model)
+                    }
+                    (Operation::Coordinate(index), Value::Kummer(point)) => {
+                        rv_unram::persist(&mut self.model, point.coordinates()[*index].clone())
+                    }
+                    (Operation::Liftable, Value::Kummer(point)) => Ok(Value::Point(usize::from(
+                        point.liftable(&mut self.model, curve)?,
+                    ))),
+                    (Operation::Lift, Value::Kummer(point)) => point
+                        .lift(&mut self.model, curve)?
+                        .persist(&mut self.model, curve),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
     fn hww_command(&mut self, command: hw_closed::Command) -> Result<Option<String>> {
         match command {
             hw_closed::Command::Define(name, ring, coefficients) => {
@@ -6743,6 +6789,7 @@ impl Engine {
                 let value = basis.coordinate(&mut self.model, &divisor, *index)?;
                 Ok(Value::PrimeScalar(value))
             }
+            TypedForm::Kummer(action) => self.eval_kummer(action),
             TypedForm::ClosedHasseWitt(action) => self.eval_hww(action),
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -9069,6 +9116,7 @@ impl Checker<'_> {
                 self.model.hw_scalar_type(ring)
             }
             TypeForm::Jacobian(name) => self.model.jacobian_type(name.text.into()),
+            TypeForm::Kummer(name) => self.model.kummer_type(name.text.into()),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -10134,6 +10182,10 @@ impl Checker<'_> {
                     Kind::Jacobian(name) => {
                         let curve = self.model.jacobian_curve(name)?;
                         Divisor::zero(&curve).persist(self.model, &curve)?
+                    }
+                    Kind::Kummer(name) => {
+                        let curve = self.model.kummer_curve(name)?;
+                        KummerPoint::identity(&curve).persist(self.model)?
                     }
                     Kind::ECPoint(_)=>Value::ECPoint(Rc::new(elliptic::Point::Infinity)),
                     Kind::ECMap(source,target)=>{
@@ -12223,6 +12275,7 @@ impl Checker<'_> {
                     TypedForm::JacobianLevelCoordinate(basis, index, Box::new(input)),
                 ))
             }
+            ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -17950,6 +18003,63 @@ impl Checker<'_> {
         self.require_type(coefficient, &x, context)?;
         self.require_type(coefficient, &y, context)?;
         Ok([x, y])
+    }
+
+    fn kummer_expression(
+        &mut self,
+        expression: kummer_surface::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use kummer_surface::{Expression, Operation};
+        let (ty, action) = match expression {
+            Expression::Coordinates(name, inputs) => {
+                let curve = self.model.kummer_curve(&name.text)?;
+                let field = Label {
+                    text: curve.grade.ring.to_string(),
+                    span: name.span,
+                };
+                let coefficient = self.model.rv_unram_type(&field)?;
+                let [k0, k1, k2, k3] = *inputs;
+                let inputs = [
+                    self.expr(k0)?,
+                    self.expr(k1)?,
+                    self.expr(k2)?,
+                    self.expr(k3)?,
+                ];
+                for input in &inputs {
+                    self.require_type(coefficient, input, "rvKummer coordinate")?;
+                }
+                let ty = self.model.kummer_type(name.text.into())?;
+                (ty, KummerAction::Coordinates(curve, Box::new(inputs)))
+            }
+            Expression::Apply(operation, input) => {
+                let input = self.expr(*input)?;
+                let project = matches!(operation, Operation::Project);
+                let name = match self.model.kind(input.ty) {
+                    Kind::Jacobian(name) if project => name.clone(),
+                    Kind::Kummer(name) if !project => name.clone(),
+                    _ => {
+                        let expected = if project {
+                            "an RVJac divisor class"
+                        } else {
+                            "an RVKummer point"
+                        };
+                        return Err(self.invalid_operand(&input, operation.name(), expected));
+                    }
+                };
+                let curve = self.model.kummer_curve(&name)?;
+                let ty = match operation {
+                    Operation::Project => self.model.kummer_type(name)?,
+                    Operation::Coordinate(_) => self.model.rv_unram_type(&Label {
+                        text: curve.grade.ring.to_string(),
+                        span: input.span,
+                    })?,
+                    Operation::Liftable => self.model.named("S").unwrap(),
+                    Operation::Lift => self.model.jacobian_type(name)?,
+                };
+                (ty, KummerAction::Apply(curve, operation, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::Kummer(action)))
     }
 
     fn hww_operand(

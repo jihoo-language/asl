@@ -145,6 +145,15 @@ impl Ring {
         self.algebra(self.modulus).constant(value)
     }
 
+    pub(crate) fn coordinate_row(&self, mut index: usize) -> Element {
+        let mut row = self.scalar(0);
+        for coordinate in row.iter_mut().rev() {
+            *coordinate = (index as u64) % self.modulus;
+            index /= self.modulus as usize;
+        }
+        row
+    }
+
     pub(crate) fn literal(&self, model: &mut Model, coefficients: Vec<i128>) -> Result<Element> {
         if coefficients.len() > self.degree() {
             return Err(Error::plain(format!(
@@ -657,14 +666,9 @@ pub(crate) fn compare(model: &mut Model, left: &[u64], right: &[u64]) -> Result<
 
 pub(crate) fn enumerate(model: &mut Model, ring: &Ring, count: usize) -> Result<Vec<Value>> {
     (0..count)
-        .map(|mut i| {
+        .map(|i| {
             model.spend(ring.degree())?;
-            let mut row = ring.scalar(0);
-            for c in row.iter_mut().rev() {
-                *c = (i as u64) % ring.modulus;
-                i /= ring.modulus as usize;
-            }
-            persist(model, row)
+            persist(model, ring.coordinate_row(i))
         })
         .collect()
 }

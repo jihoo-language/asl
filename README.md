@@ -1244,6 +1244,12 @@ The example gives $P(T)=T^4-2T^2+9$ and independently counts eight classes over 
 
 `rvJacTorsionCoord[B,i](T)` returns coordinate `i` in the listed order, starting at zero, as `PrimeScalar(ell)`. It checks $\ell T=0$ and takes a discrete logarithm to base `zeta` of the appropriate Weil pairing by baby-step giant-step. `rvJacTorsionFrob[B,Base,k];` reports the matrix of the $k$th power of `Base` Frobenius, with images in columns. It also gives the multiplier $|K_{\mathrm{Base}}|^k\bmod\ell$ and the characteristic polynomial in descending order. The interpreter checks that each column reconstructs the actual divisor-class image and that $M^tJM=|K_{\mathrm{Base}}|^k J$ over $\mathbb F_\ell$. The example gives a nontrivial shear on genus-two 2-torsion and the matrix $\operatorname{diag}(1,2)$ on elliptic 3-torsion. [Certified Jacobian torsion example](examples/hyperelliptic-jacobian-level.asl)
 
+#### Projective Kummer surface
+
+`RVKummer(C)` is the projective quartic $J(C)/\{\pm1\}$ of a smooth monic quintic over a named odd finite field. `rvKummer[C](k0,k1,k2,k3)` checks the quartic equation and normalizes the first nonzero coordinate to one. `rvKummerCoord[i](K)` returns coordinate $i$ for $0\le i\le3$. The identity image is $(0:0:0:1)$ and `zero[RVKummer(C)]` gives this point.
+
+`rvJacKummerPoint(D)` sends a Mumford class to the quartic and gives the same point for $D$ and $-D$. In degree one the coordinates are $(0:1:x:x^2)$. For $u=X^2-sX+p$ in degree two, write $q=(f-v^2)/u$. The coordinates are $(1:s:p:-q_0-pq_2)$, including at repeated support. `rvKummerLiftable(K)` tests for a rational lift to $J(C)$ and `rvKummerLift(K)` chooses a lift using the lexicographically smaller square root in the named field basis. Point enumeration includes rational points whose lifts lie on the quadratic twist. [Projective Kummer surface example](examples/hyperelliptic-kummer-surface.asl)
+
 #### Richelot isogeny targets
 
 `rvrichelot D[C]{G1}{G2}{G3};` registers a genus-two Richelot target over the same named odd finite field as `C`. The source curve has precision one and a smooth quintic or sextic equation $y^2=f(x)$. Each brace lists the coefficients of one factor as bracketed signed field coordinates in ascending degree, as in `rvjac`. The product must equal $f$ exactly. Each factor is quadratic, with one linear factor allowed for a quintic. The linear factor accounts for the branch point at infinity.

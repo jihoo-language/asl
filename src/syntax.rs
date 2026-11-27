@@ -123,6 +123,7 @@ pub(crate) enum TypeForm {
     RVFusion(usize, usize),
     RVCyclo(usize),
     Jacobian(Label),
+    Kummer(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -961,6 +962,7 @@ pub(crate) enum ExprForm {
     HasseWitt(Box<crate::hyperelliptic::Expression>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Expression>),
     JacobianLevelCoordinate(Label, usize, Box<ParsedExpr>),
+    Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -2868,6 +2870,49 @@ impl<'src> Parser<'src> {
             Command::Frobenius(basis, base, power)
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
+    }
+
+    fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::{Expression, Operation};
+        let (expression, depth) = if name == "rvKummer" {
+            self.expect(Token::LBracket)?;
+            let curve = self.label()?;
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LParen)?;
+            let k0 = self.expr(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let k1 = self.expr(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let k2 = self.expr(nest + 1)?;
+            self.expect(Token::Comma)?;
+            let k3 = self.expr(nest + 1)?;
+            self.expect(Token::RParen)?;
+            let inputs = [k0, k1, k2, k3];
+            let depth = 1 + inputs.iter().map(|input| input.depth).max().unwrap_or(0);
+            (Expression::Coordinates(curve, Box::new(inputs)), depth)
+        } else {
+            let operation = match name {
+                "rvJacKummerPoint" => Operation::Project,
+                "rvKummerCoord" => {
+                    self.expect(Token::LBracket)?;
+                    let (coordinate, span) = self.number()?;
+                    if coordinate >= 4 {
+                        return Err(Error::new(
+                            span,
+                            "rvKummerCoord index must be between 0 and 3",
+                        ));
+                    }
+                    self.expect(Token::RBracket)?;
+                    Operation::Coordinate(coordinate)
+                }
+                "rvKummerLiftable" => Operation::Liftable,
+                _ => Operation::Lift,
+            };
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Apply(operation, Box::new(input)), depth)
+        };
+        expr(span, ExprForm::Kummer(Box::new(expression)), depth)
     }
 
     fn richelot_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -6766,10 +6811,15 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
-        if name.text == "RVJac" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "RVJac" | "RVKummer") && self.eat(Token::LParen)? {
             let curve = self.label()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::Jacobian(curve), 0);
+            let form = if name.text == "RVJac" {
+                TypeForm::Jacobian(curve)
+            } else {
+                TypeForm::Kummer(curve)
+            };
+            return ty(span, form, 0);
         }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
@@ -8681,6 +8731,15 @@ impl<'src> Parser<'src> {
                         ExprForm::JacobianLevelCoordinate(basis, index, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(name.text.as_str(), "rvKummer" | "rvKummerCoord")
+                    && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvJacKummerPoint" | "rvKummerLiftable" | "rvKummerLift"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.kummer_expression(&name.text, span, nest);
                 }
                 if name.text == "rvUnramElem" && self.eat(Token::LBracket)? {
                     let ring = self.label()?;

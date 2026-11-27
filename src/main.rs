@@ -40,6 +40,7 @@ mod hyperelliptic_chart;
 mod hyperelliptic_graph;
 mod hyperelliptic_jacobian;
 mod hyperelliptic_kummer;
+mod hyperelliptic_kummer_surface;
 mod integer_smith;
 mod jacobian_level;
 mod jet_hom;
