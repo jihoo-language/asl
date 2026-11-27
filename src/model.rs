@@ -327,6 +327,9 @@ pub(crate) enum Kind {
     CMAbelianDiv(Rc<str>),
     CMAbelianMukai(Rc<str>),
     CMAbelianMap(Rc<str>),
+    CMPeriod(Rc<str>),
+    CMCharge(Rc<str>),
+    CMPeriodWall(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     FrickeSSDiv(Rc<str>),
@@ -575,6 +578,9 @@ pub(crate) enum Value {
     CMAbelianDiv(Rc<cm_hom::fourier::Divisor>),
     CMAbelianMukai(Rc<cm_hom::fourier::Mukai>),
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
+    CMPeriod(Rc<cm_hom::fourier::period::Period>),
+    CMCharge(cm_hom::fourier::period::Charge),
+    CMPeriodWall(Rc<cm_hom::fourier::period::Wall>),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     FrickeSSDiv(Rc<[i128]>),
@@ -1633,7 +1639,10 @@ impl Model {
             Kind::CMHomCoordinate(..)
             | Kind::CMAbelianDiv(..)
             | Kind::CMAbelianMukai(..)
-            | Kind::CMAbelianMap(..) => usize::MAX,
+            | Kind::CMAbelianMap(..)
+            | Kind::CMPeriod(..)
+            | Kind::CMCharge(..)
+            | Kind::CMPeriodWall(..) => usize::MAX,
             Kind::CMHomWedge(ref name) => {
                 usize::try_from(self.cm_hom_markings[name.as_ref()].modulus())
                     .unwrap_or(usize::MAX)
@@ -1977,6 +1986,9 @@ impl Model {
                 | Kind::CMAbelianDiv(..)
                 | Kind::CMAbelianMukai(..)
                 | Kind::CMAbelianMap(..)
+                | Kind::CMPeriod(..)
+                | Kind::CMCharge(..)
+                | Kind::CMPeriodWall(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::FrickeSSDiv(..)
@@ -7757,6 +7769,9 @@ impl Model {
             | Kind::CMAbelianDiv(..)
             | Kind::CMAbelianMukai(..)
             | Kind::CMAbelianMap(..)
+            | Kind::CMPeriod(..)
+            | Kind::CMCharge(..)
+            | Kind::CMPeriodWall(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::FrickeSSDiv(..)
@@ -8341,6 +8356,9 @@ impl Model {
             Kind::CMAbelianDiv(name) => out.push(&format!("RVCMAbelianDiv({name})")),
             Kind::CMAbelianMukai(name) => out.push(&format!("RVCMAbelianMukai({name})")),
             Kind::CMAbelianMap(name) => out.push(&format!("RVCMAbelianMap({name})")),
+            Kind::CMPeriod(name) => out.push(&format!("RVCMPeriod({name})")),
+            Kind::CMCharge(name) => out.push(&format!("RVCMCharge({name})")),
+            Kind::CMPeriodWall(name) => out.push(&format!("RVCMPeriodWall({name})")),
             Kind::KummerBrauerFixed(name, level) => {
                 out.push(&format!("RVKummerBrauerFixed({name},{level})"))
             }
@@ -8811,6 +8829,9 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a == b),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a == b),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a == b),
+            (Value::CMPeriod(a), Value::CMPeriod(b)) => Ok(a == b),
+            (Value::CMCharge(a), Value::CMCharge(b)) => Ok(a == b),
+            (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
@@ -9253,6 +9274,9 @@ impl Model {
             (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMukai(a), Value::CMAbelianMukai(b)) => Ok(a.cmp(b)),
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a.cmp(b)),
+            (Value::CMPeriod(a), Value::CMPeriod(b)) => Ok(a.cmp(b)),
+            (Value::CMCharge(a), Value::CMCharge(b)) => Ok(a.cmp(b)),
+            (Value::CMPeriodWall(a), Value::CMPeriodWall(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
@@ -9735,6 +9759,9 @@ impl Model {
                     return Err(Error::plain(
                         "cannot enumerate exact CM abelian correspondences",
                     ));
+                }
+                Kind::CMPeriod(..) | Kind::CMCharge(..) | Kind::CMPeriodWall(..) => {
+                    return Err(Error::plain("cannot enumerate exact CM period values"));
                 }
                 Kind::CMHomCoordinate(..) => {
                     return Err(Error::plain("cannot enumerate exact CM Hom coordinates"));
@@ -11670,6 +11697,18 @@ impl Model {
                 out.push(&format!("{{{:?}}}", value.coordinates()))
             }
             Value::CMAbelianMap(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMPeriodWall(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coefficients()))
+            }
+            Value::CMCharge(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", value.coordinates()))
+            }
+            Value::CMPeriod(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{:?}}}", value.coordinates()))
             }

@@ -711,7 +711,7 @@ impl<const N: usize> Wide<N> {
     }
 }
 
-fn normalize_wide<const N: usize>(
+pub(crate) fn normalize_wide<const N: usize>(
     model: &mut Model,
     a: Wide<N>,
     b: Wide<N>,

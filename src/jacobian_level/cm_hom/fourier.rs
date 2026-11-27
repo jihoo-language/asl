@@ -9,7 +9,10 @@ use crate::model::Model;
 use crate::rv_qp_quad::{self, Element};
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod period;
+
 pub(crate) enum Statement {
+    Period(Box<period::Statement>),
     Define(Label, [Label; 4]),
     Report(Report, Box<ParsedExpr>),
     Pair(Box<[ParsedExpr; 2]>),
@@ -23,6 +26,7 @@ pub(crate) enum Report {
 }
 
 pub(crate) enum Expression {
+    Period(Box<period::Expression>),
     Divisor(Label, [i128; 2], Box<ParsedExpr>),
     Mukai([i128; 2], Box<ParsedExpr>),
     Map(Label, Box<[ParsedExpr; 4]>),

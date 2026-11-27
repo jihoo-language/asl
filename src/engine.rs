@@ -80,6 +80,7 @@ use crate::jacobian_level::cm_cycles as kummer_cm;
 use crate::jacobian_level::cm_hom;
 use crate::jacobian_level::cm_hom::composition as cm_composition;
 use crate::jacobian_level::cm_hom::fourier as cm_abelian;
+use crate::jacobian_level::cm_hom::fourier::period as cm_period;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -706,6 +707,18 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+struct TypedCMPeriod {
+    surface: Rc<cm_abelian::Abelian>,
+    operation: CMPeriodOperation,
+}
+
+enum CMPeriodOperation {
+    New(Box<[TypedExpr; 2]>),
+    Unary(cm_period::Unary, Box<TypedExpr>),
+    Binary(cm_period::Binary, Box<[TypedExpr; 2]>),
+    Wall(Box<[TypedExpr; 4]>),
+}
+
 struct TypedCMAbelian {
     atlas: Rc<cm_abelian::Abelian>,
     operation: CMAbelianOperation,
@@ -967,6 +980,7 @@ enum TypedForm {
     CMHomOperator(Box<TypedCMHomOperator>),
     CMHomCoordinate(TypedCMHomCoordinate),
     CMAbelian(Box<TypedCMAbelian>),
+    CMPeriod(Box<TypedCMPeriod>),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
@@ -7877,9 +7891,57 @@ impl Engine {
         }
     }
 
+    fn cm_period_statement(&mut self, statement: cm_period::Statement) -> Result<Option<String>> {
+        use cm_period::Statement;
+        let result = match statement {
+            Statement::Data(input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, surface) = self.checker().cm_period_operand(&input)?;
+                let Value::CMPeriod(period) = self.eval(&input)? else {
+                    return Err(Error::new(
+                        input.span,
+                        "CM period data requires a tube-domain point",
+                    ));
+                };
+                period.report(&mut self.model, &surface)?
+            }
+            Statement::Ray(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                self.checker()
+                    .require_type(a.ty, &b, "CM charge ray arguments")?;
+                let (Value::CMCharge(a), Value::CMCharge(b)) = (self.eval(&a)?, self.eval(&b)?)
+                else {
+                    return Err(Error::plain(
+                        "CM charge ray requires two charges of the same marking",
+                    ));
+                };
+                format!("rvCMChargeRay = {}", a.ray(&mut self.model, b)?)
+            }
+            Statement::WallData(input) => self.cm_period_wall(*input)?.report(&mut self.model)?,
+            Statement::WallAt(coords, input) => {
+                self.cm_period_wall(*input)?.at(&mut self.model, coords)?
+            }
+        };
+        Ok(Some(result))
+    }
+
+    fn cm_period_wall(&mut self, input: ParsedExpr) -> Result<Rc<cm_period::Wall>> {
+        let input = self.checker().expr(input)?;
+        let Value::CMPeriodWall(wall) = self.eval(&input)? else {
+            return Err(Error::new(
+                input.span,
+                "CM numerical wall query requires a wall",
+            ));
+        };
+        Ok(wall)
+    }
+
     fn cm_abelian_statement(&mut self, statement: cm_abelian::Statement) -> Result<Option<String>> {
         use cm_abelian::{Report, Statement};
         match statement {
+            Statement::Period(statement) => self.cm_period_statement(*statement),
             Statement::Define(name, [h, hd, r, s]) => {
                 self.model.define_cm_abelian(name, |model| {
                     let frames = [
@@ -8226,6 +8288,87 @@ impl Engine {
             Statement::Form(name) => {
                 let pairing = self.model.kummer_brauer_pairing(&name.text)?;
                 pairing.form(&mut self.model, &name.text).map(Some)
+            }
+        }
+    }
+
+    fn eval_cm_period(&mut self, plan: &TypedCMPeriod) -> Result<Value> {
+        use CMPeriodOperation as Op;
+        let surface = &plan.surface;
+        match &plan.operation {
+            Op::New(inputs) => {
+                let [a, b] = inputs.as_ref();
+                let (Value::CMAbelianDiv(a), Value::CMAbelianDiv(b)) =
+                    (self.eval(a)?, self.eval(b)?)
+                else {
+                    unreachable!()
+                };
+                Ok(Value::CMPeriod(Rc::new(cm_period::Period::new(
+                    &mut self.model,
+                    surface,
+                    *a,
+                    *b,
+                )?)))
+            }
+            Op::Unary(op, input) => {
+                use cm_period::Unary as U;
+                let Value::CMPeriod(period) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(match op {
+                    U::Fourier => {
+                        Value::CMPeriod(Rc::new(period.fourier(&mut self.model, surface)?))
+                    }
+                    U::Real => Value::CMAbelianDiv(Rc::new(period.parts()[0])),
+                    U::Imaginary => Value::CMAbelianDiv(Rc::new(period.parts()[1])),
+                    U::Factor => Value::CMCharge(period.factor()),
+                    U::Determinant => {
+                        Value::CMCharge(period.determinant(&mut self.model, surface)?)
+                    }
+                })
+            }
+            Op::Binary(op, inputs) => {
+                use cm_period::Binary as B;
+                let [a, b] = inputs.as_ref();
+                match (op, self.eval(a)?, self.eval(b)?) {
+                    (B::Tensor, Value::CMPeriod(p), Value::CMAbelianDiv(d)) => Ok(Value::CMPeriod(
+                        Rc::new(p.tensor(&mut self.model, surface, *d)?),
+                    )),
+                    (B::Pull, Value::CMPeriod(p), Value::CMAbelianMap(m)) => Ok(Value::CMPeriod(
+                        Rc::new(p.pull(&mut self.model, surface, *m)?),
+                    )),
+                    (B::Pair, Value::CMPeriod(p), Value::CMAbelianMukai(v)) => {
+                        Ok(Value::CMCharge(p.pair(&mut self.model, surface, *v)?))
+                    }
+                    (B::Multiply, Value::CMCharge(a), Value::CMCharge(b)) => {
+                        Ok(Value::CMCharge(a.multiply(&mut self.model, b)?))
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Op::Wall(inputs) => {
+                let [l, beta, x, y] = inputs.as_ref();
+                let (
+                    Value::CMAbelianDiv(l),
+                    Value::CMAbelianDiv(beta),
+                    Value::CMAbelianMukai(x),
+                    Value::CMAbelianMukai(y),
+                ) = (
+                    self.eval(l)?,
+                    self.eval(beta)?,
+                    self.eval(x)?,
+                    self.eval(y)?,
+                )
+                else {
+                    unreachable!()
+                };
+                Ok(Value::CMPeriodWall(Rc::new(cm_period::Wall::new(
+                    &mut self.model,
+                    surface,
+                    *l,
+                    *beta,
+                    [*x, *y],
+                )?)))
             }
         }
     }
@@ -13887,6 +14030,7 @@ impl Engine {
                 Value::CMHomCycle(cycle) => Ok(Value::CMHomCycle(kummer_cm::cycle_negate(cycle)?)),
                 _ => unreachable!(),
             },
+            TypedForm::CMPeriod(plan) => self.eval_cm_period(plan),
             TypedForm::CMAbelian(plan) => self.eval_cm_abelian(plan),
             TypedForm::CMHomCoordinate(action) => {
                 use TypedCMHomCoordinate as Action;
@@ -18322,6 +18466,9 @@ impl Checker<'_> {
                 self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)
             }
             TypeForm::CMAbelianMap(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianMap),
+            TypeForm::CMPeriod(name) => self.model.cm_abelian_type(&name, Kind::CMPeriod),
+            TypeForm::CMCharge(name) => self.model.cm_abelian_type(&name, Kind::CMCharge),
+            TypeForm::CMPeriodWall(name) => self.model.cm_abelian_type(&name, Kind::CMPeriodWall),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::FrickeSSDiv(name) => self.model.fricke_ss_type(&name),
@@ -19537,6 +19684,7 @@ impl Checker<'_> {
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
+                    Kind::CMCharge(..) => Value::CMCharge(cm_period::Charge::ZERO),
                     Kind::CMAbelianDiv(..) => Value::CMAbelianDiv(Rc::new(cm_abelian::Divisor::ZERO)),
                     Kind::CMAbelianMukai(..) => Value::CMAbelianMukai(Rc::new(cm_abelian::Mukai::ZERO)),
                     Kind::CMHomCoordinate(name) => {
@@ -33602,6 +33750,115 @@ impl Checker<'_> {
         ))
     }
 
+    fn cm_period_operand(&self, input: &TypedExpr) -> Result<(Label, Rc<cm_abelian::Abelian>)> {
+        if let Kind::CMPeriod(name) | Kind::CMCharge(name) | Kind::CMPeriodWall(name) =
+            self.model.kind(input.ty)
+        {
+            Ok((
+                Label {
+                    text: name.to_string(),
+                    span: input.span,
+                },
+                self.model.cm_abelian(name)?,
+            ))
+        } else {
+            self.cm_abelian_operand(input)
+        }
+    }
+
+    fn cm_period_expression(
+        &mut self,
+        expression: cm_period::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_period::Expression;
+        use CMPeriodOperation as Op;
+        let (ty, surface, operation) = match expression {
+            Expression::ChargeLiteral(name, coefficients) => {
+                let ty = self.model.cm_abelian_type(&name, Kind::CMCharge)?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Value::CMCharge(cm_period::Charge::new(coefficients)?)),
+                ));
+            }
+            Expression::New(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (name, surface) = self.cm_period_operand(&a)?;
+                let expected = self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?;
+                self.require_type(expected, &a, "CM period real divisor")?;
+                self.require_type(expected, &b, "CM period imaginary divisor")?;
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMPeriod)?,
+                    surface,
+                    Op::New(Box::new([a, b])),
+                )
+            }
+            Expression::Unary(op, input) => {
+                use cm_period::Unary as U;
+                let input = self.expr(*input)?;
+                let (name, surface) = self.cm_period_operand(&input)?;
+                let expected = self.model.cm_abelian_type(&name, Kind::CMPeriod)?;
+                self.require_type(expected, &input, "CM period unary operand")?;
+                let kind: fn(Rc<str>) -> Kind = match op {
+                    U::Fourier => Kind::CMPeriod,
+                    U::Real | U::Imaginary => Kind::CMAbelianDiv,
+                    U::Determinant | U::Factor => Kind::CMCharge,
+                };
+                (
+                    self.model.cm_abelian_type(&name, kind)?,
+                    surface,
+                    Op::Unary(op, Box::new(input)),
+                )
+            }
+            Expression::Binary(op, inputs) => {
+                use cm_period::Binary as B;
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (name, surface) = self.cm_period_operand(&a)?;
+                let [left, right, result]: [fn(Rc<str>) -> Kind; 3] = match op {
+                    B::Tensor => [Kind::CMPeriod, Kind::CMAbelianDiv, Kind::CMPeriod],
+                    B::Pull => [Kind::CMPeriod, Kind::CMAbelianMap, Kind::CMPeriod],
+                    B::Pair => [Kind::CMPeriod, Kind::CMAbelianMukai, Kind::CMCharge],
+                    B::Multiply => [Kind::CMCharge, Kind::CMCharge, Kind::CMCharge],
+                };
+                let ty_a = self.model.cm_abelian_type(&name, left)?;
+                let ty_b = self.model.cm_abelian_type(&name, right)?;
+                self.require_type(ty_a, &a, "CM period first operand")?;
+                self.require_type(ty_b, &b, "CM period second operand")?;
+                (
+                    self.model.cm_abelian_type(&name, result)?,
+                    surface,
+                    Op::Binary(op, Box::new([a, b])),
+                )
+            }
+            Expression::Wall(inputs) => {
+                let [l, beta, v, w] = *inputs;
+                let l = self.expr(l)?;
+                let beta = self.expr(beta)?;
+                let v = self.expr(v)?;
+                let w = self.expr(w)?;
+                let (name, surface) = self.cm_period_operand(&l)?;
+                let divisor = self.model.cm_abelian_type(&name, Kind::CMAbelianDiv)?;
+                let mukai = self.model.cm_abelian_type(&name, Kind::CMAbelianMukai)?;
+                self.require_type(divisor, &l, "CM numerical wall polarization")?;
+                self.require_type(divisor, &beta, "CM numerical wall real offset")?;
+                self.require_type(mukai, &v, "CM numerical wall first class")?;
+                self.require_type(mukai, &w, "CM numerical wall second class")?;
+                (
+                    self.model.cm_abelian_type(&name, Kind::CMPeriodWall)?,
+                    surface,
+                    Op::Wall(Box::new([l, beta, v, w])),
+                )
+            }
+        };
+        Ok((
+            ty,
+            TypedForm::CMPeriod(Box::new(TypedCMPeriod { surface, operation })),
+        ))
+    }
+
     fn cm_abelian_operand(&self, input: &TypedExpr) -> Result<(Label, Rc<cm_abelian::Abelian>)> {
         let (Kind::CMAbelianDiv(name) | Kind::CMAbelianMukai(name) | Kind::CMAbelianMap(name)) =
             self.model.kind(input.ty)
@@ -33626,6 +33883,7 @@ impl Checker<'_> {
         use cm_abelian::Expression;
         use CMAbelianOperation as Op;
         let (ty, atlas, operation) = match expression {
+            Expression::Period(expression) => return self.cm_period_expression(*expression),
             Expression::Divisor(name, diagonal, input) => {
                 let atlas = self.model.cm_abelian(&name.text)?;
                 let input = self.expr(*input)?;

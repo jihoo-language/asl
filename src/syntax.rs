@@ -172,6 +172,9 @@ pub(crate) enum TypeForm {
     CMAbelianDiv(Label),
     CMAbelianMukai(Label),
     CMAbelianMap(Label),
+    CMPeriod(Label),
+    CMCharge(Label),
+    CMPeriodWall(Label),
     KummerWeil(Label),
     KummerDiv(Label),
     FrickeSSDiv(Label),
@@ -3297,6 +3300,107 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::CMHom(Box::new(result)))
+    }
+
+    fn cm_period_statement(&mut self, command: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{period::Statement, Statement as Abelian},
+            Statement as Hom,
+        };
+        self.advance()?;
+        let statement = match command {
+            "rvCMChargeRay" => Statement::Ray(Box::new(self.paren_pair(0)?)),
+            "rvCMPeriodWallData" => Statement::WallData(Box::new(self.paren_expr(0)?)),
+            "rvCMPeriodWallAt" => {
+                self.expect(Token::LBracket)?;
+                let bn = self.signed_wide("a signed real numerator", "wall coordinate")?;
+                let mut next = || -> Result<i128> {
+                    self.expect(Token::Comma)?;
+                    self.signed_wide("a signed wall coefficient", "wall coordinate")
+                };
+                let values = [bn, next()?, next()?, next()?];
+                self.expect(Token::RBracket)?;
+                Statement::WallAt(values, Box::new(self.paren_expr(0)?))
+            }
+            _ => Statement::Data(Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::CMHom(Box::new(Hom::Fourier(Box::new(
+            Abelian::Period(Box::new(statement)),
+        )))))
+    }
+
+    fn cm_period_expression(
+        &mut self,
+        command: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{
+            fourier::{
+                period::{Binary, Expression, Unary},
+                Expression as Abelian,
+            },
+            Expression as Hom,
+        };
+        let (expression, depth) = match command {
+            "rvCMCharge" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                let mut next = || -> Result<i128> {
+                    self.expect(Token::Comma)?;
+                    self.signed_wide("a signed charge coefficient", "charge coefficient")
+                };
+                let scalars = [next()?, next()?, next()?];
+                self.expect(Token::RBracket)?;
+                (Expression::ChargeLiteral(name, scalars), 0)
+            }
+            "rvCMPeriodWall" => {
+                self.expect(Token::LParen)?;
+                let a = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let b = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let c = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let d = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let values = Box::new([a, b, c, d]);
+                let depth = values.iter().map(|x| x.depth).max().unwrap_or(0) + 1;
+                (Expression::Wall(values), depth)
+            }
+            "rvCMPeriod" | "rvCMPeriodTensor" | "rvCMPeriodPull" | "rvCMPeriodCharge"
+            | "rvCMChargeMul" => {
+                let values = Box::new(self.paren_pair(nest)?);
+                let depth = values[0].depth.max(values[1].depth) + 1;
+                let expression = match command {
+                    "rvCMPeriod" => Expression::New(values),
+                    "rvCMPeriodTensor" => Expression::Binary(Binary::Tensor, values),
+                    "rvCMPeriodPull" => Expression::Binary(Binary::Pull, values),
+                    "rvCMPeriodCharge" => Expression::Binary(Binary::Pair, values),
+                    _ => Expression::Binary(Binary::Multiply, values),
+                };
+                (expression, depth)
+            }
+            _ => {
+                let value = Box::new(self.paren_expr(nest)?);
+                let depth = value.depth + 1;
+                let op = match command {
+                    "rvCMPeriodFourier" => Unary::Fourier,
+                    "rvCMPeriodB" => Unary::Real,
+                    "rvCMPeriodOmega" => Unary::Imaginary,
+                    "rvCMPeriodFactor" => Unary::Factor,
+                    _ => Unary::Determinant,
+                };
+                (Expression::Unary(op, value), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Fourier(Box::new(Abelian::Period(Box::new(
+                expression,
+            )))))),
+            depth,
+        )
     }
 
     fn cm_abelian_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -12738,6 +12842,10 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
+                name @ ("rvCMPeriodData" | "rvCMChargeRay" | "rvCMPeriodWallData"
+                | "rvCMPeriodWallAt"),
+            ) => self.cm_period_statement(name)?,
+            Token::Word(
                 name @ ("rvcmabelian" | "rvCMAbelianPair" | "rvCMAbelianData"
                 | "rvCMAbelianMapData" | "rvCMAbelianDet"),
             ) => self.cm_abelian_statement(name)?,
@@ -16843,6 +16951,20 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
+            "RVCMPeriod" | "RVCMCharge" | "RVCMPeriodWall"
+        ) && self.eat(Token::LParen)?
+        {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            let form = match name.text.as_str() {
+                "RVCMPeriod" => TypeForm::CMPeriod(label),
+                "RVCMCharge" => TypeForm::CMCharge(label),
+                _ => TypeForm::CMPeriodWall(label),
+            };
+            return ty(span, form, 0);
+        }
+        if matches!(
+            name.text.as_str(),
             "RVCMAbelianDiv" | "RVCMAbelianMukai" | "RVCMAbelianMap"
         ) && self.eat(Token::LParen)?
         {
@@ -19463,6 +19585,24 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (name.text == "rvCMCharge" && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvCMPeriod"
+                            | "rvCMPeriodFourier"
+                            | "rvCMPeriodB"
+                            | "rvCMPeriodOmega"
+                            | "rvCMPeriodFactor"
+                            | "rvCMPeriodDet"
+                            | "rvCMPeriodTensor"
+                            | "rvCMPeriodPull"
+                            | "rvCMPeriodCharge"
+                            | "rvCMChargeMul"
+                            | "rvCMPeriodWall"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.cm_period_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
