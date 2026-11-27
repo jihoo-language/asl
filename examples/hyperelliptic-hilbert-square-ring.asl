@@ -1,0 +1,22 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let delta=rvHilbSquareDiv[1](zero[RVK3Lattice(B)]);
+let delta2=rvHilbSquareCup(delta,delta);
+let c2=rvHilbSquareC2[B];
+let c22=rvHilbSquareCup(c2,c2);
+let c4=rvHilbSquareC4[B];
+rvHilbSquareIntegral(rvHilbSquareCup(delta2,delta2));
+rvHilbSquareIntegral(c22);
+rvHilbSquareIntegral(rvHilbSquareCup(c2,delta2));
+rvHilbSquareIntegral(c4);
+let todd=rvHilbSquareScale[1,720](add(rvHilbSquareScale[3,1](c22),neg(c4)));
+rvHilbSquareIntegral(todd);

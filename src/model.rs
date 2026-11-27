@@ -32,7 +32,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
-    self, nakajima, nikulin, unimodular, Point as KummerPoint,
+    self, hilbert_square, nakajima, nikulin, unimodular, Point as KummerPoint,
 };
 use crate::jet_hom;
 use crate::jet_page;
@@ -263,6 +263,7 @@ pub(crate) enum Kind {
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     Mukai(Rc<str>),
+    HilbertSquare(Rc<str>, usize),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
     ECKernel(Rc<str>, u64),
@@ -434,6 +435,7 @@ pub(crate) enum Value {
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
+    HilbertSquare(Rc<hilbert_square::Class>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
     ECKernel(Rc<ECKernel>),
@@ -611,6 +613,7 @@ pub(crate) struct Model {
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
+    hilbert_square_form: Option<Rc<hilbert_square::Form>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
     richelot_descents: HashMap<String, Rc<crate::richelot::descent::Descent>>,
     bielliptic_quotients: HashMap<String, Rc<crate::bielliptic::Quotient>>,
@@ -710,6 +713,7 @@ impl Model {
             enriques_quotients: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             nakajima_gram: None,
+            hilbert_square_form: None,
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
             bielliptic_quotients: HashMap::new(),
@@ -1006,6 +1010,8 @@ impl Model {
                     1
                 }
             }
+            Kind::HilbertSquare(_, degree) if hilbert_square::dimension(degree) == 0 => 1,
+            Kind::HilbertSquare(..) => usize::MAX,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1225,6 +1231,7 @@ impl Model {
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::Mukai(..)
+                | Kind::HilbertSquare(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
                 | Kind::ECKernel(..)
@@ -3915,6 +3922,24 @@ impl Model {
         Ok(gram)
     }
 
+    pub(crate) fn hilbert_square_type(&mut self, name: &Label, degree: usize) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "Hilbert-square cohomology requires a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::HilbertSquare(name.text.as_str().into(), degree), 0)
+    }
+
+    pub(crate) fn hilbert_square_form(&mut self) -> Result<Rc<hilbert_square::Form>> {
+        if let Some(form) = &self.hilbert_square_form {
+            return Ok(form.clone());
+        }
+        let form = Rc::new(hilbert_square::Form::new(self)?);
+        self.hilbert_square_form = Some(form.clone());
+        Ok(form)
+    }
+
     pub(crate) fn show_jacobian_kummer(
         &mut self,
         support: &hyperelliptic_kummer::Support,
@@ -5041,6 +5066,7 @@ impl Model {
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::Mukai(..)
+            | Kind::HilbertSquare(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
             | Kind::ECKernel(..)
@@ -5550,6 +5576,9 @@ impl Model {
                 grade.basis, grade.length, grade.degree
             )),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
+            Kind::HilbertSquare(name, degree) => {
+                out.push(&format!("RVHilbSquare({name}, {degree})"))
+            }
             Kind::ECMap(a, b) => out.push(&format!("RVECMap({a}, {b})")),
             Kind::ECPoint(name) => out.push(&format!("RVECPoint({name})")),
             Kind::ECIso(name) => out.push(&format!("RVECIso({name})")),
@@ -5835,6 +5864,7 @@ impl Model {
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Mukai(a), Value::Mukai(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::ECMap(a), Value::ECMap(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
@@ -6166,6 +6196,7 @@ impl Model {
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::Mukai(a), Value::Mukai(b)) => a.compare(self, b),
+            (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
@@ -6497,6 +6528,14 @@ impl Model {
                         ));
                     }
                     vec![nakajima::State::zero().persist(self)?]
+                }
+                Kind::HilbertSquare(_, degree) if hilbert_square::dimension(degree) == 0 => {
+                    vec![hilbert_square::Class::zero(degree).persist(self)?]
+                }
+                Kind::HilbertSquare(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational Hilbert-square component",
+                    ));
                 }
                 Kind::ECMap(..) => {
                     return Err(Error::plain(
@@ -7946,6 +7985,18 @@ impl Model {
                     out.push(&coefficient.to_string())?;
                 }
                 out.push("}")
+            }
+            Value::HilbertSquare(class) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{coordinates=[")?;
+                self.spend(class.coordinates().len())?;
+                for (index, coordinate) in class.coordinates().iter().enumerate() {
+                    if index != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coordinate.to_string())?;
+                }
+                out.push("]}")
             }
             Value::K3Lattice(vector) => {
                 let (w, b) = vector.coordinates();

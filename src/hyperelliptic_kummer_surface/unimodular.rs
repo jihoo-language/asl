@@ -54,6 +54,38 @@ impl Vector {
         (&self.w, &self.b)
     }
 
+    pub(super) fn basis_coordinates(&self, model: &mut Model) -> Result<[i128; RANK]> {
+        let (rows, pivots) = glue_basis(model)?;
+        let mut output = [0; RANK];
+        // The first eleven basis vectors have an identity block on the RREF
+        // pivot columns. The remaining vectors are doubled coordinate vectors.
+        for (index, &pivot) in pivots.iter().enumerate() {
+            output[index] = self.coordinate(pivot);
+        }
+        model.spend(RANK * GLUE_DIMENSION * 30)?;
+        for (index, column) in (0..RANK).filter(|i| !pivots.contains(i)).enumerate() {
+            let mut residual = Integer::from_i128(self.coordinate(column));
+            for (&row, &coefficient) in rows.iter().zip(&output) {
+                if row & (1 << column) != 0 {
+                    residual = residual.add(Integer::from_i128(coefficient).negate())?;
+                }
+            }
+            let (magnitude, remainder) = residual.magnitude.divide_u32(2);
+            if remainder != 0 {
+                return Err(Error::plain(
+                    "K3 lattice basis coordinates must be integral",
+                ));
+            }
+            output[GLUE_DIMENSION + index] = (Integer {
+                magnitude,
+                negative: residual.negative,
+            })
+            .signed()
+            .ok_or_else(coordinate_range)?;
+        }
+        Ok(output)
+    }
+
     pub(crate) fn compare(&self, model: &mut Model, rhs: &Self) -> Result<Ordering> {
         model.spend(RANK)?;
         Ok(self.cmp(rhs))
@@ -193,7 +225,7 @@ fn parity_bits(coordinates: &[i128]) -> u16 {
         .fold(0, |mask, (i, &entry)| mask | (((entry & 1) as u16) << i))
 }
 
-fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
+fn glue_basis(model: &mut Model) -> Result<([u32; GLUE_DIMENSION], Vec<usize>)> {
     model.spend(RANK * GLUE_DIMENSION * 2)?;
     let mut rows = [0u32; GLUE_DIMENSION];
     for (i, &table) in QUADRATIC.iter().enumerate() {
@@ -208,6 +240,11 @@ fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
             "K3 lattice gluing code has the wrong dimension",
         ));
     }
+    Ok((rows, pivots))
+}
+
+fn integral_basis(model: &mut Model) -> Result<Vec<Vector>> {
+    let (rows, pivots) = glue_basis(model)?;
     // In doubled coordinates each RREF pivot is 1. Doubling its row recovers
     // the original 2e_i using the 2e_j at nonpivots.
     let mut result = Vec::with_capacity(RANK);

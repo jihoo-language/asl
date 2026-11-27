@@ -14,6 +14,7 @@ pub(crate) mod arithmetic;
 pub(crate) mod dynamics;
 pub(crate) mod enriques;
 pub(crate) mod hilbert;
+pub(crate) mod hilbert_square;
 pub(crate) mod k3;
 pub(crate) mod mukai;
 pub(crate) mod nakajima;

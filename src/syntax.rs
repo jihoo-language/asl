@@ -131,6 +131,7 @@ pub(crate) enum TypeForm {
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     Mukai(Label),
+    HilbertSquare(Label, usize),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -978,6 +979,7 @@ pub(crate) enum ExprForm {
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
+    HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
     QpQuadElement(Label, i128, i128, i128),
@@ -1166,6 +1168,7 @@ pub(crate) enum StatementForm {
     NakajimaPair(Box<[ParsedExpr; 2]>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
+    HilbertSquareIntegral(Box<ParsedExpr>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -3026,6 +3029,59 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::K3Lattice(Box::new(command)))
     }
 
+    fn hilbert_square_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hilbert_square::Expression;
+        let (expression, depth) = match name {
+            "rvHilbSquareCup" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+                (Expression::Cup(Box::new(inputs)), depth)
+            }
+            "rvHilbSquareBasis" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(basis, degree, index), 0)
+            }
+            "rvHilbSquareC2" | "rvHilbSquareC4" => {
+                self.expect(Token::LBracket)?;
+                let basis = self.label()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Chern(basis, name == "rvHilbSquareC4"), 0)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let numerator =
+                    self.signed_wide("a signed integer", "Hilbert-square coefficient")?;
+                let denominator = if name == "rvHilbSquareScale" {
+                    self.expect(Token::Comma)?;
+                    Some(self.signed_wide("a signed integer", "Hilbert-square denominator")?)
+                } else {
+                    None
+                };
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let expression = if let Some(denominator) = denominator {
+                    Expression::Scale(numerator, denominator, Box::new(input))
+                } else {
+                    Expression::Divisor(numerator, Box::new(input))
+                };
+                (expression, depth)
+            }
+        };
+        expr(span, ExprForm::HilbertSquare(Box::new(expression)), depth)
+    }
+
     fn k3_lattice_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::unimodular::{Expression, RANK};
         let (expression, depth) = match name {
@@ -4515,6 +4571,10 @@ impl<'src> Parser<'src> {
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word(name @ ("rvMukaiPair" | "rvMukaiHilbFujiki")) => {
                 self.mukai_statement(name)?
+            }
+            Token::Word("rvHilbSquareIntegral") => {
+                self.advance()?;
+                StatementForm::HilbertSquareIntegral(Box::new(self.paren_expr(0)?))
             }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
@@ -7823,6 +7883,13 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Nakajima(basis, length, degree), 0);
         }
+        if name.text == "RVHilbSquare" && self.eat(Token::LParen)? {
+            let basis = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HilbertSquare(basis, degree), 0);
+        }
         if name.text == "RVHWMatrix" && self.eat(Token::LParen)? {
             let (p, g, s) = self.hw_shape()?;
             self.expect(Token::RParen)?;
@@ -9851,6 +9918,18 @@ impl<'src> Parser<'src> {
                         Box::new(input),
                     );
                     return expr(span, ExprForm::K3AutoDiv(Box::new(expression)), depth);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvHilbSquareBasis"
+                        | "rvHilbSquareDiv"
+                        | "rvHilbSquareScale"
+                        | "rvHilbSquareC2"
+                        | "rvHilbSquareC4"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvHilbSquareCup" && self.token() == Token::LParen)
+                {
+                    return self.hilbert_square_expression(&name.text, span, nest);
                 }
                 if name.text == "rvJacRichelotKernel" && self.eat(Token::LBracket)? {
                     let (basis, base) = self.richelot_level_names()?;

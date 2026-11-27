@@ -35,7 +35,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::mukai;
 use crate::hyperelliptic_kummer_surface::{
-    self as kummer_surface, nakajima, nikulin, polarized as kummer_div, unimodular,
+    self as kummer_surface, hilbert_square, nakajima, nikulin, polarized as kummer_div, unimodular,
     Point as KummerPoint,
 };
 use crate::jacobian_level;
@@ -639,6 +639,9 @@ enum TypedForm {
     Nakajima(nakajima::Operation, Box<TypedExpr>),
     Mukai(MukaiAction),
     K3AutoDiv(Rc<kummer_surface::dynamics::Word>, Box<TypedExpr>),
+    HilbertSquareDivisor(i128, Box<TypedExpr>),
+    HilbertSquareCup(Box<[TypedExpr; 2]>),
+    HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
@@ -1621,6 +1624,22 @@ impl Engine {
             }
             StatementForm::KummerDiv(command) => {
                 return self.kummer_divisor_command(*command).map(Some)
+            }
+            StatementForm::HilbertSquareIntegral(input) => {
+                let input = self.checker().expr(*input)?;
+                let (_, degree) = self
+                    .checker()
+                    .hilbert_square_operand(&input, "rvHilbSquareIntegral")?;
+                if degree != 8 {
+                    return Err(Error::new(
+                        input.span,
+                        "rvHilbSquareIntegral requires cohomological degree eight",
+                    ));
+                }
+                let Value::HilbertSquare(class) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                return Ok(Some(format!("rvHilbSquareIntegral = {}", class.integral())));
             }
             StatementForm::K3Lattice(command) => {
                 return self.k3_lattice_command(*command).map(Some)
@@ -6049,6 +6068,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Nakajima(a), Value::Nakajima(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::HilbertSquare(a), Value::HilbertSquare(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::OddClass(a), Value::OddClass(b)) => {
                         let p = match *self.model.kind(expr.ty) {
                             Kind::PExt(p, ..)
@@ -7505,6 +7527,31 @@ impl Engine {
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
             TypedForm::Mukai(action) => self.eval_mukai(action),
+            TypedForm::HilbertSquareDivisor(delta, input) => {
+                let Value::K3Lattice(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                hilbert_square::Class::divisor(&mut self.model, &vector, *delta)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareCup(inputs) => {
+                let (Value::HilbertSquare(left), Value::HilbertSquare(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let form = self.model.hilbert_square_form()?;
+                left.cup(&mut self.model, &form, &right)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareScale(scalar, input) => {
+                let Value::HilbertSquare(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                class
+                    .scale(&mut self.model, *scalar)?
+                    .persist(&mut self.model)
+            }
             TypedForm::K3LatticeReflect(inputs) => {
                 let (Value::K3Lattice(root), Value::K3Lattice(vector)) =
                     (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
@@ -9886,6 +9933,7 @@ impl Checker<'_> {
                 self.model.nakajima_type(&name, length, degree)
             }
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
+            TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
             TypeForm::ECCurve(name) => self.model.ec_curve_type(name.text.into(), false),
             TypeForm::ECPoint(name) => self.model.ec_curve_type(name.text.into(), true),
@@ -10927,6 +10975,7 @@ impl Checker<'_> {
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
+                    Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
                     Kind::BP(..) => bp::zero(),
                     Kind::BPRel(..) => bp_rel::zero(),
@@ -13074,6 +13123,7 @@ impl Checker<'_> {
                 self.require_type(ty, &input, "rvK3AutoDiv input")?;
                 Ok((ty, TypedForm::K3AutoDiv(word, Box::new(input))))
             }
+            ExprForm::HilbertSquare(expression) => self.hilbert_square_expression(*expression),
             ExprForm::HWWClosed(expression) => self.hww_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
@@ -13764,6 +13814,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::Nakajima(nakajima::Operation::Scale(-1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::HilbertSquare(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::HilbertSquareScale(
+                            crate::lee_linear::Rational::integer(-1),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDisc(..)) {
@@ -17488,6 +17547,7 @@ impl Checker<'_> {
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
                         | Kind::Mukai(..)
+                        | Kind::HilbertSquare(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -18940,6 +19000,85 @@ impl Checker<'_> {
         self.require_type(coefficient, &x, context)?;
         self.require_type(coefficient, &y, context)?;
         Ok([x, y])
+    }
+
+    fn hilbert_square_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(Rc<str>, usize)> {
+        match self.model.kind(input.ty) {
+            Kind::HilbertSquare(name, degree) => Ok((name.clone(), *degree)),
+            _ => Err(self.invalid_operand(input, operation, "an RVHilbSquare cohomology class")),
+        }
+    }
+
+    fn hilbert_square_expression(
+        &mut self,
+        expression: hilbert_square::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use hilbert_square::Expression;
+        match expression {
+            Expression::Basis(name, degree, index) => {
+                let ty = self.model.hilbert_square_type(&name, degree)?;
+                let class = hilbert_square::Class::basis(degree, index)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(class)))
+            }
+            Expression::Divisor(delta, input) => {
+                let input = self.expr(*input)?;
+                self.k3_lattice_operand(&input, "rvHilbSquareDiv")?;
+                let Kind::K3Lattice(name) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let name = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let ty = self.model.hilbert_square_type(&name, 2)?;
+                Ok((ty, TypedForm::HilbertSquareDivisor(delta, Box::new(input))))
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let (name, left_degree) = self.hilbert_square_operand(&left, "rvHilbSquareCup")?;
+                let (other, right_degree) =
+                    self.hilbert_square_operand(&right, "rvHilbSquareCup")?;
+                if name != other {
+                    return Err(Error::new(
+                        right.span,
+                        "rvHilbSquareCup requires the same named marking",
+                    ));
+                }
+                let degree = hilbert_square::cup_degree(left_degree, right_degree)?;
+                let name = Label {
+                    text: name.to_string(),
+                    span: left.span,
+                };
+                let ty = self.model.hilbert_square_type(&name, degree)?;
+                Ok((ty, TypedForm::HilbertSquareCup(Box::new([left, right]))))
+            }
+            Expression::Scale(numerator, denominator, input) => {
+                let input = self.expr(*input)?;
+                self.hilbert_square_operand(&input, "rvHilbSquareScale")?;
+                let scalar = hilbert_square::ratio(numerator, denominator)?;
+                Ok((
+                    input.ty,
+                    TypedForm::HilbertSquareScale(scalar, Box::new(input)),
+                ))
+            }
+            Expression::Chern(name, top) => {
+                let ty = self
+                    .model
+                    .hilbert_square_type(&name, if top { 8 } else { 4 })?;
+                let class = if top {
+                    hilbert_square::Class::c4()
+                } else {
+                    self.model.hilbert_square_form()?.c2(self.model)?
+                };
+                Ok((ty, TypedForm::Constant(class.persist(self.model)?)))
+            }
+        }
     }
 
     fn k3_lattice_expression(
