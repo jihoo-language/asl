@@ -106,7 +106,7 @@ fn curved_exact_tangent_requires_cubic_and_quartic_primitives() {
 }
 
 #[test]
-fn rank_one_carry_preserves_the_flat_cubic_product() {
+fn rank_one_carry_and_trivial_gauge_have_the_expected_flat_products() {
     let output = stdout(interpret(
         r"
         rvhodgewick B[21]{0,1}{[2]};
@@ -117,9 +117,17 @@ fn rank_one_carry_preserves_the_flat_cubic_product() {
         rvVerbitskyAssocProduct[J,1,2];
         rvVerbitskyAssocProduct[J,2,2];
         assert rvVerbitskyAssocCoefficient[J]{2}==zero[RVVerbitskyHochschildCochain(B,1,2,-6)];
+        let phi=rvVerbitskyHHTerm[B,1,1,-1,0]{1};
+        rvverbitskyassoc Gauge[5]{rvVerbitskyHHDiff(phi)};
+        assert rvVerbitskyAssocCoefficient[Gauge]{2}==rvVerbitskyHHTerm[B,1,2,-2,0,-1]{1,1};
+        assert rvVerbitskyAssocCoefficient[Gauge]{3}==zero[RVVerbitskyHochschildCochain(B,1,2,-3)];
+        rvVerbitskyAssocProduct[Gauge,1,1];
+        rvVerbitskyAssocProduct[Gauge,1,2];
+        rvVerbitskyAssocProduct[Gauge,2,2];
         ",
     ));
-    assert_eq!(output, "rvVerbitskyAssocReport[J] = weights=[-3] requested=6 associative_through=6 corrections=[] obstructions=[]\nrvVerbitskyAssocProduct[J, 0, 1] = [([0], [(1, 1)])]\nrvVerbitskyAssocProduct[J, 1, 2] = [([1], [(0, 1)])]\nrvVerbitskyAssocProduct[J, 2, 2] = [([1], [(1, 1)])]\n");
+    // Pull back the original product by F(x)=x+ε, F(x²)=x².
+    assert_eq!(output, "rvVerbitskyAssocReport[J] = weights=[-3] requested=6 associative_through=6 corrections=[] obstructions=[]\nrvVerbitskyAssocProduct[J, 0, 1] = [([0], [(1, 1)])]\nrvVerbitskyAssocProduct[J, 1, 2] = [([1], [(0, 1)])]\nrvVerbitskyAssocProduct[J, 2, 2] = [([1], [(1, 1)])]\nrvVerbitskyAssocProduct[Gauge, 1, 1] = [([0], [(2, 1)]), ([1], [(1, 2)]), ([2], [(0, -1)])]\nrvVerbitskyAssocProduct[Gauge, 1, 2] = [([1], [(2, 1)])]\nrvVerbitskyAssocProduct[Gauge, 2, 2] = []\n");
 }
 
 #[test]
