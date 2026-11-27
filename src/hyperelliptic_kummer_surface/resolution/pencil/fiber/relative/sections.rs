@@ -10,6 +10,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 use super::{field, Pencil, RelativeJacobian};
 
+pub(crate) mod covering;
 mod selmer;
 mod square_classes;
 mod torsion;
@@ -19,6 +20,11 @@ pub(crate) use square_classes::Descent;
 
 pub(crate) enum Expression {
     Literal(Label, Box<[Vec<Vec<i128>>; 4]>),
+    KummerLiteral(Label, Box<[Vec<Vec<i128>>; 3]>),
+    CoverPoint(Label, Box<[Vec<Vec<i128>>; 4]>),
+    CoverMap(Box<ParsedExpr>),
+    CoverLift(Label, Box<ParsedExpr>),
+    ShaClass(Label, Label),
     Torsion(Label, usize),
     SelmerBasis(Label, usize),
     SelmerContains(Box<ParsedExpr>),
@@ -38,17 +44,7 @@ impl Section {
         coordinates: [Vec<Vec<i128>>; 4],
     ) -> Result<Self> {
         let field = field(&pencil.curve);
-        let mut polynomial = |rows: Vec<Vec<i128>>| -> Result<Polynomial> {
-            field.check_polynomial(rows.len())?;
-            rows.into_iter()
-                .map(|row| field.ring.literal(model, row))
-                .collect()
-        };
-        let [xn, xd, yn, yd] = coordinates;
-        let xn = polynomial(xn)?;
-        let xd = poly::trim(polynomial(xd)?);
-        let yn = polynomial(yn)?;
-        let yd = poly::trim(polynomial(yd)?);
+        let [xn, xd, yn, yd] = read_polynomials(model, field, coordinates)?;
         if xd.is_empty() || yd.is_empty() {
             return Err(Error::plain(
                 "K3 pencil section coordinate has zero denominator",
@@ -141,6 +137,23 @@ impl Section {
         let y3 = sum(model, field, &y3, y, true)?;
         Ok(Self::Affine(x3, y3))
     }
+}
+
+fn read_polynomials<const N: usize>(
+    model: &mut Model,
+    field: Field<'_>,
+    rows: [Vec<Vec<i128>>; N],
+) -> Result<[Polynomial; N]> {
+    let mut result = std::array::from_fn(|_| Vec::new());
+    for (polynomial, rows) in result.iter_mut().zip(rows) {
+        field.check_polynomial(rows.len())?;
+        let coefficients = rows
+            .into_iter()
+            .map(|row| field.ring.literal(model, row))
+            .collect::<Result<_>>()?;
+        *polynomial = poly::trim(coefficients);
+    }
+    Ok(result)
 }
 
 fn on_curve(

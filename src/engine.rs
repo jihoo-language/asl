@@ -736,6 +736,8 @@ enum TypedForm {
     K3PencilSectionNegate(Rc<pencil::Pencil>, Box<TypedExpr>),
     K3PencilDescent(Rc<pencil::Pencil>, bool, Box<TypedExpr>),
     K3PencilSelmerContains(Rc<pencil::Pencil>, Box<TypedExpr>),
+    K3PencilCoverMap(Rc<pencil::sections::covering::Cover>, Box<TypedExpr>),
+    K3PencilCoverLift(Rc<pencil::sections::covering::Cover>, Box<TypedExpr>),
     K3Mordell(Rc<mordell::Mordell>, mordell::Shift, i128, Box<TypedExpr>),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
@@ -1852,6 +1854,7 @@ impl Engine {
                     }
                 });
             }
+            StatementForm::K3PencilCover(command) => return self.pencil_cover_command(*command),
             StatementForm::K3Pencil(command) => {
                 use pencil::Command;
                 return match *command {
@@ -7375,6 +7378,66 @@ impl Engine {
         .persist(&mut self.model)
     }
 
+    fn pencil_cover_command(
+        &mut self,
+        command: pencil::sections::covering::Command,
+    ) -> Result<Option<String>> {
+        use pencil::sections::covering::Command;
+        match command {
+            Command::Define(name, pencil, input) => {
+                let ty = self.model.k3_pencil_kummer2_type(&pencil)?;
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .require_type(ty, &input, "K3 pencil covering squareclass")?;
+                let Value::K3PencilKummer2(descent) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                self.model.define_k3_pencil_cover(name, pencil, descent)?;
+                Ok(None)
+            }
+            Command::DefineImage(name, pencil, inputs) => {
+                let ty = self.model.k3_pencil_section_type(&pencil)?;
+                let mut sections = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    let input = self.checker().expr(input)?;
+                    self.checker().require_type(
+                        ty,
+                        &input,
+                        "K3 pencil Mordell-Weil certificate section",
+                    )?;
+                    let Value::K3PencilSection(section) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    sections.push(section);
+                }
+                self.model
+                    .define_k3_pencil_mw_image(name, &pencil, &sections)?;
+                Ok(None)
+            }
+            Command::Quadrics(name) => {
+                let cover = self.model.k3_pencil_cover(&name)?;
+                cover.quadrics(&mut self.model, &name.text).map(Some)
+            }
+            Command::Image(name) => {
+                let image = self.model.k3_pencil_mw_image(&name)?;
+                Ok(Some(image.report(&name.text)))
+            }
+            Command::Status(name, image) => {
+                let cover = self.model.k3_pencil_cover(&name)?;
+                let label = image.as_ref().map_or_else(
+                    || name.text.clone(),
+                    |image| format!("{}, {}", name.text, image.text),
+                );
+                let image = image
+                    .map(|image| self.model.k3_pencil_mw_image(&image))
+                    .transpose()?;
+                cover
+                    .status(&mut self.model, &label, image.as_deref())
+                    .map(Some)
+            }
+        }
+    }
+
     fn pencil_parameter(
         &mut self,
         name: &Label,
@@ -9600,6 +9663,20 @@ impl Engine {
                 Ok(Value::Point(usize::from(
                     space.contains(&mut self.model, &descent)?,
                 )))
+            }
+            TypedForm::K3PencilCoverMap(cover, input) => {
+                let Value::K3PencilCoverPoint(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cover.map(&mut self.model, &point)?.persist(&mut self.model)
+            }
+            TypedForm::K3PencilCoverLift(cover, input) => {
+                let Value::K3PencilSection(section) = self.eval(input)? else {
+                    unreachable!()
+                };
+                cover
+                    .lift(&mut self.model, &section)?
+                    .persist(&mut self.model)
             }
             TypedForm::K3PencilSectionNegate(pencil, input) => {
                 let Value::K3PencilSection(section) = self.eval(input)? else {
@@ -12590,6 +12667,7 @@ impl Checker<'_> {
             TypeForm::K3PencilBase(name) => self.model.k3_pencil_base_type(&name),
             TypeForm::K3PencilSection(name) => self.model.k3_pencil_section_type(&name),
             TypeForm::K3PencilKummer2(name) => self.model.k3_pencil_kummer2_type(&name),
+            TypeForm::K3PencilCoverPoint(name) => self.model.k3_pencil_cover_point_type(&name),
             TypeForm::KummerDisc(name) => self.model.kummer_disc_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
@@ -23949,6 +24027,52 @@ impl Checker<'_> {
                 let value =
                     Section::literal(self.model, &pencil, *coordinates)?.persist(self.model)?;
                 Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::KummerLiteral(name, coordinates) => {
+                let pencil = self.model.k3_pencil(&name)?;
+                let ty = self.model.k3_pencil_kummer2_type(&name)?;
+                let class = pencil
+                    .kummer_literal(self.model, *coordinates)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(class)))
+            }
+            Expression::CoverPoint(name, coordinates) => {
+                let cover = self.model.k3_pencil_cover(&name)?;
+                let ty = self.model.k3_pencil_cover_point_type(&name)?;
+                let point = cover.point(self.model, *coordinates)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(point)))
+            }
+            Expression::CoverMap(input) => {
+                let input = self.expr(*input)?;
+                let Kind::K3PencilCoverPoint(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        "K3 pencil covering map",
+                        "an RVK3PencilCoverPoint point",
+                    ));
+                };
+                let name = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let cover = self.model.k3_pencil_cover(&name)?;
+                let ty = self.model.k3_pencil_section_type(&cover.pencil_name)?;
+                Ok((ty, TypedForm::K3PencilCoverMap(cover, Box::new(input))))
+            }
+            Expression::CoverLift(name, input) => {
+                let cover = self.model.k3_pencil_cover(&name)?;
+                let ty = self.model.k3_pencil_section_type(&cover.pencil_name)?;
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, "K3 pencil covering lift")?;
+                let ty = self.model.k3_pencil_cover_point_type(&name)?;
+                Ok((ty, TypedForm::K3PencilCoverLift(cover, Box::new(input))))
+            }
+            Expression::ShaClass(cover, image) => {
+                let cover = self.model.k3_pencil_cover(&cover)?;
+                let image = self.model.k3_pencil_mw_image(&image)?;
+                let ty = self.model.k3_pencil_kummer2_type(&cover.pencil_name)?;
+                let class = image.sha_class(self.model, &cover)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(class)))
             }
             Expression::Torsion(name, index) => {
                 let pencil = self.model.k3_pencil(&name)?;

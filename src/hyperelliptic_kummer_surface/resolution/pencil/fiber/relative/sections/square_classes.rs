@@ -25,6 +25,36 @@ impl Descent {
         Self(coordinates.map(|(nonsquare, support)| SquareClass { nonsquare, support }))
     }
 
+    pub(super) fn from_representatives(
+        model: &mut Model,
+        field: Field<'_>,
+        representatives: [Polynomial; 3],
+    ) -> Result<Self> {
+        let mut result = Self::default();
+        let mut parity = false;
+        let mut odd_factors = BTreeSet::new();
+        for (coordinate, polynomial) in result.0.iter_mut().zip(representatives) {
+            if polynomial.is_empty() {
+                return Err(Error::plain(
+                    "K3 pencil squareclass representative must be nonzero",
+                ));
+            }
+            *coordinate = SquareClass::of(model, field, &from_polynomial(field, polynomial))?;
+            parity ^= coordinate.nonsquare;
+            for factor in &coordinate.support {
+                if !odd_factors.insert(factor.clone()) {
+                    odd_factors.remove(factor);
+                }
+            }
+        }
+        if parity || !odd_factors.is_empty() {
+            return Err(Error::plain(
+                "K3 pencil Kummer triple must have square product",
+            ));
+        }
+        Ok(result)
+    }
+
     pub(crate) fn coordinates(&self) -> impl Iterator<Item = (bool, &[Polynomial])> {
         self.0
             .iter()
@@ -139,7 +169,7 @@ impl SquareClass {
     }
 }
 
-fn is_square(model: &mut Model, field: Field<'_>, value: &Scalar) -> Result<bool> {
+pub(super) fn is_square(model: &mut Model, field: Field<'_>, value: &Scalar) -> Result<bool> {
     // The norm has the same square character over the prime field, even
     // when q does not fit a machine word.
     let mut norm = value.clone();

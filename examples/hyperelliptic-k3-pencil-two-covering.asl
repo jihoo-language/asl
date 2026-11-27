@@ -1,0 +1,43 @@
+rvunram F[23,1]{0,1};
+let z=rvUnramElem[F]{};
+let o=rvUnramElem[F]{1};
+let two=rvUnramElem[F]{2};
+let four=rvUnramElem[F]{4};
+let nine=rvUnramElem[F]{9};
+rvhyperelliptic C[F]{z,four,neg(four),o,neg(two),o};
+let r0=rvJacPoint[C](z,z);
+let r1=rvJacPoint[C](o,z);
+let r2=rvJacPoint[C](two,z);
+let r3=rvJacPoint[C](nine,z);
+rvjactorsionbasis B[C,2](neg(o)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),r3)};
+rvk3pencil P[B,0,14];
+
+let p=rvK3PencilSectionPoint[P]{[0],[18],[2],[5]}{[1]}{[0],[0],[18],[11],[10],[5],[6]}{[1]};
+let q=rvK3PencilSectionPoint[P]{[0],[18],[4],[5]}{[1]}{[0],[0],[14],[7],[18],[5],[6]}{[1]};
+rvk3pencilmw2 M[P]{p,q};
+rvK3PencilMW2[M];
+
+let delta=rvK3PencilDescent2(p);
+rvk3pencilcover RationalCover[P](delta);
+let witness=rvK3PencilCoverPoint[RationalCover]{[2],[1]}{[0],[6],[18]}{[15],[19]}{[6]};
+assert rvK3PencilCoverMap(witness)==p;
+assert rvK3PencilCoverLift[RationalCover](p)==witness;
+show witness;
+rvK3PencilCoverStatus[RationalCover,M];
+
+let a=rvK3PencilKummer2[P]{[0],[-10],[1]}{[0],[-10],[1]}{[1]};
+let b=rvK3PencilKummer2[P]{[150],[-85],[5]}{[0],[-2],[1]}{[0],[-75],[5]};
+rvk3pencilcover A[P](a);
+rvk3pencilcover Bcover[P](b);
+rvk3pencilcover Sum[P](add(a,b));
+rvK3PencilCoverQuadrics[A];
+rvK3PencilCoverStatus[A,M];
+rvK3PencilCoverStatus[Bcover,M];
+rvK3PencilCoverStatus[Sum,M];
+let sa=rvK3PencilShaClass[A,M];
+let sb=rvK3PencilShaClass[Bcover,M];
+let sc=rvK3PencilShaClass[Sum,M];
+assert add(sa,sb)==sc;
+show sa;
+show sb;
+show sc;

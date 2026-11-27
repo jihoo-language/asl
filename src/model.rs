@@ -270,6 +270,7 @@ pub(crate) enum Kind {
     K3PencilBase(Rc<str>),
     K3PencilSection(Rc<str>),
     K3PencilKummer2(Rc<str>),
+    K3PencilCoverPoint(Rc<str>),
     KummerDisc(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
@@ -463,6 +464,7 @@ pub(crate) enum Value {
     K3PencilBase(Rc<pencil::Parameter>),
     K3PencilSection(Rc<pencil::sections::Section>),
     K3PencilKummer2(Rc<pencil::sections::Descent>),
+    K3PencilCoverPoint(Rc<pencil::sections::covering::Point>),
     KummerDisc(u8),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
@@ -665,6 +667,8 @@ pub(crate) struct Model {
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
+    k3_pencil_covers: HashMap<String, Rc<pencil::sections::covering::Cover>>,
+    k3_pencil_mw_images: HashMap<String, Rc<pencil::sections::covering::MordellImage>>,
     k3_mordell: HashMap<String, Rc<mordell::Mordell>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
@@ -790,6 +794,8 @@ impl Model {
             jacobian_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
+            k3_pencil_covers: HashMap::new(),
+            k3_pencil_mw_images: HashMap::new(),
             k3_mordell: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
@@ -1100,7 +1106,9 @@ impl Model {
             }
             Kind::Enriques(ref name) => self.enriques_quotients[name.as_ref()].count(),
             Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()].count(),
-            Kind::K3PencilSection(..) | Kind::K3PencilKummer2(..) => usize::MAX,
+            Kind::K3PencilSection(..)
+            | Kind::K3PencilKummer2(..)
+            | Kind::K3PencilCoverPoint(..) => usize::MAX,
             Kind::KummerDisc(..) => usize::from(nikulin::ORDER),
             Kind::CMClass(ref name) => self.cm_ring_orders[name.as_ref()].cardinality_bound(),
             Kind::KummerWeil(..) => usize::MAX,
@@ -1346,6 +1354,7 @@ impl Model {
                 | Kind::K3PencilBase(..)
                 | Kind::K3PencilSection(..)
                 | Kind::K3PencilKummer2(..)
+                | Kind::K3PencilCoverPoint(..)
                 | Kind::KummerDisc(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
@@ -4179,6 +4188,84 @@ impl Model {
         self.inhabited_type(Kind::K3PencilKummer2(name.text.as_str().into()), 0)
     }
 
+    pub(crate) fn define_k3_pencil_cover(
+        &mut self,
+        name: Label,
+        pencil_name: Label,
+        descent: Rc<pencil::sections::Descent>,
+    ) -> Result<()> {
+        if self.k3_pencil_covers.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("K3 pencil covering '{}' is already defined", name.text),
+            ));
+        }
+        let pencil = self.k3_pencil(&pencil_name)?;
+        let cover = pencil::sections::covering::Cover::new(self, pencil_name, pencil, descent)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_pencil_covers.insert(name.text, Rc::new(cover));
+        Ok(())
+    }
+
+    pub(crate) fn k3_pencil_cover(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<pencil::sections::covering::Cover>> {
+        self.k3_pencil_covers
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown K3 pencil covering '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn k3_pencil_cover_point_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.k3_pencil_cover(name)?;
+        self.inhabited_type(Kind::K3PencilCoverPoint(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_k3_pencil_mw_image(
+        &mut self,
+        name: Label,
+        pencil: &Label,
+        sections: &[Rc<pencil::sections::Section>],
+    ) -> Result<()> {
+        if self.k3_pencil_mw_images.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!(
+                    "K3 pencil Mordell-Weil certificate '{}' is already defined",
+                    name.text
+                ),
+            ));
+        }
+        let pencil = self.k3_pencil(pencil)?;
+        let image = pencil::sections::covering::MordellImage::new(self, pencil, sections)
+            .map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_pencil_mw_images.insert(name.text, Rc::new(image));
+        Ok(())
+    }
+
+    pub(crate) fn k3_pencil_mw_image(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<pencil::sections::covering::MordellImage>> {
+        self.k3_pencil_mw_images
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown K3 pencil Mordell-Weil certificate '{}'", name.text),
+                )
+            })
+    }
+
     pub(crate) fn define_k3_mordell(
         &mut self,
         name: Label,
@@ -5882,6 +5969,7 @@ impl Model {
             | Kind::K3PencilBase(..)
             | Kind::K3PencilSection(..)
             | Kind::K3PencilKummer2(..)
+            | Kind::K3PencilCoverPoint(..)
             | Kind::KummerDisc(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
@@ -6411,6 +6499,7 @@ impl Model {
             Kind::K3PencilBase(name) => out.push(&format!("RVK3PencilBase({name})")),
             Kind::K3PencilSection(name) => out.push(&format!("RVK3PencilSection({name})")),
             Kind::K3PencilKummer2(name) => out.push(&format!("RVK3PencilKummer2({name})")),
+            Kind::K3PencilCoverPoint(name) => out.push(&format!("RVK3PencilCoverPoint({name})")),
             Kind::KummerDisc(name) => out.push(&format!("RVKummerDisc({name})")),
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
@@ -6726,6 +6815,9 @@ impl Model {
             (Value::KummerK3(a), Value::KummerK3(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Enriques(a), Value::Enriques(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3PencilBase(a), Value::K3PencilBase(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::K3PencilCoverPoint(a), Value::K3PencilCoverPoint(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::K3PencilSection(a), Value::K3PencilSection(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -7089,6 +7181,7 @@ impl Model {
             (Value::K3PencilBase(a), Value::K3PencilBase(b)) => a.compare(self, b),
             (Value::K3PencilSection(a), Value::K3PencilSection(b)) => a.compare(self, b),
             (Value::K3PencilKummer2(a), Value::K3PencilKummer2(b)) => a.compare(self, b),
+            (Value::K3PencilCoverPoint(a), Value::K3PencilCoverPoint(b)) => a.compare(self, b),
             (Value::KummerDisc(a), Value::KummerDisc(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
@@ -7433,6 +7526,11 @@ impl Model {
                 Kind::K3PencilSection(..) | Kind::K3PencilKummer2(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a generic K3 pencil section or square-class type",
+                    ));
+                }
+                Kind::K3PencilCoverPoint(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a generic K3 pencil covering",
                     ));
                 }
                 Kind::K3PencilBase(ref name) => self.k3_pencils[name.as_ref()]
@@ -9025,6 +9123,17 @@ impl Model {
                         out.push("}")
                     }
                 }
+            }
+            Value::K3PencilCoverPoint(point) => {
+                self.write_type(out, ty, 0)?;
+                out.push("[")?;
+                for (i, coordinate) in point.coordinates().iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    self.write_ec_polynomial(out, coordinate)?;
+                }
+                out.push("]")
             }
             Value::K3PencilKummer2(descent) => {
                 self.write_type(out, ty, 0)?;

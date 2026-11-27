@@ -135,6 +135,7 @@ pub(crate) enum TypeForm {
     K3PencilBase(Label),
     K3PencilSection(Label),
     K3PencilKummer2(Label),
+    K3PencilCoverPoint(Label),
     KummerDisc(Label),
     KummerWeil(Label),
     KummerDiv(Label),
@@ -1227,6 +1228,7 @@ pub(crate) enum StatementForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Command>),
+    K3PencilCover(Box<crate::hyperelliptic_kummer_surface::pencil::sections::covering::Command>),
     K3FiberEquation(Box<crate::hyperelliptic_kummer_surface::pencil::fiber::Command>),
     K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Command>),
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
@@ -5969,6 +5971,40 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::K3Pencil(Box::new(command)))
     }
 
+    fn k3_pencil_cover_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::pencil::sections::covering::Command;
+        self.advance()?;
+        let command = if matches!(name, "rvk3pencilcover" | "rvk3pencilmw2") {
+            let label = self.label()?;
+            self.expect(Token::LBracket)?;
+            let pencil = self.label()?;
+            self.expect(Token::RBracket)?;
+            if name == "rvk3pencilcover" {
+                Command::Define(label, pencil, Box::new(self.paren_expr(0)?))
+            } else {
+                Command::DefineImage(label, pencil, self.set_named_rows(|p| p.expr(0))?)
+            }
+        } else {
+            self.expect(Token::LBracket)?;
+            let label = self.label()?;
+            let command = match name {
+                "rvK3PencilCoverQuadrics" => Command::Quadrics(label),
+                "rvK3PencilMW2" => Command::Image(label),
+                _ => {
+                    let image = if self.eat(Token::Comma)? {
+                        Some(self.label()?)
+                    } else {
+                        None
+                    };
+                    Command::Status(label, image)
+                }
+            };
+            self.expect(Token::RBracket)?;
+            command
+        };
+        Ok(StatementForm::K3PencilCover(Box::new(command)))
+    }
+
     fn k3_pencil_section_expression(
         &mut self,
         name: &str,
@@ -5977,23 +6013,46 @@ impl<'src> Parser<'src> {
     ) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::pencil::sections::Expression;
         let (expression, depth) = match name {
-            "rvK3PencilSectionPoint" => {
+            "rvK3PencilSectionPoint" | "rvK3PencilCoverPoint" | "rvK3PencilKummer2" => {
                 self.expect(Token::LBracket)?;
                 let pencil = self.label()?;
                 self.expect(Token::RBracket)?;
                 let coefficient = |parser: &mut Self| {
                     parser.signed_tuple(
                         "a signed residue coordinate",
-                        "K3 pencil section coefficient",
+                        "K3 pencil polynomial coefficient",
                     )
                 };
-                let coordinates = [
-                    self.set_named_rows(coefficient)?,
-                    self.set_named_rows(coefficient)?,
-                    self.set_named_rows(coefficient)?,
-                    self.set_named_rows(coefficient)?,
-                ];
-                (Expression::Literal(pencil, Box::new(coordinates)), 0)
+                let first = self.set_named_rows(coefficient)?;
+                let second = self.set_named_rows(coefficient)?;
+                let third = self.set_named_rows(coefficient)?;
+                let expression = if name == "rvK3PencilKummer2" {
+                    Expression::KummerLiteral(pencil, Box::new([first, second, third]))
+                } else {
+                    let coordinates =
+                        Box::new([first, second, third, self.set_named_rows(coefficient)?]);
+                    if name == "rvK3PencilCoverPoint" {
+                        Expression::CoverPoint(pencil, coordinates)
+                    } else {
+                        Expression::Literal(pencil, coordinates)
+                    }
+                };
+                (expression, 0)
+            }
+            "rvK3PencilCoverLift" | "rvK3PencilShaClass" => {
+                self.expect(Token::LBracket)?;
+                let cover = self.label()?;
+                if name == "rvK3PencilShaClass" {
+                    self.expect(Token::Comma)?;
+                    let image = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    (Expression::ShaClass(cover, image), 0)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = 1 + input.depth;
+                    (Expression::CoverLift(cover, Box::new(input)), depth)
+                }
             }
             "rvK3PencilTorsion2At" | "rvK3PencilSelmerBasis" => {
                 self.expect(Token::LBracket)?;
@@ -6011,10 +6070,10 @@ impl<'src> Parser<'src> {
             _ => {
                 let input = self.paren_expr(nest)?;
                 let depth = 1 + input.depth;
-                let expression = if name == "rvK3PencilSelmerContains" {
-                    Expression::SelmerContains(Box::new(input))
-                } else {
-                    Expression::Descent(Box::new(input), name == "rvK3PencilDivisible2")
+                let expression = match name {
+                    "rvK3PencilSelmerContains" => Expression::SelmerContains(Box::new(input)),
+                    "rvK3PencilCoverMap" => Expression::CoverMap(Box::new(input)),
+                    _ => Expression::Descent(Box::new(input), name == "rvK3PencilDivisible2"),
                 };
                 (expression, depth)
             }
@@ -7475,6 +7534,13 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilTorsion2"
                 | "rvK3PencilSelmer"),
             ) => self.k3_pencil_statement(op)?,
+            Token::Word(
+                op @ ("rvk3pencilcover"
+                | "rvk3pencilmw2"
+                | "rvK3PencilCoverQuadrics"
+                | "rvK3PencilMW2"
+                | "rvK3PencilCoverStatus"),
+            ) => self.k3_pencil_cover_statement(op)?,
             Token::Word(
                 op
                 @ ("rvk3fiberjac" | "rvK3FiberQuartic" | "rvK3FiberJacobian" | "rvK3FiberPoints"),
@@ -11143,6 +11209,7 @@ impl<'src> Parser<'src> {
                 | "RVK3PencilBase"
                 | "RVK3PencilSection"
                 | "RVK3PencilKummer2"
+                | "RVK3PencilCoverPoint"
                 | "RVKummerDisc"
                 | "RVKummerDiv"
                 | "RVK3Lattice"
@@ -11164,6 +11231,7 @@ impl<'src> Parser<'src> {
                 "RVK3PencilBase" => TypeForm::K3PencilBase(endpoint),
                 "RVK3PencilSection" => TypeForm::K3PencilSection(endpoint),
                 "RVK3PencilKummer2" => TypeForm::K3PencilKummer2(endpoint),
+                "RVK3PencilCoverPoint" => TypeForm::K3PencilCoverPoint(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
@@ -13137,11 +13205,20 @@ impl<'src> Parser<'src> {
                 }
                 if (matches!(
                     name.text.as_str(),
-                    "rvK3PencilSectionPoint" | "rvK3PencilTorsion2At" | "rvK3PencilSelmerBasis"
+                    "rvK3PencilSectionPoint"
+                        | "rvK3PencilTorsion2At"
+                        | "rvK3PencilSelmerBasis"
+                        | "rvK3PencilKummer2"
+                        | "rvK3PencilCoverPoint"
+                        | "rvK3PencilCoverLift"
+                        | "rvK3PencilShaClass"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
-                        "rvK3PencilDescent2" | "rvK3PencilDivisible2" | "rvK3PencilSelmerContains"
+                        "rvK3PencilDescent2"
+                            | "rvK3PencilDivisible2"
+                            | "rvK3PencilSelmerContains"
+                            | "rvK3PencilCoverMap"
                     ) && self.token() == Token::LParen)
                 {
                     return self.k3_pencil_section_expression(&name.text, span, nest);

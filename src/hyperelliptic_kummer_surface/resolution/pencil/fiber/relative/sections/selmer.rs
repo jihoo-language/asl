@@ -139,9 +139,17 @@ impl Selmer {
                 self.basis.len()
             ))
         })?;
+        self.decode(model, *vector)
+    }
+
+    pub(super) fn width(&self) -> usize {
+        2 * (self.factors.len() + 1)
+    }
+
+    pub(super) fn decode(&self, model: &mut Model, vector: u32) -> Result<Descent> {
         let width = self.factors.len() + 1;
-        let left = *vector & ((1 << width) - 1);
-        let right = *vector >> width;
+        let left = vector & ((1 << width) - 1);
+        let right = vector >> width;
         model.spend(3 * (1 + self.factors.len()))?;
         Ok(Descent::from_coordinates([left, right, left ^ right].map(
             |bits| {
@@ -158,20 +166,25 @@ impl Selmer {
     }
 
     pub(crate) fn contains(&self, model: &mut Model, descent: &Descent) -> Result<bool> {
+        Ok(self.encode_local(model, descent)?.is_some())
+    }
+
+    pub(super) fn encode_local(&self, model: &mut Model, descent: &Descent) -> Result<Option<u32>> {
         let mut coordinates = [0u32; 3];
         for (bits, (nonsquare, support)) in coordinates.iter_mut().zip(descent.coordinates()) {
             *bits = u32::from(nonsquare);
             for factor in support {
                 model.spend(1 + self.factors.len())?;
                 let Ok(i) = self.factors.binary_search(factor) else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 *bits |= 1 << (i + 1);
             }
         }
         let [a, b, c] = coordinates;
+        let vector = a | (b << (self.factors.len() + 1));
         model.spend(self.constraints.len())?;
-        Ok(a ^ b == c && satisfies(&self.constraints, a | (b << (self.factors.len() + 1))))
+        Ok((a ^ b == c && satisfies(&self.constraints, vector)).then_some(vector))
     }
 }
 
