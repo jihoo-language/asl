@@ -174,6 +174,7 @@ pub(crate) enum TypeForm {
     CMAbelianMap(Label),
     KummerWeil(Label),
     KummerDiv(Label),
+    FrickeSSDiv(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
@@ -1132,6 +1133,7 @@ pub(crate) enum ExprForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
     CMNeighbor(crate::hyperelliptic_kummer_surface::cm_neighbors::Expression),
     EllipticModular(Box<crate::elliptic_modular::Expression>),
+    FrickeSS(Box<crate::dwork_k3::fricke::brandt::Expression>),
     FrickeCMPolyEval(Label, Box<ParsedExpr>),
     FrickeCMPolyModCoeff(Label, Label, usize),
     FrickeCMPairCoeff(usize, Box<ParsedExpr>),
@@ -1416,6 +1418,7 @@ pub(crate) enum StatementForm {
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Statement>),
     CMNeighbors(crate::hyperelliptic_kummer_surface::cm_neighbors::Statement),
     EllipticModular(crate::elliptic_modular::Statement),
+    FrickeSS(Box<crate::dwork_k3::fricke::brandt::Command>),
     FrickeCMDefine(Label, Label, Option<Label>),
     FrickeCMData(Label, Option<usize>),
     FrickeCMFactors(Label, Label),
@@ -6316,6 +6319,85 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn fricke_ss_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::dwork_k3::fricke::brandt::Command;
+        self.advance()?;
+        let name = if operation == "rvfrickess" {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        self.expect(Token::LBracket)?;
+        let argument = self.label()?;
+        let command = match operation {
+            "rvFrickeSSData" => Command::Describe(argument),
+            "rvFrickeSSMatrix" => {
+                self.expect(Token::Comma)?;
+                Command::Matrix(argument, self.number()?.0)
+            }
+            "rvFrickeSSRelations" => Command::Relations(argument),
+            _ => Command::Define(name.unwrap(), argument),
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::FrickeSS(Box::new(command)))
+    }
+
+    fn fricke_ss_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::dwork_k3::fricke::brandt::{Expression, Operation, ScalarEntry};
+        let action = match name {
+            "rvFrickeSSFrob" => Some(Operation::Frobenius),
+            "rvFrickeSSHecke" => {
+                self.expect(Token::LBracket)?;
+                let level = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Some(Operation::Hecke(level))
+            }
+            _ => None,
+        };
+        if let Some(operation) = action {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::FrickeSS(Box::new(Expression::Action(operation, input))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let basis = self.label()?;
+        let expression = if name == "rvFrickeSSDiv" {
+            self.expect(Token::RBracket)?;
+            self.expect(Token::LBrace)?;
+            let coefficients = self.signed_list(
+                Token::RBrace,
+                "a signed divisor coefficient",
+                "supersingular Fricke divisor",
+            )?;
+            Expression::Divisor(basis, coefficients)
+        } else {
+            self.expect(Token::Comma)?;
+            let index = self.number()?.0;
+            let expression = match name {
+                "rvFrickeSSBasis" => Expression::Basis(basis, index),
+                "rvFrickeSSVertex" => Expression::Scalar(basis, ScalarEntry::Vertex(index)),
+                "rvFrickeSSEndpoint" => {
+                    self.expect(Token::Comma)?;
+                    Expression::Scalar(basis, ScalarEntry::Endpoint(index, self.number()?.0))
+                }
+                _ => Expression::Scalar(
+                    basis,
+                    ScalarEntry::Polynomial {
+                        fricke: name == "rvFrickeSSFrickeCoeff",
+                        index,
+                    },
+                ),
+            };
+            self.expect(Token::RBracket)?;
+            expression
+        };
+        expr(span, ExprForm::FrickeSS(Box::new(expression)), 0)
     }
 
     fn fricke_cm_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -12721,6 +12803,12 @@ impl<'src> Parser<'src> {
                 | "rvFrickeCMEndpoints"
                 | "rvFrickeCMEdgeEndpoints"),
             ) => self.fricke_cm_statement(name)?,
+            Token::Word(
+                name @ ("rvfrickess"
+                | "rvFrickeSSData"
+                | "rvFrickeSSMatrix"
+                | "rvFrickeSSRelations"),
+            ) => self.fricke_ss_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -17055,6 +17143,7 @@ impl<'src> Parser<'src> {
                 | "RVK3PencilCoverPoint"
                 | "RVKummerDisc"
                 | "RVKummerDiv"
+                | "RVFrickeSSDiv"
                 | "RVK3Lattice"
                 | "RVMukai"
                 | "RVKummerWeil"
@@ -17076,6 +17165,7 @@ impl<'src> Parser<'src> {
                 "RVK3PencilKummer2" => TypeForm::K3PencilKummer2(endpoint),
                 "RVK3PencilCoverPoint" => TypeForm::K3PencilCoverPoint(endpoint),
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
+                "RVFrickeSSDiv" => TypeForm::FrickeSSDiv(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVOG10" => TypeForm::OG10(endpoint),
@@ -19602,6 +19692,20 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.cm_class_poly_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvFrickeSSDiv"
+                        | "rvFrickeSSBasis"
+                        | "rvFrickeSSVertex"
+                        | "rvFrickeSSEndpoint"
+                        | "rvFrickeSSJCoeff"
+                        | "rvFrickeSSFrickeCoeff"
+                        | "rvFrickeSSHecke"
+                        | "rvFrickeSSFrob"
+                ) && matches!(self.token(), Token::LBracket | Token::LParen)
+                {
+                    return self.fricke_ss_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

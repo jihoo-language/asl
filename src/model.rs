@@ -22,6 +22,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
+use crate::dwork_k3::fricke::brandt as fricke_ss;
 use crate::ec_morphism::Morphism as ECMap;
 use crate::ec_poly::Scalar as ECScalar;
 use crate::elliptic::{
@@ -328,6 +329,7 @@ pub(crate) enum Kind {
     CMAbelianMap(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
+    FrickeSSDiv(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
@@ -575,6 +577,7 @@ pub(crate) enum Value {
     CMAbelianMap(Rc<cm_hom::fourier::Endomorphism>),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
+    FrickeSSDiv(Rc<[i128]>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
@@ -802,6 +805,7 @@ pub(crate) struct Model {
     ec_torsion_levels: HashMap<String, Rc<ec_level::Level>>,
     elliptic_isogenies: HashMap<Rc<str>, Rc<Isogeny>>,
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
+    fricke_ss_bases: HashMap<String, Rc<fricke_ss::Basis>>,
     dwork_hecke_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
@@ -971,6 +975,7 @@ impl Model {
             ec_torsion_levels: HashMap::new(),
             elliptic_isogenies: HashMap::new(),
             elliptic_modular_polynomials: HashMap::new(),
+            fricke_ss_bases: HashMap::new(),
             dwork_hecke_equations: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
@@ -1604,6 +1609,7 @@ impl Model {
                     usize::MAX
                 }
             }
+            Kind::FrickeSSDiv(..) => usize::MAX,
             Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
                 usize::MAX
             }
@@ -1973,6 +1979,7 @@ impl Model {
                 | Kind::CMAbelianMap(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
+                | Kind::FrickeSSDiv(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
@@ -6901,6 +6908,34 @@ impl Model {
         self.inhabited_type(Kind::CMOrder(grade), 0)
     }
 
+    pub(crate) fn define_fricke_ss(&mut self, name: Label, basis: fricke_ss::Basis) -> Result<()> {
+        if self.fricke_ss_bases.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "supersingular Fricke basis is already defined",
+            ));
+        }
+        self.fricke_ss_bases.insert(name.text, Rc::new(basis));
+        Ok(())
+    }
+
+    pub(crate) fn fricke_ss(&self, name: &Label) -> Result<Rc<fricke_ss::Basis>> {
+        self.fricke_ss_bases
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown supersingular Fricke basis '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn fricke_ss_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.fricke_ss(name)?;
+        self.inhabited_type(Kind::FrickeSSDiv(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn dwork_hecke_equation(
         &mut self,
         ell: usize,
@@ -7724,6 +7759,7 @@ impl Model {
             | Kind::CMAbelianMap(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
+            | Kind::FrickeSSDiv(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
@@ -8310,6 +8346,7 @@ impl Model {
             }
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
+            Kind::FrickeSSDiv(name) => out.push(&format!("RVFrickeSSDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::VerbitskyCyclic(grade, class) => {
                 let name = if *class {
@@ -8776,6 +8813,10 @@ impl Model {
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a == b),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
+                self.spend(a.len())?;
+                Ok(a == b)
+            }
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVPartitionExt(a), Value::RVPartitionExt(b)) => Ok(a == b),
@@ -9214,6 +9255,10 @@ impl Model {
             (Value::CMAbelianMap(a), Value::CMAbelianMap(b)) => Ok(a.cmp(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
+            (Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
+                self.spend(a.len())?;
+                Ok(a.cmp(b))
+            }
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
@@ -9717,6 +9762,11 @@ impl Model {
                 Kind::KummerWeil(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kummer Weil representation",
+                    ))
+                }
+                Kind::FrickeSSDiv(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an integral supersingular Fricke divisor lattice",
                     ))
                 }
                 Kind::KummerDiv(..) => {
@@ -11656,6 +11706,18 @@ impl Model {
                     "{{{:?} / {}}}",
                     fraction.numerator, fraction.denominator
                 ))
+            }
+            Value::FrickeSSDiv(coefficients) => {
+                self.write_type(out, ty, 0)?;
+                out.push("{")?;
+                for (i, coefficient) in coefficients.iter().enumerate() {
+                    self.spend(1)?;
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&coefficient.to_string())?;
+                }
+                out.push("}")
             }
             Value::KummerDiv(divisor) => {
                 self.write_type(out, ty, 0)?;

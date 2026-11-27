@@ -26,6 +26,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
+use crate::dwork_k3::fricke::brandt as fricke_ss;
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
@@ -1076,6 +1077,7 @@ enum TypedForm {
     ECCMActionApply(Rc<ec_cm_action::Realization>, Box<[TypedExpr; 2]>),
     ECCMActionMap(Rc<ec_cm_action::Realization>, Box<TypedExpr>),
     ECLevel(Rc<ec_level::Level>, ECLevelAction),
+    FrickeSSAction(Rc<fricke_ss::Basis>, fricke_ss::Operation, Box<TypedExpr>),
     FrickeCMPolyEval(
         Rc<cm_class_poly::fricke::Polynomial>,
         Rc<UnramRing>,
@@ -2654,6 +2656,7 @@ impl Engine {
             StatementForm::EllipticModular(command) => {
                 return self.elliptic_modular_statement(command).map(Some)
             }
+            StatementForm::FrickeSS(command) => return command.execute(&mut self.model),
             StatementForm::FrickeCMDefine(name, left, right) => {
                 let left = self.model.cm_class_polynomial(&left)?;
                 let value = if let Some(right) = right {
@@ -12350,6 +12353,9 @@ impl Engine {
                             .group(&mut self.model, grade, k)?;
                         Ok(Value::KhClass(group.add(&mut self.model, &a, &b)?))
                     }
+                    (BinaryOp::Add, Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
+                        fricke_ss::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::KummerDiv(a), Value::KummerDiv(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -14346,6 +14352,12 @@ impl Engine {
                 };
                 let result = cycle.apply(&mut self.model, point.as_ref().clone())?;
                 elliptic::persist_point(&mut self.model, result)
+            }
+            TypedForm::FrickeSSAction(basis, operation, input) => {
+                let Value::FrickeSSDiv(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                basis.apply(&mut self.model, *operation, &value)
             }
             TypedForm::FrickeCMPolyEval(polynomial, ring, input) => {
                 let Value::RVUnram(h) = self.eval(input)? else {
@@ -18312,6 +18324,7 @@ impl Checker<'_> {
             TypeForm::CMAbelianMap(name) => self.model.cm_abelian_type(&name, Kind::CMAbelianMap),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
+            TypeForm::FrickeSSDiv(name) => self.model.fricke_ss_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
@@ -19649,6 +19662,10 @@ impl Checker<'_> {
                     Kind::Kummer(name) => {
                         let curve = self.model.kummer_curve(name)?;
                         KummerPoint::identity(&curve).persist(self.model)?
+                    }
+                    Kind::FrickeSSDiv(name) => {
+                        let basis = self.model.fricke_ss(&Label { text: name.to_string(), span })?;
+                        fricke_ss::persist(self.model, vec![0; basis.rank()])?
                     }
                     Kind::KummerDiv(..) => kummer_div::Divisor::zero().persist(self.model)?,
                     Kind::K3PencilSection(..) => pencil::sections::Section::Infinity.persist(self.model)?,
@@ -21906,6 +21923,7 @@ impl Checker<'_> {
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::CMClass(expression) => self.cm_class_expression(*expression),
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
+            ExprForm::FrickeSS(expression) => self.fricke_ss_expression(*expression),
             ExprForm::FrickeCMPolyEval(name, input) => {
                 let polynomial = self.model.fricke_cm_polynomial(&name)?;
                 let input = self.expr(*input)?;
@@ -23190,6 +23208,17 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::FrickeSSDiv(..)) {
+                    let basis = self.fricke_ss_operand(&input)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::FrickeSSAction(
+                            basis,
+                            fricke_ss::Operation::Negate,
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::KummerDiv(..)) {
@@ -27054,6 +27083,7 @@ impl Checker<'_> {
                         | Kind::RVCyclo(..)
                         | Kind::Jacobian(..)
                         | Kind::KummerDiv(..)
+                        | Kind::FrickeSSDiv(..)
                         | Kind::K3PencilSection(..)
                         | Kind::K3PencilKummer2(..)
                         | Kind::ECPoint(..)
@@ -34172,6 +34202,69 @@ impl Checker<'_> {
             return Err(self.invalid_operand(input, operation, "an RVKummerDisc element"));
         };
         Ok(name)
+    }
+
+    fn fricke_ss_operand(&self, input: &TypedExpr) -> Result<Rc<fricke_ss::Basis>> {
+        let Kind::FrickeSSDiv(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(
+                input,
+                "Fricke divisor action",
+                "an RVFrickeSSDiv class",
+            ));
+        };
+        self.model.fricke_ss(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn fricke_ss_expression(
+        &mut self,
+        expression: fricke_ss::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use fricke_ss::Expression;
+        match expression {
+            Expression::Divisor(name, values) => {
+                let ty = self.model.fricke_ss_type(&name)?;
+                let rank = self.model.fricke_ss(&name)?.rank();
+                if values.len() != rank {
+                    return Err(Error::new(
+                        name.span,
+                        format!("supersingular Fricke divisor needs {rank} coefficients"),
+                    ));
+                }
+                Ok((
+                    ty,
+                    TypedForm::Constant(fricke_ss::persist(self.model, values)?),
+                ))
+            }
+            Expression::Basis(name, index) => {
+                let ty = self.model.fricke_ss_type(&name)?;
+                let values = self.model.fricke_ss(&name)?.div_basis(index)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(fricke_ss::persist(self.model, values)?),
+                ))
+            }
+            Expression::Scalar(name, entry) => {
+                let basis = self.model.fricke_ss(&name)?;
+                let ty = self.model.rv_unram_type(&basis.field_label(name.span))?;
+                let value = basis.scalar(entry)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(rv_unram::persist(self.model, value)?),
+                ))
+            }
+            Expression::Action(operation, input) => {
+                let input = self.expr(input)?;
+                let basis = self.fricke_ss_operand(&input)?;
+                basis.check_operation(operation)?;
+                Ok((
+                    input.ty,
+                    TypedForm::FrickeSSAction(basis, operation, Box::new(input)),
+                ))
+            }
+        }
     }
 
     fn kummer_divisor_expression(

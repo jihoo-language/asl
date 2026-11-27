@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::model::Model;
 
+pub(crate) mod brandt;
 mod eta;
 mod fiber;
 pub(crate) mod hecke;
