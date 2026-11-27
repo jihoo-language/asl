@@ -39,8 +39,8 @@ use crate::hyperelliptic_kummer_surface::period as k3_period;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
 use crate::hyperelliptic_kummer_surface::{
-    self as kummer_surface, hilbert_square, nakajima, nikulin, pencil, polarized as kummer_div,
-    unimodular, Point as KummerPoint,
+    self as kummer_surface, hilbert_square, mordell, nakajima, nikulin, pencil,
+    polarized as kummer_div, unimodular, Point as KummerPoint,
 };
 use crate::jacobian_level;
 use crate::jet_hom;
@@ -661,6 +661,7 @@ enum TypedForm {
     Kummer(KummerAction),
     Enriques(EnriquesAction),
     K3Pencil(Rc<pencil::Pencil>, PencilAction),
+    K3Mordell(Rc<mordell::Mordell>, mordell::Shift, i128, Box<TypedExpr>),
     KummerDiscQuadratic(Box<TypedExpr>),
     KummerDiscPair(Box<[TypedExpr; 2]>),
     KummerDiscFrobenius(nikulin::Action, Box<TypedExpr>),
@@ -1655,6 +1656,39 @@ impl Engine {
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::KummerK3(command) => return command.execute(&mut self.model).map(Some),
+            StatementForm::K3Mordell(command) => {
+                use mordell::Command;
+                return match *command {
+                    Command::Define(name, pencil, zero) => {
+                        self.model.define_k3_mordell(name, &pencil, zero)?;
+                        Ok(None)
+                    }
+                    Command::Coord(name, input) => {
+                        let marked = self.model.k3_mordell(&name)?;
+                        let divisor =
+                            self.mordell_divisor(&marked, *input, "rvK3MordellCoord divisor")?;
+                        let (degree, free) = marked.coordinates(&mut self.model, &divisor)?;
+                        Ok(Some(format!(
+                            "rvK3MordellCoord[{}] = degree={degree}, free={free}",
+                            name.text
+                        )))
+                    }
+                    Command::Height(name, inputs) => {
+                        let marked = self.model.k3_mordell(&name)?;
+                        let [left, right] = *inputs;
+                        let left =
+                            self.mordell_divisor(&marked, left, "rvK3MordellHeight divisor")?;
+                        let right =
+                            self.mordell_divisor(&marked, right, "rvK3MordellHeight divisor")?;
+                        let height = marked.height(&mut self.model, &left, &right)?;
+                        Ok(Some(format!("rvK3MordellHeight[{}] = {height}", name.text)))
+                    }
+                    Command::Lattice(name) => {
+                        let marked = self.model.k3_mordell(&name)?;
+                        marked.lattice(&mut self.model, &name.text).map(Some)
+                    }
+                };
+            }
             StatementForm::K3Pencil(command) => {
                 use pencil::Command;
                 return match *command {
@@ -5972,6 +6006,21 @@ impl Engine {
         .persist(&mut self.model)
     }
 
+    fn mordell_divisor(
+        &mut self,
+        marked: &mordell::Mordell,
+        input: ParsedExpr,
+        operation: &str,
+    ) -> Result<Rc<kummer_div::Divisor>> {
+        let ty = self.model.kummer_divisor_type(&marked.pencil.basis_name)?;
+        let input = self.checker().expr(input)?;
+        self.checker().require_type(ty, &input, operation)?;
+        let Value::KummerDiv(divisor) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok(divisor)
+    }
+
     fn eval_kummer(&mut self, action: &KummerAction) -> Result<Value> {
         use kummer_surface::{BaseOperation, Operation};
         match action {
@@ -8084,6 +8133,15 @@ impl Engine {
                 Ok(Value::PrimeScalar(value))
             }
             TypedForm::Kummer(action) => self.eval_kummer(action),
+            TypedForm::K3Mordell(marked, shift, steps, input) => match (shift, self.eval(input)?) {
+                (mordell::Shift::Divisor, Value::KummerDiv(divisor)) => {
+                    marked.shift_divisor(&mut self.model, *steps, &divisor)
+                }
+                (mordell::Shift::Point, Value::KummerK3(point)) => {
+                    marked.shift_point(&mut self.model, *steps, point)
+                }
+                _ => unreachable!(),
+            },
             TypedForm::K3Pencil(pencil, action) => match action {
                 PencilAction::Param(inputs) => {
                     let (Value::RVUnram(u), Value::RVUnram(v)) =
@@ -13875,6 +13933,27 @@ impl Checker<'_> {
             ExprForm::Kummer(expression) => self.kummer_expression(*expression),
             ExprForm::Enriques(expression) => self.enriques_expression(*expression),
             ExprForm::K3Pencil(expression) => self.pencil_expression(*expression),
+            ExprForm::K3Mordell(expression) => {
+                let mordell::Expression(name, shift, steps, input) = *expression;
+                let marked = self.model.k3_mordell(&name)?;
+                let (ty, operation) = match shift {
+                    mordell::Shift::Divisor => (
+                        self.model.kummer_divisor_type(&marked.pencil.basis_name)?,
+                        "rvK3MordellShiftDiv divisor",
+                    ),
+                    mordell::Shift::Point => (
+                        self.model
+                            .kummer_k3_type(marked.pencil.basis.curve_name.clone())?,
+                        "rvK3MordellShift point",
+                    ),
+                };
+                let input = self.expr(*input)?;
+                self.require_type(ty, &input, operation)?;
+                Ok((
+                    ty,
+                    TypedForm::K3Mordell(marked, shift, steps, Box::new(input)),
+                ))
+            }
             ExprForm::KummerDisc(expression) => self.kummer_disc_expression(*expression),
             ExprForm::KummerWeil(expression) => self.kummer_weil_expression(*expression),
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),

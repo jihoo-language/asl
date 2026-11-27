@@ -1,0 +1,31 @@
+rvunram F[5,1]{0,1};
+let z=rvUnramElem[F]{};
+let o=rvUnramElem[F]{1};
+let two=rvUnramElem[F]{2};
+let three=rvUnramElem[F]{3};
+rvhyperelliptic C[F]{z,neg(o),z,z,z,o};
+let r0=rvJacPoint[C](z,z);
+let r1=rvJacPoint[C](o,z);
+let r2=rvJacPoint[C](two,z);
+let r3=rvJacPoint[C](three,z);
+rvjactorsionbasis B[C,2](neg(o)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),r3)};
+
+rvk3pencil P[B,0,1];
+rvk3mordell M[P,4];
+let section=rvKummerTropeDiv[B,4];
+let translation=add(rvKummerNodeDiv[B,0],neg(rvKummerNodeDiv[B,1]));
+rvK3MordellLattice[M];
+rvK3MordellCoord[M](section);
+rvK3MordellCoord[M](rvK3MordellShiftDiv[M,1](section));
+rvK3MordellHeight[M](translation,translation);
+
+rvk3autom ProjectPair[B]{project(0),project(1)};
+assert rvK3MordellShiftDiv[M,1](section)==rvK3AutoDiv[ProjectPair](section);
+let p=rvK3PencilParam[P](o,two);
+let x=rvK3PencilSection[P,4](p);
+let shifted=rvK3MordellShift[M,1](x);
+assert shifted==rvK3AutoPoint[ProjectPair](x);
+assert rvK3PencilMap[P](shifted)==p;
+assert rvK3MordellShift[M,-1](shifted)==x;
+assert rvK3MordellShift[M,-170141183460469231731687303715884105728](x)==shifted;
+rvK3AutoPeriod[ProjectPair](x);

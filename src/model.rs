@@ -32,7 +32,7 @@ use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
-    self, hilbert_square, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
+    self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
 };
 use crate::hyperelliptic_kummer_surface::{clifford, rational_sparse, spinor};
 use crate::jet_hom;
@@ -627,6 +627,7 @@ pub(crate) struct Model {
     jacobian_levels: HashMap<String, Rc<crate::jacobian_level::Basis>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
+    k3_mordell: HashMap<String, Rc<mordell::Mordell>>,
     k3_automorphisms: HashMap<String, Rc<hyperelliptic_kummer_surface::dynamics::Word>>,
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
@@ -731,6 +732,7 @@ impl Model {
             jacobian_levels: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
+            k3_mordell: HashMap::new(),
             k3_automorphisms: HashMap::new(),
             k3_periods: HashMap::new(),
             nakajima_gram: None,
@@ -3940,6 +3942,35 @@ impl Model {
     pub(crate) fn k3_pencil_base_type(&mut self, name: &Label) -> Result<TypeId> {
         self.k3_pencil(name)?;
         self.inhabited_type(Kind::K3PencilBase(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_k3_mordell(
+        &mut self,
+        name: Label,
+        pencil: &Label,
+        zero: u8,
+    ) -> Result<()> {
+        if self.k3_mordell.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("K3 Mordell–Weil marking '{}' is already defined", name.text),
+            ));
+        }
+        let pencil = self.k3_pencil(pencil)?;
+        let marked =
+            mordell::Mordell::new(self, pencil, zero).map_err(|error| error.at(name.span))?;
+        self.allocate(1 + name.text.len())?;
+        self.k3_mordell.insert(name.text, Rc::new(marked));
+        Ok(())
+    }
+
+    pub(crate) fn k3_mordell(&self, name: &Label) -> Result<Rc<mordell::Mordell>> {
+        self.k3_mordell.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown K3 Mordell–Weil marking '{}'", name.text),
+            )
+        })
     }
 
     pub(crate) fn define_enriques(&mut self, declaration: enriques::Declare) -> Result<()> {

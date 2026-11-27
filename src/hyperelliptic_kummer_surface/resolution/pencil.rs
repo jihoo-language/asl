@@ -13,6 +13,8 @@ use crate::syntax::{Label, ParsedExpr};
 use super::super::{field, nikulin, polarized, theta, Point};
 use super::{jets, quartic, ResolvedPoint};
 
+pub(crate) mod mordell;
+
 pub(crate) enum Command {
     Define(Label, Label, u8, u8),
     Fiber(Label, Box<ParsedExpr>),
@@ -82,6 +84,7 @@ pub(crate) struct Pencil {
     masks: [u8; 2],
     nodes: [Point; 2],
     forms: Forms,
+    origin: u16,
     section_masks: u16,
     sections: [OnceCell<Section>; 16],
     counts: OnceCell<Box<[usize]>>,
@@ -139,6 +142,7 @@ impl Pencil {
             masks,
             nodes: [left, right],
             forms,
+            origin,
             section_masks,
             sections: std::array::from_fn(|_| OnceCell::new()),
             counts: OnceCell::new(),
@@ -177,12 +181,16 @@ impl Pencil {
     }
 
     pub(crate) fn divisor(&self, model: &mut Model) -> Result<Value> {
+        self.fiber_class(model)?.persist(model)
+    }
+
+    fn fiber_class(&self, model: &mut Model) -> Result<polarized::Divisor> {
         let mut coefficients = [0; polarized::COEFFICIENTS];
         coefficients[0] = 2;
         for mask in self.masks {
             coefficients[1 + usize::from(mask)] = -2;
         }
-        polarized::Divisor::literal(model, &self.basis, coefficients)?.persist(model)
+        polarized::Divisor::literal(model, &self.basis, coefficients)
     }
 
     pub(crate) fn map(&self, model: &mut Model, point: &ResolvedPoint) -> Result<Parameter> {

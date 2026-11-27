@@ -981,6 +981,7 @@ pub(crate) enum ExprForm {
     Kummer(Box<crate::hyperelliptic_kummer_surface::Expression>),
     Enriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Expression>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Expression>),
+    K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Expression>),
     KummerDisc(Box<crate::hyperelliptic_kummer_surface::nikulin::Expression>),
     KummerWeil(Box<crate::hyperelliptic_kummer_surface::weil::Expression>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
@@ -1176,6 +1177,7 @@ pub(crate) enum StatementForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Command>),
+    K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Command>),
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
@@ -3912,6 +3914,53 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::GeneralizedKummer(Box::new(command)))
     }
 
+    fn k3_mordell_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mordell::Command;
+        self.advance()?;
+        let command = if operation == "rvk3mordell" {
+            let name = self.label()?;
+            self.expect(Token::LBracket)?;
+            let pencil = self.label()?;
+            let zero = self.kummer_theta_index("K3 Mordell–Weil zero trope mask", 15)? as u8;
+            self.expect(Token::RBracket)?;
+            Command::Define(name, pencil, zero)
+        } else {
+            self.expect(Token::LBracket)?;
+            let name = self.label()?;
+            self.expect(Token::RBracket)?;
+            match operation {
+                "rvK3MordellCoord" => Command::Coord(name, Box::new(self.paren_expr(0)?)),
+                "rvK3MordellHeight" => Command::Height(name, Box::new(self.paren_pair(0)?)),
+                _ => Command::Lattice(name),
+            }
+        };
+        Ok(StatementForm::K3Mordell(Box::new(command)))
+    }
+
+    fn k3_mordell_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mordell::{Expression, Shift};
+        self.expect(Token::LBracket)?;
+        let marking = self.label()?;
+        self.expect(Token::Comma)?;
+        let steps = self.signed_wide(
+            "a signed translation count",
+            "K3 Mordell–Weil translation count",
+        )?;
+        self.expect(Token::RBracket)?;
+        let input = self.paren_expr(nest)?;
+        let depth = 1 + input.depth;
+        let shift = if name == "rvK3MordellShiftDiv" {
+            Shift::Divisor
+        } else {
+            Shift::Point
+        };
+        expr(
+            span,
+            ExprForm::K3Mordell(Box::new(Expression(marking, shift, steps, Box::new(input)))),
+            depth,
+        )
+    }
+
     fn k3_pencil_statement(&mut self, operation: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::pencil::Command;
         self.advance()?;
@@ -5306,6 +5355,10 @@ impl<'src> Parser<'src> {
             Token::Word(op @ ("rvk3pencil" | "rvK3PencilFiber" | "rvK3PencilCensus")) => {
                 self.k3_pencil_statement(op)?
             }
+            Token::Word(
+                op @ ("rvk3mordell" | "rvK3MordellCoord" | "rvK3MordellHeight"
+                | "rvK3MordellLattice"),
+            ) => self.k3_mordell_statement(op)?,
             Token::Word(
                 command @ ("rvKummerK3Zeta"
                 | "rvKummerK3Points"
@@ -10659,6 +10712,13 @@ impl<'src> Parser<'src> {
                 ) && self.token() == Token::LBracket
                 {
                     return self.k3_pencil_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvK3MordellShiftDiv" | "rvK3MordellShift"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.k3_mordell_expression(&name.text, span, nest);
                 }
                 if (name.text == "rvEnriquesOrbit" && self.token() == Token::LBracket)
                     || (matches!(

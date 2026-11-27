@@ -58,13 +58,12 @@ impl Command {
             Self::Define(name, basis_name, generators) => {
                 let basis = polarized::basis(model, &basis_name)?;
                 let origin = polarized::trope_origin(model, &basis)?;
-                let word = Word {
-                    basis_name: basis_name.text.into(),
-                    generators: generators.into_boxed_slice(),
+                let word = Word::new(
+                    basis_name.text.into(),
                     basis,
                     origin,
-                    point_geometry: OnceCell::new(),
-                };
+                    generators.into_boxed_slice(),
+                );
                 model.define_k3_automorphism(name, word)?;
                 Ok(None)
             }
@@ -93,6 +92,21 @@ impl Command {
 }
 
 impl Word {
+    pub(super) fn new(
+        basis_name: Rc<str>,
+        basis: Rc<Basis>,
+        origin: u16,
+        generators: Box<[Generator]>,
+    ) -> Self {
+        Self {
+            basis_name,
+            basis,
+            origin,
+            generators,
+            point_geometry: OnceCell::new(),
+        }
+    }
+
     pub(crate) fn apply(&self, model: &mut Model, divisor: &Divisor) -> Result<Divisor> {
         let image = self.action(model, *divisor.coefficients())?;
         Divisor::literal(model, &self.basis, image)
@@ -202,14 +216,14 @@ fn signed<const N: usize>(value: Wide<N>) -> Result<i128> {
         .ok_or_else(|| Error::plain("K3 automorphism coefficient exceeds signed 128-bit range"))
 }
 
-struct IntegralBasis {
+pub(super) struct IntegralBasis {
     rows: [u32; GLUE_DIMENSION],
     pivots: Vec<usize>,
     nonpivots: Vec<usize>,
 }
 
 impl IntegralBasis {
-    fn new(model: &mut Model, origin: u16) -> Result<Self> {
+    pub(super) fn new(model: &mut Model, origin: u16) -> Result<Self> {
         model.spend(RANK * GLUE_DIMENSION * 2)?;
         let mut rows = [0; GLUE_DIMENSION];
         rows[0] = 1 | (u32::from(origin) << 1);
@@ -232,7 +246,7 @@ impl IntegralBasis {
         })
     }
 
-    fn vectors(&self) -> impl Iterator<Item = Coordinates> + '_ {
+    pub(super) fn vectors(&self) -> impl Iterator<Item = Coordinates> + '_ {
         self.rows
             .iter()
             .map(|row| std::array::from_fn(|i| i128::from((row >> i) & 1)))
@@ -243,7 +257,11 @@ impl IntegralBasis {
             }))
     }
 
-    fn coordinates(&self, model: &mut Model, vector: &Coordinates) -> Result<Coordinates> {
+    pub(super) fn coordinates(
+        &self,
+        model: &mut Model,
+        vector: &Coordinates,
+    ) -> Result<Coordinates> {
         model.spend(8 * RANK * GLUE_DIMENSION)?;
         let mut result = [0; RANK];
         for (i, &pivot) in self.pivots.iter().enumerate() {
