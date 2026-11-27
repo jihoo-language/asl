@@ -12,10 +12,12 @@ use crate::rv_ore::gcd;
 use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod composition;
 pub(crate) mod marked;
 
 pub(crate) enum Statement {
-    Define(Label, Option<[Label; 2]>, Box<[ParsedExpr; 2]>),
+    Define(Label, Option<[Label; 2]>, Box<[ParsedExpr; 2]>, bool),
+    Composition(Box<composition::Statement>),
     Mark(Label, Label, Label, Label, [Label; 2]),
     Data(Label),
     MarkedData(Label),
@@ -26,6 +28,7 @@ pub(crate) enum Statement {
 
 pub(crate) enum Expression {
     Class(Label, Label),
+    Composition(Box<composition::Expression>),
     Map(Label, [i128; 2]),
     Cycle(Label, Cycle),
     Wedge(Label, [i128; 6]),
@@ -61,6 +64,7 @@ impl Hom {
         model: &mut Model,
         pair: [Rc<Morphism>; 2],
         witnesses: Option<[Rc<Certificate>; 2]>,
+        nonprincipal_only: bool,
     ) -> Result<Self> {
         let [phi, psi] = &pair;
         if phi.source != psi.source || phi.target != psi.target {
@@ -76,7 +80,7 @@ impl Hom {
         phi.certify(model, source, target)?;
         psi.certify(model, source, target)?;
         let j = [source.j_invariant(model)?, target.j_invariant(model)?];
-        if j[0] == j[1] {
+        if nonprincipal_only && j[0] == j[1] {
             return Err(Error::plain(
                 "CM Hom correspondences require distinct elliptic j-invariants",
             ));
@@ -146,7 +150,7 @@ impl Hom {
         let primitive_discriminant = span_discriminant / content / content;
         let reduced =
             Order::new(primitive_discriminant)?.class(model, form.map(|x| x / content))?;
-        if maximal && index == 1 && reduced.0[0] * content <= 1 {
+        if maximal && index == 1 && j[0] != j[1] && reduced.0[0] * content <= 1 {
             return Err(inconsistent());
         }
         let gram = [
@@ -204,16 +208,10 @@ impl Hom {
     }
 
     pub(crate) fn combination(&self, model: &mut Model, coeffs: [i128; 2]) -> Result<Morphism> {
-        let [domain, range] = self.endpoints.each_ref().map(Rc::as_ref);
-        let make = |model: &mut Model, f: &Morphism, coefficient| {
-            if coefficient == 1 {
-                return Ok(f.clone());
-            }
-            let multiple = Morphism::multiple(model, f.target.clone(), range, coefficient)?;
-            multiple.compose(model, domain, f)
-        };
-        let a = make(model, &self.maps[0], coeffs[0])?;
-        let b = make(model, &self.maps[1], coeffs[1])?;
+        let endpoints = self.endpoints.each_ref().map(Rc::as_ref);
+        let a = composition::scale_map(model, endpoints, &self.maps[0], coeffs[0])?;
+        let b = composition::scale_map(model, endpoints, &self.maps[1], coeffs[1])?;
+        let [domain, range] = endpoints;
         let map = maps::sum(model, domain, range, &a, &b)?;
         if map.degree() as i128 != self.degree(model, coeffs)? {
             return Err(inconsistent());
@@ -229,8 +227,21 @@ impl Hom {
             "unproved".into()
         };
         let status = if self.maximal {
+            let nonprincipal = if self.index == 1 {
+                if min == 1 {
+                    "false"
+                } else {
+                    "true"
+                }
+            } else if self.j[0] != self.j[1] {
+                "true"
+            } else if self.maps[0].source == self.maps[0].target {
+                "false"
+            } else {
+                "unproved"
+            };
             format!(
-                "span_index={}, full_lattice={}, nonprincipal=true",
+                "span_index={}, full_lattice={}, nonprincipal={nonprincipal}",
                 self.index,
                 self.index == 1
             )

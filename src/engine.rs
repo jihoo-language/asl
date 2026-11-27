@@ -76,6 +76,7 @@ use crate::hyperelliptic_kummer_surface::{
 use crate::jacobian_level;
 use crate::jacobian_level::cm_cycles as kummer_cm;
 use crate::jacobian_level::cm_hom;
+use crate::jacobian_level::cm_hom::composition as cm_composition;
 use crate::jacobian_level::linking as brauer_linking;
 use crate::jacobian_level::transfers as brauer_transfers;
 use crate::jacobian_level::twisted_mukai as brauer_mukai;
@@ -700,6 +701,14 @@ enum KummerCMOperation {
     Project(bool),
 }
 
+enum TypedCMHomCoordinate {
+    Read(Rc<cm_hom::Hom>, Box<TypedExpr>),
+    Map(Box<TypedExpr>),
+    Compose(Rc<cm_hom::Hom>, Box<[TypedExpr; 2]>),
+    Inverse(Rc<cm_hom::Hom>, Box<TypedExpr>),
+    Negate(Rc<cm_hom::Hom>, Box<TypedExpr>),
+}
+
 struct TypedCMHomOperator {
     modulus: u64,
     operator: [[u64; 6]; 6],
@@ -915,6 +924,7 @@ enum TypedForm {
     KummerCMNegate(Box<TypedExpr>),
     CMHomLift(Rc<cm_hom::marked::Marking>, Box<TypedExpr>),
     CMHomOperator(Box<TypedCMHomOperator>),
+    CMHomCoordinate(TypedCMHomCoordinate),
     CMHomWedgeNegate(u64, Box<TypedExpr>),
     KummerWeil(KummerWeilAction),
     KummerDiv(KummerDivAction),
@@ -7517,7 +7527,8 @@ impl Engine {
     fn cm_hom_statement(&mut self, statement: cm_hom::Statement) -> Result<Option<String>> {
         use cm_hom::Statement;
         match statement {
-            Statement::Define(name, certs, expressions) => {
+            Statement::Composition(statement) => self.cm_composition_statement(*statement),
+            Statement::Define(name, certs, expressions, nonprincipal_only) => {
                 let [left, right] = *expressions;
                 let left = self.checker().expr(left)?;
                 if !matches!(self.model.kind(left.ty), Kind::ECMap(..)) {
@@ -7544,7 +7555,7 @@ impl Engine {
                     } else {
                         None
                     };
-                    cm_hom::Hom::new(model, [left, right], certificates)
+                    cm_hom::Hom::new(model, [left, right], certificates, nonprincipal_only)
                 })?;
                 Ok(None)
             }
@@ -7623,6 +7634,59 @@ impl Engine {
                 Ok(Some(format!(
                     "rvCMHomWedgePair = residue={pairing}, modulus={n}"
                 )))
+            }
+        }
+    }
+
+    fn cm_composition_statement(
+        &mut self,
+        statement: cm_composition::Statement,
+    ) -> Result<Option<String>> {
+        use cm_composition::Statement;
+        match statement {
+            Statement::Dual(name, frame, provided) => {
+                let frame = self.model.cm_hom(&frame.text)?;
+                let duals = if let Some(pair) = provided {
+                    let [a, b] = *pair;
+                    let expected = self
+                        .model
+                        .ec_map_type(frame.maps[0].target.clone(), frame.maps[0].source.clone())?;
+                    let mut evaluate = |input| -> Result<_> {
+                        let input = self.checker().expr(input)?;
+                        self.checker()
+                            .require_type(expected, &input, "CM Hom dual map")?;
+                        let Value::ECMap(map) = self.eval(&input)? else {
+                            unreachable!()
+                        };
+                        Ok(map)
+                    };
+                    Some([evaluate(a)?, evaluate(b)?])
+                } else {
+                    None
+                };
+                self.model
+                    .define_cm_hom(name, |model| cm_composition::dual(model, &frame, duals))?;
+                Ok(None)
+            }
+            Statement::Compose(name, outer, inner, target) => {
+                self.model.define_cm_hom_product(name, |model| {
+                    let o = model.cm_hom(&outer.text)?;
+                    let i = model.cm_hom(&inner.text)?;
+                    let t = model.cm_hom(&target.text)?;
+                    cm_composition::Product::new(model, &o, &i, target, t)
+                })?;
+                Ok(None)
+            }
+            Statement::Report(name) => Ok(Some(
+                self.model.cm_hom_product(&name.text)?.report(&name.text),
+            )),
+            Statement::Coordinates(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker().cm_hom_coordinate_operand(&input)?;
+                let Value::CMHomCoordinate(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                Ok(Some(value.report()))
             }
         }
     }
@@ -11123,6 +11187,15 @@ impl Engine {
                     (BinaryOp::Add, Value::CMHomCycle(a), Value::CMHomCycle(b)) => {
                         Ok(Value::CMHomCycle(kummer_cm::cycle_add(a, b)?))
                     }
+                    (BinaryOp::Add, Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => {
+                        let Kind::CMHomCoordinate(name) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let frame = self.model.cm_hom(name)?;
+                        let value =
+                            cm_composition::Coordinates::add(&mut self.model, &frame, &a, &b)?;
+                        Ok(Value::CMHomCoordinate(Rc::new(value)))
+                    }
                     (BinaryOp::Add, Value::CMHomWedge(a), Value::CMHomWedge(b)) => {
                         let Kind::CMHomWedge(name) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -12938,6 +13011,45 @@ impl Engine {
                 Value::CMHomCycle(cycle) => Ok(Value::CMHomCycle(kummer_cm::cycle_negate(cycle)?)),
                 _ => unreachable!(),
             },
+            TypedForm::CMHomCoordinate(action) => {
+                use TypedCMHomCoordinate as Action;
+                let value = match action {
+                    Action::Read(frame, input) => {
+                        let Value::ECMap(map) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        cm_composition::Coordinates::read(&mut self.model, frame, map)?
+                    }
+                    Action::Map(input) => {
+                        let Value::CMHomCoordinate(coordinate) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        return Ok(Value::ECMap(coordinate.map.clone()));
+                    }
+                    Action::Compose(frame, inputs) => {
+                        let [outer, inner] = inputs.as_ref();
+                        let (Value::CMHomCoordinate(outer), Value::CMHomCoordinate(inner)) =
+                            (self.eval(outer)?, self.eval(inner)?)
+                        else {
+                            unreachable!()
+                        };
+                        cm_composition::compose(&mut self.model, frame, &outer.map, &inner.map)?
+                    }
+                    Action::Negate(frame, input) => {
+                        let Value::CMHomCoordinate(value) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        cm_composition::Coordinates::negate(&mut self.model, frame, &value)?
+                    }
+                    Action::Inverse(frame, input) => {
+                        let Value::CMHomCoordinate(input) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        cm_composition::inverse(&mut self.model, frame, &input.map)?
+                    }
+                };
+                Ok(Value::CMHomCoordinate(Rc::new(value)))
+            }
             TypedForm::CMHomLift(marked, input) => {
                 let Value::CMHomCycle(cycle) = self.eval(input)? else {
                     unreachable!()
@@ -16949,6 +17061,7 @@ impl Checker<'_> {
             TypeForm::KummerCMCycle(name) => self.model.kummer_cm_cycle_type(&name),
             TypeForm::CMHomCycle(name) => self.model.cm_hom_cycle_type(&name),
             TypeForm::CMHomWedge(name) => self.model.cm_hom_wedge_type(&name),
+            TypeForm::CMHomCoordinate(name) => self.model.cm_hom_coordinate_type(&name),
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
@@ -18141,6 +18254,11 @@ impl Checker<'_> {
                     Kind::KummerCMCycle(..) => Value::KummerCMCycle([0; 4]),
                     Kind::CMHomCycle(..) => Value::CMHomCycle([0; 4]),
                     Kind::CMHomWedge(..) => Value::CMHomWedge([0; 6]),
+                    Kind::CMHomCoordinate(name) => {
+                        let frame = self.model.cm_hom(name)?;
+                        let value = cm_composition::Coordinates::literal(self.model, &frame, [0; 2])?;
+                        Value::CMHomCoordinate(Rc::new(value))
+                    }
                     Kind::ECLevel(_, false) => Value::ECLevelVec([0; 2]),
                     Kind::ECLevel(_, true) => Value::ECLevelMat(ec_level::Matrix([[0; 2]; 2])),
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
@@ -21544,6 +21662,16 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::ECLevel(level, ECLevelAction::Negate(Box::new(input))),
+                    ));
+                }
+                if let Kind::CMHomCoordinate(name) = self.model.kind(input.ty) {
+                    let frame = self.model.cm_hom(name)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::CMHomCoordinate(TypedCMHomCoordinate::Negate(
+                            frame,
+                            Box::new(input),
+                        )),
                     ));
                 }
                 if let Kind::CMHomWedge(name) = self.model.kind(input.ty) {
@@ -25466,6 +25594,7 @@ impl Checker<'_> {
                         | Kind::KummerCMCycle(..)
                         | Kind::CMHomCycle(..)
                         | Kind::CMHomWedge(..)
+                        | Kind::CMHomCoordinate(..)
                         | Kind::ECLevel(..)
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
@@ -31393,6 +31522,9 @@ impl Checker<'_> {
     fn cm_hom_expression(&mut self, expression: cm_hom::Expression) -> Result<(TypeId, TypedForm)> {
         use cm_hom::Expression;
         let (ty, modulus, operator, input) = match expression {
+            Expression::Composition(expression) => {
+                return self.cm_composition_expression(*expression)
+            }
             Expression::Class(order, hom) => {
                 let witness = self.model.cm_hom(&hom.text)?;
                 let cm_order = self.model.cm_ring_order(&order)?;
@@ -31470,6 +31602,77 @@ impl Checker<'_> {
                 input,
             })),
         ))
+    }
+
+    fn cm_hom_coordinate_operand(&self, input: &TypedExpr) -> Result<Rc<cm_hom::Hom>> {
+        let Kind::CMHomCoordinate(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(
+                input,
+                "CM Hom coordinate operator",
+                "typed CM Hom coordinates",
+            ));
+        };
+        self.model.cm_hom(name)
+    }
+
+    fn cm_composition_expression(
+        &mut self,
+        expression: cm_composition::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use cm_composition::Expression;
+        use TypedCMHomCoordinate as Action;
+        let (ty, action) = match expression {
+            Expression::Literal(name, numerator) => {
+                let frame = self.model.cm_hom(&name.text)?;
+                let ty = self.model.cm_hom_coordinate_type(&name)?;
+                let v = cm_composition::Coordinates::literal(self.model, &frame, numerator)?;
+                return Ok((ty, TypedForm::Constant(Value::CMHomCoordinate(Rc::new(v)))));
+            }
+            Expression::Product(name, index, basis) => {
+                let product = self.model.cm_hom_product(&name.text)?;
+                let ty = self.model.cm_hom_coordinate_type(&product.target_name)?;
+                let v = product.coordinate(self.model, index, basis)?;
+                return Ok((ty, TypedForm::Constant(Value::CMHomCoordinate(v))));
+            }
+            Expression::Coordinates(name, input) => {
+                let input = self.expr(*input)?;
+                let frame = self.model.cm_hom(&name.text)?;
+                let expected = self
+                    .model
+                    .ec_map_type(frame.maps[0].source.clone(), frame.maps[0].target.clone())?;
+                self.require_type(expected, &input, "CM Hom coordinate map endpoints")?;
+                (
+                    self.model.cm_hom_coordinate_type(&name)?,
+                    Action::Read(frame, Box::new(input)),
+                )
+            }
+            Expression::Map(input) => {
+                let input = self.expr(*input)?;
+                let frame = self.cm_hom_coordinate_operand(&input)?;
+                let ty = self
+                    .model
+                    .ec_map_type(frame.maps[0].source.clone(), frame.maps[0].target.clone())?;
+                (ty, Action::Map(Box::new(input)))
+            }
+            Expression::Compose(name, inputs) => {
+                let [outer, inner] = *inputs;
+                let outer = self.expr(outer)?;
+                let inner = self.expr(inner)?;
+                self.cm_hom_coordinate_operand(&outer)?;
+                self.cm_hom_coordinate_operand(&inner)?;
+                let frame = self.model.cm_hom(&name.text)?;
+                let ty = self.model.cm_hom_coordinate_type(&name)?;
+                (ty, Action::Compose(frame, Box::new([outer, inner])))
+            }
+            Expression::Inverse(name, input) => {
+                let input = self.expr(*input)?;
+                self.cm_hom_coordinate_operand(&input)?;
+                let frame = self.model.cm_hom(&name.text)?;
+                let ty = self.model.cm_hom_coordinate_type(&name)?;
+                (ty, Action::Inverse(frame, Box::new(input)))
+            }
+        };
+        Ok((ty, TypedForm::CMHomCoordinate(action)))
     }
 
     fn kummer_cm_expression(

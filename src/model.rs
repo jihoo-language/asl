@@ -313,6 +313,7 @@ pub(crate) enum Kind {
     KummerCMCycle(Rc<str>),
     CMHomCycle(Rc<str>),
     CMHomWedge(Rc<str>),
+    CMHomCoordinate(Rc<str>),
     KummerWeil(Rc<str>),
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
@@ -548,6 +549,7 @@ pub(crate) enum Value {
     KummerCMCycle(cm_cycles::Cycle),
     CMHomCycle(cm_cycles::Cycle),
     CMHomWedge(linking::Fixed),
+    CMHomCoordinate(Rc<cm_hom::composition::Coordinates>),
     KummerWeil(Rc<crate::hyperelliptic_kummer_surface::weil::Vector>),
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
@@ -784,6 +786,7 @@ pub(crate) struct Model {
     kummer_cm_cycles: HashMap<String, Rc<cm_cycles::Cycles>>,
     cm_hom: HashMap<String, Rc<cm_hom::Hom>>,
     cm_hom_markings: HashMap<String, Rc<cm_hom::marked::Marking>>,
+    cm_hom_products: HashMap<String, Rc<cm_hom::composition::Product>>,
     enriques_quotients: HashMap<String, Rc<enriques::Quotient>>,
     k3_pencils: HashMap<String, Rc<pencil::Pencil>>,
     k3_cassels: HashMap<String, Rc<pencil::sections::covering::cassels::Pairing>>,
@@ -946,6 +949,7 @@ impl Model {
             kummer_cm_cycles: HashMap::new(),
             cm_hom: HashMap::new(),
             cm_hom_markings: HashMap::new(),
+            cm_hom_products: HashMap::new(),
             enriques_quotients: HashMap::new(),
             k3_pencils: HashMap::new(),
             k3_cassels: HashMap::new(),
@@ -1543,6 +1547,7 @@ impl Model {
             Kind::KummerBrauerClass(ref name) => {
                 self.kummer_brauer_quotients[name.as_ref()].cardinality_bound()
             }
+            Kind::CMHomCoordinate(..) => usize::MAX,
             Kind::CMHomWedge(ref name) => {
                 usize::try_from(self.cm_hom_markings[name.as_ref()].modulus())
                     .unwrap_or(usize::MAX)
@@ -1873,6 +1878,7 @@ impl Model {
                 | Kind::KummerCMCycle(..)
                 | Kind::CMHomCycle(..)
                 | Kind::CMHomWedge(..)
+                | Kind::CMHomCoordinate(..)
                 | Kind::KummerWeil(..)
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
@@ -4506,6 +4512,35 @@ impl Model {
         self.allocate(name.text.len())?;
         self.cm_hom.insert(name.text, Rc::new(entry));
         Ok(())
+    }
+
+    pub(crate) fn define_cm_hom_product(
+        &mut self,
+        name: Label,
+        build: impl FnOnce(&mut Self) -> Result<cm_hom::composition::Product>,
+    ) -> Result<()> {
+        if self.cm_hom_products.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "CM Hom composition is already defined",
+            ));
+        }
+        let item = build(self)?;
+        self.allocate(name.text.len())?;
+        self.cm_hom_products.insert(name.text, Rc::new(item));
+        Ok(())
+    }
+
+    pub(crate) fn cm_hom_product(&self, name: &str) -> Result<Rc<cm_hom::composition::Product>> {
+        self.cm_hom_products
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown CM Hom composition '{name}'")))
+    }
+
+    pub(crate) fn cm_hom_coordinate_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.cm_hom(&name.text)?;
+        self.inhabited_type(Kind::CMHomCoordinate(name.text.as_str().into()), 0)
     }
 
     pub(crate) fn define_cm_hom_mark(
@@ -7399,6 +7434,7 @@ impl Model {
             | Kind::KummerCMCycle(..)
             | Kind::CMHomCycle(..)
             | Kind::CMHomWedge(..)
+            | Kind::CMHomCoordinate(..)
             | Kind::KummerWeil(..)
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
@@ -7970,6 +8006,7 @@ impl Model {
             Kind::KummerCMCycle(name) => out.push(&format!("RVKummerCMCycle({name})")),
             Kind::CMHomCycle(name) => out.push(&format!("RVCMHomCycle({name})")),
             Kind::CMHomWedge(name) => out.push(&format!("RVCMHomWedge({name})")),
+            Kind::CMHomCoordinate(name) => out.push(&format!("RVCMHomCoordinate({name})")),
             Kind::KummerBrauerFixed(name, level) => {
                 out.push(&format!("RVKummerBrauerFixed({name},{level})"))
             }
@@ -8424,6 +8461,7 @@ impl Model {
             (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a == b),
             (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a == b),
             (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a == b),
+            (Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => Ok(a.compare(b).is_eq()),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -8846,6 +8884,7 @@ impl Model {
             (Value::KummerCMCycle(a), Value::KummerCMCycle(b)) => Ok(a.cmp(b)),
             (Value::CMHomCycle(a), Value::CMHomCycle(b)) => Ok(a.cmp(b)),
             (Value::CMHomWedge(a), Value::CMHomWedge(b)) => Ok(a.cmp(b)),
+            (Value::CMHomCoordinate(a), Value::CMHomCoordinate(b)) => Ok(a.compare(b)),
             (Value::KummerWeil(a), Value::KummerWeil(b)) => a.compare(self, b),
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
@@ -9311,6 +9350,9 @@ impl Model {
                             Value::CMHomWedge(coordinates)
                         })
                         .collect()
+                }
+                Kind::CMHomCoordinate(..) => {
+                    return Err(Error::plain("cannot enumerate exact CM Hom coordinates"));
                 }
                 Kind::CMHomCycle(..) => {
                     return Err(Error::plain("cannot enumerate integral CM Hom cycles"));
@@ -11177,6 +11219,13 @@ impl Model {
                     self.write_ec_polynomial(out, direction)?;
                 }
                 out.push("}")
+            }
+            Value::CMHomCoordinate(coordinate) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!(
+                    "{{{:?}/{}}}",
+                    coordinate.numerator, coordinate.denominator
+                ))
             }
             Value::KummerCMCycle(coordinates) | Value::CMHomCycle(coordinates) => {
                 self.write_type(out, ty, 0)?;

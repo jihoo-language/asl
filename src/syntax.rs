@@ -159,6 +159,7 @@ pub(crate) enum TypeForm {
     KummerCMCycle(Label),
     CMHomCycle(Label),
     CMHomWedge(Label),
+    CMHomCoordinate(Label),
     KummerWeil(Label),
     KummerDiv(Label),
     K3Lattice(Label),
@@ -3191,7 +3192,7 @@ impl<'src> Parser<'src> {
         use crate::jacobian_level::cm_hom::Statement;
         self.advance()?;
         let result = match command {
-            "rvcmhom" => {
+            "rvcmhom" | "rvcmhomframe" => {
                 let name = self.label()?;
                 let witnesses = if self.eat(Token::LBracket)? {
                     let source = self.label()?;
@@ -3202,7 +3203,12 @@ impl<'src> Parser<'src> {
                 } else {
                     None
                 };
-                Statement::Define(name, witnesses, Box::new(self.paren_pair(0)?))
+                Statement::Define(
+                    name,
+                    witnesses,
+                    Box::new(self.paren_pair(0)?),
+                    command == "rvcmhom",
+                )
             }
             "rvcmhommark" => {
                 let name = self.label()?;
@@ -3234,6 +3240,110 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::CMHom(Box::new(result)))
+    }
+
+    fn cm_composition_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::jacobian_level::cm_hom::{composition::Statement, Statement as Hom};
+        self.advance()?;
+        let value = match name {
+            "rvCMHomCoordinates" => Statement::Coordinates(Box::new(self.paren_expr(0)?)),
+            "rvCMHomProductData" => {
+                self.expect(Token::LBracket)?;
+                let label = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Report(label)
+            }
+            _ => {
+                let result = self.label()?;
+                self.expect(Token::LBracket)?;
+                let first = self.label()?;
+                if name == "rvcmhomdual" {
+                    self.expect(Token::RBracket)?;
+                    let maps = if self.token() == Token::LParen {
+                        Some(Box::new(self.paren_pair(0)?))
+                    } else {
+                        None
+                    };
+                    Statement::Dual(result, first, maps)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let inner = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    Statement::Compose(result, first, inner, target)
+                }
+            }
+        };
+        Ok(StatementForm::CMHom(Box::new(Hom::Composition(Box::new(
+            value,
+        )))))
+    }
+
+    fn cm_composition_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::jacobian_level::cm_hom::{composition::Expression, Expression as Hom};
+        let (value, depth) = if name == "rvCMHomCoordMap" {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            (Expression::Map(Box::new(input)), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            let label = self.label()?;
+            match name {
+                "rvCMHomProductColumn" | "rvCMHomProductBasis" => {
+                    self.expect(Token::Comma)?;
+                    let index = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    (
+                        Expression::Product(label, index, name == "rvCMHomProductBasis"),
+                        0,
+                    )
+                }
+                "rvCMHomCoord" => {
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let values = self.signed_list(
+                        Token::RBrace,
+                        "a signed Hom coordinate",
+                        "Hom coordinate",
+                    )?;
+                    let coordinates = values
+                        .try_into()
+                        .map_err(|_| Error::new(span, "CM Hom coordinate requires two integers"))?;
+                    (Expression::Literal(label, coordinates), 0)
+                }
+                "rvCMHomCoordCompose" => {
+                    self.expect(Token::RBracket)?;
+                    let inputs = self.paren_pair(nest)?;
+                    let depth = inputs[0].depth.max(inputs[1].depth) + 1;
+                    (Expression::Compose(label, Box::new(inputs)), depth)
+                }
+                _ => {
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let input = Box::new(input);
+                    (
+                        if name == "rvCMHomCoordInverse" {
+                            Expression::Inverse(label, input)
+                        } else {
+                            Expression::Coordinates(label, input)
+                        },
+                        depth,
+                    )
+                }
+            }
+        };
+        expr(
+            span,
+            ExprForm::CMHom(Box::new(Hom::Composition(Box::new(value)))),
+            depth,
+        )
     }
 
     fn cm_hom_coefficients(&mut self) -> Result<[i128; 2]> {
@@ -11698,8 +11808,13 @@ impl<'src> Parser<'src> {
                 self.ec_cm_action_statement(name)?
             }
             Token::Word(
-                name @ ("rvcmhom" | "rvcmhommark" | "rvCMHomData" | "rvCMHomMarkData"
-                | "rvCMHomNorm" | "rvCMHomCyclePair" | "rvCMHomWedgePair"),
+                name @ ("rvcmhomdual" | "rvcmhomcompose" | "rvCMHomProductData"
+                | "rvCMHomCoordinates"),
+            ) => self.cm_composition_statement(name)?,
+            Token::Word(
+                name @ ("rvcmhom" | "rvcmhomframe" | "rvcmhommark" | "rvCMHomData"
+                | "rvCMHomMarkData" | "rvCMHomNorm" | "rvCMHomCyclePair"
+                | "rvCMHomWedgePair"),
             ) => self.cm_hom_statement(name)?,
             Token::Word(
                 name @ ("rvkummercmcycles"
@@ -15647,6 +15762,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::CMOrder(field, exponent), 0);
         }
+        if name.text == "RVCMHomCoordinate" && self.eat(Token::LParen)? {
+            let label = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::CMHomCoordinate(label), 0);
+        }
         if matches!(name.text.as_str(), "RVCMHomCycle" | "RVCMHomWedge")
             && self.eat(Token::LParen)?
         {
@@ -18170,6 +18290,19 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvKummerBrauerLinkNonzero" && self.token() == Token::LParen)
                 {
                     return self.kummer_brauer_link_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvCMHomCoords"
+                        | "rvCMHomCoord"
+                        | "rvCMHomCoordCompose"
+                        | "rvCMHomCoordInverse"
+                        | "rvCMHomProductColumn"
+                        | "rvCMHomProductBasis"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvCMHomCoordMap" && self.token() == Token::LParen)
+                {
+                    return self.cm_composition_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
