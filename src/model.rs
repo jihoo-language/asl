@@ -18,6 +18,8 @@ use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
 use crate::error::{Error, Result};
+use crate::hw_algebra::Matrix as HWMatrix;
+use crate::hyperelliptic::{self, Residues};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -229,6 +231,8 @@ pub(crate) enum Kind {
     RVCTResidue(PeriodLevel),
     RVFusion(rv_fusion::Grade),
     RVCyclo(usize),
+    HWMatrix(Residues, usize),
+    HWScalar(Residues),
     RVUnram(Rc<str>),
     RVCycloQ(usize),
     RVQpQuad(Rc<str>),
@@ -380,6 +384,8 @@ pub(crate) enum Value {
     PeriodResidue(u128),
     RVFusion(rv_fusion::Support),
     RVCyclo(rv_cyclotomic::Polynomial),
+    HWMatrix(Rc<HWMatrix<u64>>),
+    HWScalar(u64),
     RVUnram(rv_unram::Coordinates),
     RVCycloQ(rv_lens::Rational),
     RVQpQuad(QuadElement),
@@ -529,6 +535,7 @@ pub(crate) struct Model {
     rv_as_odd_covers: HashMap<String, Rc<RvAsOddCover>>,
     rv_as_two_covers: HashMap<String, Rc<RvAsTwoCover>>,
     rv_witt_covers: HashMap<String, Rc<RvWittCover>>,
+    hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
     rv_tor: HashMap<TypeId, Rc<Tor>>,
@@ -605,6 +612,7 @@ impl Model {
             rv_as_odd_covers: HashMap::new(),
             rv_as_two_covers: HashMap::new(),
             rv_witt_covers: HashMap::new(),
+            hyperelliptic: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             rv_witt_towers: HashMap::new(),
             rv_tor: HashMap::new(),
@@ -855,6 +863,8 @@ impl Model {
             Kind::RVValMat(..) => usize::MAX,
             Kind::RVStableTree(3) | Kind::RVStableMarks(_, 3) => 1,
             Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
+            Kind::HWScalar(ring) => ring.count(1),
+            Kind::HWMatrix(ring, size) => ring.count(size * size),
             Kind::RVUnram(ref name) => self.rv_unram_rings[name.as_ref()].count(),
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
@@ -1048,6 +1058,8 @@ impl Model {
                 | Kind::RVCTResidue(..)
                 | Kind::RVFusion(..)
                 | Kind::RVCyclo(..)
+                | Kind::HWMatrix(..)
+                | Kind::HWScalar(..)
                 | Kind::RVUnram(..)
                 | Kind::RVCycloQ(..)
                 | Kind::RVQpQuad(..)
@@ -2899,6 +2911,41 @@ impl Model {
             .ok_or_else(|| Error::new(name.span, format!("unknown rank ideal '{}'", name.text)))
     }
 
+    pub(crate) fn define_hyperelliptic(
+        &mut self,
+        name: Label,
+        prime: usize,
+        lift: Vec<i128>,
+    ) -> Result<()> {
+        if self.hyperelliptic.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "hyperelliptic curve is already defined",
+            ));
+        }
+        let curve = hyperelliptic::Curve::new(self, prime, lift)?;
+        self.hyperelliptic.insert(name.text, Rc::new(curve));
+        Ok(())
+    }
+
+    pub(crate) fn hyperelliptic(&self, name: &Label) -> Result<Rc<hyperelliptic::Curve>> {
+        self.hyperelliptic.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown hyperelliptic curve '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn hw_matrix_type(&mut self, ring: Residues, size: usize) -> Result<TypeId> {
+        ring.matrix_size(size)?;
+        self.inhabited_type(Kind::HWMatrix(ring, size), 0)
+    }
+
+    pub(crate) fn hw_scalar_type(&mut self, ring: Residues) -> Result<TypeId> {
+        self.inhabited_type(Kind::HWScalar(ring), 0)
+    }
+
     pub(crate) fn register_rv_unram(
         &mut self,
         name: Label,
@@ -3971,6 +4018,8 @@ impl Model {
             | Kind::RVCTResidue(..)
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
+            | Kind::HWMatrix(..)
+            | Kind::HWScalar(..)
             | Kind::RVUnram(..)
             | Kind::RVCycloQ(..)
             | Kind::RVResSpace(..)
@@ -4422,6 +4471,16 @@ impl Model {
             Kind::CMOrder(grade) => {
                 out.push(&format!("RVCMOrder({}, {})", grade.family, grade.exponent))
             }
+            Kind::HWMatrix(ring, size) => out.push(&format!(
+                "RVHWMatrix({}, {size}, {})",
+                ring.prime.get(),
+                ring.precision
+            )),
+            Kind::HWScalar(ring) => out.push(&format!(
+                "RVHWScalar({}, {})",
+                ring.prime.get(),
+                ring.precision
+            )),
             Kind::RVUnram(name) => out.push(&format!("RVUnram({name})")),
             Kind::RVCycloQ(order) => out.push(&format!("RVCycloQ({order})")),
             Kind::RVCyclo(order) => out.push(&format!("RVCyclo({order})")),
@@ -4656,6 +4715,11 @@ impl Model {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left == right),
+            (Value::HWMatrix(a), Value::HWMatrix(b)) => {
+                self.spend(a.entries().len().min(b.entries().len()))?;
+                Ok(a == b)
+            }
+            (Value::HWScalar(a), Value::HWScalar(b)) => Ok(a == b),
             (Value::RVUnram(left), Value::RVUnram(right)) => {
                 Ok(rv_unram::compare(self, left, right)?.is_eq())
             }
@@ -4946,6 +5010,11 @@ impl Model {
                 }
             }
             (Value::CMOrder(left), Value::CMOrder(right)) => Ok(left.cmp(right)),
+            (Value::HWMatrix(a), Value::HWMatrix(b)) => {
+                self.spend(a.entries().len().min(b.entries().len()))?;
+                Ok(a.entries().cmp(b.entries()))
+            }
+            (Value::HWScalar(a), Value::HWScalar(b)) => Ok(a.cmp(b)),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
             (Value::RVCycloQ(left), Value::RVCycloQ(right)) => rv_lens::compare(self, left, right),
             (Value::RVCyclo(left), Value::RVCyclo(right)) => {
@@ -5225,6 +5294,14 @@ impl Model {
                 Kind::CMOrder(..) => {
                     return Err(Error::plain("cannot enumerate an integral CM order"));
                 }
+                Kind::HWScalar(ring) => {
+                    let size = ring.count(1);
+                    self.check_element_limit(size)?;
+                    self.spend(size)?;
+                    self.allocate(size)?;
+                    (0..size).map(|c| Value::HWScalar(c as u64)).collect()
+                }
+                Kind::HWMatrix(ring, size) => ring.matrix_elements(self, size, MAX_ELEMENTS)?,
                 Kind::RVUnram(ref name) => {
                     let ring = self
                         .rv_unram_named(name)
@@ -6573,6 +6650,23 @@ impl Model {
             Value::CMOrder(value) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}, {}}}", value.constant, value.generator))
+            }
+            Value::HWMatrix(matrix) => {
+                self.write_type(out, ty, 0)?;
+                self.spend(matrix.entries().len())?;
+                out.push("{[")?;
+                let n = matrix.size();
+                for i in 0..n {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{:?}", &matrix.entries()[i * n..(i + 1) * n]))?;
+                }
+                out.push("]}")
+            }
+            Value::HWScalar(value) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{value}}}"))
             }
             Value::RVUnram(values) => {
                 self.write_type(out, ty, 0)?;

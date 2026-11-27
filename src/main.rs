@@ -26,6 +26,8 @@ mod dependent_sets;
 mod engine;
 mod eo;
 mod error;
+mod hw_algebra;
+mod hyperelliptic;
 mod integer_smith;
 mod jet_hom;
 mod jet_page;

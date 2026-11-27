@@ -20,6 +20,8 @@ use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
 use crate::eo;
 use crate::error::{Error, Result, Span};
+use crate::hw_algebra;
+use crate::hyperelliptic::{self, Residues};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -453,6 +455,8 @@ enum TypedForm {
     RVScale(BinaryField, usize, Box<TypedExpr>),
     RVLaurentMonomial(i64, Box<TypedExpr>),
     UnramUnary(crate::rv_unram::Unary, Rc<UnramRing>, Box<TypedExpr>),
+    HWUnary(Residues, hyperelliptic::Unary, Box<TypedExpr>),
+    HWCompose(Residues, Box<[TypedExpr; 2]>),
     LegendreClosed(
         crate::legendre_closed::Operation,
         Rc<UnramRing>,
@@ -960,6 +964,31 @@ impl Engine {
                         |(k, _)| (result.strands + k).to_string(),
                     );
                     format!("khKappa[{}] = {kappa}", name.text)
+                }
+            },
+            StatementForm::HasseWitt(command) => match *command {
+                hyperelliptic::Command::Define(name, p, lift) => {
+                    self.model.define_hyperelliptic(name, p, lift)?;
+                    return Ok(None);
+                }
+                hyperelliptic::Command::Report(name, report) => self
+                    .model
+                    .hyperelliptic(&name)?
+                    .report(&mut self.model, &name.text, report)?,
+                hyperelliptic::Command::Valuation(input) => {
+                    let input = self.checker().expr(*input)?;
+                    let Kind::HWScalar(ring) = *self.model.kind(input.ty) else {
+                        return Err(Error::new(input.span, "rvHWVal requires an RVHWScalar"));
+                    };
+                    let Value::HWScalar(value) = self.eval(&input)? else {
+                        unreachable!()
+                    };
+                    let order = ring.valuation(&mut self.model, value)?;
+                    if order == ring.precision {
+                        format!("rvHWVal = >={order}")
+                    } else {
+                        format!("rvHWVal = {order}")
+                    }
                 }
             },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
@@ -4246,6 +4275,18 @@ impl Engine {
                         };
                         legendre_cm::persist(&mut self.model, value)
                     }
+                    (BinaryOp::Add, Value::HWMatrix(a), Value::HWMatrix(b)) => {
+                        let Kind::HWMatrix(ring, _) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        ring.add_matrices(&mut self.model, &a, &b)
+                    }
+                    (BinaryOp::Add, Value::HWScalar(a), Value::HWScalar(b)) => {
+                        let Kind::HWScalar(ring) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        Ok(Value::HWScalar(rv_unram::add_mod(a, b, ring.modulus)))
+                    }
                     (BinaryOp::Add, Value::RVCycloQ(a), Value::RVCycloQ(b)) => {
                         rv_lens::add(&mut self.model, &a, &b)
                     }
@@ -5293,6 +5334,20 @@ impl Engine {
                     legendre_cm::Unary::Negate => value.negate(&mut self.model)?,
                 };
                 legendre_cm::persist(&mut self.model, value)
+            }
+            TypedForm::HWUnary(ring, operation, input) => {
+                let value = self.eval(input)?;
+                operation.apply(&mut self.model, *ring, value)
+            }
+            TypedForm::HWCompose(ring, input) => {
+                let Value::HWMatrix(a) = self.eval(&input[0])? else {
+                    unreachable!()
+                };
+                let Value::HWMatrix(b) = self.eval(&input[1])? else {
+                    unreachable!()
+                };
+                let m = hw_algebra::multiply(&mut self.model, ring, &a, &b)?;
+                hyperelliptic::persist_matrix(&mut self.model, m)
             }
             TypedForm::UnramUnary(operation, ring, input) => {
                 let Value::RVUnram(value) = self.eval(input)? else {
@@ -7384,6 +7439,14 @@ impl Checker<'_> {
             }
             TypeForm::RVQpQuad(name) => self.model.qp_quad_type(&name),
             TypeForm::CMOrder(name, exponent) => self.model.cm_order_type(&name, exponent),
+            TypeForm::HWMatrix(p, g, s) => {
+                let ring = Residues::checked(self.model, p, s)?;
+                self.model.hw_matrix_type(ring, g)
+            }
+            TypeForm::HWScalar(p, s) => {
+                let ring = Residues::checked(self.model, p, s)?;
+                self.model.hw_scalar_type(ring)
+            }
             TypeForm::RVUnram(ring) => self.model.rv_unram_type(&ring),
             TypeForm::RVCycloQ(order) => self.model.cyclotomic_rational_type(order),
             TypeForm::RVCyclo(order) => self.model.cyclotomic_type(order),
@@ -8226,6 +8289,8 @@ impl Checker<'_> {
                     Kind::RVResSpace(grade) => ResSpace::zero(*grade).persist(self.model)?,
                     Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
                     Kind::CMOrder(..) => Value::CMOrder(legendre_cm::Element::ZERO),
+                    Kind::HWMatrix(ring,size)=>ring.zero_matrix(self.model,*size)?,
+                    Kind::HWScalar(_)=>Value::HWScalar(0),
                     Kind::RVUnram(name) => {
                         let ring = self.model.rv_unram_named(name).expect("registered unramified ring");
                         rv_unram::persist(self.model,ring.scalar(0))?
@@ -10171,6 +10236,7 @@ impl Checker<'_> {
                     TypedForm::UnramUnary(operation, ring, Box::new(input)),
                 ))
             }
+            ExprForm::HasseWitt(expression) => self.hw_expression(*expression),
             ExprForm::LegendreClosed(operation, input) => {
                 let input = self.expr(*input)?;
                 let ring = self.unram_ring(&input, operation.name())?;
@@ -10887,6 +10953,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::TlOperation(grade, TlOp::Negate, Box::new(input)),
+                    ));
+                }
+                if let Kind::HWMatrix(ring, _) | Kind::HWScalar(ring) = *self.model.kind(input.ty) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVUnram(..)) {
@@ -14399,6 +14471,8 @@ impl Checker<'_> {
                         | Kind::RVCTResidue(..)
                         | Kind::RVFusion(..)
                         | Kind::RVCyclo(..)
+                        | Kind::HWMatrix(..)
+                        | Kind::HWScalar(..)
                         | Kind::RVUnram(..)
                         | Kind::RVCycloQ(..)
                         | Kind::RVQpQuad(..)
@@ -15021,6 +15095,107 @@ impl Checker<'_> {
         } else {
             Ok((right, TypedForm::Snd(Box::new(pair))))
         }
+    }
+
+    fn hw_expression(
+        &mut self,
+        expression: hyperelliptic::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use hyperelliptic::{Expression, Unary};
+        let (ty, value) = match expression {
+            Expression::Raw(name, level, precision) => {
+                let curve = self.model.hyperelliptic(&name)?;
+                let ring = Residues::new(curve.prime, precision)?;
+                let ty = self.model.hw_matrix_type(ring, curve.genus)?;
+                (ty, Value::HWMatrix(curve.raw(self.model, level, ring)?))
+            }
+            Expression::Unit(name, precision) => {
+                let curve = self.model.hyperelliptic(&name)?;
+                let ring = Residues::new(curve.prime, precision)?;
+                let ty = self.model.hw_matrix_type(ring, curve.genus)?;
+                (ty, Value::HWMatrix(curve.unit(self.model, ring)?))
+            }
+            Expression::Matrix(p, g, s, entries) => {
+                let ring = Residues::checked(self.model, p, s)?;
+                let ty = self.model.hw_matrix_type(ring, g)?;
+                (ty, ring.matrix_literal(self.model, g, &entries)?)
+            }
+            Expression::Scalar(p, s, c) => {
+                let ring = Residues::checked(self.model, p, s)?;
+                (
+                    self.model.hw_scalar_type(ring)?,
+                    Value::HWScalar(ring.coefficient(c)),
+                )
+            }
+            Expression::Compose(input) => {
+                let [a, b] = *input;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let Kind::HWMatrix(ring, _) = *self.model.kind(a.ty) else {
+                    return Err(self.invalid_operand(&a, "rvHWCompose", "an RVHWMatrix"));
+                };
+                self.require_type(a.ty, &b, "rvHWCompose")?;
+                return Ok((a.ty, TypedForm::HWCompose(ring, Box::new([a, b]))));
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let (ring, size) = match *self.model.kind(input.ty) {
+                    Kind::HWMatrix(ring, size) => (ring, Some(size)),
+                    Kind::HWScalar(ring) => (ring, None),
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            operation.name(),
+                            "an RVHWScalar or RVHWMatrix",
+                        ))
+                    }
+                };
+                let output = match operation {
+                    Unary::Entry(i, j) => {
+                        let Some(size) = size else {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "an RVHWMatrix",
+                            ));
+                        };
+                        if i == 0 || j == 0 || i > size || j > size {
+                            return Err(Error::new(
+                                input.span,
+                                "Hasse–Witt matrix entry is out of range",
+                            ));
+                        }
+                        self.model.hw_scalar_type(ring)?
+                    }
+                    Unary::Coefficient(k) => {
+                        let Some(size) = size else {
+                            return Err(self.invalid_operand(
+                                &input,
+                                operation.name(),
+                                "an RVHWMatrix",
+                            ));
+                        };
+                        if k > size {
+                            return Err(Error::new(
+                                input.span,
+                                "characteristic coefficient is out of range",
+                            ));
+                        }
+                        self.model.hw_scalar_type(ring)?
+                    }
+                    Unary::Reduce(precision) => {
+                        let target = ring.reduce_to(precision)?;
+                        match size {
+                            Some(size) => self.model.hw_matrix_type(target, size)?,
+                            None => self.model.hw_scalar_type(target)?,
+                        }
+                    }
+                    Unary::Invert | Unary::Negate => input.ty,
+                };
+                return Ok((output, TypedForm::HWUnary(ring, operation, Box::new(input))));
+            }
+        };
+        Ok((ty, TypedForm::Constant(value)))
     }
 
     fn unram_ring(&self, input: &TypedExpr, operation: &str) -> Result<Rc<UnramRing>> {

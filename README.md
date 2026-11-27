@@ -1072,6 +1072,22 @@ Write $u_0=0$, $u_1=1$, and $u_{m+1}=a u_m-q u_{m-1}$. In the original basis one
 
 For $\lambda=X$ over $\mathbb F_{25}$ with $X^2=-2$, the chosen embedding gives $2823\bmod 5^5$. At powers $m=3,4,6$ the traces are $142,866,-11086$ and the absolute indices are $21,92,2982$. In the order at power three the generator from power six has coordinates $(-15625,142)$. The example checks the tower and its multiplication and also compares the two unit calculations for $\lambda=2$ over $\mathbb F_5$. [Legendre Frobenius order example](examples/legendre-cm-orders.asl)
 
+### Higher Hasse–Witt matrices of hyperelliptic curves
+
+`rvhyperelliptic C[p]{f0,...,1};` declares the chosen integral lift $f(x)$ for the smooth odd-degree model $y^2=f(x)$ over $\mathbb F_p$. Coefficients are signed integers in increasing degree. The interpreter checks that $p$ is odd, $f$ is monic of degree $2g+1$, and $f\bmod p$ is squarefree. The declaration retains the integral lift for the coefficient calculation. The point counts depend on its reduction.
+
+`rvHW[C,r,s]` returns $A_r\bmod p^s$, where
+$$
+A_r(i,j)=[x^{p^rj-i}]f(x)^{(p^r-1)/2},\qquad 1\le i,j\le g,
+$$
+with $A_0=I$. The calculation uses exact modular polynomial powering, truncating to the necessary coefficient range. `rvHWStatus[C];` reports the genus and whether $A_1\bmod p$ is invertible. Raw matrices are available on smooth nonordinary curves. On ordinary curves `rvHWUnit[C,s]` computes the ordered matrix $M_s=A_sA_{s-1}^{-1}$ with **both** matrices at precision $s$. `rvHWConverges[C,s];` compares its reduction with the independently computed $M_{s-1}$ for $s\ge2$.
+
+The matrix type is `RVHWMatrix(p,g,s)`, with row-major literal `rvHWMat[p,g,s]{entries}`. Use `rvHWCompose(A,B)` for $AB$ and `rvHWInv(A)` when the determinant is a unit modulo $p$. `rvHWEntry[i,j](A)` uses one-based indices. `rvHWChar[k](A)` gives the coefficient of $T^{g-k}$ in $\det(TI-A)$ by a division-free recurrence. Both return values in `RVHWScalar(p,s)`, with literal `rvHWScalar[p,s,c]`. Both types support zero, addition, negation, equality and precision reduction `rvHWReduce[s](x)`. Scalars also support `rvHWInv` on units and `rvHWVal(x);` for the $p$-adic valuation, with `>=s` for zero. The modulus $p^s$ fits in unsigned 64 bits, and the polynomial and matrix calculations use the interpreter's work and storage limits.
+
+`rvHWPoints[C,r];` counts points over $\mathbb F_{p^r}$ by the quadratic character of $f(x)$ and includes the single point at infinity. It uses deterministically selected irreducible polynomials for the finite extensions. `rvHWWeil[C];` computes the descending coefficients of the Frobenius characteristic polynomial $P(T)$ from the first $g$ point counts using exact Newton identities and the reciprocal functional equation. `rvHWCertify[C,s];` verifies by monic division that $\det(TI-M_s)$ is a unit factor of $P(T)\bmod p^s$ and checks that the complementary factor reduces to $T^g$ modulo $p$. It prints the complementary factor and remainder. This certification uses a point-count calculation independent of the coefficient matrices. Finite-field enumeration and exact integer arithmetic remain subject to their resource limits.
+
+For the genus-two curve in the example, $M_3=\begin{pmatrix}16&4\\13&11\end{pmatrix}\bmod 27$, and its ordered characteristic factor $T^2+16$ divides $T^4-2T^2+9$ modulo $27$. The reverse product gives a different matrix. The example includes a noncommuting genus-three calculation, a genus-two certificate modulo $3^7$, and the Legendre unit $39\bmod 49$. [Hyperelliptic Hasse–Witt example](examples/hyperelliptic-hasse-witt.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

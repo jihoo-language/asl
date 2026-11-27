@@ -53,17 +53,64 @@ impl Ring {
             .ok_or_else(|| Error::plain("unramified coefficient modulus p^s exceeds u64"))?;
         model.spend(lower.len())?;
         let lower: Box<[_]> = lower.iter().map(|&c| reduce(c, modulus)).collect();
-        let mut ring = Self {
+        let ring = Self {
             prime: p,
             precision,
             modulus,
             lower,
             frobenius_images: Vec::new(),
         };
-        ring.validate_irreducible(model)?;
-        ring.frobenius_images = ring.lift_frobenius(model)?;
-        model.allocate(8 + ring.degree() * (4 + ring.degree()))?;
-        Ok(ring)
+        if !ring.is_irreducible(model)? {
+            return Err(Error::plain(
+                "unramified modulus polynomial must be irreducible modulo p",
+            ));
+        }
+        ring.finish(model)
+    }
+
+    pub(crate) fn field_of_degree(model: &mut Model, prime: Prime, degree: usize) -> Result<Self> {
+        if !(1..=MAX_DEGREE).contains(&degree) {
+            return Err(Error::plain(format!(
+                "residue field degree must be in 1..={MAX_DEGREE}"
+            )));
+        }
+        let p = u64::from(prime.get());
+        let count = p
+            .checked_pow(degree as u32)
+            .ok_or_else(|| Error::plain("residue field size exceeds u64"))?;
+        let mut ring = Self {
+            prime,
+            precision: 1,
+            modulus: p,
+            lower: vec![0; degree].into(),
+            frobenius_images: Vec::new(),
+        };
+        if degree == 1 {
+            return ring.finish(model);
+        }
+        for mut index in 1..count {
+            model.spend(1)?;
+            if index.is_multiple_of(p) {
+                continue;
+            }
+            model.spend(degree)?;
+            for coefficient in &mut ring.lower {
+                *coefficient = index % p;
+                index /= p;
+            }
+            if ring.is_irreducible(model)? {
+                return ring.finish(model);
+            }
+        }
+        Err(Error::plain(
+            "could not find a monic irreducible residue polynomial",
+        ))
+    }
+
+    fn finish(mut self, model: &mut Model) -> Result<Self> {
+        self.frobenius_images = self.lift_frobenius(model)?;
+        model.allocate(8 + self.degree() * (4 + self.degree()))?;
+        Ok(self)
     }
 
     pub(crate) fn prime(&self) -> u64 {
@@ -121,7 +168,7 @@ impl Ring {
         }
     }
 
-    fn validate_irreducible(&self, model: &mut Model) -> Result<()> {
+    fn is_irreducible(&self, model: &mut Model) -> Result<bool> {
         let p = self.prime();
         let alg = self.algebra(p);
         let x = alg.generator();
@@ -137,12 +184,10 @@ impl Ring {
                 polynomial,
                 defect.into_iter().map(|x| x as u32).collect(),
             )? {
-                return Err(Error::plain(
-                    "unramified modulus polynomial must be irreducible modulo p",
-                ));
+                return Ok(false);
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     fn lift_frobenius(&self, model: &mut Model) -> Result<Vec<Element>> {
@@ -321,37 +366,64 @@ impl Ring {
     }
 
     pub(crate) fn legendre_trace(&self, model: &mut Model, lambda: &[u64]) -> Result<i64> {
-        let q = self.size_of_residue_field()?;
-        let count =
-            usize::try_from(q).map_err(|_| Error::plain("Legendre point field is too large"))?;
-        model.spend(count)?;
-        let p = self.prime();
-        let alg = self.algebra(p);
-        let inverse_exponent = (q - 1) / 2;
+        let alg = self.algebra(self.prime());
         let lambda = self.residue(lambda);
         let one = alg.constant(1);
+        self.residue_quadratic_trace(model, |model, x| {
+            if x == lambda || x == one || x.iter().all(|&c| c == 0) {
+                return Ok(alg.constant(0));
+            }
+            let x_one = alg.subtract(model, x, &one)?;
+            let x_lambda = alg.subtract(model, x, &lambda)?;
+            let rhs = alg.multiply(model, x, &x_one)?;
+            alg.multiply(model, &rhs, &x_lambda)
+        })
+    }
+
+    pub(crate) fn residue_polynomial_trace(
+        &self,
+        model: &mut Model,
+        polynomial: &[u64],
+    ) -> Result<i64> {
+        let alg = self.algebra(self.prime());
+        self.residue_quadratic_trace(model, |model, x| alg.evaluate(model, polynomial, x))
+    }
+
+    pub(crate) fn residue_quadratic_trace(
+        &self,
+        model: &mut Model,
+        mut evaluate: impl FnMut(&mut Model, &[u64]) -> Result<Element>,
+    ) -> Result<i64> {
+        let q = self.size_of_residue_field()?;
+        let count = usize::try_from(q)
+            .map_err(|_| Error::plain("quadratic character point field is too large"))?;
+        model.spend(count)?;
+        let p = self.prime();
+        if p == 2 {
+            return Err(Error::plain("quadratic character requires an odd prime"));
+        }
+        let alg = self.algebra(p);
+        let exponent = (q - 1) / 2;
         let mut x = alg.constant(0);
         let mut trace = 0;
         for mut index in 0..q {
+            model.spend(self.degree())?;
             for c in &mut x {
                 *c = index % p;
                 index /= p;
             }
-            if x == lambda || x == one || x.iter().all(|&c| c == 0) {
+            let rhs = evaluate(model, &x)?;
+            if rhs.iter().all(|c| c.is_multiple_of(p)) {
                 continue;
             }
-            let x_one = alg.subtract(model, &x, &one)?;
-            let x_lambda = alg.subtract(model, &x, &lambda)?;
-            let rhs = alg.multiply(model, &x, &x_one)?;
-            let rhs = alg.multiply(model, &rhs, &x_lambda)?;
-            let character = alg.pow(model, &rhs, inverse_exponent)?;
+            let character = alg.pow(model, &rhs, exponent)?;
             trace += match require_scalar(&character)? {
                 1 => -1,
                 c if c == p - 1 => 1,
                 _ => {
                     return Err(Error::plain(
-                        "nonzero Legendre value must have quadratic character +1 or -1",
-                    ))
+                        "nonzero residue field value must have quadratic character +1 or -1",
+                    ));
                 }
             };
         }
@@ -523,7 +595,12 @@ impl Algebra<'_> {
     }
 }
 
-fn coprime(model: &mut Model, prime: Prime, mut a: Vec<u32>, mut b: Vec<u32>) -> Result<bool> {
+pub(crate) fn coprime(
+    model: &mut Model,
+    prime: Prime,
+    mut a: Vec<u32>,
+    mut b: Vec<u32>,
+) -> Result<bool> {
     trim(&mut b);
     while let Some(&leading) = b.last() {
         let inverse = invert(model, prime, leading)?;
@@ -547,15 +624,15 @@ fn trim(polynomial: &mut Vec<u32>) {
     }
 }
 
-fn reduce(x: i128, modulus: u64) -> u64 {
+pub(crate) fn reduce(x: i128, modulus: u64) -> u64 {
     x.rem_euclid(i128::from(modulus)) as u64
 }
 
-fn add_mod(a: u64, b: u64, modulus: u64) -> u64 {
+pub(crate) fn add_mod(a: u64, b: u64, modulus: u64) -> u64 {
     ((u128::from(a) + u128::from(b)) % u128::from(modulus)) as u64
 }
 
-fn mul_mod(a: u64, b: u64, modulus: u64) -> u64 {
+pub(crate) fn mul_mod(a: u64, b: u64, modulus: u64) -> u64 {
     ((u128::from(a) * u128::from(b)) % u128::from(modulus)) as u64
 }
 
@@ -567,7 +644,7 @@ fn neg_mod(x: u64, modulus: u64) -> u64 {
     }
 }
 
-fn sub_mod(a: u64, b: u64, modulus: u64) -> u64 {
+pub(crate) fn sub_mod(a: u64, b: u64, modulus: u64) -> u64 {
     if a >= b {
         a - b
     } else {
