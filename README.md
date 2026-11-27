@@ -1154,6 +1154,22 @@ The $p$-series report also gives its reduction modulo $p$. A first nonzero term 
 
 `rvDworkK3Unit[p,psi,s];` uses the rank-one higher Hasse–Witt ratio $b_{p^s}/b_{p^{s-1}}\pmod{p^s}$. The Witt Frobenius on $\mathbb Z_p$ is the identity, so the integer lift in the query is used in both periods. For ordinary reduction the ratio gives the crystalline Frobenius unit eigenvalue to precision $s$. A zero Hasse–Witt coefficient reports nonordinarity. `rvDworkK3ClosedUnit(psi);` takes an `RVUnram` value with residue field $\mathbb F_{p^a}$ and precision $s$. It uses the Teichmüller parameter and returns the $\sigma$-semilinear factor $b_{p^s}/\sigma(b_{p^{s-1}})$ and the $a$-fold Frobenius norm, which is the $p^a$-Frobenius unit eigenvalue. The modular recurrence retains unit parts of multinomial coefficients through terms that vanish at the selected precision. It uses the checked modulus $p^s$ and the statement computation budget. [Beukers and Vlasenko, *Dwork Crystals I*, Theorem 5.3](https://doi.org/10.1093/imrn/rnaa119) · [Runnable Dwork quartic example](examples/dwork-k3-formal-brauer.asl)
 
+### Picard–Fuchs periods and the quartic mirror coordinate
+
+Use $z=(4\psi)^{-4}$ and $\theta=z\,d/dz$. `rvDworkPicardFuchs[]` returns the `RVOre` operator $\theta^3-4z(4\theta+1)(4\theta+2)(4\theta+3)$, and `rvDworkClausen[]` returns $\theta^2-4z(8\theta+1)(8\theta+3)$. The first grade of an `RVOre` term is the power of $z$. The operators work with `rvOreMul` and `rvOreCoeff`. [Hartmann, *Period- and mirror-maps for the quartic K3*](https://arxiv.org/abs/1101.4601)
+
+`rvDworkMirrorPeriods[N];` prints exact coefficients in ascending powers of $z$ from degree $0$ through $N$. The Frobenius recurrence starts at $A_0(s)=1$ and computes
+$$A_n(s)=\frac{4(4(n+s)-3)(4(n+s)-2)(4(n+s)-1)}{(n+s)^3}A_{n-1}(s).$$
+The Taylor coefficients through $s^2$ give $f,g,h$ with $f(0)=1$ and $g(0)=h(0)=0$. The normalized solutions are $Y_0=f$, $Y_1=f\log z+g$ and $Y_2=f(\log z)^2/2+g\log z+h$. The analogous rank-two recurrence gives $U_0=u$ and $U_1=u\log z+v$. The report checks the Ore equations, $f=u^2$, $g=uv$, $2h=v^2$, $2fh=g^2$, and $W=u\theta U_1-U_1\theta u=(1-256z)^{-1/2}=f\theta\log q$.
+
+`rvDworkMirrorApply[rank,j,N](A);` applies an Ore element to solution $j$ of the rank-two or rank-three system modulo $z^{N+1}$. It displays the coefficients in the basis $1,\log z,(\log z)^2/2$. `rvDworkMirrorMonodromy[N,k];` substitutes $\log z+k$ and verifies the action in the $(Y_0,Y_1,Y_2)$ basis. For $k=1$ the normalized action has a single unipotent Jordan block of size three. Analytic continuation around $z=0$ uses the same formula with shift $2\pi i$. `rvDworkMirrorConnection;` gives the exact companion connection on $(Y,\theta Y,\theta^2Y)$, checks the symmetric square over $\mathbb Q(z)$, and verifies the horizontal bilinear form by $\theta B+A^{\mathsf T}B+BA=0$.
+
+`rvDworkMirrorMap[N];` forms $q=z\exp(g/f)$ and reverts it to $z(q)$, checking both compositions. It reports $\log(q/z)$, $q(z)/z$ and $z(q)/q$ through degree $N$. The forward quotient begins with $1,104,15188,2585184$ and the inverse with $1,-104,6444,-311744$. The checked rational calculations support $0\le N\le12$. [Lian and Yau, *Arithmetic Properties of Mirror Map and Quantum Coupling*](https://arxiv.org/abs/hep-th/9411234)
+
+`rvDworkMirrorCongruence[p,psi,s];` requires a smooth quartic and $\psi\ne0$ in the residue field. With $m=p^s$ and $a_j=(4j)!/(j!)^4$, the formal Brauer coefficient satisfies
+$$b_m=(-4\psi)^{m-1}\sum_{j=0}^{\lfloor(m-1)/4\rfloor}a_j\binom{m-1}{4j}z^j.$$
+Lucas's theorem gives $\binom{p^s-1}{4j}\equiv1\pmod p$, which proves agreement with the unweighted truncation modulo $p$. The report evaluates both sums modulo $p^s$ with the signed integer lift and gives their actual difference and the number of agreeing digits through precision $s$. For $p=7,\psi=3,s=2$ the difference is $28\bmod49$. [Runnable mirror periods example](examples/dwork-quartic-mirror-periods.asl)
+
 ## Dwork unit roots of Legendre elliptic curves
 
 For an odd prime $p$ and $\lambda\in\mathbb F_p\setminus\{0,1\}$, `legendreTrace[p,lambda];` counts points of $y^2=x(x-1)(x-\lambda)$ over $\mathbb F_p$ using the quadratic character and includes the point at infinity. It reports the trace $a_p=p+1-\#E$ of Frobenius on $H^1(E)$. The parameter uses its representative in $0,\ldots,p-1$.

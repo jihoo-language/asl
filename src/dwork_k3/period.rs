@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::legendre::{inverse, split_prime};
+use crate::legendre::{inverse, modular_power, split_prime};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 use crate::rv_unram::{add_mod, mul_mod, reduce, require_scalar, sub_mod, Ring};
@@ -13,15 +13,7 @@ pub(super) fn unit_root(
     precision: usize,
 ) -> Result<String> {
     let p = u64::from(prime.get());
-    if precision == 0 {
-        return Err(Error::plain(
-            "Dwork quartic unit-root precision must be positive",
-        ));
-    }
-    let modulus = u32::try_from(precision)
-        .ok()
-        .and_then(|s| p.checked_pow(s))
-        .ok_or_else(|| Error::plain("Dwork quartic unit-root modulus p^s must fit in u64"))?;
+    let modulus = modulus(p, precision)?;
 
     let hasse_witt = coefficient(model, p, p, p, psi)?;
     if hasse_witt == 0 {
@@ -54,6 +46,86 @@ pub(super) fn unit_root(
     }
     Ok(format!(
         "mod {modulus}, Hasse–Witt={hasse_witt}, b_{degree}={current}, b_{previous_degree}={previous}, unit={unit}"
+    ))
+}
+
+fn modulus(p: u64, precision: usize) -> Result<u64> {
+    if precision == 0 {
+        return Err(Error::plain(
+            "Dwork quartic period precision must be positive",
+        ));
+    }
+    u32::try_from(precision)
+        .ok()
+        .and_then(|s| p.checked_pow(s))
+        .ok_or_else(|| Error::plain("Dwork quartic period modulus p^s must fit in u64"))
+}
+
+fn cross_term(psi: i128, modulus: u64) -> u64 {
+    mul_mod(
+        sub_mod(0, 4 % modulus, modulus),
+        reduce(psi, modulus),
+        modulus,
+    )
+}
+
+pub(super) fn mirror_congruence(
+    model: &mut Model,
+    prime: Prime,
+    psi: i128,
+    precision: usize,
+) -> Result<String> {
+    let p = u64::from(prime.get());
+    if psi.rem_euclid(i128::from(p)) == 0 {
+        return Err(Error::plain(
+            "Dwork mirror coordinate requires psi nonzero modulo p",
+        ));
+    }
+    let modulus = modulus(p, precision)?;
+    let cross = cross_term(psi, modulus);
+    let square = mul_mod(cross, cross, modulus);
+    let z = inverse(model, mul_mod(square, square, modulus), modulus)?;
+    let degree = modulus;
+    let b = coefficient(model, p, modulus, degree, psi)?;
+    let last = (degree - 1) / 4;
+    let mut sum = 0;
+    let mut power = 1;
+    emit_coefficients(
+        model,
+        p,
+        modulus,
+        last,
+        |j| {
+            let a = 4 * j;
+            [a + 1, a + 2, a + 3, a + 4]
+        },
+        |_, a| {
+            sum = add_mod(sum, mul_mod(a, power, modulus), modulus);
+            power = mul_mod(power, z, modulus);
+            Ok(())
+        },
+    )?;
+    let weighted = mul_mod(
+        modular_power(model, cross, degree - 1, modulus)?,
+        sum,
+        modulus,
+    );
+    let difference = sub_mod(b, weighted, modulus);
+    // b_m is the same sum with each A_j additionally multiplied by
+    // binom(m-1,4j). For m=p^s this binomial is 1 mod p by Lucas.
+    if !difference.is_multiple_of(p) {
+        return Err(Error::plain(
+            "Dwork mirror and formal Brauer periods failed their mod-p congruence",
+        ));
+    }
+    let agreement = if difference == 0 {
+        precision
+    } else {
+        split_prime(difference, p).1
+    };
+    Ok(format!(
+        "rvDworkMirrorCongruence[{p}, {psi}, {precision}] = mod {modulus}, z={z}, terms={}, b_{degree}={b}, hypergeometric sum={sum}, scaled sum={weighted}, difference={difference}, agreeing digits={agreement}, congruence mod p certified",
+        last + 1
     ))
 }
 
@@ -131,11 +203,7 @@ fn coefficient_in_ring(
 
 fn coefficient(model: &mut Model, p: u64, modulus: u64, degree: u64, psi: i128) -> Result<u64> {
     let n = degree - 1;
-    let z = mul_mod(
-        sub_mod(0, 4 % modulus, modulus),
-        reduce(psi, modulus),
-        modulus,
-    );
+    let z = cross_term(psi, modulus);
     let square = mul_mod(z, z, modulus);
     let fourth = mul_mod(square, square, modulus);
     let tails = [1, z, square, mul_mod(square, z, modulus)];
@@ -153,9 +221,19 @@ fn multinomial_terms(
     p: u64,
     modulus: u64,
     n: u64,
+    emit: impl FnMut(&mut Model, u64) -> Result<()>,
+) -> Result<()> {
+    emit_coefficients(model, p, modulus, n / 4, |j| numerator_factors(n, j), emit)
+}
+
+fn emit_coefficients(
+    model: &mut Model,
+    p: u64,
+    modulus: u64,
+    last: u64,
+    numerator: impl Fn(u64) -> [u64; 4],
     mut emit: impl FnMut(&mut Model, u64) -> Result<()>,
 ) -> Result<()> {
-    let last = n / 4;
     let work = usize::try_from(last + 1)
         .map_err(|_| Error::plain("Dwork quartic period truncation is out of range"))?;
     model.spend(work)?;
@@ -174,7 +252,7 @@ fn multinomial_terms(
             // u_(j+1)/u_j is the product of four consecutive
             // factors divided by (j+1)^4. Retain the unit even when
             // this term vanishes at the requested precision.
-            for factor in numerator_factors(n, j) {
+            for factor in numerator(j) {
                 let (value, order) = split_prime(factor, p);
                 valuation += order;
                 unit = mul_mod(unit, value % modulus, modulus);

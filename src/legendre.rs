@@ -272,7 +272,12 @@ fn multiply(a: u64, b: u64, modulus: u64) -> u64 {
     ((u128::from(a) * u128::from(b)) % u128::from(modulus)) as u64
 }
 
-fn modular_power(model: &mut Model, mut a: u64, mut exponent: u64, modulus: u64) -> Result<u64> {
+pub(crate) fn modular_power(
+    model: &mut Model,
+    mut a: u64,
+    mut exponent: u64,
+    modulus: u64,
+) -> Result<u64> {
     model.spend(2 * (u64::BITS - exponent.leading_zeros()) as usize)?;
     let mut power = 1;
     while exponent > 0 {

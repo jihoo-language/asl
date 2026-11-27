@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 
+pub(crate) mod mirror;
 mod period;
 mod series;
 
@@ -43,15 +44,8 @@ impl Query {
             psi,
             cutoff,
         } = self;
-        if prime < 3 || prime.is_multiple_of(2) {
-            return Err(odd_characteristic());
-        }
-        let p = Prime::new(model, prime)?;
+        let p = quartic_prime(model, prime, psi)?;
         let residue = psi.rem_euclid(i128::from(p.get())) as u32;
-        let square = p.mul(residue, residue);
-        if p.mul(square, square) == 1 {
-            return Err(singular());
-        }
         let report = match operation {
             Operation::Unit => period::unit_root(model, p, psi, cutoff)?,
             _ => series::report(model, p, psi, residue, cutoff, operation)?,
@@ -61,6 +55,19 @@ impl Query {
             operation.spelling()
         ))
     }
+}
+
+fn quartic_prime(model: &mut Model, prime: usize, psi: i128) -> Result<Prime> {
+    if prime < 3 || prime.is_multiple_of(2) {
+        return Err(odd_characteristic());
+    }
+    let p = Prime::new(model, prime)?;
+    let residue = psi.rem_euclid(i128::from(p.get())) as u32;
+    let square = p.mul(residue, residue);
+    if p.mul(square, square) == 1 {
+        return Err(singular());
+    }
+    Ok(p)
 }
 
 fn numerator_factors(n: u64, j: u64) -> [u64; 4] {

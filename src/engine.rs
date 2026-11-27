@@ -2756,6 +2756,20 @@ impl Engine {
                 }
             },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
+            StatementForm::DworkMirror(report) => report.run(&mut self.model)?,
+            StatementForm::DworkMirrorApply(rank, solution, degree, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVOre) {
+                    return Err(Error::new(
+                        input.span,
+                        "rvDworkMirrorApply requires an Ore operator",
+                    ));
+                }
+                let Value::RVOre(terms) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::mirror::apply(&mut self.model, rank, solution, degree, &terms)?
+            }
             StatementForm::DworkK3(query) => query.run(&mut self.model)?,
             StatementForm::DworkK3ClosedUnit(input) => {
                 let input = self.checker().expr(input)?;
@@ -15073,6 +15087,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::RVCTLiteral(..)
             | ExprForm::RVCTSection(..)
             | ExprForm::RVCTRead(..)
+            | ExprForm::DworkMirrorOperator(..)
             | ExprForm::OreTerm(..)
             | ExprForm::OreProduct(..)
             | ExprForm::OreUnary(..)
@@ -20458,6 +20473,11 @@ impl Checker<'_> {
                 let grade = grade.clone();
                 let ty = self.model.rv_ct_residue_type(grade.level)?;
                 Ok((ty, TypedForm::PeriodRead(grade, Box::new(input))))
+            }
+            ExprForm::DworkMirrorOperator(operator) => {
+                let ty = self.model.ore_type()?;
+                let value = operator.value(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             ExprForm::OreTerm(q, theta, coefficient) => {
                 let ty = self.model.ore_type()?;

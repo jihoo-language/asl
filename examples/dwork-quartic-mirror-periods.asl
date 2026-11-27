@@ -1,0 +1,18 @@
+let L=rvDworkPicardFuchs[];
+let M=rvDworkClausen[];
+show L;
+show M;
+rvOreCoeff[1,1](L);
+rvDworkMirrorPeriods[5];
+rvDworkMirrorApply[3,0,5](L);
+rvDworkMirrorApply[3,1,5](L);
+rvDworkMirrorApply[3,2,5](L);
+rvDworkMirrorApply[2,0,5](M);
+rvDworkMirrorApply[2,1,5](M);
+rvDworkMirrorApply[2,1,2](rvOre[0,1]);
+rvDworkMirrorMonodromy[5,1];
+rvDworkMirrorConnection;
+rvDworkMirrorMap[6];
+rvDworkMirrorCongruence[7,3,1];
+rvDworkMirrorCongruence[7,3,2];
+rvDworkK3Unit[7,3,2];

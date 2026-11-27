@@ -864,6 +864,7 @@ pub(crate) enum ExprForm {
     RVCTLiteral(usize, usize, u128),
     RVCTSection(usize, Box<ParsedExpr>),
     RVCTRead(Box<ParsedExpr>),
+    DworkMirrorOperator(crate::dwork_k3::mirror::Operator),
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
     OreUnary(OreOp, Box<ParsedExpr>),
@@ -1380,6 +1381,8 @@ pub(crate) enum StatementForm {
     Legendre(crate::legendre::Query),
     DworkK3(crate::dwork_k3::Query),
     DworkK3ClosedUnit(ParsedExpr),
+    DworkMirror(crate::dwork_k3::mirror::Report),
+    DworkMirrorApply(usize, usize, usize, ParsedExpr),
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
     LegendreClosedReport(crate::legendre_closed::Query, ParsedExpr),
@@ -10765,6 +10768,51 @@ impl<'src> Parser<'src> {
                     cutoff,
                 })
             }
+            Token::Word(
+                command @ ("rvDworkMirrorPeriods"
+                | "rvDworkMirrorMap"
+                | "rvDworkMirrorMonodromy"
+                | "rvDworkMirrorCongruence"),
+            ) => {
+                use crate::dwork_k3::mirror::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let n = self.number()?.0;
+                let report = match command {
+                    "rvDworkMirrorPeriods" => Report::Periods(n),
+                    "rvDworkMirrorMap" => Report::MirrorMap(n),
+                    "rvDworkMirrorMonodromy" => {
+                        self.expect(Token::Comma)?;
+                        let shift =
+                            self.signed_wide("a signed logarithm shift", "Dwork logarithm shift")?;
+                        Report::Monodromy(n, shift)
+                    }
+                    _ => {
+                        self.expect(Token::Comma)?;
+                        let psi = self.signed_wide(
+                            "a signed quartic parameter lift",
+                            "Dwork quartic parameter",
+                        )?;
+                        self.expect(Token::Comma)?;
+                        Report::Congruence(n, psi, self.number()?.0)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkMirror(report)
+            }
+            Token::Word("rvDworkMirrorConnection") => {
+                self.advance()?;
+                StatementForm::DworkMirror(crate::dwork_k3::mirror::Report::Connection)
+            }
+            Token::Word("rvDworkMirrorApply") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (rank, solution) = self.quantum_grade()?;
+                self.expect(Token::Comma)?;
+                let degree = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkMirrorApply(rank, solution, degree, self.paren_expr(0)?)
+            }
             Token::Word("rvDworkK3ClosedUnit") => {
                 self.advance()?;
                 StatementForm::DworkK3ClosedUnit(self.paren_expr(0)?)
@@ -19102,6 +19150,17 @@ impl<'src> Parser<'src> {
                         | "rvK3StratumSpectrum"
                 ) {
                     return self.witt_spectrum_expression(&name.text, span, nest);
+                }
+                if matches!(name.text.as_str(), "rvDworkPicardFuchs" | "rvDworkClausen")
+                    && self.eat(Token::LBracket)?
+                {
+                    self.expect(Token::RBracket)?;
+                    let operator = if name.text == "rvDworkPicardFuchs" {
+                        crate::dwork_k3::mirror::Operator::PicardFuchs
+                    } else {
+                        crate::dwork_k3::mirror::Operator::Clausen
+                    };
+                    return expr(span, ExprForm::DworkMirrorOperator(operator), 0);
                 }
                 if name.text == "rvOre" && self.eat(Token::LBracket)? {
                     let (q, theta) = self.quantum_grade()?;
