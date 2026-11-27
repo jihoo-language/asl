@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 use verbitsky_resolution::deformation;
+use verbitsky_tate::matrix_factorization as mf;
 
 use crate::adams::Adams;
 use crate::binary_field::BinaryField;
@@ -350,6 +351,7 @@ pub(crate) enum Kind {
     VerbitskyKoszul(koszul::Grade),
     VerbitskyTor(koszul::Grade),
     VerbitskyCyclic(verbitsky_cyclic::Grade, bool),
+    MatrixFactorization(mf::Grade, bool),
     VerbitskyTate(verbitsky_tate::Grade),
     VerbitskyHochschild(hochschild::Grade, bool),
     VerbitskyDeformation(deformation::Grade, bool),
@@ -613,6 +615,7 @@ pub(crate) enum Value {
     VerbitskyKoszul(Rc<koszul::Chain>),
     VerbitskyFree(Rc<verbitsky_resolution::Vector>),
     VerbitskyCyclic(Rc<verbitsky_cyclic::Chain>),
+    MatrixFactorization(Rc<mf::Morphism>),
     VerbitskyTate(Rc<verbitsky_tate::State>),
     VerbitskyHochschild(Rc<hochschild::Cochain>),
     K3Clifford(Rc<clifford::Element>),
@@ -911,6 +914,7 @@ pub(crate) struct Model {
     cubic_splits: HashMap<String, Rc<cubic_algebra::Split>>,
     eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
+    matrix_factorizations: HashMap<String, Rc<mf::Object>>,
     verbitsky_tate: HashMap<String, Rc<verbitsky_tate::Definition>>,
     verbitsky_associative: HashMap<String, Rc<hochschild::kuranishi::Jet>>,
     hodge_wick_forms: HashMap<String, Rc<hyperelliptic_kummer_surface::hodge_wick::Form>>,
@@ -1080,6 +1084,7 @@ impl Model {
             cubic_splits: HashMap::new(),
             eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
+            matrix_factorizations: HashMap::new(),
             verbitsky_tate: HashMap::new(),
             verbitsky_associative: HashMap::new(),
             hodge_wick_forms: HashMap::new(),
@@ -1766,6 +1771,15 @@ impl Model {
                     1
                 }
             }
+            Kind::MatrixFactorization(ref grade, _) => {
+                if self.matrix_factorizations[grade.source.as_ref()].is_empty()
+                    || self.matrix_factorizations[grade.target.as_ref()].is_empty()
+                {
+                    1
+                } else {
+                    usize::MAX
+                }
+            }
             Kind::VerbitskyTate(ref grade) => {
                 if grade.mode == verbitsky_tate::Mode::Ordinary && grade.degree < 0 {
                     1
@@ -2089,6 +2103,7 @@ impl Model {
                 | Kind::VerbitskyKoszul(..)
                 | Kind::VerbitskyTor(..)
                 | Kind::VerbitskyCyclic(..)
+                | Kind::MatrixFactorization(..)
                 | Kind::VerbitskyTate(..)
                 | Kind::VerbitskyHochschild(..)
                 | Kind::VerbitskyDeformation(..)
@@ -6052,6 +6067,41 @@ impl Model {
             .ok_or_else(|| Error::plain(format!("unknown Hodge Wick marking '{name}'")))
     }
 
+    pub(crate) fn register_matrix_factorization(
+        &mut self,
+        name: Label,
+        object: mf::Object,
+    ) -> Result<()> {
+        if self.matrix_factorizations.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("matrix factorization '{}' is already defined", name.text),
+            ));
+        }
+        self.allocate(object.cells())?;
+        self.matrix_factorizations
+            .insert(name.text, Rc::new(object));
+        Ok(())
+    }
+
+    pub(crate) fn matrix_factorization(&self, name: &str) -> Result<Rc<mf::Object>> {
+        self.matrix_factorizations
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::plain(format!("unknown matrix factorization '{name}'")))
+    }
+
+    pub(crate) fn matrix_factorization_type(
+        &mut self,
+        grade: mf::Grade,
+        class: bool,
+    ) -> Result<TypeId> {
+        let source = self.matrix_factorization(&grade.source)?;
+        let target = self.matrix_factorization(&grade.target)?;
+        mf::Hom::new(&source, &target, grade.odd)?;
+        self.inhabited_type(Kind::MatrixFactorization(grade, class), 0)
+    }
+
     pub(crate) fn register_verbitsky_tate(
         &mut self,
         name: Label,
@@ -8063,6 +8113,7 @@ impl Model {
             | Kind::VerbitskyKoszul(..)
             | Kind::VerbitskyTor(..)
             | Kind::VerbitskyCyclic(..)
+            | Kind::MatrixFactorization(..)
             | Kind::VerbitskyTate(..)
             | Kind::VerbitskyHochschild(..)
             | Kind::VerbitskyDeformation(..)
@@ -8673,6 +8724,15 @@ impl Model {
                     grade.weight
                 ))
             }
+            Kind::MatrixFactorization(grade, class) => {
+                let name = if *class { "RVMF" } else { "RVMFCochain" };
+                out.push(&format!(
+                    "{name}({},{},{})",
+                    grade.source,
+                    grade.target,
+                    u8::from(grade.odd)
+                ))
+            }
             Kind::VerbitskyTate(grade) => out.push(&format!(
                 "RVVerbitskyTate({},{},{},{})",
                 grade.name,
@@ -9179,6 +9239,9 @@ impl Model {
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
+            (Value::MatrixFactorization(a), Value::MatrixFactorization(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
@@ -9613,6 +9676,7 @@ impl Model {
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::HodgeTensor(a), Value::HodgeTensor(b)) => a.compare(self, b),
             (Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => a.compare(self, b),
+            (Value::MatrixFactorization(a), Value::MatrixFactorization(b)) => a.compare(self, b),
             (Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => a.compare(self, b),
             (Value::VerbitskyHochschild(a), Value::VerbitskyHochschild(b)) => a.compare(self, b),
             (Value::VerbitskyFree(a), Value::VerbitskyFree(b)) => a.compare(self, b),
@@ -10166,6 +10230,16 @@ impl Model {
                         ));
                     }
                     vec![verbitsky_cyclic::Chain::default().persist(self)?]
+                }
+                Kind::MatrixFactorization(ref grade, _) => {
+                    if !self.matrix_factorization(&grade.source)?.is_empty()
+                        && !self.matrix_factorization(&grade.target)?.is_empty()
+                    {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational matrix factorization Hom",
+                        ));
+                    }
+                    vec![mf::Morphism::default().persist(self)?]
                 }
                 Kind::VerbitskyTate(ref grade) => {
                     if grade.mode == verbitsky_tate::Mode::Stable || grade.degree >= 0 {
@@ -12239,6 +12313,10 @@ impl Model {
             Value::VerbitskyCyclic(chain) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&chain.text(self)?)
+            }
+            Value::MatrixFactorization(morphism) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&morphism.text(self)?)
             }
             Value::VerbitskyTate(state) => {
                 self.write_type(out, ty, 0)?;

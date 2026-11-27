@@ -8,6 +8,7 @@ use super::{
 };
 
 mod bar;
+pub(crate) mod matrix_factorization;
 mod resolution;
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]

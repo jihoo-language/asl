@@ -196,6 +196,7 @@ pub(crate) enum TypeForm {
         crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::SyntaxGrade,
         bool,
     ),
+    MatrixFactorization(Label, Label, bool, bool),
     VerbitskyTate(
         Label,
         crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Mode,
@@ -1132,6 +1133,7 @@ pub(crate) enum ExprForm {
     VerbitskyEulerian(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::Expression>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Expression>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Expression>),
+    MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Expression>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Expression>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Expression>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Expression>),
@@ -1421,6 +1423,7 @@ pub(crate) enum StatementForm {
     MonomialCICotangent(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::eulerian::cotangent::Command>),
     VerbitskyCyclic(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::cyclic::Command>),
     VerbitskyAssociative(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::kuranishi::Command>),
+    MatrixFactorization(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Command>),
     VerbitskyTate(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Command>),
     VerbitskyHochschild(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::Command>),
     VerbitskyKoszul(Box<crate::hyperelliptic_kummer_surface::hodge_wick::ring::koszul::Command>),
@@ -9294,6 +9297,164 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::VerbitskyKoszul(Box::new(command)))
     }
 
+    fn matrix_factorization_grade(&mut self) -> Result<(Label, Label, bool)> {
+        let source = self.label()?;
+        self.expect(Token::Comma)?;
+        let target = self.label()?;
+        self.expect(Token::Comma)?;
+        let (parity, at) = self.number()?;
+        if parity > 1 {
+            return Err(Error::new(
+                at,
+                "matrix factorization parity must be zero or one",
+            ));
+        }
+        Ok((source, target, parity == 1))
+    }
+
+    fn matrix_factorization_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::Command;
+        self.advance()?;
+        let command = match name {
+            "rvmf" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let mark = self.label()?;
+                self.expect(Token::RBracket)?;
+                let factors = self.set_named_rows(|parser| Ok(parser.number()?.0))?;
+                Command::Declare(name, mark, factors)
+            }
+            "rvmfshift" => {
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Shift(name, source)
+            }
+            "rvmfcone" | "rvMFCone" => {
+                let name = if name == "rvmfcone" {
+                    Some(self.label()?)
+                } else {
+                    None
+                };
+                Command::Cone(name, Box::new(self.paren_expr(0)?))
+            }
+            "rvMFObject" => {
+                self.expect(Token::LBracket)?;
+                let object = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Object(object)
+            }
+            "rvMFHom" => {
+                self.expect(Token::LBracket)?;
+                let (source, target, parity) = self.matrix_factorization_grade()?;
+                self.expect(Token::RBracket)?;
+                Command::Hom(source, target, parity)
+            }
+            "rvMFTrace" => Command::Trace(Box::new(self.paren_expr(0)?)),
+            _ => Command::Pair(Box::new(self.paren_pair(0)?)),
+        };
+        Ok(StatementForm::MatrixFactorization(Box::new(command)))
+    }
+
+    fn matrix_factorization_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::matrix_factorization::{Expression, Unary};
+        let (expression, depth) = match name {
+            "rvMFTerm" | "rvMFBasis" => {
+                self.expect(Token::LBracket)?;
+                let (source, target, parity) = self.matrix_factorization_grade()?;
+                self.expect(Token::Comma)?;
+                let row = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let column = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let expression = if name == "rvMFTerm" {
+                    let slot = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let exponent =
+                        self.wide_unsigned("matrix factorization polynomial exponent")?;
+                    let coefficient = if self.eat(Token::Comma)? {
+                        self.rational_entry("cochain numerator", "cochain denominator")?
+                    } else {
+                        (1, 1)
+                    };
+                    Expression::Term(
+                        source,
+                        target,
+                        parity,
+                        row,
+                        column,
+                        slot,
+                        exponent,
+                        coefficient,
+                    )
+                } else {
+                    let power = self.wide_unsigned("matrix factorization Hom basis index")?;
+                    Expression::Basis(source, target, parity, row, column, power)
+                };
+                self.expect(Token::RBracket)?;
+                (expression, 0)
+            }
+            "rvMFIdentity" => {
+                self.expect(Token::LBracket)?;
+                let object = self.label()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Identity(object), 0)
+            }
+            "rvMFShift" => {
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Shift(source, target, Box::new(input)), depth)
+            }
+            "rvMFCompose" | "rvMFStableAction" => {
+                let inputs = self.paren_pair(nest)?;
+                let depth = inputs[0].depth.max(inputs[1].depth) + 1;
+                let expression = if name == "rvMFCompose" {
+                    Expression::Compose(Box::new(inputs))
+                } else {
+                    Expression::StableAction(Box::new(inputs))
+                };
+                (expression, depth)
+            }
+            _ => {
+                let operation = match name {
+                    "rvMFDiff" => Unary::Differential,
+                    "rvMFClass" => Unary::Class,
+                    "rvMFRepresentative" => Unary::Representative,
+                    "rvMFPrimitive" => Unary::Primitive,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let numerator =
+                            self.signed_wide("an integer numerator", "cochain numerator")?;
+                        self.expect(Token::Comma)?;
+                        let denominator =
+                            self.signed_wide("a positive denominator", "cochain denominator")?;
+                        self.expect(Token::RBracket)?;
+                        Unary::Scale((numerator, denominator))
+                    }
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Unary(operation, Box::new(input)), depth)
+            }
+        };
+        expr(
+            span,
+            ExprForm::MatrixFactorization(Box::new(expression)),
+            depth,
+        )
+    }
+
     fn verbitsky_tate_mode(
         &mut self,
     ) -> Result<crate::hyperelliptic_kummer_surface::hodge_wick::ring::hochschild::tate::Mode> {
@@ -13362,6 +13523,10 @@ impl<'src> Parser<'src> {
                 | "rvVerbitskyAssocProduct"
                 | "rvVerbitskyAssocDirection"),
             ) => self.verbitsky_associative_statement(command)?,
+            Token::Word(
+                command @ ("rvmf" | "rvmfshift" | "rvmfcone" | "rvMFCone" | "rvMFObject"
+                | "rvMFHom" | "rvMFTrace" | "rvMFPair"),
+            ) => self.matrix_factorization_statement(command)?,
             Token::Word(
                 command @ ("rvverbitskytate"
                 | "rvVerbitskyTatePeriod"
@@ -18197,6 +18362,15 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if matches!(name.text.as_str(), "RVMF" | "RVMFCochain") && self.eat(Token::LParen)? {
+            let (source, target, parity) = self.matrix_factorization_grade()?;
+            self.expect(Token::RParen)?;
+            return ty(
+                span,
+                TypeForm::MatrixFactorization(source, target, parity, name.text == "RVMF"),
+                0,
+            );
+        }
         if name.text == "RVVerbitskyTate" && self.eat(Token::LParen)? {
             let mark = self.label()?;
             self.expect(Token::Comma)?;
@@ -20165,6 +20339,22 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvMFTerm" | "rvMFBasis" | "rvMFIdentity" | "rvMFShift" | "rvMFScale"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvMFCompose"
+                            | "rvMFStableAction"
+                            | "rvMFDiff"
+                            | "rvMFClass"
+                            | "rvMFRepresentative"
+                            | "rvMFPrimitive"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.matrix_factorization_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

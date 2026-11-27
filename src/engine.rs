@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use verbitsky_cyclic::eulerian;
 use verbitsky_resolution::deformation;
+use verbitsky_tate::matrix_factorization as mf;
 
 use crate::adams;
 use crate::binary_field::{BinaryField, Embedding};
@@ -1102,6 +1103,10 @@ enum TypedForm {
     HilbertCohomologyCup(Box<[TypedExpr; 2]>),
     VerbitskyHHUnary(hochschild::Unary, Box<TypedExpr>),
     VerbitskyHHBilinear(hochschild::Bilinear, Box<[TypedExpr; 2]>),
+    MatrixFactorizationUnary(mf::Unary, Box<TypedExpr>),
+    MatrixFactorizationCompose(Box<[TypedExpr; 2]>),
+    MatrixFactorizationAction(Box<[TypedExpr; 2]>),
+    MatrixFactorizationShift(Box<TypedExpr>),
     VerbitskyTateUnary(verbitsky_tate::Unary, Box<TypedExpr>),
     VerbitskyTateBilinear(verbitsky_tate::Bilinear, Box<[TypedExpr; 2]>),
     VerbitskyTateBar(Box<TypedExpr>),
@@ -2812,6 +2817,9 @@ impl Engine {
             StatementForm::HodgeWick(command) => return self.hodge_wick_command(*command),
             StatementForm::VerbitskyAssociative(command) => {
                 return self.verbitsky_associative_command(*command)
+            }
+            StatementForm::MatrixFactorization(command) => {
+                return self.matrix_factorization_command(*command)
             }
             StatementForm::VerbitskyTate(command) => return self.verbitsky_tate_command(*command),
             StatementForm::VerbitskyEulerian(command) => {
@@ -6816,6 +6824,110 @@ impl Engine {
             Command::ClassNumber(name) => {
                 let count = form.class_number(&mut self.model)?;
                 Ok(format!("rvK3CMClassNumber[{}] = {count}", name.text))
+            }
+        }
+    }
+
+    fn matrix_factorization_command(&mut self, command: mf::Command) -> Result<Option<String>> {
+        use mf::Command;
+        match command {
+            Command::Declare(name, mark, factors) => {
+                let definition = self.model.verbitsky_tate(&mark.text)?;
+                let object = mf::Object::new(mark.text.into(), &definition, factors)?;
+                self.model.register_matrix_factorization(name, object)?;
+                Ok(None)
+            }
+            Command::Shift(name, source) => {
+                let object = self.model.matrix_factorization(&source.text)?;
+                self.model
+                    .register_matrix_factorization(name, object.shifted())?;
+                Ok(None)
+            }
+            Command::Object(name) => {
+                let object = self.model.matrix_factorization(&name.text)?;
+                Ok(Some(format!(
+                    "rvMFObject[{}] = {}",
+                    name.text,
+                    object.text()?
+                )))
+            }
+            Command::Hom(source, target, odd) => {
+                let source_object = self.model.matrix_factorization(&source.text)?;
+                let target_object = self.model.matrix_factorization(&target.text)?;
+                let hom = mf::Hom::new(&source_object, &target_object, odd)?;
+                let value = hom.report(&mut self.model)?;
+                Ok(Some(format!(
+                    "rvMFHom[{}, {}, {}] = {value}",
+                    source.text,
+                    target.text,
+                    u8::from(odd)
+                )))
+            }
+            Command::Cone(name, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self
+                    .checker()
+                    .matrix_factorization_operand(&input, "rvMFCone")?
+                    .0
+                    .clone();
+                let [source, target] = grade.objects(&self.model)?;
+                let Value::MatrixFactorization(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let (object, report) = mf::Hom::new(&source, &target, grade.odd)?.cone(
+                    &mut self.model,
+                    &value,
+                    name.is_none(),
+                )?;
+                if let Some(name) = name {
+                    self.model.register_matrix_factorization(name, object)?;
+                }
+                Ok(report.map(|report| format!("rvMFCone = {report}")))
+            }
+            Command::Trace(input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self
+                    .checker()
+                    .matrix_factorization_operand(&input, "rvMFTrace")?
+                    .0
+                    .clone();
+                if grade.source != grade.target {
+                    return Err(Error::plain(
+                        "matrix factorization trace requires an endomorphism",
+                    ));
+                }
+                let [source, target] = grade.objects(&self.model)?;
+                let Value::MatrixFactorization(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let value =
+                    mf::Hom::new(&source, &target, grade.odd)?.trace(&mut self.model, &value)?;
+                Ok(Some(format!("rvMFTrace = {value}")))
+            }
+            Command::Pair(inputs) => {
+                let [first, second] = *inputs;
+                let first = self.checker().expr(first)?;
+                let second = self.checker().expr(second)?;
+                let checker = self.checker();
+                let (a, a_class) = checker.matrix_factorization_operand(&first, "rvMFPair")?;
+                let (b, b_class) = checker.matrix_factorization_operand(&second, "rvMFPair")?;
+                if a_class != b_class || a.source != b.target || a.target != b.source {
+                    return Err(Error::plain("matrix factorization pairing requires opposite Hom spaces, both raw or both classes"));
+                }
+                let (a, b) = (a.clone(), b.clone());
+                let [source, target] = a.objects(&self.model)?;
+                let Value::MatrixFactorization(first) = self.eval(&first)? else {
+                    unreachable!()
+                };
+                let Value::MatrixFactorization(second) = self.eval(&second)? else {
+                    unreachable!()
+                };
+                mf::Hom::new(&source, &target, a.odd)?.require_cycle(&mut self.model, &first)?;
+                mf::Hom::new(&target, &source, b.odd)?.require_cycle(&mut self.model, &second)?;
+                let composed = second.compose(&mut self.model, b.odd, &first)?;
+                let value = mf::Hom::new(&source, &source, a.odd ^ b.odd)?
+                    .trace(&mut self.model, &composed)?;
+                Ok(Some(format!("rvMFPair = {value}")))
             }
         }
     }
@@ -12954,6 +13066,11 @@ impl Engine {
                     (BinaryOp::Add, Value::VerbitskyCyclic(a), Value::VerbitskyCyclic(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (
+                        BinaryOp::Add,
+                        Value::MatrixFactorization(a),
+                        Value::MatrixFactorization(b),
+                    ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
                     (BinaryOp::Add, Value::VerbitskyTate(a), Value::VerbitskyTate(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -15295,6 +15412,75 @@ impl Engine {
                 operation
                     .apply(&mut self.model, &h, &x, &grade)?
                     .persist(&mut self.model)
+            }
+            TypedForm::MatrixFactorizationUnary(operation, input) => {
+                let Kind::MatrixFactorization(grade, _) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let Value::MatrixFactorization(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                if matches!(operation, mf::Unary::Representative) {
+                    return Ok(Value::MatrixFactorization(value));
+                }
+                let [source, target] = grade.objects(&self.model)?;
+                let hom = mf::Hom::new(&source, &target, grade.odd)?;
+                let output = match operation {
+                    mf::Unary::Differential => hom.differential(&mut self.model, &value)?,
+                    mf::Unary::Class => hom.class(&mut self.model, &value)?,
+                    mf::Unary::Primitive => hom.primitive(&mut self.model, &value)?,
+                    mf::Unary::Scale(coefficient) => value.scale(&mut self.model, *coefficient)?,
+                    mf::Unary::Representative => unreachable!(),
+                };
+                output.persist(&mut self.model)
+            }
+            TypedForm::MatrixFactorizationCompose(inputs) => {
+                let Kind::MatrixFactorization(grade, class) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let grade = grade.clone();
+                let class = *class;
+                let Kind::MatrixFactorization(left, _) = self.model.kind(inputs[0].ty) else {
+                    unreachable!()
+                };
+                let odd = left.odd;
+                let Value::MatrixFactorization(a) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::MatrixFactorization(b) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                let result = a.compose(&mut self.model, odd, &b)?;
+                let result = if class {
+                    let [source, target] = grade.objects(&self.model)?;
+                    mf::Hom::new(&source, &target, grade.odd)?.class(&mut self.model, &result)?
+                } else {
+                    result
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::MatrixFactorizationAction(inputs) => {
+                let Kind::MatrixFactorization(grade, _) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let [source, target] = grade.objects(&self.model)?;
+                let odd = grade.odd;
+                let Value::VerbitskyTate(tate) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::MatrixFactorization(value) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                mf::Hom::new(&source, &target, odd)?
+                    .stable_action(&mut self.model, &tate, &value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::MatrixFactorizationShift(input) => {
+                let Value::MatrixFactorization(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.shifted(&mut self.model)?.persist(&mut self.model)
             }
             TypedForm::VerbitskyTateUnary(operation, input) => {
                 let Kind::VerbitskyTate(grade) = self.model.kind(input.ty) else {
@@ -19406,6 +19592,16 @@ impl Checker<'_> {
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
             }
+            TypeForm::MatrixFactorization(source, target, odd, class) => {
+                self.model.matrix_factorization_type(
+                    mf::Grade {
+                        source: source.text.into(),
+                        target: target.text.into(),
+                        odd,
+                    },
+                    class,
+                )
+            }
             TypeForm::VerbitskyTate(name, mode, degree, shift) => {
                 self.model.verbitsky_tate_type(verbitsky_tate::Grade {
                     name: name.text.into(),
@@ -20650,6 +20846,7 @@ impl Checker<'_> {
                     Kind::HodgeTensor(..) | Kind::Verbitsky(..) => hodge_wick::Tensor::default().persist(self.model)?,
                     Kind::VerbitskyKoszul(..) | Kind::VerbitskyTor(..) => koszul::Chain::default().persist(self.model)?,
                     Kind::VerbitskyCyclic(..) => verbitsky_cyclic::Chain::default().persist(self.model)?,
+                    Kind::MatrixFactorization(..) => mf::Morphism::default().persist(self.model)?,
                     Kind::VerbitskyTate(..) => verbitsky_tate::State::default().persist(self.model)?,
                     Kind::VerbitskyHochschild(..) => hochschild::Cochain::default().persist(self.model)?,
                     Kind::VerbitskyFree(..) | Kind::VerbitskyDeformation(..) => verbitsky_resolution::Vector::default().persist(self.model)?,
@@ -22955,6 +23152,9 @@ impl Checker<'_> {
                 let value = jet.lookup(self.model, operation, &powers)?;
                 Ok((ty, TypedForm::Constant(value)))
             }
+            ExprForm::MatrixFactorization(expression) => {
+                self.matrix_factorization_expression(*expression)
+            }
             ExprForm::VerbitskyTate(expression) => self.verbitsky_tate_expression(*expression),
             ExprForm::VerbitskyEulerian(expression) => {
                 let eulerian::Expression(operation, input) = *expression;
@@ -23919,6 +24119,15 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::VerbitskyCyclicScale((-1, 1), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::MatrixFactorization(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::MatrixFactorizationUnary(
+                            mf::Unary::Scale((-1, 1)),
+                            Box::new(input),
+                        ),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::VerbitskyTate(..)) {
@@ -28160,6 +28369,7 @@ impl Checker<'_> {
                         | Kind::VerbitskyKoszul(..)
                         | Kind::VerbitskyTor(..)
                         | Kind::VerbitskyCyclic(..)
+                        | Kind::MatrixFactorization(..)
                         | Kind::VerbitskyTate(..)
                         | Kind::VerbitskyHochschild(..)
                         | Kind::VerbitskyDeformation(..)
@@ -29873,6 +30083,139 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
                 ))
+            }
+        }
+    }
+
+    fn matrix_factorization_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<(&mf::Grade, bool)> {
+        if let Kind::MatrixFactorization(grade, class) = self.model.kind(input.ty) {
+            Ok((grade, *class))
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVMF class or RVMFCochain"))
+        }
+    }
+
+    fn matrix_factorization_expression(
+        &mut self,
+        expression: mf::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use mf::{Expression, Grade, Unary};
+        match expression {
+            Expression::Term(source, target, odd, row, column, slot, exponent, coefficient) => {
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd,
+                };
+                let [source, target] = grade.objects(self.model)?;
+                let value = mf::Hom::new(&source, &target, odd)?.term(
+                    self.model,
+                    row,
+                    column,
+                    slot,
+                    exponent,
+                    coefficient,
+                )?;
+                let ty = self.model.matrix_factorization_type(grade, false)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Basis(source, target, odd, row, column, power) => {
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd,
+                };
+                let [source, target] = grade.objects(self.model)?;
+                let value =
+                    mf::Hom::new(&source, &target, odd)?.basis(self.model, row, column, power)?;
+                let ty = self.model.matrix_factorization_type(grade, true)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Identity(name) => {
+                let name: Rc<str> = name.text.into();
+                let object = self.model.matrix_factorization(&name)?;
+                let grade = Grade {
+                    source: name.clone(),
+                    target: name,
+                    odd: false,
+                };
+                let value = mf::Hom::new(&object, &object, false)?.identity(self.model)?;
+                let ty = self.model.matrix_factorization_type(grade, true)?;
+                Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+            }
+            Expression::Unary(operation, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) =
+                    self.matrix_factorization_operand(&input, "matrix factorization operation")?;
+                let (grade,out_class)=match operation {
+                    Unary::Differential | Unary::Primitive if !class => (grade.opposite(),false),
+                    Unary::Class if !class => (grade.clone(),true),
+                    Unary::Representative if class => (grade.clone(),false),
+                    Unary::Scale((_,denominator)) => {
+                        if denominator<=0 { return Err(Error::plain("Hodge Wick rational denominator must be positive")); }
+                        (grade.clone(),class)
+                    }
+                    _ => return Err(Error::plain("matrix factorization differential, class and homotopy require raw cochains, and representative requires a class")),
+                };
+                let ty = self.model.matrix_factorization_type(grade, out_class)?;
+                Ok((
+                    ty,
+                    TypedForm::MatrixFactorizationUnary(operation, Box::new(input)),
+                ))
+            }
+            Expression::Compose(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let (left, class) = self.matrix_factorization_operand(&a, "rvMFCompose")?;
+                let (right, other) = self.matrix_factorization_operand(&b, "rvMFCompose")?;
+                if class != other {
+                    return Err(Error::plain("matrix factorization composition requires both raw cochains or both classes"));
+                }
+                let grade = left.compose(right)?;
+                let ty = self.model.matrix_factorization_type(grade, class)?;
+                Ok((ty, TypedForm::MatrixFactorizationCompose(Box::new([a, b]))))
+            }
+            Expression::StableAction(inputs) => {
+                let [scalar, value] = *inputs;
+                let scalar = self.expr(scalar)?;
+                let value = self.expr(value)?;
+                let tate = self.verbitsky_tate_operand(&scalar, "rvMFStableAction")?;
+                let (grade, class) =
+                    self.matrix_factorization_operand(&value, "rvMFStableAction")?;
+                if !class {
+                    return Err(Error::plain(
+                        "matrix factorization stable action requires a Hom class",
+                    ));
+                }
+                let source = self.model.matrix_factorization(&grade.source)?;
+                mf::check_stable(tate, &source)?;
+                Ok((
+                    value.ty,
+                    TypedForm::MatrixFactorizationAction(Box::new([scalar, value])),
+                ))
+            }
+            Expression::Shift(source, target, input) => {
+                let input = self.expr(*input)?;
+                let (grade, class) = self.matrix_factorization_operand(&input, "rvMFShift")?;
+                let [old_source, old_target] = grade.objects(self.model)?;
+                let grade = Grade {
+                    source: source.text.into(),
+                    target: target.text.into(),
+                    odd: grade.odd,
+                };
+                let [new_source, new_target] = grade.objects(self.model)?;
+                if !new_source.is_shift_of(&old_source) || !new_target.is_shift_of(&old_target) {
+                    return Err(Error::plain(
+                        "matrix factorization shift targets must be the indicated shifted objects",
+                    ));
+                }
+                let ty = self.model.matrix_factorization_type(grade, class)?;
+                Ok((ty, TypedForm::MatrixFactorizationShift(Box::new(input))))
             }
         }
     }
