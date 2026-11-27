@@ -55,7 +55,7 @@ impl Group {
             .collect())
     }
 
-    fn project(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<usize>> {
+    pub(crate) fn project(&self, model: &mut Model, terms: &[Term]) -> Result<Vec<usize>> {
         let support = indices(model, &self.terms, terms)?;
         self.quotient
             .project(model, support)?
@@ -239,7 +239,7 @@ fn preimage<T: Clone + Eq + Hash>(
     Ok(None)
 }
 
-fn real_preimage(
+pub(crate) fn real_preimage(
     model: &mut Model,
     grade: Grade,
     terms: &[Term],

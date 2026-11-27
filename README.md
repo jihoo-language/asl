@@ -307,6 +307,14 @@ The calculation uses the normalized cobar at $t=0,w=-k$. Filtering its basis by 
 
 Use `rmbarGen[s,k,i]` for the bar's `RMExt` generator and `rmbarRep[s,k,i]` for its traced real cocycle. For a finite bar, `rmbarNull[s,k,i]` gives the paired cochain $u$ with $du=\rho^r z$, where $z$ is the traced representative. The null starts in filtration zero in topological degree $B-r$ and supports the differential $d_r$ to the filtration-$r$ class of $\rho^r z$. The example verifies this correspondence for length six in $(s,k)=(2,5)$ and length seven in $(3,6)$. [Real-motivic rho bars example](examples/real-motivic-bars.asl)
 
+### Real-motivic triple Massey products
+
+Use `rmTriple(a,b,c)` for the affine coset of the ordered triple Massey product. Each input may be an `RMExt` class or a closed `RMCobar` cochain. The adjacent balanced products $ab$ and $bc$ must be boundaries. `rmMasseyNull(a,b)` gives an actual primitive of $ab$ in positive total cobar length. `rmMassey(a,b,c)` gives the corresponding cocycle $uc+av$, where $du=ab$ and $dv=bc$. This raw operation needs only the defining system. For an adjacent product of length zero the product must already vanish and its negative-length primitive contributes zero.
+
+The `RMTriple(s,t,w)` value has indeterminacy $aH^{s_b+s_c-1}+H^{s_a+s_b-1}c$ in the relevant signed tridegrees. `rmTripleBase(M)` gives a class in the coset and `rmTripleDir[i](M)` gives a direction in the indeterminacy basis. `rmTripleDim(M);` prints its affine dimension and `rmTripleContains(M,x);` checks membership. A candidate may be an `RMExt` class or a closed cochain in the output grade.
+
+For example $\langle\rho,[\tau_0],[\xi_1]\rangle$ contains $[\tau_0^2]$ and $[\tau_0^2]+\rho^2[\xi_1^2]$. For $N$ a power of two the defining cocycle for $\langle[\tau_0^N],\rho^N,[\tau_0^N]\rangle$ is $\rho^N[\tau_0^{2N}]$, with both primitives equal to $\tau^N$. The scalar indeterminacy vanishes and the class has exact $\rho$ exponent $N$. The example computes the full coset at $N=4$ and checks the sparse defining cocycle and its minimal null at $N=32$. [Real-motivic Massey product example](examples/real-motivic-massey.asl)
+
 ## The odd-prime cobar algebra
 
 `PCobar(p, s, t)` uses coefficients in $\mathbb F_p$ for an odd prime `p` that fits in an unsigned 32-bit integer. The dual Steenrod algebra is polynomial on $\xi_i$ of degree $2(p^i-1)$ for $i\ge1$ and exterior on $\tau_i$ of degree $2p^i-1$ for $i\ge0$. The literal `pword[3]{([1], [0]), ([], [1])}` denotes $[\xi_1\tau_0\mid\tau_1]$. Each factor gives the polynomial exponents in generator order and the strictly increasing exterior indices. Every factor has positive degree. The empty word `pword[p]{}` gives the tensor unit.

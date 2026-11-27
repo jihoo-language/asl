@@ -64,6 +64,7 @@ pub(crate) enum TypeForm {
     RhoLoc(MotivicGrade),
     MExt(MotivicGrade),
     RMExt(MotivicGrade),
+    RMTriple(MotivicGrade),
     PCobar(usize, usize, usize),
     PCobarAn(usize, usize, usize, usize),
     PExt(usize, usize, usize),
@@ -554,6 +555,9 @@ pub(crate) enum ExprForm {
     RhoShift(i128, Box<ParsedExpr>),
     RealComplex(Box<ParsedExpr>),
     RhoNull(usize, Box<ParsedExpr>),
+    RealMassey(bool, Box<[ParsedExpr; 3]>),
+    RealMasseyNull(Box<[ParsedExpr; 2]>),
+    RealTripleClass(Option<usize>, Box<ParsedExpr>),
     Realize(Box<ParsedExpr>),
     PCobarWord(usize, Vec<FactorLiteral>),
     PExtGenerator(usize, usize, usize, usize, Span),
@@ -833,6 +837,8 @@ pub(crate) enum StatementForm {
     RhoOrder(Box<ParsedExpr>),
     RealBars(usize, i128),
     RealBarRank(usize, i128, i128, usize),
+    RealTripleDim(Box<ParsedExpr>),
+    RealTripleContains(Box<[ParsedExpr; 2]>),
     RhoDimension(rho_bock::Grade),
     PExtDimension(usize, usize, usize),
     PExtAnDimension(usize, usize, usize, usize),
@@ -2073,6 +2079,21 @@ impl<'src> Parser<'src> {
                 let input = self.paren_expr(0)?;
                 StatementForm::RhoOrder(Box::new(input))
             }
+            Token::Word("rmTripleDim") => {
+                self.advance()?;
+                StatementForm::RealTripleDim(Box::new(self.paren_expr(0)?))
+            }
+            Token::Word("rmTripleContains") => {
+                let span = self.span();
+                self.advance()?;
+                self.expect(Token::LParen)?;
+                StatementForm::RealTripleContains(self.exact_arguments(
+                    0,
+                    span,
+                    "rmTripleContains",
+                    "a bracket and a candidate",
+                )?)
+            }
             Token::Word("rmextdim") => {
                 self.advance()?;
                 self.expect(Token::LBracket)?;
@@ -3124,7 +3145,7 @@ impl<'src> Parser<'src> {
         }
         if matches!(
             name.text.as_str(),
-            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RhoLoc"
+            "MCobar" | "MExt" | "RMCobar" | "RMExt" | "RMTriple" | "RhoLoc"
         ) && self.eat(Token::LParen)?
         {
             let grade = self.motivic_grade()?;
@@ -3133,6 +3154,7 @@ impl<'src> Parser<'src> {
                 "MCobar" => TypeForm::MCobar(grade),
                 "RMCobar" => TypeForm::RMCobar(grade),
                 "RMExt" => TypeForm::RMExt(grade),
+                "RMTriple" => TypeForm::RMTriple(grade),
                 "RhoLoc" => TypeForm::RhoLoc(grade),
                 _ => TypeForm::MExt(grade),
             };
@@ -3657,11 +3679,21 @@ impl<'src> Parser<'src> {
         span: Span,
         name: &str,
     ) -> Result<Box<[ParsedExpr; 3]>> {
-        let triple: [ParsedExpr; 3] = self
+        self.exact_arguments(nest, span, name, "three BPExt classes")
+    }
+
+    fn exact_arguments<const N: usize>(
+        &mut self,
+        nest: usize,
+        span: Span,
+        name: &str,
+        expected: &str,
+    ) -> Result<Box<[ParsedExpr; N]>> {
+        let arguments = self
             .arguments(nest)?
             .try_into()
-            .map_err(|_| Error::new(span, format!("{name} requires three BPExt classes")))?;
-        Ok(Box::new(triple))
+            .map_err(|_| Error::new(span, format!("{name} requires {expected}")))?;
+        Ok(Box::new(arguments))
     }
 
     fn variadic(&mut self, head: ParsedExpr, nest: usize) -> Result<ParsedExpr> {
@@ -4781,6 +4813,42 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::RhoNull(power, Box::new(input)), depth);
+                }
+                if matches!(name.text.as_str(), "rmMassey" | "rmTriple")
+                    && self.eat(Token::LParen)?
+                {
+                    let inputs = self.exact_arguments(nest, span, &name.text, "three inputs")?;
+                    let depth = inputs.iter().map(|x| x.depth).max().unwrap_or(0) + 1;
+                    return expr(
+                        span,
+                        ExprForm::RealMassey(name.text == "rmTriple", inputs),
+                        depth,
+                    );
+                }
+                if name.text == "rmMasseyNull" && self.eat(Token::LParen)? {
+                    let inputs = self.exact_arguments(nest, span, &name.text, "two inputs")?;
+                    let depth = inputs.iter().map(|x| x.depth).max().unwrap_or(0) + 1;
+                    return expr(span, ExprForm::RealMasseyNull(inputs), depth);
+                }
+                if name.text == "rmTripleBase" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RealTripleClass(None, Box::new(input)),
+                        depth,
+                    );
+                }
+                if name.text == "rmTripleDir" && self.eat(Token::LBracket)? {
+                    let (index, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::RealTripleClass(Some(index), Box::new(input)),
+                        depth,
+                    );
                 }
                 if name.text == "rhoSection" && self.eat(Token::LBracket)? {
                     let t = self.signed_wide(

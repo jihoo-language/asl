@@ -49,6 +49,7 @@ use crate::q_module;
 use crate::rank_jets;
 use crate::rank_variety;
 use crate::real_ext;
+use crate::real_massey;
 use crate::real_motivic;
 use crate::restriction_transfer;
 use crate::rho_bock;
@@ -407,6 +408,9 @@ enum TypedForm {
     RealComplex(Box<TypedExpr>),
     RhoNull(usize, Box<TypedExpr>),
     RealBar(RealBarOp, usize, i128, usize),
+    RealMassey(bool, real_massey::Layout, Box<[TypedExpr; 3]>),
+    RealMasseyNull(motivic::Grade, Box<[TypedExpr; 2]>),
+    RealTripleClass(Option<usize>, Box<TypedExpr>),
     RhoOperation(RhoOp, Box<TypedExpr>),
     RhoLocOperation(RhoLocOp, Box<TypedExpr>),
     MapExtInduced(Box<TypedExpr>),
@@ -1281,6 +1285,47 @@ impl Engine {
                     Some(exponent) => format!("rhoorder = {exponent}"),
                     None => "rhoorder = infinite".to_string(),
                 }
+            }
+            StatementForm::RealTripleDim(bracket) => {
+                let bracket = self.checker().expr(*bracket)?;
+                self.checker().rm_triple_grade(&bracket, "rmTripleDim")?;
+                let Value::RMTriple(coset) = self.eval(&bracket)? else {
+                    unreachable!();
+                };
+                format!("rmTripleDim = {}", coset.dimension())
+            }
+            StatementForm::RealTripleContains(pair) => {
+                let [bracket, candidate] = *pair;
+                let mut checker = self.checker();
+                let bracket = checker.expr(bracket)?;
+                let grade = checker.rm_triple_grade(&bracket, "rmTripleContains")?;
+                let candidate = checker.expr(candidate)?;
+                let candidate_grade = checker.real_grade(&candidate, "rmTripleContains")?;
+                if candidate_grade != grade {
+                    let motivic::Grade { s, t, w } = grade;
+                    return Err(checker.invalid_operand(
+                        &candidate,
+                        "rmTripleContains",
+                        &format!("an RMCobar cochain or RMExt class in degree ({s}, {t}, {w})"),
+                    ));
+                }
+                let Value::RMTriple(coset) = self.eval(&bracket)? else {
+                    unreachable!();
+                };
+                let coords = match self.eval(&candidate)? {
+                    Value::Class(coords) => coords,
+                    Value::RMCobar(terms) => {
+                        let ty = self.model.rmext_type(grade)?;
+                        let Value::Class(coords) = real_ext::class(&mut self.model, ty, &terms)?
+                        else {
+                            unreachable!();
+                        };
+                        coords
+                    }
+                    _ => unreachable!(),
+                };
+                let answer = coset.contains(&mut self.model, &coords)?;
+                format!("rmTripleContains = {}", if answer { "yes" } else { "no" })
             }
             StatementForm::RMExtDimension(grade) => {
                 let ty = self.model.rmext_type(grade)?;
@@ -2597,6 +2642,38 @@ impl Engine {
                 let grade = self.model.kind(input.ty).real_grade().unwrap();
                 let (terms, known_cycle) = self.real_terms(input)?;
                 real_ext::null(&mut self.model, grade, &terms, *power, known_cycle)
+            }
+            TypedForm::RealMassey(coset, layout, inputs) => {
+                let [a, b, c] = inputs.as_ref();
+                let values = [
+                    self.real_terms(a)?,
+                    self.real_terms(b)?,
+                    self.real_terms(c)?,
+                ];
+                let inputs = values
+                    .each_ref()
+                    .map(|(terms, known)| (terms.as_ref(), *known));
+                if *coset {
+                    let coset = layout.coset(&mut self.model, inputs)?;
+                    Ok(Value::RMTriple(Rc::new(coset)))
+                } else {
+                    layout.representative(&mut self.model, inputs)
+                }
+            }
+            TypedForm::RealMasseyNull(grade, inputs) => {
+                let [left, right] = inputs.as_ref();
+                let (a, a_closed) = self.real_terms(left)?;
+                let (b, b_closed) = self.real_terms(right)?;
+                real_massey::adjacent_null(&mut self.model, *grade, (&a, a_closed), (&b, b_closed))
+            }
+            TypedForm::RealTripleClass(index, input) => {
+                let Value::RMTriple(coset) = self.eval(input)? else {
+                    unreachable!();
+                };
+                match index {
+                    Some(index) => coset.direction(&mut self.model, *index),
+                    None => Ok(coset.base()),
+                }
             }
             TypedForm::MotivicCast(input) => {
                 let value = self.eval(input)?;
@@ -4410,6 +4487,7 @@ impl Checker<'_> {
                 self.model.sheaf_hom_type(form, &source, &target, degree)
             }
             TypeForm::RMExt(grade) => self.model.rmext_type(grade),
+            TypeForm::RMTriple(grade) => self.model.rm_triple_type(grade),
             TypeForm::PExt(p, s, t) => {
                 let prime = Prime::new(self.model, p)?;
                 self.model.odd_ext_type(prime, s, t)
@@ -4930,6 +5008,50 @@ impl Checker<'_> {
                     .model
                     .real_cobar_type(real_motivic::shifted(previous, power)?)?;
                 Ok((ty, TypedForm::RhoNull(power, Box::new(input))))
+            }
+            ExprForm::RealMassey(coset, inputs) => {
+                let name = if coset { "rmTriple" } else { "rmMassey" };
+                let [a, b, c] = *inputs;
+                let inputs = [self.expr(a)?, self.expr(b)?, self.expr(c)?];
+                let [a, b, c] = inputs.each_ref();
+                let layout = real_massey::Layout::new([
+                    self.real_grade(a, name)?,
+                    self.real_grade(b, name)?,
+                    self.real_grade(c, name)?,
+                ])?;
+                let ty = if coset {
+                    self.model.rm_triple_type(layout.target)?
+                } else {
+                    self.model.real_cobar_type(layout.target)?
+                };
+                Ok((ty, TypedForm::RealMassey(coset, layout, Box::new(inputs))))
+            }
+            ExprForm::RealMasseyNull(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let grade = self
+                    .real_grade(&left, "rmMasseyNull")?
+                    .product(self.real_grade(&right, "rmMasseyNull")?)?;
+                let previous = grade.previous().ok_or_else(|| {
+                    Error::new(span, "rmMasseyNull requires positive total cobar length")
+                })?;
+                let ty = self.model.real_cobar_type(previous)?;
+                Ok((
+                    ty,
+                    TypedForm::RealMasseyNull(grade, Box::new([left, right])),
+                ))
+            }
+            ExprForm::RealTripleClass(index, input) => {
+                let input = self.expr(*input)?;
+                let name = if index.is_some() {
+                    "rmTripleDir"
+                } else {
+                    "rmTripleBase"
+                };
+                let grade = self.rm_triple_grade(&input, name)?;
+                let ty = self.model.rmext_type(grade)?;
+                Ok((ty, TypedForm::RealTripleClass(index, Box::new(input))))
             }
             ExprForm::TauShift(power, input) => {
                 let input = self.expr(*input)?;
@@ -8337,6 +8459,13 @@ impl Checker<'_> {
             };
             self.invalid_operand(input, operation, expected)
         })
+    }
+
+    fn rm_triple_grade(&self, input: &TypedExpr, operation: &str) -> Result<motivic::Grade> {
+        match *self.model.kind(input.ty) {
+            Kind::RMTriple(grade) => Ok(grade),
+            _ => Err(self.invalid_operand(input, operation, "an RMTriple coset")),
+        }
     }
 
     fn cobar_result(

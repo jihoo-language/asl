@@ -38,6 +38,7 @@ use crate::q_module::{Module, Presentation};
 use crate::rank_jets::Path;
 use crate::real_bars;
 use crate::real_ext;
+use crate::real_massey;
 use crate::real_motivic;
 use crate::rho_bock;
 use crate::rho_localized;
@@ -149,6 +150,7 @@ pub(crate) enum Kind {
     RhoLoc(motivic::Grade),
     MExt(motivic::Grade),
     RMExt(motivic::Grade),
+    RMTriple(motivic::Grade),
     PCobar(Prime, usize, usize),
     PCobarAn(Prime, usize, usize, usize),
     PExt(Prime, usize, usize),
@@ -288,6 +290,7 @@ pub(crate) enum Value {
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
     RMCobar(real_motivic::Cochain),
+    RMTriple(Rc<real_massey::Coset>),
     RhoLoc(rho_localized::Cochain),
     PCobar(odd_cobar::Support),
     OddClass(Rc<[Coordinate]>),
@@ -640,6 +643,7 @@ impl Model {
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMTriple(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
@@ -802,6 +806,7 @@ impl Model {
                 | Kind::ExtAn(..)
                 | Kind::MExt(..)
                 | Kind::RMExt(..)
+                | Kind::RMTriple(..)
                 | Kind::RhoBock(..)
                 | Kind::XExt(..)
                 | Kind::MapCobar(..)
@@ -1463,6 +1468,10 @@ impl Model {
         let group = Rc::new(real_bars::Group::build(self, s, k)?);
         self.real_bars.insert((s, k), group.clone());
         Ok(group)
+    }
+
+    pub(crate) fn rm_triple_type(&mut self, grade: motivic::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RMTriple(grade), 0)
     }
 
     pub(crate) fn real_ext(&mut self, ty: TypeId) -> Result<Rc<real_ext::Group>> {
@@ -2614,6 +2623,7 @@ impl Model {
             | Kind::ExtAn(..)
             | Kind::MExt(..)
             | Kind::RMExt(..)
+            | Kind::RMTriple(..)
             | Kind::RhoBock(..)
             | Kind::XExt(..)
             | Kind::MapCobar(..)
@@ -2821,6 +2831,9 @@ impl Model {
             }
             &Kind::MExt(motivic::Grade { s, t, w }) => out.push(&format!("MExt({s}, {t}, {w})")),
             &Kind::RMExt(motivic::Grade { s, t, w }) => out.push(&format!("RMExt({s}, {t}, {w})")),
+            &Kind::RMTriple(motivic::Grade { s, t, w }) => {
+                out.push(&format!("RMTriple({s}, {t}, {w})"))
+            }
             &Kind::RhoBock(rho_bock::Grade {
                 chain: motivic::Grade { s, t, w },
                 r,
@@ -3126,6 +3139,9 @@ impl Model {
             }
             (Value::PCobar(left), Value::PCobar(right)) => Ok(Rc::ptr_eq(left, right)
                 || odd_cobar::compare(self, left, right)? == Ordering::Equal),
+            (Value::RMTriple(left), Value::RMTriple(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::BPTriple(left), Value::BPTriple(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
@@ -3301,6 +3317,13 @@ impl Model {
                     return Ok(Ordering::Equal);
                 }
                 odd_cobar::compare(self, left, right)
+            }
+            (Value::RMTriple(left), Value::RMTriple(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
             }
             (Value::BPTriple(left), Value::BPTriple(right)) => {
                 if Rc::ptr_eq(left, right) {
@@ -3637,6 +3660,11 @@ impl Model {
                 Kind::BPRel(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an integral BP relative cochain space",
+                    ))
+                }
+                Kind::RMTriple(..) => {
+                    return Err(Error::plain(
+                        "RMTriple types do not enumerate ambient cosets",
                     ))
                 }
                 Kind::BPTriple(..) => {
@@ -4405,6 +4433,16 @@ impl Model {
                     write_odd_word(out, p, word)?;
                 }
                 out.push("}")
+            }
+            Value::RMTriple(coset) => {
+                let Kind::RMTriple(grade) = *self.kind(ty) else {
+                    unreachable!()
+                };
+                self.write_type(out, ty, 0)?;
+                out.push("{base = ")?;
+                let ext_type = self.rmext_type(grade)?;
+                self.write_value(out, ext_type, &coset.base())?;
+                out.push(&format!(", dimension = {}}}", coset.dimension()))
             }
             Value::BPTriple(coset) => {
                 let Kind::BPTriple(grade) = *self.kind(ty) else {
