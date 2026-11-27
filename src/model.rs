@@ -99,6 +99,7 @@ use crate::rv_crystal::{Crystal, Entries as CrystalEntries};
 use crate::rv_curve::Curve as RvCurve;
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
+use crate::rv_eisenstein as eisenstein;
 use crate::rv_fusion;
 use crate::rv_hh;
 use crate::rv_hh_homology;
@@ -337,6 +338,7 @@ pub(crate) enum Kind {
     MazurOrdinary(Box<str>, u64),
     Tate(rv_tate::Precision),
     Tame(tame::Grade),
+    Eisenstein(eisenstein::Grade),
     PeriodPolynomial(period::Grade),
     ECMap(Rc<str>, Rc<str>),
     ECPoint(Rc<str>),
@@ -562,6 +564,7 @@ pub(crate) enum Value {
     MazurOrdinary(u64),
     Tate(Rc<rv_tate::Series>),
     Tame(Rc<tame::Element>),
+    Eisenstein(Rc<eisenstein::Element>),
     PeriodPolynomial(Rc<period::Polynomial>),
     ECMap(Rc<ECMap>),
     ECPoint(Rc<ECPoint>),
@@ -803,6 +806,7 @@ pub(crate) struct Model {
     siegel_maass_forms: HashMap<String, Rc<maass::Form>>,
     siegel_chambers: HashMap<String, Rc<farey::Period>>,
     pub(crate) igusa_inverse_cache: inverse::Cache,
+    eisenstein_fields: HashMap<String, Rc<eisenstein::Extension>>,
     rv_unram_rings: HashMap<String, Rc<UnramRing>>,
     hodge_wick_forms: HashMap<String, Rc<hyperelliptic_kummer_surface::hodge_wick::Form>>,
     rv_witt_towers: HashMap<String, Rc<RvWittTower>>,
@@ -952,6 +956,7 @@ impl Model {
             siegel_maass_forms: HashMap::new(),
             siegel_chambers: HashMap::new(),
             igusa_inverse_cache: inverse::Cache::default(),
+            eisenstein_fields: HashMap::new(),
             rv_unram_rings: HashMap::new(),
             hodge_wick_forms: HashMap::new(),
             rv_witt_towers: HashMap::new(),
@@ -1501,6 +1506,7 @@ impl Model {
             | Kind::MazurDiscRoot(..)
             | Kind::Tate(..)
             | Kind::Tame(..)
+            | Kind::Eisenstein(..)
             | Kind::PeriodPolynomial(..) => usize::MAX,
             Kind::Nakajima(ref grade)
             | Kind::HilbertCohomology(ref grade)
@@ -1830,6 +1836,7 @@ impl Model {
                 | Kind::MazurDiscRoot(..)
                 | Kind::Tate(..)
                 | Kind::Tame(..)
+                | Kind::Eisenstein(..)
                 | Kind::PeriodPolynomial(..)
                 | Kind::ECMap(..)
                 | Kind::ECPoint(..)
@@ -5876,6 +5883,48 @@ impl Model {
         self.inhabited_type(Kind::HWWMatrix(grade), 0)
     }
 
+    pub(crate) fn register_eisenstein(
+        &mut self,
+        declaration: eisenstein::Declaration,
+    ) -> Result<()> {
+        let (name, base, polynomial, level) = match declaration {
+            eisenstein::Declaration::Polynomial(name, base, polynomial) => {
+                (name, base, polynomial, None)
+            }
+            eisenstein::Declaration::Cyclotomic(name, base, level) => {
+                (name, base, Vec::new(), Some(level))
+            }
+        };
+        if self.eisenstein_fields.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("Eisenstein extension '{}' is already defined", name.text),
+            ));
+        }
+        let base = self.rv_unram(&base)?;
+        let extension = eisenstein::Extension::new(self, base, polynomial, level)
+            .map_err(|e| e.at(name.span))?;
+        self.eisenstein_fields.insert(name.text, Rc::new(extension));
+        Ok(())
+    }
+
+    pub(crate) fn eisenstein_named(&self, name: &str) -> Option<Rc<eisenstein::Extension>> {
+        self.eisenstein_fields.get(name).cloned()
+    }
+
+    pub(crate) fn eisenstein(&self, name: &Label) -> Result<Rc<eisenstein::Extension>> {
+        self.eisenstein_named(&name.text).ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Eisenstein extension '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn eisenstein_type(&mut self, grade: eisenstein::Grade) -> Result<TypeId> {
+        self.inhabited_type(Kind::Eisenstein(grade), 0)
+    }
+
     pub(crate) fn register_rv_unram(
         &mut self,
         name: Label,
@@ -7117,6 +7166,7 @@ impl Model {
             | Kind::MazurDiscRoot(..)
             | Kind::Tate(..)
             | Kind::Tame(..)
+            | Kind::Eisenstein(..)
             | Kind::PeriodPolynomial(..)
             | Kind::ECMap(..)
             | Kind::ECPoint(..)
@@ -7737,6 +7787,9 @@ impl Model {
                 "RVTame({},{},{})",
                 grade.name, grade.e, grade.precision
             )),
+            Kind::Eisenstein(grade) => {
+                out.push(&format!("RVEisenstein({},{})", grade.name, grade.precision))
+            }
             Kind::MazurOrdinary(name, _) => out.push(&format!("RVMazurOrdinary({name})")),
             Kind::PeriodPolynomial(grade) => {
                 out.push(&format!("RVPeriod({},{})", grade.weight, grade.sign.text()))
@@ -8126,6 +8179,7 @@ impl Model {
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a == b),
             (Value::Tate(a), Value::Tate(b)) => Ok(a == b),
             (Value::Tame(a), Value::Tame(b)) => Ok(a == b),
+            (Value::Eisenstein(a), Value::Eisenstein(b)) => Ok(a == b),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8516,6 +8570,7 @@ impl Model {
             (Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => Ok(a.cmp(b)),
             (Value::Tate(a), Value::Tate(b)) => Ok(a.cmp(b)),
             (Value::Tame(a), Value::Tame(b)) => Ok(a.cmp(b)),
+            (Value::Eisenstein(a), Value::Eisenstein(b)) => Ok(a.cmp(b)),
             (Value::PeriodPolynomial(a), Value::PeriodPolynomial(b)) => a.compare(self, b),
             (Value::ECMap(a), Value::ECMap(b)) => a.compare(self, b),
             (Value::RVUnram(left), Value::RVUnram(right)) => rv_unram::compare(self, left, right),
@@ -9045,6 +9100,11 @@ impl Model {
                 Kind::MazurAmice(..) => {
                     return Err(Error::plain(
                         "cannot enumerate an Amice cyclotomic group ring",
+                    ));
+                }
+                Kind::Eisenstein(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the bounded Eisenstein coefficient algebra",
                     ));
                 }
                 Kind::Tame(..) => {
@@ -10934,6 +10994,10 @@ impl Model {
             Value::MazurDiscRoot(root) => {
                 self.write_type(out, ty, 0)?;
                 out.push(&format!("{{{}}}", root.data()))
+            }
+            Value::Eisenstein(element) => {
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{{:?}}}", element.rows()))
             }
             Value::Tame(element) => {
                 self.write_type(out, ty, 0)?;

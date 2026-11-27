@@ -132,6 +132,7 @@ mod rv_curve;
 mod rv_cyclic_homology;
 mod rv_cyclotomic;
 mod rv_descent;
+mod rv_eisenstein;
 mod rv_field;
 mod rv_flag;
 mod rv_fusion;

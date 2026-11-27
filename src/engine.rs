@@ -145,6 +145,7 @@ use crate::rv_curve::{self, Curve as RvCurve};
 use crate::rv_cyclic_homology;
 use crate::rv_cyclotomic;
 use crate::rv_descent;
+use crate::rv_eisenstein as eisenstein;
 use crate::rv_field;
 use crate::rv_fusion;
 use crate::rv_gauss;
@@ -1058,6 +1059,9 @@ enum TypedForm {
     TameUnary(tame::Unary, Box<TypedExpr>),
     TameProduct(Box<[TypedExpr; 2]>),
     TameEvaluate(Box<[TypedExpr; 2]>),
+    EisensteinUnary(eisenstein::Unary, Box<TypedExpr>),
+    EisensteinProduct(Box<[TypedExpr; 2]>),
+    EisensteinEvaluate(Box<[TypedExpr; 2]>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2641,6 +2645,43 @@ impl Engine {
                 } else {
                     format!("rvTameVal = {valuation}")
                 }));
+            }
+            StatementForm::EisensteinDeclaration(declaration) => {
+                self.model.register_eisenstein(declaration)?;
+                return Ok(None);
+            }
+            StatementForm::EisensteinExtension(report) => {
+                return match report {
+                    eisenstein::ExtensionReport::Polynomial(name) => {
+                        let field = self.model.eisenstein(&name)?;
+                        Ok(Some(field.polynomial_report(&name.text)))
+                    }
+                    eisenstein::ExtensionReport::Polygon(name) => {
+                        let field = self.model.eisenstein(&name)?;
+                        field.polygon_report(&mut self.model, &name.text).map(Some)
+                    }
+                    eisenstein::ExtensionReport::Herbrand(eisenstein::Spec(name, precision)) => {
+                        let field = self.model.eisenstein(&name)?;
+                        field
+                            .herbrand_report(&mut self.model, &name.text, precision)
+                            .map(Some)
+                    }
+                };
+            }
+            StatementForm::EisensteinElement(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().eisenstein_operand(&input, report.name())?;
+                let Value::Eisenstein(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                return field
+                    .algebra(grade.precision)?
+                    .report(&mut self.model, &value, report)
+                    .map(Some);
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -10656,6 +10697,19 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::Eisenstein(a), Value::Eisenstein(b)) => {
+                        let Kind::Eisenstein(grade) = self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        let field = self
+                            .model
+                            .eisenstein_named(&grade.name)
+                            .expect("registered Eisenstein field");
+                        let algebra = field.algebra(grade.precision)?;
+                        algebra
+                            .add(&mut self.model, &a, &b)?
+                            .persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::Tame(a), Value::Tame(b)) => {
                         let Kind::Tame(grade) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -13306,6 +13360,62 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::EisensteinUnary(operation, input) => {
+                let Value::Eisenstein(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::Eisenstein(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                let algebra = field.algebra(grade.precision)?;
+                let result = match operation {
+                    eisenstein::Unary::Negate => algebra.negate(&mut self.model, &value)?,
+                    eisenstein::Unary::Automorphism(exponent) => {
+                        algebra.automorphism(&mut self.model, &value, *exponent)?
+                    }
+                };
+                result.persist(&mut self.model)
+            }
+            TypedForm::EisensteinProduct(inputs) => {
+                let (Value::Eisenstein(a), Value::Eisenstein(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::Eisenstein(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                field
+                    .algebra(grade.precision)?
+                    .multiply(&mut self.model, &a, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::EisensteinEvaluate(inputs) => {
+                let (Value::Eisenstein(point), Value::Tate(polynomial)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                let Kind::Eisenstein(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                field
+                    .algebra(grade.precision)?
+                    .evaluate_rational(&mut self.model, polynomial.coefficients(), &point)?
                     .persist(&mut self.model)
             }
             TypedForm::TameUnary(operation, input) => {
@@ -16137,6 +16247,10 @@ impl Checker<'_> {
                 let grade = Rc::new(disc::Grade::new(source, chart)?);
                 self.model.mazur_disc_type(grade, root)
             }
+            TypeForm::Eisenstein(spec) => {
+                let (grade, _) = eisenstein::Grade::resolve(self.model, spec)?;
+                self.model.eisenstein_type(grade)
+            }
             TypeForm::Tame(spec) => {
                 let (grade, _) = tame::Grade::resolve(self.model, spec)?;
                 self.model.tame_type(grade)
@@ -17245,6 +17359,10 @@ impl Checker<'_> {
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
                     Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
+                    Kind::Eisenstein(grade) => {
+                        let field = self.model.eisenstein_named(&grade.name).expect("registered Eisenstein field");
+                        field.algebra(grade.precision)?.zero().persist(self.model)?
+                    }
                     Kind::Tame(grade) => {
                         let ring = self.model.rv_unram_named(&grade.name).expect("registered unramified ring");
                         grade.algebra(&ring)?.zero().persist(self.model)?
@@ -19650,6 +19768,7 @@ impl Checker<'_> {
             ExprForm::MazurDisc(operation) => self.mazur_disc_expression(operation),
             ExprForm::Tate(operation) => self.tate_expression(operation),
             ExprForm::Tame(operation) => self.tame_expression(operation),
+            ExprForm::Eisenstein(operation) => self.eisenstein_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -20537,6 +20656,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::Eisenstein(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::EisensteinUnary(eisenstein::Unary::Negate, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Tame(..)) {
@@ -24453,6 +24578,7 @@ impl Checker<'_> {
                         | Kind::MazurAmice(..)
                         | Kind::Tate(..)
                         | Kind::Tame(..)
+                        | Kind::Eisenstein(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -29571,6 +29697,95 @@ impl Checker<'_> {
             Ok(grade.clone())
         } else {
             Err(self.invalid_operand(input, operation, "an RVTame(B,e,M) element"))
+        }
+    }
+
+    fn eisenstein_expression(
+        &mut self,
+        expression: eisenstein::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use eisenstein::Expression;
+        match expression {
+            Expression::Literal(spec, coefficients) => {
+                let (grade, field) = eisenstein::Grade::resolve(self.model, spec)?;
+                let value = field
+                    .algebra(grade.precision)?
+                    .literal(self.model, coefficients)?
+                    .persist(self.model)?;
+                let ty = self.model.eisenstein_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Uniformizer(spec) => {
+                let (grade, field) = eisenstein::Grade::resolve(self.model, spec)?;
+                let value = field.algebra(grade.precision)?.pi().persist(self.model)?;
+                let ty = self.model.eisenstein_type(grade)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                self.eisenstein_operand(&a, "rvEisensteinMul")?;
+                self.require_type(a.ty, &b, "rvEisensteinMul input")?;
+                Ok((a.ty, TypedForm::EisensteinProduct(Box::new([a, b]))))
+            }
+            Expression::Evaluate(inputs) => {
+                let [point, polynomial] = *inputs;
+                let point = self.expr(point)?;
+                let grade = self.eisenstein_operand(&point, "rvEisensteinEval")?;
+                let polynomial = self.expr(polynomial)?;
+                let Kind::Tate(source) = self.model.kind(polynomial.ty) else {
+                    return Err(self.invalid_operand(
+                        &polynomial,
+                        "rvEisensteinEval",
+                        "an RVTate(p,s) series",
+                    ));
+                };
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                if u64::from(source.prime.get()) != field.prime() {
+                    return Err(Error::new(
+                        polynomial.span,
+                        "Eisenstein and Tate coefficient primes do not match",
+                    ));
+                }
+                if source.digits * field.degree() < grade.precision {
+                    return Err(Error::new(
+                        polynomial.span,
+                        "Tate coefficient precision is insufficient for this Eisenstein evaluation",
+                    ));
+                }
+                Ok((
+                    point.ty,
+                    TypedForm::EisensteinEvaluate(Box::new([point, polynomial])),
+                ))
+            }
+            Expression::Automorphism(exponent, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.eisenstein_operand(&input, "rvEisensteinSigma")?;
+                let field = self
+                    .model
+                    .eisenstein_named(&grade.name)
+                    .expect("registered Eisenstein field");
+                let exponent = field.automorphism_exponent(exponent)?;
+                Ok((
+                    input.ty,
+                    TypedForm::EisensteinUnary(
+                        eisenstein::Unary::Automorphism(exponent),
+                        Box::new(input),
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn eisenstein_operand(&self, input: &TypedExpr, operation: &str) -> Result<eisenstein::Grade> {
+        if let Kind::Eisenstein(grade) = self.model.kind(input.ty) {
+            Ok(grade.clone())
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVEisenstein(K,M) element"))
         }
     }
 

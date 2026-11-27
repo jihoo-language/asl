@@ -33,6 +33,7 @@ use crate::rv_as_odd_tate::Operation as AsOddTateOp;
 use crate::rv_as_two::Query as AsTwoQuery;
 use crate::rv_as_two_cartier::{Operation as AsTwoDiffOp, Query as AsTwoCartierQuery};
 use crate::rv_crystal::{Entries as CrystalEntries, Query as CrystalQuery};
+use crate::rv_eisenstein as eisenstein;
 use crate::rv_gauss::Operation as GaussOp;
 use crate::rv_phodge::{QuadraticSpec, Query as PHodgeQuery, Specification as PHodgeSpec};
 use crate::rv_qp_quad::Unary as QuadUnary;
@@ -188,6 +189,7 @@ pub(crate) enum TypeForm {
     MazurOrdinary(Label),
     Tate(usize, usize),
     Tame(tame::Spec),
+    Eisenstein(eisenstein::Spec),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1118,6 +1120,7 @@ pub(crate) enum ExprForm {
     MazurDisc(period::disc::Expression),
     Tate(rv_tate::Expression),
     Tame(tame::Expression),
+    Eisenstein(eisenstein::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1392,6 +1395,9 @@ pub(crate) enum StatementForm {
     MazurDisc(period::disc::Report, Box<ParsedExpr>),
     Tate(rv_tate::Report, Box<ParsedExpr>),
     TameValuation(Box<ParsedExpr>),
+    EisensteinDeclaration(eisenstein::Declaration),
+    EisensteinExtension(eisenstein::ExtensionReport),
+    EisensteinElement(eisenstein::ElementReport, Box<ParsedExpr>),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -6410,27 +6416,124 @@ impl<'src> Parser<'src> {
                     let depth = input.depth + 1;
                     (Expression::Teichmuller(spec, Box::new(input)), depth)
                 } else {
-                    self.expect(Token::LParen)?;
-                    let mut rows = Vec::new();
-                    if !self.eat(Token::RParen)? {
-                        loop {
-                            self.expect(Token::LBracket)?;
-                            rows.push(self.signed_list(
-                                Token::RBracket,
-                                "a signed tame coefficient",
-                                "tame coefficient",
-                            )?);
-                            if !self.eat(Token::Comma)? {
-                                self.expect(Token::RParen)?;
-                                break;
-                            }
-                        }
-                    }
+                    let rows = self
+                        .local_coefficient_rows("a signed tame coefficient", "tame coefficient")?;
                     (Expression::Literal(spec, rows), 0)
                 }
             }
         };
         expr(span, ExprForm::Tame(operation), depth)
+    }
+
+    fn local_coefficient_rows(&mut self, expected: &str, label: &str) -> Result<Vec<Vec<i128>>> {
+        self.expect(Token::LParen)?;
+        let mut rows = Vec::new();
+        if !self.eat(Token::RParen)? {
+            loop {
+                self.expect(Token::LBracket)?;
+                rows.push(self.signed_list(Token::RBracket, expected, label)?);
+                if !self.eat(Token::Comma)? {
+                    self.expect(Token::RParen)?;
+                    break;
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    fn eisenstein_spec(&mut self) -> Result<eisenstein::Spec> {
+        let name = self.label()?;
+        self.expect(Token::Comma)?;
+        let (precision, _) = self.number()?;
+        Ok(eisenstein::Spec(name, precision))
+    }
+
+    fn eisenstein_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use eisenstein::{Declaration, ElementReport, ExtensionReport};
+        self.advance()?;
+        match name {
+            "rveisenstein" | "rvcyclotomiclocal" => {
+                let field = self.label()?;
+                self.expect(Token::LBracket)?;
+                let base = self.label()?;
+                let declaration = if name == "rveisenstein" {
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let polynomial = self.signed_list(
+                        Token::RBrace,
+                        "a signed Eisenstein coefficient",
+                        "Eisenstein coefficient",
+                    )?;
+                    Declaration::Polynomial(field, base, polynomial)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let (level, _) = self.number()?;
+                    self.expect(Token::RBracket)?;
+                    Declaration::Cyclotomic(field, base, level)
+                };
+                Ok(StatementForm::EisensteinDeclaration(declaration))
+            }
+            "rvEisensteinPolynomial" | "rvRamificationPolygon" | "rvHerbrand" => {
+                self.expect(Token::LBracket)?;
+                let report = match name {
+                    "rvEisensteinPolynomial" => ExtensionReport::Polynomial(self.label()?),
+                    "rvRamificationPolygon" => ExtensionReport::Polygon(self.label()?),
+                    _ => ExtensionReport::Herbrand(self.eisenstein_spec()?),
+                };
+                self.expect(Token::RBracket)?;
+                Ok(StatementForm::EisensteinExtension(report))
+            }
+            _ => {
+                let report = match name {
+                    "rvEisensteinTrace" => ElementReport::Trace,
+                    "rvEisensteinNorm" => ElementReport::Norm,
+                    _ => ElementReport::Valuation,
+                };
+                Ok(StatementForm::EisensteinElement(
+                    report,
+                    Box::new(self.paren_expr(0)?),
+                ))
+            }
+        }
+    }
+
+    fn eisenstein_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use eisenstein::Expression;
+        let (operation, depth) = match name {
+            "rvEisensteinMul" | "rvEisensteinEval" => {
+                let pair = self.paren_pair(nest)?;
+                let depth = pair[0].depth.max(pair[1].depth) + 1;
+                let operation = if name == "rvEisensteinMul" {
+                    Expression::Multiply(Box::new(pair))
+                } else {
+                    Expression::Evaluate(Box::new(pair))
+                };
+                (operation, depth)
+            }
+            "rvEisensteinSigma" => {
+                self.expect(Token::LBracket)?;
+                let a = self.signed_wide("a signed cyclotomic unit", "cyclotomic unit")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Automorphism(a, Box::new(input)), depth)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let spec = self.eisenstein_spec()?;
+                self.expect(Token::RBracket)?;
+                if name == "rvEisensteinPi" {
+                    (Expression::Uniformizer(spec), 0)
+                } else {
+                    let rows = self.local_coefficient_rows(
+                        "a signed Eisenstein coefficient",
+                        "Eisenstein coefficient",
+                    )?;
+                    (Expression::Literal(spec, rows), 0)
+                }
+            }
+        };
+        expr(span, ExprForm::Eisenstein(operation), depth)
     }
 
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
@@ -11025,6 +11128,16 @@ impl<'src> Parser<'src> {
                 self.advance()?;
                 StatementForm::TameValuation(Box::new(self.paren_expr(0)?))
             }
+            Token::Word(
+                name @ ("rveisenstein"
+                | "rvcyclotomiclocal"
+                | "rvEisensteinPolynomial"
+                | "rvRamificationPolygon"
+                | "rvHerbrand"
+                | "rvEisensteinVal"
+                | "rvEisensteinTrace"
+                | "rvEisensteinNorm"),
+            ) => self.eisenstein_statement(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -14870,6 +14983,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::Tame(spec), 0);
         }
+        if name.text == "RVEisenstein" && self.eat(Token::LParen)? {
+            let spec = self.eisenstein_spec()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Eisenstein(spec), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -17712,6 +17830,15 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvEisensteinElem" | "rvEisensteinPi" | "rvEisensteinSigma"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvEisensteinMul" | "rvEisensteinEval")
+                        && self.token() == Token::LParen)
+                {
+                    return self.eisenstein_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
