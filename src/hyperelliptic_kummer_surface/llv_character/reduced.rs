@@ -9,13 +9,13 @@ use super::weyl::{self, RootSystem};
 use super::{arithmetic, decimal, guard, report_limit};
 use super::{Magnitude, Oscillators};
 
-enum Grade {
+pub(super) enum Grade {
     Absent,
     Axis,
     Interior { charge: u128, weight_bound: u128 },
 }
 
-fn grade(n: u128, d: i128, primitive: bool) -> Result<Grade> {
+pub(super) fn grade(n: u128, d: i128, primitive: bool) -> Result<Grade> {
     if n == 1 {
         return Err(Error::plain(
             "these LLV reports exclude length one, whose LLV type is D12",

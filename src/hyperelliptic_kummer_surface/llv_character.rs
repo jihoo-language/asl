@@ -7,6 +7,7 @@ use crate::wide_integer::Natural;
 mod hodge;
 mod invariants;
 mod orthogonal;
+mod real_multiplication;
 mod reduced;
 mod weyl;
 
@@ -32,6 +33,8 @@ pub(crate) enum Command {
     PrimitiveDecompose(u128, i128),
     HodgeInvariantMultiplicity(u128, Vec<u128>),
     HodgeInvariant(u128, i128, u128, bool),
+    RealMultiplicationHodge(u128, i128, u128, u128, bool),
+    SoOscillator(u128, u128),
 }
 
 impl Command {
@@ -85,6 +88,10 @@ impl Command {
             Self::HodgeInvariant(n, d, rho, primitive) => {
                 invariants::dimension(model, n, d, rho, primitive)
             }
+            Self::RealMultiplicationHodge(n, d, rho, e, primitive) => {
+                real_multiplication::dimension(model, n, d, rho, e, primitive)
+            }
+            Self::SoOscillator(m, k) => real_multiplication::oscillator(model, m, k),
         }
     }
 }

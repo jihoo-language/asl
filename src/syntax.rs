@@ -6313,12 +6313,35 @@ impl<'src> Parser<'src> {
             Command::Dimension(shape(self)?)
         } else {
             self.expect(Token::LBracket)?;
-            let n = self.wide_unsigned(if name == "rvHilbHodgeInvariantMultiplicity" {
-                "Hodge polarization rank"
-            } else {
-                "Hilbert length"
-            })?;
+            let first = match name {
+                "rvHilbHodgeInvariantMultiplicity" => "Hodge polarization rank",
+                "rvHilbSOOscillator" => "orthogonal dimension",
+                _ => "Hilbert length",
+            };
+            let n = self.wide_unsigned(first)?;
             match name {
+                "rvHilbSOOscillator" => {
+                    self.expect(Token::Comma)?;
+                    let k = self.wide_unsigned("oscillator degree")?;
+                    self.expect(Token::RBracket)?;
+                    Command::SoOscillator(n, k)
+                }
+                "rvHilbRealMultiplicationHodge" | "rvHilbRealMultiplicationPrimitiveHodge" => {
+                    self.expect(Token::Comma)?;
+                    let d = self.signed_wide("a signed degree", "cohomological degree")?;
+                    self.expect(Token::Comma)?;
+                    let rho = self.wide_unsigned("Hodge polarization rank")?;
+                    self.expect(Token::Comma)?;
+                    let e = self.wide_unsigned("real multiplication field degree")?;
+                    self.expect(Token::RBracket)?;
+                    Command::RealMultiplicationHodge(
+                        n,
+                        d,
+                        rho,
+                        e,
+                        name == "rvHilbRealMultiplicationPrimitiveHodge",
+                    )
+                }
                 "rvHilbHodgeInvariantMultiplicity" => {
                     self.expect(Token::RBracket)?;
                     Command::HodgeInvariantMultiplicity(n, shape(self)?)
@@ -7658,7 +7681,10 @@ impl<'src> Parser<'src> {
                 | "rvHilbPrimitiveLLVDecomposition"
                 | "rvHilbHodgeInvariantMultiplicity"
                 | "rvHilbHodgeInvariant"
-                | "rvHilbPrimitiveHodgeInvariant"),
+                | "rvHilbPrimitiveHodgeInvariant"
+                | "rvHilbRealMultiplicationHodge"
+                | "rvHilbRealMultiplicationPrimitiveHodge"
+                | "rvHilbSOOscillator"),
             ) => self.hilbert_llv_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
             Token::Word("rvAbMukaiPair") => {
