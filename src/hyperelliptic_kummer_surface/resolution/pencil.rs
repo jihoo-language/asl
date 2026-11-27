@@ -13,6 +13,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::super::{field, nikulin, polarized, theta, Point};
 use super::{jets, quartic, ResolvedPoint};
 
+pub(crate) mod fiber;
 pub(crate) mod mordell;
 
 pub(crate) enum Command {
@@ -27,6 +28,7 @@ pub(crate) enum Operation {
     Divisor,
     Param(Box<[ParsedExpr; 2]>),
     Map(Box<ParsedExpr>),
+    FiberJ(Box<ParsedExpr>),
     Section(u8, Box<ParsedExpr>),
 }
 

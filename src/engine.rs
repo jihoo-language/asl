@@ -563,6 +563,7 @@ enum EnriquesAction {
 enum PencilAction {
     Param(Box<[TypedExpr; 2]>),
     Map(Box<TypedExpr>),
+    FiberJ(Box<TypedExpr>),
     Section(u8, Box<TypedExpr>),
 }
 
@@ -1695,6 +1696,28 @@ impl Engine {
                     }
                 };
             }
+            StatementForm::K3FiberEquation(command) => {
+                use pencil::fiber::{Command, Query};
+                let Command(name, query, input) = *command;
+                let (pencil, parameter) =
+                    self.pencil_parameter(&name, *input, "K3 fiber parameter")?;
+                let fiber = pencil.equation(&mut self.model, &parameter)?;
+                return Ok(match query {
+                    Query::Quartic => Some(fiber.quartic_report(&name.text)),
+                    Query::Jacobian => Some(fiber.jacobian_report(&name.text)),
+                    Query::Points(degree) => {
+                        let count = fiber.points(&mut self.model, &pencil, degree)?;
+                        Some(format!(
+                            "rvK3FiberPoints[{}, {degree}] = {count}",
+                            name.text
+                        ))
+                    }
+                    Query::Register(target) => {
+                        fiber.register(&mut self.model, &pencil, target)?;
+                        None
+                    }
+                });
+            }
             StatementForm::K3Pencil(command) => {
                 use pencil::Command;
                 return match *command {
@@ -1703,14 +1726,8 @@ impl Engine {
                         Ok(None)
                     }
                     Command::Fiber(name, input) => {
-                        let pencil = self.model.k3_pencil(&name)?;
-                        let base = self.model.k3_pencil_base_type(&name)?;
-                        let input = self.checker().expr(*input)?;
-                        self.checker()
-                            .require_type(base, &input, "rvK3PencilFiber parameter")?;
-                        let Value::K3PencilBase(parameter) = self.eval(&input)? else {
-                            unreachable!()
-                        };
+                        let (pencil, parameter) =
+                            self.pencil_parameter(&name, *input, "rvK3PencilFiber parameter")?;
                         let count = pencil.fiber(&mut self.model, &parameter)?;
                         Ok(Some(format!("rvK3PencilFiber[{}] = {count}", name.text)))
                     }
@@ -6078,6 +6095,22 @@ impl Engine {
         .persist(&mut self.model)
     }
 
+    fn pencil_parameter(
+        &mut self,
+        name: &Label,
+        input: ParsedExpr,
+        operation: &str,
+    ) -> Result<(Rc<pencil::Pencil>, Rc<pencil::Parameter>)> {
+        let pencil = self.model.k3_pencil(name)?;
+        let base = self.model.k3_pencil_base_type(name)?;
+        let input = self.checker().expr(input)?;
+        self.checker().require_type(base, &input, operation)?;
+        let Value::K3PencilBase(parameter) = self.eval(&input)? else {
+            unreachable!()
+        };
+        Ok((pencil, parameter))
+    }
+
     fn mordell_divisor(
         &mut self,
         marked: &mordell::Mordell,
@@ -8232,6 +8265,14 @@ impl Engine {
                     pencil
                         .map(&mut self.model, &point)?
                         .persist(&mut self.model)
+                }
+                PencilAction::FiberJ(input) => {
+                    let Value::K3PencilBase(parameter) = self.eval(input)? else {
+                        unreachable!()
+                    };
+                    let fiber = pencil.equation(&mut self.model, &parameter)?;
+                    let j = fiber.j(&mut self.model, pencil)?;
+                    rv_unram::persist(&mut self.model, j)
                 }
                 PencilAction::Section(mask, input) => {
                     let Value::K3PencilBase(parameter) = self.eval(input)? else {
@@ -20927,6 +20968,15 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_type(resolved, &input, "rvK3PencilMap point")?;
                 (base, PencilAction::Map(Box::new(input)))
+            }
+            Operation::FiberJ(input) => {
+                let input = self.expr(*input)?;
+                self.require_type(base, &input, "rvK3FiberJ parameter")?;
+                let coefficient = self.model.rv_unram_type(&Label {
+                    text: pencil.curve.grade.ring.to_string(),
+                    span: name.span,
+                })?;
+                (coefficient, PencilAction::FiberJ(Box::new(input)))
             }
             Operation::Section(mask, input) => {
                 let input = self.expr(*input)?;

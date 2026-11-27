@@ -1177,6 +1177,7 @@ pub(crate) enum StatementForm {
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
     K3Pencil(Box<crate::hyperelliptic_kummer_surface::pencil::Command>),
+    K3FiberEquation(Box<crate::hyperelliptic_kummer_surface::pencil::fiber::Command>),
     K3Mordell(Box<crate::hyperelliptic_kummer_surface::mordell::Command>),
     KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     DeclareEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::points::Declare>),
@@ -4097,6 +4098,43 @@ impl<'src> Parser<'src> {
         )
     }
 
+    fn k3_fiber_equation_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::pencil::fiber::{Command, Query};
+        self.advance()?;
+        let target = (operation == "rvk3fiberjac")
+            .then(|| self.label())
+            .transpose()?;
+        self.expect(Token::LBracket)?;
+        let pencil = self.label()?;
+        let query = if let Some(target) = target {
+            Query::Register(target)
+        } else {
+            match operation {
+                "rvK3FiberQuartic" => Query::Quartic,
+                "rvK3FiberJacobian" => Query::Jacobian,
+                _ => {
+                    self.expect(Token::Comma)?;
+                    let span = self.span();
+                    let degree = self.wide_unsigned("K3 fiber extension degree")?;
+                    if degree == 0 {
+                        return Err(Error::new(
+                            span,
+                            "K3 fiber extension degree must be positive",
+                        ));
+                    }
+                    Query::Points(degree)
+                }
+            }
+        };
+        self.expect(Token::RBracket)?;
+        let parameter = self.paren_expr(0)?;
+        Ok(StatementForm::K3FiberEquation(Box::new(Command(
+            pencil,
+            query,
+            Box::new(parameter),
+        ))))
+    }
+
     fn k3_pencil_statement(&mut self, operation: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::pencil::Command;
         self.advance()?;
@@ -4141,10 +4179,10 @@ impl<'src> Parser<'src> {
             _ => {
                 let input = self.paren_expr(nest)?;
                 let depth = 1 + input.depth;
-                let operation = if name == "rvK3PencilSection" {
-                    Operation::Section(mask, Box::new(input))
-                } else {
-                    Operation::Map(Box::new(input))
+                let operation = match name {
+                    "rvK3PencilSection" => Operation::Section(mask, Box::new(input)),
+                    "rvK3FiberJ" => Operation::FiberJ(Box::new(input)),
+                    _ => Operation::Map(Box::new(input)),
                 };
                 (operation, depth)
             }
@@ -5491,6 +5529,10 @@ impl<'src> Parser<'src> {
             Token::Word(op @ ("rvk3pencil" | "rvK3PencilFiber" | "rvK3PencilCensus")) => {
                 self.k3_pencil_statement(op)?
             }
+            Token::Word(
+                op
+                @ ("rvk3fiberjac" | "rvK3FiberQuartic" | "rvK3FiberJacobian" | "rvK3FiberPoints"),
+            ) => self.k3_fiber_equation_statement(op)?,
             Token::Word(
                 op @ ("rvk3mordell" | "rvK3MordellCoord" | "rvK3MordellHeight"
                 | "rvK3MordellLattice"),
@@ -10857,7 +10899,11 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "rvK3PencilDiv" | "rvK3PencilParam" | "rvK3PencilMap" | "rvK3PencilSection"
+                    "rvK3PencilDiv"
+                        | "rvK3PencilParam"
+                        | "rvK3PencilMap"
+                        | "rvK3PencilSection"
+                        | "rvK3FiberJ"
                 ) && self.token() == Token::LBracket
                 {
                     return self.k3_pencil_expression(&name.text, span, nest);
