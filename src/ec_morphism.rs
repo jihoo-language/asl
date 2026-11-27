@@ -569,6 +569,19 @@ impl Morphism {
             kernel: dual,
             differential,
         });
+        if ell == 2 {
+            let source_square = result.compose(model, domain, self)?;
+            let target_square = self.compose(model, range, &result)?;
+            let source_double = Self::multiple(model, Rc::clone(&self.source), domain, 2)?;
+            let target_double = Self::multiple(model, Rc::clone(&self.target), range, 2)?;
+            if source_square.compare(model, &source_double)?.is_ne()
+                || target_square.compare(model, &target_double)?.is_ne()
+            {
+                return Err(Error::plain(
+                    "degree-two Vélu and dual composites did not equal multiplication by two",
+                ));
+            }
+        }
         Ok(result)
     }
 
@@ -680,7 +693,7 @@ fn image_kernel(
 ) -> Result<Rc<Kernel>> {
     let field = target.field();
     let value = x.residue(model, field, modulus)?;
-    let expected = (ell as usize - 1) / 2;
+    let expected = elliptic::kernel_degree(ell);
     let minimum = minimal_polynomial(model, field, &value, modulus, expected)?;
     if minimum.len() != expected + 1 {
         return Err(Error::plain(

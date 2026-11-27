@@ -234,6 +234,11 @@ fn valuation(mut n: u64, prime: u64) -> u32 {
     depth
 }
 
+pub(crate) fn frobenius_conductor(model: &mut Model, delta: i128) -> Result<u64> {
+    let (_, conductor, _) = quadratic_data(model, delta)?;
+    Ok(conductor)
+}
+
 fn quadratic_data(model: &mut Model, delta: i128) -> Result<(i128, u64, Vec<Depth>)> {
     if delta >= 0 || !matches!(delta.rem_euclid(4), 0 | 1) {
         return Err(Error::plain(

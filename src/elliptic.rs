@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
+use crate::finite_field_factor;
 use crate::hw_algebra::CoefficientRing;
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
@@ -143,6 +144,9 @@ impl Curve {
         // A rational cyclic kernel is an F_ell-line fixed by Frobenius.
         // The characteristic polynomial on E[ell] is T² - trace*T + q.
         let (q, trace) = self.trace(model)?;
+        if ell == 2 {
+            return Ok(trace % 2 == 0);
+        }
         let modulus = i128::from(ell);
         let trace = i128::from(trace).rem_euclid(modulus);
         let discriminant = (trace * trace - 4 * i128::from(q)).rem_euclid(modulus) as u64;
@@ -327,14 +331,26 @@ impl Kernel {
         polynomial: Polynomial,
     ) -> Result<Self> {
         let ell = validate_ell(model, curve, ell)?;
-        let size = (ell - 1) as usize / 2;
+        let size = kernel_degree(ell);
         let field = curve.field();
         if polynomial.len() != size + 1 || polynomial.last() != Some(&field.one()) {
-            return Err(Error::plain(
-                "kernel polynomial must be monic of degree (ell-1)/2",
-            ));
+            let message = if ell == 2 {
+                "degree-two kernel polynomial must be monic and linear"
+            } else {
+                "kernel polynomial must be monic of degree (ell-1)/2"
+            };
+            return Err(Error::plain(message));
         }
         field.check_polynomial(polynomial.len())?;
+        if ell == 2 {
+            if !poly::remainder(model, field, curve.polynomial().to_vec(), &polynomial)?.is_empty()
+            {
+                return Err(Error::plain(
+                    "degree-two kernel root is not a root of the Weierstrass cubic",
+                ));
+            }
+            return Self::from_certified(model, curve, ell, polynomial);
+        }
         let derivative = poly::derivative(model, field, &polynomial)?;
         if !poly::coprime(model, field, polynomial.clone(), derivative)? {
             return Err(Error::plain("kernel polynomial has repeated roots"));
@@ -368,10 +384,34 @@ impl Kernel {
     }
 }
 
+pub(crate) fn kernel_degree(ell: u64) -> usize {
+    if ell == 2 {
+        1
+    } else {
+        (ell - 1) as usize / 2
+    }
+}
+
 pub(crate) fn validate_ell(model: &mut Model, curve: &Curve, ell: usize) -> Result<u64> {
+    if ell == 2 {
+        return Ok(2);
+    }
+    if ell < 3 || ell.is_multiple_of(2) {
+        return Err(Error::plain(
+            "cyclic isogeny degree must be 2 or an odd prime",
+        ));
+    }
+    separable_odd_degree(model, curve, ell)
+}
+
+pub(crate) fn validate_odd_ell(model: &mut Model, curve: &Curve, ell: usize) -> Result<u64> {
     if ell < 3 || ell.is_multiple_of(2) {
         return Err(Error::plain("cyclic isogeny degree must be an odd prime"));
     }
+    separable_odd_degree(model, curve, ell)
+}
+
+fn separable_odd_degree(model: &mut Model, curve: &Curve, ell: usize) -> Result<u64> {
     let ell = u64::from(Prime::new(model, ell)?.get());
     if ell == curve.ring.prime() {
         return Err(Error::plain(
@@ -446,9 +486,13 @@ pub(crate) fn integer_power_mod(model: &mut Model, mut a: u64, mut n: u64, m: u6
 }
 
 pub(crate) fn division_polynomial(model: &mut Model, curve: &Curve, m: u64) -> Result<Polynomial> {
+    if m == 2 {
+        model.spend(curve.polynomial().len() * curve.field().cells())?;
+        return Ok(curve.polynomial().to_vec());
+    }
     if m == 0 || m.is_multiple_of(2) {
         return Err(Error::plain(
-            "x-division polynomial requires a positive odd index",
+            "x-division polynomial requires index two or a positive odd index",
         ));
     }
     let degree = (u128::from(m).pow(2) - 1) / 2;
@@ -693,8 +737,18 @@ pub(crate) fn enumerate_kernels(
     ell: usize,
 ) -> Result<Vec<Polynomial>> {
     let ell = validate_ell(model, curve, ell)?;
-    let degree = (ell - 1) as usize / 2;
+    let degree = kernel_degree(ell);
     let q = curve.ring.size_of_residue_field()?;
+    if ell == 2 {
+        let field = curve.field();
+        let x = field.polynomial(&[0, 1]);
+        let frobenius = poly::power_mod(model, field, &x, q, curve.polynomial())?;
+        let difference = poly::sum(model, field, &frobenius, &x, true)?;
+        let rational = poly::monic_gcd(model, field, curve.polynomial().to_vec(), difference)?;
+        let mut kernels = finite_field_factor::factor_squarefree(model, field, rational)?;
+        kernels.sort_unstable();
+        return Ok(kernels);
+    }
     let candidates = q
         .checked_pow(degree as u32)
         .and_then(|n| usize::try_from(n).ok())
@@ -764,6 +818,9 @@ impl Isogeny {
         target: Rc<str>,
         kernel: Rc<Kernel>,
     ) -> Result<(Self, Curve)> {
+        if kernel.ell == 2 {
+            return Self::two_velu(model, curve, source, target, kernel);
+        }
         let field = curve.field();
         let k = &kernel.polynomial;
         let sums = poly::power_sums(model, field, k)?;
@@ -817,15 +874,7 @@ impl Isogeny {
         let denominator_slope = poly::scale(model, field, &denominator_slope, &field.signed(2))?;
         let derivative_numerator = poly::sum(model, field, &preimage, &denominator_slope, true)?;
 
-        if numerator.len() != kernel.ell as usize + 1
-            || numerator.last() != Some(&field.one())
-            || !poly::coprime(model, field, numerator.clone(), k.to_vec())?
-        {
-            return Err(Error::plain(
-                "normalized Vélu numerator failed degree or pole certification",
-            ));
-        }
-        let map = Self {
+        Self {
             source,
             target,
             kernel,
@@ -833,16 +882,70 @@ impl Isogeny {
             denominator,
             derivative_numerator,
             derivative_denominator,
-        };
-        map.certify(model, curve, &quotient)?;
+        }
+        .finish(model, curve, quotient)
+    }
+
+    fn two_velu(
+        model: &mut Model,
+        curve: &Curve,
+        source: Rc<str>,
+        target: Rc<str>,
+        kernel: Rc<Kernel>,
+    ) -> Result<(Self, Curve)> {
+        let field = curve.field();
+        let negative_r = &kernel.polynomial[0];
+        let r = curve.ring.negate(model, negative_r)?;
+        let square = field.multiply(model, &r, &r)?;
+        let three_square = field.multiply(model, &square, &field.signed(3))?;
+        let h = field.add(model, &three_square, &curve.a)?;
+        let a_shift = field.multiply(model, &field.signed(5), &h)?;
+        let rh = field.multiply(model, &r, &h)?;
+        let b_shift = field.multiply(model, &field.signed(7), &rh)?;
+        let a = field.subtract(model, &curve.a, &a_shift)?;
+        let b = field.subtract(model, &curve.b, &b_shift)?;
+        let quotient = Curve::new(model, curve.ring_name.clone(), curve.ring.clone(), a, b)?;
+
+        let numerator = vec![h.clone(), negative_r.clone(), field.one()];
+        let denominator = kernel.polynomial.to_vec();
+        let derivative_denominator = poly::multiply(model, field, &denominator, &denominator)?;
+        let derivative_numerator = poly::sum(model, field, &derivative_denominator, &[h], true)?;
+        Self {
+            source,
+            target,
+            kernel,
+            numerator,
+            denominator,
+            derivative_numerator,
+            derivative_denominator,
+        }
+        .finish(model, curve, quotient)
+    }
+
+    fn finish(self, model: &mut Model, curve: &Curve, quotient: Curve) -> Result<(Self, Curve)> {
+        let field = curve.field();
+        if self.numerator.len() != self.kernel.ell as usize + 1
+            || self.numerator.last() != Some(&field.one())
+            || !poly::coprime(
+                model,
+                field,
+                self.numerator.clone(),
+                self.kernel.polynomial.to_vec(),
+            )?
+        {
+            return Err(Error::plain(
+                "normalized Vélu numerator failed degree or pole certification",
+            ));
+        }
+        self.certify(model, curve, &quotient)?;
         model.allocate(
             12 + field.cells()
-                * (map.numerator.len()
-                    + map.denominator.len()
-                    + map.derivative_numerator.len()
-                    + map.derivative_denominator.len()),
+                * (self.numerator.len()
+                    + self.denominator.len()
+                    + self.derivative_numerator.len()
+                    + self.derivative_denominator.len()),
         )?;
-        Ok((map, quotient))
+        Ok((self, quotient))
     }
 
     pub(crate) fn certify(&self, model: &mut Model, curve: &Curve, target: &Curve) -> Result<()> {
@@ -853,19 +956,30 @@ impl Isogeny {
             &self.derivative_numerator,
             &self.derivative_numerator,
         )?;
-        let left = poly::multiply(model, field, curve.polynomial(), &derivative_square)?;
         let n2 = poly::multiply(model, field, &self.numerator, &self.numerator)?;
         let n3 = poly::multiply(model, field, &n2, &self.numerator)?;
-        let k4 = poly::multiply(model, field, &self.denominator, &self.denominator)?;
-        let k6 = poly::multiply(
-            model,
-            field,
-            &self.derivative_denominator,
-            &self.derivative_denominator,
-        )?;
-        let linear = poly::multiply(model, field, &self.numerator, &k4)?;
+        let denominator_squared =
+            poly::multiply(model, field, &self.denominator, &self.denominator)?;
+        let (source, denominator_cubed) = if self.kernel.ell == 2 {
+            // Here x has denominator K and y has denominator K^2.
+            // Cancel the exact factor K in the source Weierstrass cubic.
+            let source =
+                poly::exact_divide(model, field, curve.polynomial(), &self.kernel.polynomial)?;
+            let cube = poly::multiply(model, field, &denominator_squared, &self.denominator)?;
+            (source, cube)
+        } else {
+            let cube = poly::multiply(
+                model,
+                field,
+                &self.derivative_denominator,
+                &self.derivative_denominator,
+            )?;
+            (curve.polynomial().to_vec(), cube)
+        };
+        let left = poly::multiply(model, field, &source, &derivative_square)?;
+        let linear = poly::multiply(model, field, &self.numerator, &denominator_squared)?;
         let linear = poly::scale(model, field, &linear, &target.a)?;
-        let constant = poly::scale(model, field, &k6, &target.b)?;
+        let constant = poly::scale(model, field, &denominator_cubed, &target.b)?;
         let right = poly::sum(model, field, &n3, &linear, false)?;
         let right = poly::sum(model, field, &right, &constant, false)?;
         model.spend(left.len().min(right.len()) * field.cells())?;
@@ -929,12 +1043,16 @@ impl Isogeny {
             return Ok(Point::Infinity);
         }
         let inverse = field.inverse_unit(model, &kernel)?;
-        let inverse2 = field.multiply(model, &inverse, &inverse)?;
-        let inverse3 = field.multiply(model, &inverse2, &inverse)?;
+        let inverse_x = if self.kernel.ell == 2 {
+            inverse.clone()
+        } else {
+            field.multiply(model, &inverse, &inverse)?
+        };
+        let inverse_y = field.multiply(model, &inverse_x, &inverse)?;
         let u = poly::evaluate(model, field, &self.numerator, x)?;
         let v = poly::evaluate(model, field, &self.derivative_numerator, x)?;
-        let u = field.multiply(model, &u, &inverse2)?;
-        let v = field.multiply(model, &v, &inverse3)?;
+        let u = field.multiply(model, &u, &inverse_x)?;
+        let v = field.multiply(model, &v, &inverse_y)?;
         let v = field.multiply(model, &v, y)?;
         target.point(model, u, v)
     }

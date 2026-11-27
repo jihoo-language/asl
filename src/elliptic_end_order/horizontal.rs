@@ -31,7 +31,7 @@ impl Action {
     pub(crate) fn new(model: &mut Model, address: &Address) -> Result<Self> {
         let certificate = model.ec_end_order(&address.0.text)?;
         let curve = model.ec_curve(certificate.curve_name())?;
-        let ell = elliptic::validate_ell(model, &curve, address.1)?;
+        let ell = elliptic::validate_odd_ell(model, &curve, address.1)?;
         let modulus = i128::from(ell);
         let frobenius = certificate.frobenius;
         if frobenius.generator.rem_euclid(modulus) == 0 {

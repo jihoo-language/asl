@@ -8105,11 +8105,16 @@ impl<'src> Parser<'src> {
             _ => {
                 self.expect(Token::LBracket)?;
                 let label = self.label()?;
-                let action = if command == "rvEllLocalOrder" {
-                    self.expect(Token::Comma)?;
-                    Command::Order(label, self.number()?.0)
-                } else {
+                let action = if command == "rvEllEdge" {
                     Command::Edge(label)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let prime = self.number()?.0;
+                    if command == "rvEllLocalOrder" {
+                        Command::Order(label, prime)
+                    } else {
+                        Command::Neighborhood(label, prime)
+                    }
                 };
                 self.expect(Token::RBracket)?;
                 action
@@ -8306,7 +8311,8 @@ impl<'src> Parser<'src> {
                 | "rvECCertify"),
             ) => self.ec_statement(command)?,
             Token::Word(
-                command @ ("rvEllFrobCert" | "rvEllLocalOrder" | "rvellipticcm" | "rvEllEdge"),
+                command @ ("rvEllFrobCert" | "rvEllLocalOrder" | "rvellipticcm" | "rvEllEdge"
+                | "rvEllNeighborhood"),
             ) => self.ec_local_statement(command)?,
             Token::Word(name @ ("rvECMapDegree" | "rvECMapCertify")) => {
                 use crate::ec_morphism::Report;

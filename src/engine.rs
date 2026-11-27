@@ -2302,6 +2302,10 @@ impl Engine {
                     self.model.register_legendre_cm(name, family)?;
                     return Ok(None);
                 }
+                elliptic_local::Command::Neighborhood(name, prime) => {
+                    let curve = self.model.ec_curve(&name.text)?;
+                    elliptic_local::neighborhood(&mut self.model, &name.text, &curve, prime)?
+                }
                 elliptic_local::Command::Edge(name) => {
                     let map = self.model.ec_isogeny(&name.text)?;
                     let source = self.model.ec_curve(&map.source)?;

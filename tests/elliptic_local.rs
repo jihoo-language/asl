@@ -86,7 +86,7 @@ fn the_full_twenty_seven_torsion_scheme_is_tested_at_its_existing_budget() {
 #[test]
 fn torsion_and_local_order_require_the_right_prime_scalar_and_cm_field() {
     for (source,expected) in [
-        ("rvEllLocalOrder[E,2];","must be an odd prime"),
+        ("rvEllLocalOrder[E,4];","must be 2 or an odd prime"),
         ("rvEllFrobCert[E,61,1];","equals the residue characteristic"),
         ("rvEllFrobCert[E,3,2,3];","scalar candidate must be prime to the torsion order"),
         ("rvEllFrobCert[E,3,90,1];","torsion order ell^k exceeds u64"),

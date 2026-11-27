@@ -135,7 +135,7 @@ fn singular_input_inseparability_nondivisibility_and_point_errors_are_explicit()
             "singular",
         ),
         ("rvECIsogenies[E,7];", "equals the residue characteristic"),
-        ("rvECIsogenies[E,2];", "odd prime"),
+        ("rvECIsogenies[E,4];", "must be 2 or an odd prime"),
         ("rvECIsogenies[E,9];", "not prime"),
         ("let a=rveckernel[E,5]{[1],[1]};", "monic of degree"),
         ("let a=rveckernel[E,5]{[0],[0],[1]};", "repeated roots"),
