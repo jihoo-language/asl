@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 use crate::prime_linear;
+use crate::rv_tate;
 use crate::rv_unram::{add_mod, mul_mod, reduce};
 use crate::syntax::ParsedExpr;
 
@@ -92,6 +93,14 @@ impl Grade {
         Self::new(self.source.clone(), Chart(center, depth))
     }
 
+    pub(crate) fn tate_precision(&self) -> rv_tate::Precision {
+        rv_tate::Precision {
+            prime: self.source.prime,
+            digits: self.precision,
+            modulus: self.modulus,
+        }
+    }
+
     pub(crate) fn root_possible(&self) -> bool {
         // Every nonconstant coefficient is divisible by the chart scale.
         self.precision > self.depth
@@ -154,6 +163,10 @@ impl Disc {
 
     pub(crate) fn compare(&self, model: &mut Model, rhs: &Self) -> Result<Ordering> {
         self.source.compare(model, &rhs.source)
+    }
+
+    pub(crate) fn coefficients(&self) -> &[u64] {
+        &self.coefficients
     }
 
     pub(crate) fn data(&self, grade: &Grade) -> String {

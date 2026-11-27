@@ -175,6 +175,7 @@ use crate::rv_sphhecke;
 use crate::rv_t_bracket;
 use crate::rv_t_system;
 use crate::rv_t_transfer;
+use crate::rv_tate;
 use crate::rv_tl;
 use crate::rv_tree;
 use crate::rv_unram::{self, Ring as UnramRing};
@@ -996,6 +997,8 @@ enum TypedForm {
     MazurTateScale(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
     MazurTateNegate(Box<TypedExpr>),
     MazurOrdinaryNegate(u64, Box<TypedExpr>),
+    TateProduct(rv_tate::Precision, Box<[TypedExpr; 2]>),
+    TateNegate(rv_tate::Precision, Box<TypedExpr>),
     PeriodScale(crate::lee_linear::Rational, Box<TypedExpr>),
     PeriodHecke(period::Grade, Box<[TypedExpr; 2]>),
     ModularHeckeScale(i128, Box<TypedExpr>),
@@ -2495,6 +2498,31 @@ impl Engine {
                     unreachable!()
                 };
                 return disc.report(&mut self.model, &grade, report).map(Some);
+            }
+            StatementForm::Tate(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let kind = self.model.kind(input.ty).clone();
+                if !matches!(kind, Kind::Tate(..) | Kind::MazurDisc(..)) {
+                    return Err(self.checker().invalid_operand(
+                        &input,
+                        report.name(),
+                        "an RVTate(p,s) series or an Amice weight disc",
+                    ));
+                }
+                return match (kind, self.eval(&input)?) {
+                    (Kind::Tate(ring), Value::Tate(series)) => report
+                        .write(&mut self.model, ring, series.coefficients(), "X")
+                        .map(Some),
+                    (Kind::MazurDisc(grade), Value::MazurDisc(disc)) => report
+                        .write(
+                            &mut self.model,
+                            grade.tate_precision(),
+                            disc.coefficients(),
+                            &grade.type_name(false),
+                        )
+                        .map(Some),
+                    _ => unreachable!(),
+                };
             }
             StatementForm::HeckeEigenperiod(declaration) => {
                 self.model.register_hecke_eigenperiod(declaration)?;
@@ -9989,6 +10017,12 @@ impl Engine {
                         let grade = grade.clone();
                         a.add(&mut self.model, &grade, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::Tate(a), Value::Tate(b)) => {
+                        let Kind::Tate(ring) = *self.model.kind(expr.ty) else {
+                            unreachable!()
+                        };
+                        a.add(&mut self.model, ring, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::MazurOrdinary(a), Value::MazurOrdinary(b)) => {
                         let Kind::MazurOrdinary(_, modulus) = self.model.kind(expr.ty) else {
                             unreachable!()
@@ -12465,6 +12499,23 @@ impl Engine {
                 };
                 let grade = grade.clone();
                 disc.root(&mut self.model, &grade, *residue)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::TateProduct(ring, inputs) => {
+                let (Value::Tate(a), Value::Tate(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                a.multiply(&mut self.model, *ring, &b)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::TateNegate(ring, input) => {
+                let Value::Tate(series) = self.eval(input)? else {
+                    unreachable!()
+                };
+                series
+                    .negate(&mut self.model, *ring)?
                     .persist(&mut self.model)
             }
             TypedForm::MazurOrdinaryNegate(modulus, input) => {
@@ -15135,6 +15186,10 @@ impl Checker<'_> {
                 let grade = Rc::new(disc::Grade::new(source, chart)?);
                 self.model.mazur_disc_type(grade, root)
             }
+            TypeForm::Tate(p, digits) => {
+                let ring = rv_tate::Precision::new(self.model, p, digits)?;
+                self.model.tate_type(ring)
+            }
             TypeForm::MazurOrdinary(name) => self.model.mazur_ordinary_type(&name),
             TypeForm::HeckeSymbol(name) => self.model.hecke_symbol_type(&name),
             TypeForm::PeriodPolynomial(grade) => self.model.period_type(grade),
@@ -16227,6 +16282,7 @@ impl Checker<'_> {
                     }
                     Kind::MazurAmice(grade) => amice::Amice::zero(grade).persist(self.model)?,
                     Kind::MazurOrdinary(..) => Value::MazurOrdinary(0),
+                    Kind::Tate(..) => rv_tate::Series::zero().persist(self.model)?,
                     Kind::HeckeSymbol(name) => {
                         let period = self.model.hecke_eigenperiod(&Label { text: name.to_string(), span })?;
                         period::modular_symbol::Symbol::zero(&period).persist(self.model)?
@@ -18613,6 +18669,7 @@ impl Checker<'_> {
             ExprForm::MazurTate(operation) => self.mazur_tate_expression(operation),
             ExprForm::MazurAmice(operation) => self.amice_expression(operation),
             ExprForm::MazurDisc(operation) => self.mazur_disc_expression(operation),
+            ExprForm::Tate(operation) => self.tate_expression(operation),
             ExprForm::HeckeSymbol(operation) => self.hecke_symbol_expression(operation),
             ExprForm::HeckeEigenperiod(period::eigenperiod::Expression(name, query)) => {
                 use period::eigenperiod::Query;
@@ -19486,6 +19543,9 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::MazurAmiceNegate(grade.clone(), Box::new(input)),
                     ));
+                }
+                if let Kind::Tate(ring) = self.model.kind(input.ty) {
+                    return Ok((input.ty, TypedForm::TateNegate(*ring, Box::new(input))));
                 }
                 if let Kind::MazurOrdinary(_, modulus) = self.model.kind(input.ty) {
                     return Ok((
@@ -23344,6 +23404,7 @@ impl Checker<'_> {
                         | Kind::HeckeSymbol(..)
                         | Kind::MazurTate(..)
                         | Kind::MazurAmice(..)
+                        | Kind::Tate(..)
                         | Kind::MazurOrdinary(..)
                         | Kind::PeriodPolynomial(..)
                         | Kind::ASDeRham(..)
@@ -27796,6 +27857,27 @@ impl Checker<'_> {
             Ok(grade.clone())
         } else {
             Err(self.invalid_operand(input, operation, "an RVMazurDisc(O,n,r,i,a,e) weight disc"))
+        }
+    }
+
+    fn tate_expression(&mut self, expression: rv_tate::Expression) -> Result<(TypeId, TypedForm)> {
+        match expression {
+            rv_tate::Expression::Polynomial(p, digits, coefficients) => {
+                let ring = rv_tate::Precision::new(self.model, p, digits)?;
+                let ty = self.model.tate_type(ring)?;
+                let value = rv_tate::Series::literal(ring, coefficients)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            rv_tate::Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let Kind::Tate(ring) = *self.model.kind(a.ty) else {
+                    return Err(self.invalid_operand(&a, "rvTateMul", "an RVTate(p,s) series"));
+                };
+                self.require_type(a.ty, &b, "rvTateMul input")?;
+                Ok((a.ty, TypedForm::TateProduct(ring, Box::new([a, b]))))
+            }
         }
     }
 

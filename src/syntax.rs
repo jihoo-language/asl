@@ -40,6 +40,7 @@ use crate::rv_rees::Operation as ReesOp;
 use crate::rv_t_bracket::Operation as RvTBracketOp;
 use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
+use crate::rv_tate;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
 use crate::set_kan::Operation as KanOp;
@@ -178,6 +179,7 @@ pub(crate) enum TypeForm {
     MazurAmice(period::amice::Spec),
     MazurDisc(Box<period::disc::Spec>, bool),
     MazurOrdinary(Label),
+    Tate(usize, usize),
     PeriodPolynomial(period::Grade),
     ECMap(Label, Label),
     ECCurve(Label),
@@ -1096,6 +1098,7 @@ pub(crate) enum ExprForm {
     MazurTate(period::mazur_tate::Expression),
     MazurAmice(period::amice::Expression),
     MazurDisc(period::disc::Expression),
+    Tate(rv_tate::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1362,6 +1365,7 @@ pub(crate) enum StatementForm {
     MazurTate(period::mazur_tate::Statement),
     MazurAmice(period::amice::Report, Box<ParsedExpr>),
     MazurDisc(period::disc::Report, Box<ParsedExpr>),
+    Tate(rv_tate::Report, Box<ParsedExpr>),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -5842,6 +5846,61 @@ impl<'src> Parser<'src> {
         expr(span, ExprForm::MazurDisc(operation), depth)
     }
 
+    fn tate_precision(&mut self) -> Result<(usize, usize)> {
+        let (p, _) = self.number()?;
+        self.expect(Token::Comma)?;
+        let (digits, _) = self.number()?;
+        Ok((p, digits))
+    }
+
+    fn tate_report(&mut self, name: &str) -> Result<StatementForm> {
+        use rv_tate::Report;
+        self.advance()?;
+        let report = match name {
+            "rvTatePrepare" => Report::Prepare,
+            "rvTateFactors" => Report::Factors,
+            "rvTateNewton" => Report::Newton,
+            _ => {
+                self.expect(Token::LBracket)?;
+                let (index, _) = self.number()?;
+                self.expect(Token::RBracket)?;
+                if name == "rvTateCoeff" {
+                    Report::Coefficient(index)
+                } else {
+                    Report::Unramified(index)
+                }
+            }
+        };
+        Ok(StatementForm::Tate(report, Box::new(self.paren_expr(0)?)))
+    }
+
+    fn tate_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use rv_tate::Expression;
+        if name == "rvTateMul" {
+            let pair = self.paren_pair(nest)?;
+            let depth = pair[0].depth.max(pair[1].depth) + 1;
+            return expr(
+                span,
+                ExprForm::Tate(Expression::Multiply(Box::new(pair))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let (p, digits) = self.tate_precision()?;
+        self.expect(Token::RBracket)?;
+        self.expect(Token::LParen)?;
+        let coefficients = self.signed_list(
+            Token::RParen,
+            "a signed Tate coefficient",
+            "Tate coefficient",
+        )?;
+        expr(
+            span,
+            ExprForm::Tate(Expression::Polynomial(p, digits, coefficients)),
+            0,
+        )
+    }
+
     fn mazur_tate_statement(&mut self, name: &str) -> Result<StatementForm> {
         use period::mazur_tate::{Embedding, Statement};
         self.advance()?;
@@ -10071,6 +10130,10 @@ impl<'src> Parser<'src> {
             Token::Word(name @ ("rvMazurDiscZeros" | "rvMazurDiscCoeff")) => {
                 self.mazur_disc_statement(name)?
             }
+            Token::Word(
+                name @ ("rvTatePrepare" | "rvTateFactors" | "rvTateNewton" | "rvTateCoeff"
+                | "rvTateUnramified"),
+            ) => self.tate_report(name)?,
             Token::Word("rvheckeeigenperiod") => self.hecke_eigenperiod_statement()?,
             Token::Word(name @ ("rvheckeresidual" | "rvHeckeEisensteinSturm")) => {
                 self.hecke_residual_statement(name)?
@@ -13739,6 +13802,11 @@ impl<'src> Parser<'src> {
                 0,
             );
         }
+        if name.text == "RVTate" && self.eat(Token::LParen)? {
+            let (p, digits) = self.tate_precision()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::Tate(p, digits), 0);
+        }
         if name.text == "RVMazurOrdinary" && self.eat(Token::LParen)? {
             let measure = self.label()?;
             self.expect(Token::RParen)?;
@@ -16444,6 +16512,11 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (name.text == "rvTatePoly" && self.token() == Token::LBracket)
+                    || (name.text == "rvTateMul" && self.token() == Token::LParen)
+                {
+                    return self.tate_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

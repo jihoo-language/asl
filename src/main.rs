@@ -170,6 +170,7 @@ mod rv_sphhecke;
 mod rv_t_bracket;
 mod rv_t_system;
 mod rv_t_transfer;
+mod rv_tate;
 mod rv_tl;
 mod rv_tree;
 mod rv_unram;
