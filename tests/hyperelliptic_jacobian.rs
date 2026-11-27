@@ -148,3 +148,118 @@ fn semireduced_composition_exposes_the_exact_norm_quotient() {
         "rvJacCompose = u=[[0], [0], [1]], v=[[1], [3]], norm quotient=[[1], [1]]\n"
     );
 }
+
+#[test]
+fn genus_two_pairing_signs_and_bilinearity() {
+    assert_eq!(
+        stdout(example("hyperelliptic-pairings")),
+        "RVUnram(F)[6]\nRVUnram(F)[6]\nRVUnram(F)[1]\n"
+    );
+}
+
+#[test]
+fn quadratic_pairing_values_at_closed_and_repeated_places() {
+    assert_eq!(
+        stdout(interpret(
+            r"
+        rvunram F[7,1]{0,1};
+        let z=rvUnramElem[F]{};
+        let one=rvUnramElem[F]{1};
+        let minusOne=rvUnramElem[F]{-1};
+        rvhyperelliptic C[F]{z,rvUnramElem[F]{3},one,rvUnramElem[F]{4},one,one};
+        let closed=rvjac[C]{[1],[],[1]}{};
+        let t0=rvJacPoint[C](z,z);
+        let identity=zero[RVJac(C)];
+        assert add(closed,closed)==identity;
+        assert rvJacWeil2(closed,t0)==one;
+        assert rvJacWeil2(closed,identity)==one;
+        assert rvJacWeil2(identity,t0)==one;
+        assert rvJacTate2(identity,closed)==one;
+        assert rvJacTate2(closed,identity)==one;
+        assert rvJacTate2(closed,closed)==minusOne;
+        assert rvJacTate2(t0,closed)==one;
+
+        rvhyperelliptic D[F]{z,rvUnramElem[F]{3},minusOne,z,rvUnramElem[F]{4},one};
+        let r=rvJacPoint[D](z,z);
+        let p=rvJacPoint[D](rvUnramElem[F]{5},one);
+        let double=add(p,p);
+        assert double==rvjac[D]{[4],[4],[1]}{[2],[4]};
+        assert rvJacTate2(r,double)==one;
+        assert rvJacTate2(r,add(r,double))==rvJacTate2(r,r);
+    "
+        )),
+        ""
+    );
+}
+
+#[test]
+fn quadratic_pairings_use_the_named_extension_field() {
+    assert_eq!(
+        stdout(interpret(
+            r"
+        rvunram F[7,1]{0,1};
+        rvunram W[7,1]{1,0,1};
+        let z=rvUnramElem[F]{};
+        let one=rvUnramElem[F]{1};
+        rvhyperelliptic C[F]{z,rvUnramElem[F]{3},rvUnramElem[F]{-1},z,rvUnramElem[F]{4},one};
+        rvjacbase D[C,W];
+        let t0=rvJacExtend[D](rvJacPoint[C](z,z));
+        let t1=rvJacExtend[D](rvJacPoint[C](one,z));
+        let basePoint=rvJacExtend[D](rvJacPoint[C](rvUnramElem[F]{5},one));
+        let p=rvJacPoint[D](rvUnramElem[W]{2,1},rvUnramElem[W]{3,4});
+        assert rvJacWeil2(t0,t1)==rvUnramElem[W]{-1};
+        assert rvJacTate2(t0,basePoint)==rvUnramElem[W]{1};
+        assert rvJacTate2(t0,p)==rvUnramElem[W]{-1};
+        assert rvJacTate2(t0,add(p,p))==rvUnramElem[W]{1};
+
+        // The residue field order 65537^4 exceeds u64. The norm of a is −3.
+        rvunram L[65537,1]{-3,0,0,0,1};
+        let a=rvUnramElem[L]{0,1};
+        let zeroL=rvUnramElem[L]{};
+        let oneL=rvUnramElem[L]{1};
+        rvhyperelliptic G[L]{zeroL,rvUnramElem[L]{-3},zeroL,zeroL,rvUnramElem[L]{21846},oneL};
+        let t=rvJacPoint[G](zeroL,zeroL);
+        let q=rvJacPoint[G](a,oneL);
+        assert rvJacTate2(t,q)==rvUnramElem[L]{-1};
+    "
+        )),
+        ""
+    );
+}
+
+#[test]
+fn quadratic_pairings_require_nominal_curves_and_torsion() {
+    for (source, expected) in [
+        (
+            "show rvJacWeil2(source,zero[RVJac(C)]);",
+            "first argument must have order dividing 2",
+        ),
+        (
+            "show rvJacWeil2(zero[RVJac(C)],source);",
+            "second argument must have order dividing 2",
+        ),
+        (
+            "show rvJacTate2(source,zero[RVJac(C)]);",
+            "first argument must have order dividing 2",
+        ),
+        (
+            "show rvJacWeil2(zero[RVJac(C)],point);",
+            "expected type RVJac(C)",
+        ),
+        (
+            "rvjacbase E[C,U]; show rvJacTate2(zero[RVJac(C)],zero[RVJac(E)]);",
+            "expected type RVJac(C)",
+        ),
+        (
+            "show rvJacWeil2(o,zero[RVJac(C)]);",
+            "requires an RVJac divisor class",
+        ),
+        (
+            "show rvJacTate2(zero[RVJac(C)],o);",
+            "expected type RVJac(C)",
+        ),
+    ] {
+        let problem = diagnostic(interpret(&format!("{F9}{source}")));
+        assert!(problem.contains(expected), "{problem}");
+    }
+}

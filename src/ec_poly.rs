@@ -301,6 +301,48 @@ pub(crate) fn gcd(
     Ok(a)
 }
 
+pub(crate) fn resultant(
+    model: &mut Model,
+    field: Field<'_>,
+    mut a: Polynomial,
+    b: &[Scalar],
+) -> Result<Scalar> {
+    if a.is_empty() || b.is_empty() {
+        return Ok(field.zero());
+    }
+    model.spend(b.len() * field.cells())?;
+    let mut b = b.to_vec();
+    let one = field.one();
+    let mut result = field.one();
+    loop {
+        let m = a.len() - 1;
+        let n = b.len() - 1;
+        let leading = &b[n];
+        if n == 0 {
+            if leading == &one {
+                return Ok(result);
+            }
+            let factor = field.ring.power(model, leading, m as u64)?;
+            return field.multiply(model, &result, &factor);
+        }
+        let remainder = remainder(model, field, a, &b)?;
+        if remainder.is_empty() {
+            return Ok(field.zero());
+        }
+        // Res(a,b) = (−1)^(mn) lc(b)^(m−deg r) Res(b,r) for r = a mod b.
+        if leading != &one {
+            let factor = field
+                .ring
+                .power(model, leading, (m + 1 - remainder.len()) as u64)?;
+            result = field.multiply(model, &result, &factor)?;
+        }
+        if m % 2 == 1 && n % 2 == 1 {
+            result = field.ring.negate(model, &result)?;
+        }
+        (a, b) = (b, remainder);
+    }
+}
+
 pub(crate) fn coprime(
     model: &mut Model,
     field: Field<'_>,

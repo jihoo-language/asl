@@ -426,6 +426,11 @@ enum JacobianOperation {
 enum JacobianAction {
     Point(Rc<hw_closed::Curve>, Box<[TypedExpr; 2]>),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
+    Pair(
+        Rc<hw_closed::Curve>,
+        hyperelliptic_jacobian::Pairing,
+        Box<[TypedExpr; 2]>,
+    ),
 }
 
 enum ClosedWittAction {
@@ -4569,6 +4574,16 @@ impl Engine {
                     }
                 };
                 output.persist(&mut self.model, target)
+            }
+            JacobianAction::Pair(curve, pairing, inputs) => {
+                let [left, right] = inputs.as_ref();
+                let (Value::Jacobian(left), Value::Jacobian(right)) =
+                    (self.eval(left)?, self.eval(right)?)
+                else {
+                    unreachable!()
+                };
+                let sign = pairing.evaluate(&mut self.model, curve, &left, &right)?;
+                rv_unram::persist(&mut self.model, sign)
             }
         }
     }
@@ -17446,6 +17461,33 @@ impl Checker<'_> {
                 Ok((
                     ty,
                     TypedForm::Jacobian(JacobianAction::Apply(curve, operation, Box::new(input))),
+                ))
+            }
+            Expression::Pair(pairing, inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let Kind::Jacobian(name) = self.model.kind(left.ty) else {
+                    return Err(self.invalid_operand(
+                        &left,
+                        pairing.name(),
+                        "an RVJac divisor class",
+                    ));
+                };
+                self.require_type(left.ty, &right, pairing.name())?;
+                let curve = self.model.jacobian_curve(name)?;
+                let field = Label {
+                    text: curve.grade.ring.to_string(),
+                    span: left.span,
+                };
+                let ty = self.model.rv_unram_type(&field)?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::Pair(
+                        curve,
+                        pairing,
+                        Box::new([left, right]),
+                    )),
                 ))
             }
         }

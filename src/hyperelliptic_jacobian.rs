@@ -22,6 +22,61 @@ pub(crate) enum Expression {
     Literal(Label, Vec<Vec<i128>>, Vec<Vec<i128>>),
     Point(Label, Box<[ParsedExpr; 2]>),
     Apply(Operation, Box<ParsedExpr>),
+    Pair(Pairing, Box<[ParsedExpr; 2]>),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum Pairing {
+    Weil,
+    Tate,
+}
+
+impl Pairing {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Weil => "rvJacWeil2",
+            Self::Tate => "rvJacTate2",
+        }
+    }
+
+    pub(crate) fn evaluate(
+        self,
+        model: &mut Model,
+        curve: &Curve,
+        left: &Divisor,
+        right: &Divisor,
+    ) -> Result<Scalar> {
+        // In reduced Mumford form, negation fixes u and sends v to −v.
+        if !left.v.is_empty() {
+            return Err(Error::plain(format!(
+                "{} first argument must have order dividing 2",
+                self.name()
+            )));
+        }
+        if matches!(self, Self::Weil) && !right.v.is_empty() {
+            return Err(Error::plain(
+                "rvJacWeil2 second argument must have order dividing 2",
+            ));
+        }
+        let field = field(curve);
+        if left.is_zero() || right.is_zero() {
+            return Ok(field.one());
+        }
+        model.spend((left.u.len() + right.u.len()) * field.cells())?;
+        let common = poly::gcd(model, field, left.u.clone(), right.u.clone())?;
+        match self {
+            Self::Weil => {
+                // Odd-degree branch subsets also contain the point at infinity.
+                let intersection = (left.u.len() - 1) * (right.u.len() - 1) + common.len() - 1;
+                Ok(if intersection.is_multiple_of(2) {
+                    field.one()
+                } else {
+                    field.signed(-1)
+                })
+            }
+            Self::Tate => left.tate_pairing(model, curve, right, common),
+        }
+    }
 }
 
 pub(crate) enum Operation {
@@ -297,6 +352,39 @@ impl Divisor {
             result = image.add(model, target, &scaled)?;
         }
         Ok(result)
+    }
+
+    fn tate_pairing(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        rhs: &Self,
+        common: Polynomial,
+    ) -> Result<Scalar> {
+        let field = field(curve);
+        let h = &self.u;
+        let value = if common.len() == 1 {
+            model.spend(rhs.u.len() * field.cells())?;
+            poly::resultant(model, field, rhs.u.clone(), h)?
+        } else {
+            let leading = common.last().expect("nonzero gcd of monic polynomials");
+            let common = if leading == &field.one() {
+                common
+            } else {
+                let inverse = field.inverse_unit(model, leading)?;
+                poly::scale(model, field, &common, &inverse)?
+            };
+            let disjoint = poly::exact_divide(model, field, &rhs.u, &common)?;
+            let ordinary = poly::resultant(model, field, disjoint, h)?;
+            // At a common branch point y is a uniformizer and h/y² = 1/(f/h).
+            // The inverse has the same square class. At infinity h has leading unit 1.
+            let complement = poly::exact_divide(model, field, curve.polynomial(), h)?;
+            let ramified = poly::resultant(model, field, common, &complement)?;
+            field.multiply(model, &ordinary, &ramified)?
+        };
+        // The field norm accounts for (q−1)/(p−1), even if q does not fit in u64.
+        let norm = curve.ring.conjugate_sum_or_product(model, &value, true)?;
+        curve.ring.power(model, &norm, (curve.ring.prime() - 1) / 2)
     }
 
     pub(crate) fn coefficient(&self, curve: &Curve, v: bool, k: usize) -> Scalar {

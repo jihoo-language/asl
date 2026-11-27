@@ -2827,7 +2827,18 @@ impl<'src> Parser<'src> {
     }
 
     fn jacobian_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
-        use crate::hyperelliptic_jacobian::{Expression, Operation};
+        use crate::hyperelliptic_jacobian::{Expression, Operation, Pairing};
+        if matches!(name, "rvJacWeil2" | "rvJacTate2") {
+            let pairing = if name == "rvJacWeil2" {
+                Pairing::Weil
+            } else {
+                Pairing::Tate
+            };
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            let expression = Expression::Pair(pairing, Box::new(inputs));
+            return expr(span, ExprForm::Jacobian(Box::new(expression)), depth);
+        }
         self.expect(Token::LBracket)?;
         let (expression, depth) = match name {
             "rvjac" => {
@@ -8419,7 +8430,7 @@ impl<'src> Parser<'src> {
                 {
                     return self.ec_map_expression(&name.text, span, nest);
                 }
-                if matches!(
+                if (matches!(
                     name.text.as_str(),
                     "rvjac"
                         | "rvJacPoint"
@@ -8430,7 +8441,9 @@ impl<'src> Parser<'src> {
                         | "rvJacDescend"
                         | "rvJacFrob"
                         | "rvJacWeilApply"
-                ) && self.token() == Token::LBracket
+                ) && self.token() == Token::LBracket)
+                    || (matches!(name.text.as_str(), "rvJacWeil2" | "rvJacTate2")
+                        && self.token() == Token::LParen)
                 {
                     return self.jacobian_expression(&name.text, name.span, nest);
                 }
