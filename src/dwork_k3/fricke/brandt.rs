@@ -9,6 +9,7 @@ use crate::syntax::{Label, ParsedExpr};
 
 pub(crate) mod eigen;
 mod geometry;
+pub(crate) mod manin;
 mod matrix;
 
 pub(crate) enum Command {
@@ -171,15 +172,29 @@ impl Basis {
         operation: Operation,
         value: &[i128],
     ) -> Result<Value> {
-        let result = match operation {
+        let result = self.act(model, operation, value)?;
+        persist(model, result)
+    }
+
+    pub(crate) fn apply_rational(
+        &self,
+        model: &mut Model,
+        operation: Operation,
+        value: &eigen::Fraction,
+    ) -> Result<Value> {
+        let result = self.act(model, operation, &value.numerator)?;
+        eigen::Fraction::new(result, value.denominator).persist(model)
+    }
+
+    fn act(&self, model: &mut Model, operation: Operation, value: &[i128]) -> Result<Vec<i128>> {
+        Ok(match operation {
             Operation::Hecke(level) => self.operator(model, level)?.push(model, value)?,
             Operation::Frobenius => self.frobenius.iter().map(|&j| value[j]).collect(),
             Operation::Negate => value
                 .iter()
                 .map(|c| c.checked_neg().ok_or_else(arithmetic))
                 .collect::<Result<_>>()?,
-        };
-        persist(model, result)
+        })
     }
 }
 

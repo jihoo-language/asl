@@ -28,7 +28,7 @@ use crate::cohomology;
 use crate::comodule::{self, Generator};
 use crate::cyclic::{self, Layout};
 use crate::dependent_sets::{self, Operation as SetOperation};
-use crate::dwork_k3::fricke::brandt as fricke_ss;
+use crate::dwork_k3::fricke::brandt::{self as fricke_ss, manin};
 use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
@@ -1179,6 +1179,8 @@ enum TypedForm {
     FrickeSSAction(Rc<fricke_ss::Basis>, fricke_ss::Operation, Box<TypedExpr>),
     FrickeOrderProject(Rc<fricke_ss::eigen::Order>, usize, Box<TypedExpr>),
     FrickeOrderExtract(bool, Box<TypedExpr>),
+    FrickeManinAction(Rc<manin::Space>, manin::Operator, Box<TypedExpr>),
+    FrickeManinTransfer(Rc<manin::Comparison>, bool, Box<TypedExpr>),
     FrickeCMPolyEval(
         Rc<cm_class_poly::fricke::Polynomial>,
         Rc<UnramRing>,
@@ -2781,6 +2783,15 @@ impl Engine {
             }
             StatementForm::FrickeSS(command) => return command.execute(&mut self.model),
             StatementForm::FrickeOrder(command) => return command.execute(&mut self.model),
+            StatementForm::FrickeManin(command) => return command.execute(&mut self.model),
+            StatementForm::FrickeManinBoundary(input) => {
+                let input = self.checker().expr(input)?;
+                let space = self.checker().manin_operand(&input)?;
+                let Value::FrickeManin(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                space.boundary(&mut self.model, &value)?
+            }
             StatementForm::FrickeCMDefine(name, left, right) => {
                 let left = self.model.cm_class_polynomial(&left)?;
                 let value = if let Some(right) = right {
@@ -13469,6 +13480,9 @@ impl Engine {
                             .group(&mut self.model, grade, k)?;
                         Ok(Value::KhClass(group.add(&mut self.model, &a, &b)?))
                     }
+                    (BinaryOp::Add, Value::FrickeManin(a), Value::FrickeManin(b)) => {
+                        manin::add(&mut self.model, &a, &b)
+                    }
                     (BinaryOp::Add, Value::FrickeSSDiv(a), Value::FrickeSSDiv(b)) => {
                         fricke_ss::add(&mut self.model, &a, &b)
                     }
@@ -15506,12 +15520,34 @@ impl Engine {
                 }
                 fricke_ss::persist(&mut self.model, fraction.numerator.clone())
             }
-            TypedForm::FrickeSSAction(basis, operation, input) => {
-                let Value::FrickeSSDiv(value) = self.eval(input)? else {
+            TypedForm::FrickeManinAction(space, operation, input) => {
+                let Value::FrickeManin(value) = self.eval(input)? else {
                     unreachable!()
                 };
-                basis.apply(&mut self.model, *operation, &value)
+                space.apply(&mut self.model, *operation, &value)
             }
+            TypedForm::FrickeManinTransfer(comparison, to_brandt, input) => {
+                match self.eval(input)? {
+                    Value::FrickeManin(fraction) | Value::FrickeSSQDiv(fraction) => {
+                        comparison.transfer(&mut self.model, *to_brandt, &fraction)
+                    }
+                    Value::FrickeSSDiv(value) => {
+                        let fraction = fricke_ss::eigen::Fraction {
+                            numerator: value.to_vec(),
+                            denominator: 1,
+                        };
+                        comparison.transfer(&mut self.model, *to_brandt, &fraction)
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            TypedForm::FrickeSSAction(basis, operation, input) => match self.eval(input)? {
+                Value::FrickeSSDiv(value) => basis.apply(&mut self.model, *operation, &value),
+                Value::FrickeSSQDiv(value) => {
+                    basis.apply_rational(&mut self.model, *operation, &value)
+                }
+                _ => unreachable!(),
+            },
             TypedForm::FrickeCMPolyEval(polynomial, ring, input) => {
                 let Value::RVUnram(h) = self.eval(input)? else {
                     unreachable!()
@@ -19817,6 +19853,7 @@ impl Checker<'_> {
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::FrickeSSDiv(name) => self.model.fricke_ss_type(&name),
             TypeForm::FrickeSSQDiv(name) => self.model.fricke_ss_qdiv_type(&name),
+            TypeForm::FrickeManin(name) => self.model.manin_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
             TypeForm::VerbitskyCyclic(grade, class) => {
                 self.model.verbitsky_cyclic_type(grade.into(), class)
@@ -21192,6 +21229,10 @@ impl Checker<'_> {
                     Kind::Kummer(name) => {
                         let curve = self.model.kummer_curve(name)?;
                         KummerPoint::identity(&curve).persist(self.model)?
+                    }
+                    Kind::FrickeManin(name) => {
+                        let space = self.model.manin_space(&Label { text: name.to_string(), span })?;
+                        manin::persist(self.model, &vec![crate::lee_linear::Rational::ZERO; space.dimension()])?
                     }
                     Kind::FrickeSSDiv(name) => {
                         let basis = self.model.fricke_ss(&Label { text: name.to_string(), span })?;
@@ -23463,6 +23504,7 @@ impl Checker<'_> {
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::FrickeSS(expression) => self.fricke_ss_expression(*expression),
             ExprForm::FrickeOrder(expression) => self.fricke_order_expression(*expression),
+            ExprForm::FrickeManin(expression) => self.fricke_manin_expression(*expression),
             ExprForm::FrickeCMPolyEval(name, input) => {
                 let polynomial = self.model.fricke_cm_polynomial(&name)?;
                 let input = self.expr(*input)?;
@@ -24791,7 +24833,21 @@ impl Checker<'_> {
                         TypedForm::HWUnary(ring, hyperelliptic::Unary::Negate, Box::new(input)),
                     ));
                 }
-                if matches!(self.model.kind(input.ty), Kind::FrickeSSDiv(..)) {
+                if matches!(self.model.kind(input.ty), Kind::FrickeManin(..)) {
+                    let space = self.manin_operand(&input)?;
+                    return Ok((
+                        input.ty,
+                        TypedForm::FrickeManinAction(
+                            space,
+                            manin::Operator::Scale(crate::lee_linear::Rational::integer(-1)),
+                            Box::new(input),
+                        ),
+                    ));
+                }
+                if matches!(
+                    self.model.kind(input.ty),
+                    Kind::FrickeSSDiv(..) | Kind::FrickeSSQDiv(..)
+                ) {
                     let basis = self.fricke_ss_operand(&input)?;
                     return Ok((
                         input.ty,
@@ -28670,6 +28726,7 @@ impl Checker<'_> {
                         | Kind::Jacobian(..)
                         | Kind::KummerDiv(..)
                         | Kind::FrickeSSDiv(..)
+                        | Kind::FrickeManin(..)
                         | Kind::K3PencilSection(..)
                         | Kind::K3PencilKummer2(..)
                         | Kind::ECPoint(..)
@@ -36918,6 +36975,69 @@ impl Checker<'_> {
         Ok(name)
     }
 
+    fn manin_operand(&self, input: &TypedExpr) -> Result<Rc<manin::Space>> {
+        let Kind::FrickeManin(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, "Manin-symbol action", "an RVManin class"));
+        };
+        self.model.manin_space(&Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn fricke_manin_expression(
+        &mut self,
+        expression: manin::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use manin::Expression;
+        let (name, values) = match expression {
+            Expression::Symbol(name, c, d) => {
+                let values = self.model.manin_space(&name)?.symbol(c, d)?;
+                (name, values)
+            }
+            Expression::Path(name, ends) => {
+                let values = self.model.manin_space(&name)?.path(self.model, ends)?;
+                (name, values)
+            }
+            Expression::Basis(name, cut, i) => {
+                let values = self.model.manin_space(&name)?.basis(cut, i)?;
+                (name, values)
+            }
+            Expression::Action(operation, input) => {
+                let input = self.expr(*input)?;
+                let space = self.manin_operand(&input)?;
+                space.check_operation(operation)?;
+                return Ok((
+                    input.ty,
+                    TypedForm::FrickeManinAction(space, operation, Box::new(input)),
+                ));
+            }
+            Expression::Transfer(name, to_brandt, input) => {
+                let comparison = self.model.manin_comparison(&name)?;
+                let input = self.expr(*input)?;
+                let manin_ty = self.model.manin_type(&comparison.manin)?;
+                let rational_ty = self.model.fricke_ss_qdiv_type(&comparison.brandt)?;
+                let output = if to_brandt {
+                    self.require_type(manin_ty, &input, "Manin-to-Brandt transfer")?;
+                    rational_ty
+                } else {
+                    let integral_ty = self.model.fricke_ss_type(&comparison.brandt)?;
+                    if input.ty != integral_ty {
+                        self.require_type(rational_ty, &input, "Brandt-to-Manin transfer")?;
+                    }
+                    manin_ty
+                };
+                return Ok((
+                    output,
+                    TypedForm::FrickeManinTransfer(comparison, to_brandt, Box::new(input)),
+                ));
+            }
+        };
+        let ty = self.model.manin_type(&name)?;
+        let value = manin::persist(self.model, &values)?;
+        Ok((ty, TypedForm::Constant(value)))
+    }
+
     fn fricke_order_expression(
         &mut self,
         expression: fricke_ss::eigen::Expression,
@@ -36961,11 +37081,11 @@ impl Checker<'_> {
     }
 
     fn fricke_ss_operand(&self, input: &TypedExpr) -> Result<Rc<fricke_ss::Basis>> {
-        let Kind::FrickeSSDiv(name) = self.model.kind(input.ty) else {
+        let (Kind::FrickeSSDiv(name) | Kind::FrickeSSQDiv(name)) = self.model.kind(input.ty) else {
             return Err(self.invalid_operand(
                 input,
                 "Fricke divisor action",
-                "an RVFrickeSSDiv class",
+                "an RVFrickeSSDiv or RVFrickeSSQDiv class",
             ));
         };
         self.model.fricke_ss(&Label {

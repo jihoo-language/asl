@@ -24,7 +24,7 @@ use crate::cobar;
 use crate::cohomology::Cohomology;
 use crate::comodule;
 use crate::dependent_sets;
-use crate::dwork_k3::fricke::brandt as fricke_ss;
+use crate::dwork_k3::fricke::brandt::{self as fricke_ss, manin};
 use crate::ec_morphism::Morphism as ECMap;
 use crate::ec_poly::Scalar as ECScalar;
 use crate::elliptic::{
@@ -348,6 +348,7 @@ pub(crate) enum Kind {
     KummerDiv(Rc<str>),
     FrickeSSDiv(Rc<str>),
     FrickeSSQDiv(Rc<str>),
+    FrickeManin(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
     HilbertCohomology(nakajima::Grade),
@@ -620,6 +621,7 @@ pub(crate) enum Value {
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     FrickeSSDiv(Rc<[i128]>),
     FrickeSSQDiv(Rc<fricke_ss::eigen::Fraction>),
+    FrickeManin(Rc<fricke_ss::eigen::Fraction>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
@@ -854,6 +856,8 @@ pub(crate) struct Model {
     elliptic_modular_polynomials: HashMap<u32, Rc<crate::elliptic_modular::Polynomial>>,
     fricke_ss_bases: HashMap<String, Rc<fricke_ss::Basis>>,
     fricke_hecke_orders: HashMap<String, Rc<fricke_ss::eigen::Order>>,
+    manin_spaces: HashMap<String, Rc<manin::Space>>,
+    manin_comparisons: HashMap<String, Rc<manin::Comparison>>,
     dwork_hecke_equations: HashMap<usize, Rc<crate::elliptic_modular::Polynomial>>,
     hyperelliptic: HashMap<String, Rc<hyperelliptic::Curve>>,
     hw_closed_curves: HashMap<String, Rc<hw_closed::Curve>>,
@@ -1037,6 +1041,8 @@ impl Model {
             elliptic_modular_polynomials: HashMap::new(),
             fricke_ss_bases: HashMap::new(),
             fricke_hecke_orders: HashMap::new(),
+            manin_spaces: HashMap::new(),
+            manin_comparisons: HashMap::new(),
             dwork_hecke_equations: HashMap::new(),
             hyperelliptic: HashMap::new(),
             hw_closed_curves: HashMap::new(),
@@ -1705,7 +1711,7 @@ impl Model {
                     usize::MAX
                 }
             }
-            Kind::FrickeSSDiv(..) | Kind::FrickeSSQDiv(..) => usize::MAX,
+            Kind::FrickeSSDiv(..) | Kind::FrickeSSQDiv(..) | Kind::FrickeManin(..) => usize::MAX,
             Kind::ECMap(..) | Kind::Kummer(..) | Kind::KummerK3(..) | Kind::KummerDiv(..) => {
                 usize::MAX
             }
@@ -2122,6 +2128,7 @@ impl Model {
                 | Kind::KummerDiv(..)
                 | Kind::FrickeSSDiv(..)
                 | Kind::FrickeSSQDiv(..)
+                | Kind::FrickeManin(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
                 | Kind::HilbertCohomology(..)
@@ -7327,6 +7334,59 @@ impl Model {
             })
     }
 
+    pub(crate) fn define_manin_space(&mut self, name: Label, space: manin::Space) -> Result<()> {
+        if self.manin_spaces.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "Manin symbol space is already defined",
+            ));
+        }
+        self.manin_spaces.insert(name.text, Rc::new(space));
+        Ok(())
+    }
+
+    pub(crate) fn manin_space(&self, name: &Label) -> Result<Rc<manin::Space>> {
+        self.manin_spaces.get(&name.text).cloned().ok_or_else(|| {
+            Error::new(
+                name.span,
+                format!("unknown Manin symbol space '{}'", name.text),
+            )
+        })
+    }
+
+    pub(crate) fn define_manin_comparison(
+        &mut self,
+        name: Label,
+        comparison: manin::Comparison,
+    ) -> Result<()> {
+        if self.manin_comparisons.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                "Manin–Brandt comparison is already defined",
+            ));
+        }
+        self.manin_comparisons
+            .insert(name.text, Rc::new(comparison));
+        Ok(())
+    }
+
+    pub(crate) fn manin_comparison(&self, name: &Label) -> Result<Rc<manin::Comparison>> {
+        self.manin_comparisons
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown Manin–Brandt comparison '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn manin_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.manin_space(name)?;
+        self.inhabited_type(Kind::FrickeManin(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn fricke_ss_qdiv_type(&mut self, name: &Label) -> Result<TypeId> {
         self.fricke_ss(name)?;
         self.inhabited_type(Kind::FrickeSSQDiv(name.text.as_str().into()), 0)
@@ -8174,6 +8234,7 @@ impl Model {
             | Kind::KummerDiv(..)
             | Kind::FrickeSSDiv(..)
             | Kind::FrickeSSQDiv(..)
+            | Kind::FrickeManin(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
             | Kind::HilbertCohomology(..)
@@ -8781,6 +8842,7 @@ impl Model {
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::FrickeSSDiv(name) => out.push(&format!("RVFrickeSSDiv({name})")),
             Kind::FrickeSSQDiv(name) => out.push(&format!("RVFrickeSSQDiv({name})")),
+            Kind::FrickeManin(name) => out.push(&format!("RVManin({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
             Kind::VerbitskyCyclic(grade, class) => {
                 let name = if *class {
@@ -9284,7 +9346,8 @@ impl Model {
                 self.spend(a.len())?;
                 Ok(a == b)
             }
-            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b)) => {
+            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b))
+            | (Value::FrickeManin(a), Value::FrickeManin(b)) => {
                 self.spend(a.numerator.len())?;
                 Ok(a == b)
             }
@@ -9749,7 +9812,8 @@ impl Model {
                 self.spend(a.len())?;
                 Ok(a.cmp(b))
             }
-            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b)) => {
+            (Value::FrickeSSQDiv(a), Value::FrickeSSQDiv(b))
+            | (Value::FrickeManin(a), Value::FrickeManin(b)) => {
                 self.spend(a.numerator.len())?;
                 Ok(a.cmp(b))
             }
@@ -10283,6 +10347,11 @@ impl Model {
                 Kind::KummerWeil(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a rational Kummer Weil representation",
+                    ))
+                }
+                Kind::FrickeManin(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate a rational modular-symbol space",
                     ))
                 }
                 Kind::FrickeSSQDiv(..) => {
@@ -12341,7 +12410,7 @@ impl Model {
                     fraction.numerator, fraction.denominator
                 ))
             }
-            Value::FrickeSSQDiv(fraction) => {
+            Value::FrickeSSQDiv(fraction) | Value::FrickeManin(fraction) => {
                 self.write_type(out, ty, 0)?;
                 self.spend(fraction.numerator.len())?;
                 out.push(&format!(

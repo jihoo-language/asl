@@ -191,6 +191,7 @@ pub(crate) enum TypeForm {
     KummerDiv(Label),
     FrickeSSDiv(Label),
     FrickeSSQDiv(Label),
+    FrickeManin(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
     HilbertCohomology(Label, i128, i128),
@@ -1166,6 +1167,7 @@ pub(crate) enum ExprForm {
     EllipticModular(Box<crate::elliptic_modular::Expression>),
     FrickeSS(Box<crate::dwork_k3::fricke::brandt::Expression>),
     FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Expression>),
+    FrickeManin(Box<crate::dwork_k3::fricke::brandt::manin::Expression>),
     FrickeCMPolyEval(Label, Box<ParsedExpr>),
     FrickeCMPolyModCoeff(Label, Label, usize),
     FrickeCMPairCoeff(usize, Box<ParsedExpr>),
@@ -1458,6 +1460,8 @@ pub(crate) enum StatementForm {
     EllipticModular(crate::elliptic_modular::Statement),
     FrickeSS(Box<crate::dwork_k3::fricke::brandt::Command>),
     FrickeOrder(Box<crate::dwork_k3::fricke::brandt::eigen::Command>),
+    FrickeManin(Box<crate::dwork_k3::fricke::brandt::manin::Command>),
+    FrickeManinBoundary(ParsedExpr),
     FrickeCMDefine(Label, Label, Option<Label>),
     FrickeCMData(Label, Option<usize>),
     FrickeCMFactors(Label, Label),
@@ -6870,6 +6874,127 @@ impl<'src> Parser<'src> {
             )
         };
         expr(span, ExprForm::CMArtin(Box::new(expression)), depth)
+    }
+
+    fn fricke_manin_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::dwork_k3::fricke::brandt::manin::Command;
+        self.advance()?;
+        if operation == "rvManinBoundary" {
+            return Ok(StatementForm::FrickeManinBoundary(self.paren_expr(0)?));
+        }
+        let name = if matches!(operation, "rvmanin" | "rvfrickejl") {
+            Some(self.label()?)
+        } else {
+            None
+        };
+        self.expect(Token::LBracket)?;
+        let command = match operation {
+            "rvmanin" => Command::Define(name.unwrap(), self.number()?.0),
+            "rvfrickejl" => {
+                let manin = self.label()?;
+                self.expect(Token::Comma)?;
+                Command::Compare(name.unwrap(), manin, self.label()?)
+            }
+            "rvManinData" => Command::Data(self.label()?),
+            "rvFrickeJLData" => Command::ComparisonData(self.label()?),
+            _ => {
+                let setting = self.label()?;
+                self.expect(Token::Comma)?;
+                let n = self.number()?.0;
+                self.expect(Token::Comma)?;
+                Command::Spectrum(setting, n, self.number()?.0)
+            }
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::FrickeManin(Box::new(command)))
+    }
+
+    fn fricke_manin_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::dwork_k3::fricke::brandt::manin::{Expression, Operator};
+        let operation = match name {
+            "rvManinJ" => Some(Operator::J),
+            "rvManinHecke" | "rvManinAtkin" | "rvManinScale" => {
+                self.expect(Token::LBracket)?;
+                let operation = match name {
+                    "rvManinHecke" => Operator::Hecke(self.number()?.0),
+                    "rvManinAtkin" => Operator::Atkin(self.number()?.0),
+                    _ => {
+                        let numerator =
+                            self.signed_wide("a signed multiplier", "Manin multiplier")?;
+                        let denominator = if self.eat(Token::Comma)? {
+                            self.signed_wide("a nonzero denominator", "Manin multiplier")?
+                        } else {
+                            1
+                        };
+                        let scale = crate::lee_linear::Rational::ratio(numerator, denominator)
+                            .map_err(|error| error.at(span))?;
+                        Operator::Scale(scale)
+                    }
+                };
+                self.expect(Token::RBracket)?;
+                Some(operation)
+            }
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            let input = self.paren_expr(nest)?;
+            let depth = input.depth + 1;
+            return expr(
+                span,
+                ExprForm::FrickeManin(Box::new(Expression::Action(operation, Box::new(input)))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let name_arg = self.label()?;
+        let (value, depth) = match name {
+            "rvManinSymbol" => {
+                self.expect(Token::Comma)?;
+                let c = self.signed_wide("a signed bottom coordinate", "Manin bottom row")?;
+                self.expect(Token::Comma)?;
+                let d = self.signed_wide("a signed bottom coordinate", "Manin bottom row")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Symbol(name_arg, c, d), 0)
+            }
+            "rvManinPath" => {
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let start = self.signed_tuple("a signed cusp coordinate", "Manin cusp")?;
+                self.expect(Token::Comma)?;
+                let end = self.signed_tuple("a signed cusp coordinate", "Manin cusp")?;
+                self.expect(Token::RBrace)?;
+                let start = start
+                    .try_into()
+                    .map_err(|_| Error::new(span, "Manin cusps require two coordinates"))?;
+                let end = end
+                    .try_into()
+                    .map_err(|_| Error::new(span, "Manin cusps require two coordinates"))?;
+                (Expression::Path(name_arg, [start, end]), 0)
+            }
+            "rvManinBasis" => {
+                self.expect(Token::Comma)?;
+                let cut = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let i = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(name_arg, cut, i), 0)
+            }
+            _ => {
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Transfer(name_arg, name == "rvFrickeJLToBrandt", Box::new(input)),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::FrickeManin(Box::new(value)), depth)
     }
 
     fn fricke_order_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -14105,6 +14230,10 @@ impl<'src> Parser<'src> {
             Token::Word(
                 name @ ("rvfrickeheckeorder" | "rvFrickeOrderData" | "rvFrickeOrderCongruence"),
             ) => self.fricke_order_statement(name)?,
+            Token::Word(
+                name @ ("rvmanin" | "rvfrickejl" | "rvManinData" | "rvManinSpectrum"
+                | "rvManinBoundary" | "rvFrickeJLData"),
+            ) => self.fricke_manin_statement(name)?,
             Token::Word(name @ ("rvCMNeighborData" | "rvCMNeighbors" | "rvCMNeighborCounts")) => {
                 self.cm_neighbor_statement(name)?
             }
@@ -18583,6 +18712,7 @@ impl<'src> Parser<'src> {
                 | "RVKummerDiv"
                 | "RVFrickeSSDiv"
                 | "RVFrickeSSQDiv"
+                | "RVManin"
                 | "RVK3Lattice"
                 | "RVMukai"
                 | "RVKummerWeil"
@@ -18606,6 +18736,7 @@ impl<'src> Parser<'src> {
                 "RVKummerDiv" => TypeForm::KummerDiv(endpoint),
                 "RVFrickeSSDiv" => TypeForm::FrickeSSDiv(endpoint),
                 "RVFrickeSSQDiv" => TypeForm::FrickeSSQDiv(endpoint),
+                "RVManin" => TypeForm::FrickeManin(endpoint),
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVOG10" => TypeForm::OG10(endpoint),
@@ -21283,6 +21414,21 @@ impl<'src> Parser<'src> {
                 ) && matches!(self.token(), Token::LBracket | Token::LParen)
                 {
                     return self.fricke_order_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvManinSymbol"
+                        | "rvManinPath"
+                        | "rvManinBasis"
+                        | "rvManinJ"
+                        | "rvManinHecke"
+                        | "rvManinAtkin"
+                        | "rvManinScale"
+                        | "rvFrickeJLToBrandt"
+                        | "rvFrickeJLToManin"
+                ) && matches!(self.token(), Token::LBracket | Token::LParen)
+                {
+                    return self.fricke_manin_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

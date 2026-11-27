@@ -52,7 +52,7 @@ pub(crate) struct Fraction {
 }
 
 impl Fraction {
-    fn new(mut numerator: Vec<i128>, mut denominator: i128) -> Self {
+    pub(super) fn new(mut numerator: Vec<i128>, mut denominator: i128) -> Self {
         let divisor = numerator
             .iter()
             .fold(denominator as u128, |d, n| gcd(d, n.unsigned_abs()))
