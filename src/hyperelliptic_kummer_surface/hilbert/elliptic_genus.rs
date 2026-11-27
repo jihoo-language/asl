@@ -12,6 +12,7 @@ use super::{Integer, Magnitude};
 use crate::hyperelliptic_kummer_surface::{enriques, nikulin::basis_for};
 
 mod cyclic;
+pub(crate) mod eigenpacket;
 pub(crate) mod farey;
 pub(crate) mod hecke;
 pub(crate) mod hurwitz;

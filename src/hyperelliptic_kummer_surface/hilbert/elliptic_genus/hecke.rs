@@ -62,7 +62,7 @@ pub(crate) enum Expression {
     SameAction(Box<[ParsedExpr; 2]>),
 }
 
-type Support = BTreeMap<u128, Integer>;
+pub(super) type Support = BTreeMap<u128, Integer>;
 
 #[derive(Clone)]
 pub(crate) struct Operator(Support);
@@ -93,12 +93,7 @@ impl Operator {
     pub(crate) fn compare(&self, model: &mut Model, rhs: &Self) -> Result<Ordering> {
         model.spend(1 + INTEGER_WORDS * self.0.len().min(rhs.0.len()))?;
         for ((n, a), (m, b)) in self.terms().zip(rhs.terms()) {
-            let ordering = n.cmp(&m).then_with(|| match (a.negative, b.negative) {
-                (true, true) => b.magnitude.cmp(a.magnitude),
-                (false, false) => a.magnitude.cmp(b.magnitude),
-                (false, true) => Ordering::Greater,
-                (true, false) => Ordering::Less,
-            });
+            let ordering = n.cmp(&m).then_with(|| compare_integers(a, b));
             if !ordering.is_eq() {
                 return Ok(ordering);
             }
@@ -130,7 +125,7 @@ impl Operator {
         Ok(Self(result?))
     }
 
-    fn scalar(&self) -> Option<Integer> {
+    pub(super) fn scalar(&self) -> Option<Integer> {
         match self.0.len() {
             0 => Some(integer(0)),
             1 => self.0.get(&1).copied(),
@@ -189,7 +184,7 @@ impl Operator {
         self.trace_cached(model, weight, &mut Support::new())
     }
 
-    fn trace_cached(
+    pub(super) fn trace_cached(
         &self,
         model: &mut Model,
         weight: u128,
@@ -241,7 +236,12 @@ impl Operator {
         Ok(*self.characteristic(model, weight, j)?.last().unwrap())
     }
 
-    fn characteristic(&self, model: &mut Model, weight: u128, j: u128) -> Result<Vec<Integer>> {
+    pub(super) fn characteristic(
+        &self,
+        model: &mut Model,
+        weight: u128,
+        j: u128,
+    ) -> Result<Vec<Integer>> {
         let count = prefix_capacity(j)?;
         let mut coefficients = Vec::with_capacity(count + 1);
         coefficients.push(integer(1));
@@ -292,13 +292,22 @@ pub(crate) fn validate_weight(weight: u128) -> Result<()> {
     Ok(())
 }
 
-fn dimension(weight: u128) -> u128 {
+pub(super) fn dimension(weight: u128) -> u128 {
     // S_k = Delta M_{k-12}, with M_* = C[E_4,E_6].
     (weight / 12).saturating_sub(u128::from(weight % 12 == 2))
 }
 
 pub(crate) fn integer(value: i128) -> Integer {
     Integer::from_i128(value)
+}
+
+pub(super) fn compare_integers(a: Integer, b: Integer) -> Ordering {
+    match (a.negative, b.negative) {
+        (true, true) => b.magnitude.cmp(a.magnitude),
+        (false, false) => a.magnitude.cmp(b.magnitude),
+        (false, true) => Ordering::Greater,
+        (true, false) => Ordering::Less,
+    }
 }
 
 fn unsigned(value: u128) -> Integer {

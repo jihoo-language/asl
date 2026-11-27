@@ -368,8 +368,8 @@ fn formal_hecke_characters_match_independent_q_expansion_action() {
 }
 
 #[test]
-fn weight_thirty_six_characteristic_uses_three_exact_newton_steps() {
-    let bound = 6;
+fn weight_thirty_six_characteristic_and_eigenpacket_match_cusp_form_action() {
+    let bound = 9;
     let delta = delta(bound);
     let e4 = e4(bound);
     let e4_cubed = convolve(&convolve(&e4, &e4, bound), &e4, bound);
@@ -379,22 +379,44 @@ fn weight_thirty_six_characteristic_uses_three_exact_newton_steps() {
     let h = convolve(&delta_squared, &delta, bound);
     assert_eq!([f[1], g[1], g[2], h[1], h[2], h[3]], [1, 0, 1, 0, 0, 1]);
 
-    let [a, b, c] = [&f, &g, &h].map(|form| {
-        let [u, v, w] = [1, 2, 3].map(|j| hecke_q_coefficient(form, 36, 2, j));
-        let v = v - u * f[2];
-        [u, v, w - u * f[3] - v * g[3]]
-    });
+    let hecke_matrix = |n| {
+        [&f, &g, &h].map(|form| {
+            let [u, v, w] = [1, 2, 3].map(|j| hecke_q_coefficient(form, 36, n, j));
+            let v = v - u * f[2];
+            [u, v, w - u * f[3] - v * g[3]]
+        })
+    };
+    let t2 = hecke_matrix(2);
+    let [a, b, c] = t2;
     let trace = a[0] + b[1] + c[2];
     let second = a[0] * b[1] - a[1] * b[0] + a[0] * c[2] - a[2] * c[0] + b[1] * c[2] - b[2] * c[1];
     let determinant = a[0] * (b[1] * c[2] - b[2] * c[1]) - b[0] * (a[1] * c[2] - a[2] * c[1])
         + c[0] * (a[1] * b[2] - a[2] * b[1]);
+    let t3 = hecke_matrix(3);
+    let t2_square: [[i128; 3]; 3] = t2
+        .map(|column| std::array::from_fn(|i| (0..3).map(|j| t2[j][i] * column[j]).sum::<i128>()));
+    for (j, column) in t3.iter().enumerate() {
+        for (i, &value) in column.iter().enumerate() {
+            // An independent Fourier check of 72 T_3 in the basis I,T_2,T_2².
+            assert_eq!(
+                72 * value,
+                72 * (478011548 * i128::from(i == j) + 2697 * t2[j][i]) - t2_square[j][i],
+            );
+        }
+    }
     let report = stdout(interpret(
-        "let a = rvHeckeT[36,2]; rvHeckeChar(a); rvHeckeCharCoeff[3](a);",
+        "let a = rvHeckeT[36,2]; rvHeckeChar(a); rvHeckeCharCoeff[3](a);
+         rvheckepacket E(a);
+         let a3 = rvHeckeEigenCoeff[E,3];
+         rvHeckeEigenCoord[0](a3); rvHeckeEigenCoord[1](a3); rvHeckeEigenCoord[2](a3);
+         rvHeckeEigenNorm(rvHeckeEigenGenerator[E]);",
     ));
     assert_eq!(
         report,
         format!(
-            "rvHeckeChar = [1, {}, {second}, {}]\nrvHeckeCharCoeff[3] = {}\n",
+            "rvHeckeChar = [1, {}, {second}, {}]\nrvHeckeCharCoeff[3] = {}\n\
+         rvHeckeEigenCoord[0] = 478011548\nrvHeckeEigenCoord[1] = 2697\n\
+         rvHeckeEigenCoord[2] = -1/72\nrvHeckeEigenNorm = {determinant}\n",
             -trace, -determinant, -determinant,
         )
     );
@@ -472,6 +494,150 @@ fn hecke_operators_diagnose_invalid_grades_and_arithmetic_limits() {
         ),
     ] {
         let error = diagnostic(interpret(&source));
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}
+
+#[test]
+fn eigenpacket_coordinates_and_conjugate_invariants_match_q_expansion() {
+    let bound = 16;
+    let delta = delta(bound);
+    let e4 = e4(bound);
+    let e4_cubed = convolve(&convolve(&e4, &e4, bound), &e4, bound);
+    let f = convolve(&delta, &e4_cubed, bound);
+    let g = convolve(&delta, &delta, bound);
+    let a = hecke24_matrix(&f, &g, 2);
+    assert_eq!(a[1][0], 1);
+    let mut program = String::from("rvheckepacket E(rvHeckeT[24,2]);\n");
+    let mut expected = String::new();
+    for n in 1..=8 {
+        let b = hecke24_matrix(&f, &g, n);
+        let v = b[1][0];
+        let u = b[0][0] - v * a[0][0];
+        // These coordinates reproduce every entry in the independently
+        // constructed T_n matrix, so they give both conjugate eigenvalues.
+        let reconstructed =
+            std::array::from_fn(|i| std::array::from_fn(|j| u * i128::from(i == j) + v * a[i][j]));
+        assert_eq!(b, reconstructed);
+        let [_, negative_trace, norm] = characteristic_2x2(b);
+        writeln!(
+            program,
+            "let a{n} = rvHeckeEigenCoeff[E,{n}];
+             rvHeckeEigenCoord[0](a{n}); rvHeckeEigenCoord[1](a{n});
+             rvHeckeEigenTrace(a{n}); rvHeckeEigenNorm(a{n});",
+        )
+        .unwrap();
+        writeln!(
+            expected,
+            "rvHeckeEigenCoord[0] = {u}\nrvHeckeEigenCoord[1] = {v}\nrvHeckeEigenTrace = {}\nrvHeckeEigenNorm = {norm}",
+            -negative_trace
+        )
+        .unwrap();
+    }
+    assert_eq!(stdout(interpret(&program)), expected);
+}
+
+#[test]
+fn eigenpacket_arithmetic_preserves_hecke_products_and_rational_coordinates() {
+    assert_eq!(
+        stdout(example("hecke-eigenpackets")),
+        concat!(
+            "rvHeckeEigenData[E] = weight 24, [1, -1080, -20468736]\n",
+            "RVHeckeEigen(E){[195660, -48]/1}\n",
+            "rvHeckeEigenTrace = 339480\n",
+            "rvHeckeEigenNorm = -19020146544\n",
+            "RVHeckeEigen(F){[978636, -48]/5}\n",
+            "rvHeckeEigenCoord[1] = -48/5\n",
+        )
+    );
+    let source = "
+        let a = rvHeckeT[24,2];
+        rvheckepacket E(add(rvHeckeScale[2](a),rvHeckeScale[7](rvHeckeUnit[24])));
+        let x = rvHeckeEigenGenerator[E];
+        let half = rvHeckeEigenScalar[E,1,2];
+        let a2 = rvHeckeEigenCoeff[E,2];
+        assert a2 == rvHeckeEigenMul(half,add(x,rvHeckeEigenScalar[E,-7,1]));
+        assert rvHeckeEigenMul(a2,zero[RVHeckeEigen(E)]) == zero[RVHeckeEigen(E)];
+        assert add(a2,neg(a2)) == zero[RVHeckeEigen(E)];
+        assert add(half,rvHeckeEigenScalar[E,2,4]) == rvHeckeEigenCoeff[E,1];
+        let b = add(rvHeckeT[24,3],rvHeckeT[24,4]);
+        assert rvHeckeEigenImage[E](rvHeckeMul(a,b)) ==
+            rvHeckeEigenMul(a2,add(rvHeckeEigenCoeff[E,3],rvHeckeEigenCoeff[E,4]));
+        assert rvHeckeEigenImage[E](add(rvHeckeMul(a,a),
+            add(rvHeckeScale[-1080](a),rvHeckeScale[-20468736](rvHeckeUnit[24]))))
+            == zero[RVHeckeEigen(E)];
+        rvHeckeEigenNorm(half);
+        rvHeckeEigenTrace(half);
+        rvHeckeEigenNorm(zero[RVHeckeEigen(E)]);
+        rvHeckeEigenCoord[1](a2);
+        rvHeckeEigenCoord[2](a2);
+        rvHeckeEigenNorm(a2);";
+    assert_eq!(
+        stdout(interpret(source)),
+        concat!(
+            "rvHeckeEigenNorm = 1/4\nrvHeckeEigenTrace = 1\n",
+            "rvHeckeEigenNorm = 0\nrvHeckeEigenCoord[1] = 1/2\n",
+            "rvHeckeEigenCoord[2] = 0\nrvHeckeEigenNorm = -20468736\n",
+        )
+    );
+}
+
+#[test]
+fn degree_one_eigenpackets_return_tau_and_reduce_the_generator() {
+    let source = "
+        rvheckepacket Delta(rvHeckeT[12,2]);
+        rvHeckeEigenData[Delta];
+        assert rvHeckeEigenGenerator[Delta] == rvHeckeEigenScalar[Delta,-24,1];
+        assert rvHeckeEigenCoeff[Delta,1] == rvHeckeEigenScalar[Delta,1,1];
+        assert rvHeckeEigenCoeff[Delta,5] == rvHeckeEigenScalar[Delta,4830,1];
+        assert rvHeckeEigenCoeff[Delta,6] == rvHeckeEigenScalar[Delta,-6048,1];
+        assert rvHeckeEigenCoeff[Delta,9] == rvHeckeEigenScalar[Delta,-113643,1];
+        rvHeckeEigenNorm(rvHeckeEigenCoeff[Delta,5]);
+        rvHeckeEigenTrace(rvHeckeEigenCoeff[Delta,5]);";
+    assert_eq!(
+        stdout(interpret(source)),
+        "rvHeckeEigenData[Delta] = weight 12, [1, 24]\nrvHeckeEigenNorm = 4830\nrvHeckeEigenTrace = 4830\n",
+    );
+}
+
+#[test]
+fn eigenpacket_certificate_detects_repeated_eigenvalues_and_nominal_mismatch() {
+    for (source, expected) in [
+        (
+            "rvheckepacket E(rvHeckeUnit[2]);",
+            "requires a nonzero cusp space",
+        ),
+        (
+            "rvheckepacket E(rvHeckeUnit[24]);",
+            "squarefree characteristic polynomial",
+        ),
+        (
+            "let t = rvHeckeT[24,2]; rvheckepacket E(add(rvHeckeMul(t,t),rvHeckeScale[-1080](t)));",
+            "squarefree characteristic polynomial",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); show rvHeckeEigenImage[E](rvHeckeT[12,2]);",
+            "RVHecke(24)",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvheckepacket F(rvHeckeT[24,2]);
+             show rvHeckeEigenMul(rvHeckeEigenCoeff[E,2],rvHeckeEigenCoeff[F,2]);",
+            "RVHeckeEigen(E)",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); rvheckepacket E(rvHeckeT[24,2]);",
+            "already defined",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); show rvHeckeEigenScalar[E,1,0];",
+            "denominator must be positive",
+        ),
+        (
+            "rvheckepacket E(rvHeckeT[24,2]); show rvHeckeEigenCoeff[E,0];",
+            "Hecke index n must be positive",
+        ),
+    ] {
+        let error = diagnostic(interpret(source));
         assert!(error.contains(expected), "{source}: {error}");
     }
 }

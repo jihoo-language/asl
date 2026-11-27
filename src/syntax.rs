@@ -5,6 +5,7 @@ use crate::comodule::Generator;
 use crate::dependent_sets::Operation as SetOperation;
 use crate::eo::Report as EoReport;
 use crate::error::{Error, Result, Span};
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::map_bracket::Operation as MapBracketOp;
 use crate::map_system::Operation as MapSystemOp;
@@ -148,6 +149,7 @@ pub(crate) enum TypeForm {
     HilbertSquare(Label, i128),
     SiegelWeight,
     ModularHecke(u128),
+    HeckeEigen(Label),
     ECMap(Label, Label),
     ECCurve(Label),
     ECPoint(Label),
@@ -1028,6 +1030,7 @@ pub(crate) enum ExprForm {
     K3AutoPoint(Box<crate::hyperelliptic_kummer_surface::dynamics::PointExpression>),
     SiegelWeight(crate::siegel::Weight),
     ModularHecke(hecke::Expression),
+    HeckeEigen(eigenpacket::Expression),
     SiegelReflect(usize, Box<ParsedExpr>),
     HWWClosed(Box<crate::hw_closed::Expression>),
     LegendreClosed(crate::legendre_closed::Operation, Box<ParsedExpr>),
@@ -1256,6 +1259,7 @@ pub(crate) enum StatementForm {
         Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::farey::Command>,
     ),
     ModularHecke(hecke::Report, Box<ParsedExpr>),
+    HeckeEigen(eigenpacket::Statement),
     Hurwitz(Box<crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hurwitz::Query>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
@@ -4320,6 +4324,84 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::SiegelMaass(Box::new(command)))
     }
 
+    fn hecke_eigen_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use eigenpacket::{Report, Statement};
+        self.advance()?;
+        let statement = match name {
+            "rvheckepacket" => Statement::Declare(self.label()?, Box::new(self.paren_expr(0)?)),
+            "rvHeckeEigenData" => {
+                self.expect(Token::LBracket)?;
+                let packet = self.label()?;
+                self.expect(Token::RBracket)?;
+                Statement::Data(packet)
+            }
+            _ => {
+                let report = match name {
+                    "rvHeckeEigenTrace" => Report::Trace,
+                    "rvHeckeEigenNorm" => Report::Norm,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let j = self.wide_unsigned("Hecke eigenpacket coordinate")?;
+                        self.expect(Token::RBracket)?;
+                        Report::Coordinate(j)
+                    }
+                };
+                Statement::Report(report, Box::new(self.paren_expr(0)?))
+            }
+        };
+        Ok(StatementForm::HeckeEigen(statement))
+    }
+
+    fn hecke_eigen_expression(
+        &mut self,
+        name: &Label,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use eigenpacket::Expression;
+        if name.text == "rvHeckeEigenMul" {
+            let [a, b] = self.paren_pair(nest)?;
+            let depth = a.depth.max(b.depth) + 1;
+            return expr(
+                span,
+                ExprForm::HeckeEigen(Expression::Multiply(Box::new([a, b]))),
+                depth,
+            );
+        }
+        self.expect(Token::LBracket)?;
+        let packet = self.label()?;
+        let (operation, depth) = match name.text.as_str() {
+            "rvHeckeEigenImage" => {
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (Expression::Image(packet, Box::new(input)), depth)
+            }
+            "rvHeckeEigenGenerator" => {
+                self.expect(Token::RBracket)?;
+                (Expression::Generator(packet), 0)
+            }
+            "rvHeckeEigenCoeff" => {
+                self.expect(Token::Comma)?;
+                let n = self.wide_unsigned("Hecke Fourier index")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Coefficient(packet, n), 0)
+            }
+            _ => {
+                self.expect(Token::Comma)?;
+                let numerator = self.signed_wide(
+                    "a signed Hecke eigenpacket numerator",
+                    "Hecke eigenpacket scalar numerator",
+                )?;
+                self.expect(Token::Comma)?;
+                let denominator = self.wide_unsigned("Hecke eigenpacket scalar denominator")?;
+                self.expect(Token::RBracket)?;
+                (Expression::Scalar(packet, numerator, denominator), 0)
+            }
+        };
+        expr(span, ExprForm::HeckeEigen(operation), depth)
+    }
+
     fn hecke_operator_statement(&mut self, name: &str) -> Result<StatementForm> {
         self.advance()?;
         let query = match name {
@@ -6912,6 +6994,10 @@ impl<'src> Parser<'src> {
                 | "rvIgusaChamberCoeff"
                 | "rvIgusaChamberPath"),
             ) => self.siegel_chamber_statement(name)?,
+            Token::Word(
+                name @ ("rvheckepacket" | "rvHeckeEigenData" | "rvHeckeEigenTrace"
+                | "rvHeckeEigenNorm" | "rvHeckeEigenCoord"),
+            ) => self.hecke_eigen_statement(name)?,
             Token::Word(name @ ("rvHeckeActionTrace" | "rvHeckeChar" | "rvHeckeCharCoeff")) => {
                 self.hecke_operator_statement(name)?
             }
@@ -10271,6 +10357,11 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::ECMap(source, target), 0);
         }
+        if name.text == "RVHeckeEigen" && self.eat(Token::LParen)? {
+            let packet = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HeckeEigen(packet), 0);
+        }
         if name.text == "RVHecke" && self.eat(Token::LParen)? {
             let weight = self.wide_unsigned("level-one Hecke weight")?;
             self.expect(Token::RParen)?;
@@ -12623,6 +12714,17 @@ impl<'src> Parser<'src> {
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvHeckeEigenImage"
+                        | "rvHeckeEigenGenerator"
+                        | "rvHeckeEigenCoeff"
+                        | "rvHeckeEigenScalar"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvHeckeEigenMul" && self.token() == Token::LParen)
+                {
+                    return self.hecke_eigen_expression(&name, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

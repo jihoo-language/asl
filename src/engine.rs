@@ -40,7 +40,7 @@ use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
+use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{eigenpacket, hecke};
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
     abelian::{self, og6},
@@ -779,6 +779,10 @@ enum TypedForm {
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     SiegelReflect(usize, Box<TypedExpr>),
+    HeckeEigenImage(Rc<eigenpacket::Packet>, Box<TypedExpr>),
+    HeckeEigenCoefficient(Rc<eigenpacket::Packet>, hecke::Operator),
+    HeckeEigenMultiply(Rc<eigenpacket::Packet>, Box<[TypedExpr; 2]>),
+    HeckeEigenNegate(Box<TypedExpr>),
     ModularHeckeScale(i128, Box<TypedExpr>),
     ModularHeckeBinary(hecke::Pair, u128, Box<[TypedExpr; 2]>),
     SiegelNegate(Box<TypedExpr>),
@@ -2000,6 +2004,7 @@ impl Engine {
             }
             StatementForm::SiegelMaass(command) => return command.execute(&mut self.model),
             StatementForm::SiegelChamber(command) => return command.execute(&mut self.model),
+            StatementForm::HeckeEigen(command) => return self.hecke_eigen_statement(command),
             StatementForm::ModularHecke(query, input) => {
                 let input = self.checker().expr(*input)?;
                 let weight = self
@@ -5460,6 +5465,36 @@ impl Engine {
         Ok(format!("rvNakajimaPair = {pair}"))
     }
 
+    fn hecke_eigen_statement(&mut self, command: eigenpacket::Statement) -> Result<Option<String>> {
+        use eigenpacket::Statement;
+        match command {
+            Statement::Declare(name, input) => {
+                let input = self.checker().expr(*input)?;
+                let weight = self
+                    .checker()
+                    .hecke_operator_operand(&input, "rvheckepacket")?;
+                let Value::ModularHecke(generator) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                self.model
+                    .register_hecke_eigenpacket(name, weight, generator)?;
+                Ok(None)
+            }
+            Statement::Data(name) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                Ok(Some(packet.data(&name.text)))
+            }
+            Statement::Report(report, input) => {
+                let input = self.checker().expr(*input)?;
+                let packet = self.checker().hecke_eigen_operand(&input, report.name())?;
+                let Value::HeckeEigen(element) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                packet.report(&mut self.model, report, &element).map(Some)
+            }
+        }
+    }
+
     fn siegel_weight(
         &mut self,
         input: ParsedExpr,
@@ -7646,6 +7681,9 @@ impl Engine {
                     (BinaryOp::Add, Value::HilbertSquare(a), Value::HilbertSquare(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::HeckeEigen(a), Value::HeckeEigen(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::ModularHecke(a), Value::ModularHecke(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -9606,6 +9644,29 @@ impl Engine {
                     unreachable!()
                 };
                 word.iterate(&mut self.model, point, *power)
+            }
+            TypedForm::HeckeEigenImage(packet, input) => {
+                let Value::ModularHecke(operator) = self.eval(input)? else {
+                    unreachable!()
+                };
+                packet.image(&mut self.model, &operator)
+            }
+            TypedForm::HeckeEigenCoefficient(packet, operator) => {
+                packet.image(&mut self.model, operator)
+            }
+            TypedForm::HeckeEigenMultiply(packet, inputs) => {
+                let (Value::HeckeEigen(a), Value::HeckeEigen(b)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                packet.multiply(&mut self.model, &a, &b)
+            }
+            TypedForm::HeckeEigenNegate(input) => {
+                let Value::HeckeEigen(element) = self.eval(input)? else {
+                    unreachable!()
+                };
+                element.negate(&mut self.model)?.persist(&mut self.model)
             }
             TypedForm::ModularHeckeScale(coefficient, input) => {
                 let Value::ModularHecke(operator) = self.eval(input)? else {
@@ -12024,6 +12085,7 @@ impl Checker<'_> {
             TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
+            TypeForm::HeckeEigen(name) => self.model.hecke_eigen_type(&name),
             TypeForm::ModularHecke(weight) => self.model.modular_hecke_type(weight),
             TypeForm::SiegelWeight => self.model.siegel_weight_type(),
             TypeForm::ECMap(a, b) => self.model.ec_map_type(a.text.into(), b.text.into()),
@@ -13078,6 +13140,13 @@ impl Checker<'_> {
                     Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
+                    Kind::HeckeEigen(ref name) => {
+                        let packet = self.model.hecke_eigenpacket(&Label {
+                            text: name.to_string(),
+                            span,
+                        })?;
+                        eigenpacket::Element::zero(packet.degree()).persist(self.model)?
+                    }
                     Kind::ModularHecke(..) => hecke::Operator::zero().persist(self.model)?,
                     Kind::SiegelWeight => Value::SiegelWeight(crate::siegel::Weight::ZERO),
                     Kind::CurveDiff(..) => Value::CurveDiff([].into()),
@@ -15323,6 +15392,7 @@ impl Checker<'_> {
                     TypedForm::K3AutoPoint(word, power, Box::new(input)),
                 ))
             }
+            ExprForm::HeckeEigen(operation) => self.hecke_eigen_expression(operation),
             ExprForm::ModularHecke(operation) => match operation {
                 hecke::Expression::Basis(weight, index) => Ok((
                     self.model.modular_hecke_type(weight)?,
@@ -16099,6 +16169,9 @@ impl Checker<'_> {
                             Box::new(input),
                         ),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::HeckeEigen(..)) {
+                    return Ok((input.ty, TypedForm::HeckeEigenNegate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::ModularHecke(..)) {
                     return Ok((input.ty, TypedForm::ModularHeckeScale(-1, Box::new(input))));
@@ -19882,6 +19955,7 @@ impl Checker<'_> {
                         | Kind::HilbertSquare(..)
                         | Kind::SiegelWeight
                         | Kind::ModularHecke(..)
+                        | Kind::HeckeEigen(..)
                         | Kind::ASDeRham(..)
                         | Kind::BinaryScalar(..)
                         | Kind::BP(..)
@@ -22799,6 +22873,69 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::KummerWeil(action)))
+    }
+
+    fn hecke_eigen_expression(
+        &mut self,
+        expression: eigenpacket::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use eigenpacket::Expression;
+        match expression {
+            Expression::Image(name, input) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let ty = self.model.hecke_eigen_type(&name)?;
+                let input = self.expr(*input)?;
+                let operator_type = self.model.modular_hecke_type(packet.weight)?;
+                self.require_type(operator_type, &input, "rvHeckeEigenImage input")?;
+                Ok((ty, TypedForm::HeckeEigenImage(packet, Box::new(input))))
+            }
+            Expression::Coefficient(name, index) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let ty = self.model.hecke_eigen_type(&name)?;
+                let operator = hecke::Operator::basis(index)?;
+                Ok((ty, TypedForm::HeckeEigenCoefficient(packet, operator)))
+            }
+            Expression::Generator(name) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let ty = self.model.hecke_eigen_type(&name)?;
+                Ok((
+                    ty,
+                    TypedForm::Constant(packet.element_generator(self.model)?),
+                ))
+            }
+            Expression::Scalar(name, numerator, denominator) => {
+                let packet = self.model.hecke_eigenpacket(&name)?;
+                let ty = self.model.hecke_eigen_type(&name)?;
+                let value = packet.scalar(self.model, numerator, denominator)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Multiply(inputs) => {
+                let [a, b] = *inputs;
+                let a = self.expr(a)?;
+                let b = self.expr(b)?;
+                let packet = self.hecke_eigen_operand(&a, "rvHeckeEigenMul")?;
+                self.require_type(a.ty, &b, "rvHeckeEigenMul input")?;
+                Ok((
+                    a.ty,
+                    TypedForm::HeckeEigenMultiply(packet, Box::new([a, b])),
+                ))
+            }
+        }
+    }
+
+    fn hecke_eigen_operand(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<Rc<eigenpacket::Packet>> {
+        if let Kind::HeckeEigen(name) = self.model.kind(input.ty) {
+            self.model.hecke_eigenpacket(&Label {
+                text: name.to_string(),
+                span: input.span,
+            })
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVHeckeEigen(E) element"))
+        }
     }
 
     fn hecke_operator_operand(&self, input: &TypedExpr, operation: &str) -> Result<u128> {
