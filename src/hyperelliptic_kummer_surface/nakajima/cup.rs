@@ -3,7 +3,8 @@ use crate::model::Model;
 
 use super::boundary::{diagonal_of_unit, surface_product, ColorPair};
 use super::{
-    coordinate_range, insert_factor, Accumulator, Gram, Integer, Mode, State, LIMBS, POINT,
+    coordinate_range, insert_factor, Accumulator, Gram, Integer, Mode, Monomial, State, LIMBS,
+    POINT,
 };
 
 impl State {
@@ -11,11 +12,33 @@ impl State {
         if self.terms.is_empty() || rhs.terms.is_empty() {
             return Ok(Self::zero());
         }
-        if let Some(unit) = self.unit_coefficient(length) {
-            return rhs.multiply_unit(model, length, unit);
+        if let Some((state, unit)) = self.unit_operand(rhs, length) {
+            // Keep the integral path's direct output storage for a scalar cup.
+            let mut terms = std::collections::BTreeMap::new();
+            state.multiply_unit(model, length, unit, |key, value| {
+                terms.insert(key.clone(), value.signed().ok_or_else(coordinate_range)?);
+                Ok(())
+            })?;
+            return Ok(Self { terms });
         }
-        if let Some(unit) = rhs.unit_coefficient(length) {
-            return self.multiply_unit(model, length, unit);
+        self.accumulate_cup(model, rhs, length)?.finish()
+    }
+
+    pub(super) fn accumulate_cup(
+        &self,
+        model: &mut Model,
+        rhs: &Self,
+        length: i128,
+    ) -> Result<Accumulator> {
+        if self.terms.is_empty() || rhs.terms.is_empty() {
+            return Ok(Accumulator::default());
+        }
+        if let Some((state, unit)) = self.unit_operand(rhs, length) {
+            let mut output = Accumulator::default();
+            state.multiply_unit(model, length, unit, |key, coefficient| {
+                output.add(key.clone(), coefficient)
+            })?;
+            return Ok(output);
         }
         let size = usize::try_from(length).map_err(|_| conjugator_limit())?;
         let factorial = (2..=size)
@@ -56,7 +79,15 @@ impl State {
                 }
             }
         }
-        output.finish()
+        Ok(output)
+    }
+
+    fn unit_operand<'a>(&'a self, rhs: &'a Self, length: i128) -> Option<(&'a Self, i128)> {
+        if let Some(unit) = self.unit_coefficient(length) {
+            Some((rhs, unit))
+        } else {
+            rhs.unit_coefficient(length).map(|unit| (self, unit))
+        }
     }
 
     fn unit_coefficient(&self, length: i128) -> Option<i128> {
@@ -78,22 +109,24 @@ impl State {
         }
     }
 
-    fn multiply_unit(&self, model: &mut Model, length: i128, unit: i128) -> Result<Self> {
+    fn multiply_unit(
+        &self,
+        model: &mut Model,
+        length: i128,
+        unit: i128,
+        mut append: impl FnMut(&Monomial, Integer) -> Result<()>,
+    ) -> Result<()> {
         // The full conjugator sum on the identity is n! times the unit.
         // Stop as soon as even the factorial itself exceeds the wide range.
         let scalar = (2..=length).try_fold(Integer::from_i128(unit), |value, k| {
             model.spend(LIMBS)?;
             scale(value, k)
         })?;
-        let mut terms = std::collections::BTreeMap::new();
         for (key, &coefficient) in &self.terms {
             model.spend(1 + key.len() + LIMBS)?;
-            let value = scale(scalar, coefficient)?
-                .signed()
-                .ok_or_else(coordinate_range)?;
-            terms.insert(key.clone(), value);
+            append(key, scale(scalar, coefficient)?)?;
         }
-        Ok(Self { terms })
+        Ok(())
     }
 }
 

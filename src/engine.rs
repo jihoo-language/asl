@@ -687,6 +687,11 @@ enum TypedForm {
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
     NakajimaCup(Box<[TypedExpr; 2]>),
+    HilbertCohomologyCup(Box<[TypedExpr; 2]>),
+    HilbertCohomologyFromFock(i128, u128, Box<TypedExpr>),
+    HilbertCohomologyScale(i128, u128, Box<TypedExpr>),
+    HilbertCohomologyToFock(i128, Box<TypedExpr>),
+    HilbertCohomologyChern(u128, u128, bool, Box<TypedExpr>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     CMClass(cm_ring::Order, CMClassAction),
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
@@ -1832,6 +1837,9 @@ impl Engine {
             StatementForm::Mukai(command) => return self.mukai_command(*command).map(Some),
             StatementForm::K3Automorphism(command) => return command.execute(&mut self.model),
             StatementForm::NakajimaPair(inputs) => return self.nakajima_pair(*inputs).map(Some),
+            StatementForm::HilbertCohomology(report) => {
+                return self.hilbert_cohomology_report(*report).map(Some)
+            }
             StatementForm::NakajimaPrimary(command) => {
                 return self.nakajima_primary(*command).map(Some)
             }
@@ -5072,6 +5080,39 @@ impl Engine {
         }
     }
 
+    fn hilbert_cohomology_report(
+        &mut self,
+        report: nakajima::cohomology::Report,
+    ) -> Result<String> {
+        use nakajima::cohomology::Report;
+        let (input, name, integral) = match report {
+            Report::Integral(input) => (input, "rvHilbCohIntegral", true),
+            Report::Denominator(input) => (input, "rvHilbCohDen", false),
+        };
+        let input = self.checker().expr(*input)?;
+        let grade = self
+            .checker()
+            .hilbert_cohomology_grade(&input, name)?
+            .clone();
+        if integral
+            && (!grade.supports_states() || grade.length.checked_mul(4) != Some(grade.degree))
+        {
+            return Err(Error::new(
+                input.span,
+                "rvHilbCohIntegral requires the top cohomological degree",
+            ));
+        }
+        let Value::HilbertCohomology(class) = self.eval(&input)? else {
+            unreachable!()
+        };
+        let result = if integral {
+            class.top_integral()
+        } else {
+            class.denominator().to_string()
+        };
+        Ok(format!("{name} = {result}"))
+    }
+
     fn hilbert_tautological(&mut self, command: nakajima::tautological::Command) -> Result<String> {
         use nakajima::tautological::{self, Command};
         let (name, length, codimension, input) = match command {
@@ -7017,6 +7058,9 @@ impl Engine {
                     (BinaryOp::Add, Value::Mukai(a), Value::Mukai(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
+                    (BinaryOp::Add, Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::Nakajima(a), Value::Nakajima(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -8726,6 +8770,55 @@ impl Engine {
                 };
                 word.apply_lattice(&mut self.model, &vector)?
                     .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyCup(inputs) => {
+                let Kind::HilbertCohomology(grade) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                if !grade.supports_states() {
+                    return nakajima::cohomology::Class::zero().persist(&mut self.model);
+                }
+                let length = grade.length;
+                let (Value::HilbertCohomology(left), Value::HilbertCohomology(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                left.cup(&mut self.model, &right, length)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyFromFock(k, d, input) => {
+                let Value::Nakajima(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                nakajima::cohomology::Class::from_fock(&mut self.model, &state, *k, *d)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyScale(k, d, input) => {
+                let Value::HilbertCohomology(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                class
+                    .scale(&mut self.model, *k, *d)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyToFock(k, input) => {
+                let Value::HilbertCohomology(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                class.to_fock(&mut self.model, *k)?.persist(&mut self.model)
+            }
+            TypedForm::HilbertCohomologyChern(length, j, character, input) => {
+                use nakajima::cohomology::Class;
+                let Value::K3Lattice(line) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let class = if *character {
+                    Class::character(&mut self.model, &line, *length, *j)?
+                } else {
+                    Class::chern(&mut self.model, &line, *length, *j)?
+                };
+                class.persist(&mut self.model)
             }
             TypedForm::HilbertTautologicalChern(length, j, scale, input) => {
                 let Value::K3Lattice(line) = self.eval(input)? else {
@@ -11125,6 +11218,9 @@ impl Checker<'_> {
             TypeForm::KummerWeil(name) => self.model.kummer_weil_type(&name),
             TypeForm::KummerDiv(name) => self.model.kummer_divisor_type(&name),
             TypeForm::K3Lattice(name) => self.model.k3_lattice_type(&name),
+            TypeForm::HilbertCohomology(name, length, degree) => {
+                self.model.hilbert_cohomology_type(&name, length, degree)
+            }
             TypeForm::Nakajima(name, length, degree) => {
                 self.model.nakajima_type(&name, length, degree)
             }
@@ -12178,6 +12274,7 @@ impl Checker<'_> {
                     Kind::KummerWeil(..) => kummer_weil::Vector::zero().persist(self.model)?,
                     Kind::K3Lattice(..) => unimodular::Vector::zero().persist(self.model)?,
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
+                    Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -14344,6 +14441,9 @@ impl Checker<'_> {
             ExprForm::KummerDiv(expression) => self.kummer_divisor_expression(*expression),
             ExprForm::K3Lattice(expression) => self.k3_lattice_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
+            ExprForm::HilbertCohomology(expression) => {
+                self.hilbert_cohomology_expression(*expression)
+            }
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
@@ -15117,6 +15217,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::Mukai(MukaiAction::Negate(Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::HilbertCohomology(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::HilbertCohomologyScale(-1, 1, Box::new(input)),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::Nakajima(..)) {
@@ -18868,6 +18974,7 @@ impl Checker<'_> {
                         | Kind::KummerWeil(..)
                         | Kind::K3Lattice(..)
                         | Kind::Nakajima(..)
+                        | Kind::HilbertCohomology(..)
                         | Kind::K3Clifford(..)
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
@@ -20539,6 +20646,134 @@ impl Checker<'_> {
                 Ok((
                     input.ty,
                     TypedForm::K3LatticeTransvection(mask, amount, Box::new(input)),
+                ))
+            }
+        }
+    }
+
+    fn hilbert_cohomology_grade(
+        &self,
+        input: &TypedExpr,
+        operation: &str,
+    ) -> Result<&nakajima::Grade> {
+        if let Kind::HilbertCohomology(grade) = self.model.kind(input.ty) {
+            Ok(grade)
+        } else {
+            Err(self.invalid_operand(input, operation, "an RVHilbCoh class"))
+        }
+    }
+
+    fn hilbert_cohomology_grade_type(
+        &mut self,
+        basis: &Label,
+        length: u128,
+        codimension: u128,
+    ) -> Result<TypeId> {
+        let length = i128::try_from(length).map_err(|_| nakajima::grade_range())?;
+        let degree = codimension
+            .checked_mul(2)
+            .and_then(|i| i128::try_from(i).ok())
+            .ok_or_else(nakajima::grade_range)?;
+        self.model.hilbert_cohomology_type(basis, length, degree)
+    }
+
+    fn hilbert_cohomology_expression(
+        &mut self,
+        expression: nakajima::cohomology::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use nakajima::cohomology::{Class, Expression};
+        match expression {
+            Expression::Unit(basis, length) => {
+                let ty = self.hilbert_cohomology_grade_type(&basis, length, 0)?;
+                let value = Class::unit(self.model, length)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::Point(basis, length) => {
+                let codimension = length.checked_mul(2).ok_or_else(nakajima::grade_range)?;
+                let ty = self.hilbert_cohomology_grade_type(&basis, length, codimension)?;
+                let value = Class::point(length).persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::FromFock(k, d, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.nakajima_grade(&input, "rvHilbCohQ")?;
+                let (length, degree) = (grade.length, grade.degree);
+                let marking = Label {
+                    text: grade.basis.to_string(),
+                    span: input.span,
+                };
+                let ty = self
+                    .model
+                    .hilbert_cohomology_type(&marking, length, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertCohomologyFromFock(k, d, Box::new(input)),
+                ))
+            }
+            Expression::Scale(k, d, input) => {
+                let input = self.expr(*input)?;
+                self.hilbert_cohomology_grade(&input, "rvHilbCohScale")?;
+                Ok((
+                    input.ty,
+                    TypedForm::HilbertCohomologyScale(k, d, Box::new(input)),
+                ))
+            }
+            Expression::ToFock(scale, input) => {
+                let input = self.expr(*input)?;
+                let grade = self.hilbert_cohomology_grade(&input, "rvHilbCohFock")?;
+                let (length, degree) = (grade.length, grade.degree);
+                let marking = Label {
+                    text: grade.basis.to_string(),
+                    span: input.span,
+                };
+                let ty = self.model.nakajima_type(&marking, length, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertCohomologyToFock(scale, Box::new(input)),
+                ))
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let x = self.hilbert_cohomology_grade(&left, "rvHilbCohCup")?;
+                let y = self.hilbert_cohomology_grade(&right, "rvHilbCohCup")?;
+                if x.basis != y.basis || x.length != y.length {
+                    return Err(Error::new(
+                        right.span,
+                        "rvHilbCohCup requires the same named level basis and length",
+                    ));
+                }
+                let length = x.length;
+                let degree = x
+                    .degree
+                    .checked_add(y.degree)
+                    .ok_or_else(nakajima::grade_range)?;
+                let marking = Label {
+                    text: x.basis.to_string(),
+                    span: left.span,
+                };
+                let ty = self
+                    .model
+                    .hilbert_cohomology_type(&marking, length, degree)?;
+                Ok((ty, TypedForm::HilbertCohomologyCup(Box::new([left, right]))))
+            }
+            Expression::Chern(length, j, character, input) => {
+                let input = self.expr(*input)?;
+                let name = if character {
+                    "rvHilbCohCh"
+                } else {
+                    "rvHilbCohChern"
+                };
+                let marking = self.k3_lattice_operand(&input, name)?;
+                let basis = Label {
+                    text: marking.to_string(),
+                    span: input.span,
+                };
+                let ty = self.hilbert_cohomology_grade_type(&basis, length, j)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertCohomologyChern(length, j, character, Box::new(input)),
                 ))
             }
         }

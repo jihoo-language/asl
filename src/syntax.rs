@@ -132,6 +132,7 @@ pub(crate) enum TypeForm {
     KummerDiv(Label),
     K3Lattice(Label),
     Nakajima(Label, i128, i128),
+    HilbertCohomology(Label, i128, i128),
     K3Clifford(Label, u8),
     K3Spinor(Label, u8),
     Mukai(Label),
@@ -990,6 +991,7 @@ pub(crate) enum ExprForm {
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Expression>),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Expression>),
     Nakajima(Box<crate::hyperelliptic_kummer_surface::nakajima::Expression>),
+    HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression>),
     K3Clifford(Box<crate::hyperelliptic_kummer_surface::clifford::Expression>),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
@@ -1198,6 +1200,7 @@ pub(crate) enum StatementForm {
     KummerWeilCoefficient(crate::hyperelliptic_kummer_surface::weil::Coefficient),
     K3Lattice(Box<crate::hyperelliptic_kummer_surface::unimodular::Command>),
     NakajimaPair(Box<[ParsedExpr; 2]>),
+    HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
@@ -3963,6 +3966,72 @@ impl<'src> Parser<'src> {
             .map_err(|error| error.at(span))
     }
 
+    fn hilbert_cohomology_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Expression;
+        let (expression, depth) = if name == "rvHilbCohCup" {
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            (Expression::Cup(Box::new(inputs)), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            match name {
+                "rvHilbCohUnit" | "rvHilbCohPoint" => {
+                    let basis = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let n = self.wide_unsigned("Hilbert length")?;
+                    self.expect(Token::RBracket)?;
+                    let expression = if name == "rvHilbCohUnit" {
+                        Expression::Unit(basis, n)
+                    } else {
+                        Expression::Point(basis, n)
+                    };
+                    (expression, 0)
+                }
+                "rvHilbCohChern" | "rvHilbCohCh" => {
+                    let n = self.wide_unsigned("Hilbert length")?;
+                    self.expect(Token::Comma)?;
+                    let j = self.wide_unsigned("characteristic class index")?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    (
+                        Expression::Chern(n, j, name == "rvHilbCohCh", Box::new(input)),
+                        depth,
+                    )
+                }
+                _ => {
+                    let k = self.signed_wide("a signed integer", "Hilbert cohomology numerator")?;
+                    let denominator = if name == "rvHilbCohFock" {
+                        None
+                    } else {
+                        self.expect(Token::Comma)?;
+                        Some(self.wide_unsigned("Hilbert cohomology denominator")?)
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let input = Box::new(input);
+                    let expression = match denominator {
+                        None => Expression::ToFock(k, input),
+                        Some(d) if name == "rvHilbCohQ" => Expression::FromFock(k, d, input),
+                        Some(d) => Expression::Scale(k, d, input),
+                    };
+                    (expression, depth)
+                }
+            }
+        };
+        expr(
+            span,
+            ExprForm::HilbertCohomology(Box::new(expression)),
+            depth,
+        )
+    }
+
     fn hilbert_tautological_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::nakajima::tautological::Command;
         self.advance()?;
@@ -5886,6 +5955,17 @@ impl<'src> Parser<'src> {
             ) => self.k3_period_statement(command)?,
             Token::Word(name @ ("rvHilbTautChernDen" | "rvHilbTautSegre")) => {
                 self.hilbert_tautological_statement(name)?
+            }
+            Token::Word(name @ ("rvHilbCohDen" | "rvHilbCohIntegral")) => {
+                use crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report;
+                self.advance()?;
+                let input = self.paren_expr(0)?;
+                let report = if name == "rvHilbCohIntegral" {
+                    Report::Integral(Box::new(input))
+                } else {
+                    Report::Denominator(Box::new(input))
+                };
+                StatementForm::HilbertCohomology(Box::new(report))
             }
             Token::Word("rvNakajimaPair") => {
                 self.advance()?;
@@ -9261,10 +9341,15 @@ impl<'src> Parser<'src> {
             };
             return ty(span, form, 0);
         }
-        if name.text == "RVNakajima" && self.eat(Token::LParen)? {
+        if matches!(name.text.as_str(), "RVNakajima" | "RVHilbCoh") && self.eat(Token::LParen)? {
             let (basis, length, degree) = self.nakajima_grade_args()?;
             self.expect(Token::RParen)?;
-            return ty(span, TypeForm::Nakajima(basis, length, degree), 0);
+            let form = if name.text == "RVNakajima" {
+                TypeForm::Nakajima(basis, length, degree)
+            } else {
+                TypeForm::HilbertCohomology(basis, length, degree)
+            };
+            return ty(span, form, 0);
         }
         if name.text == "RVHilbSquare" && self.eat(Token::LParen)? {
             let basis = self.label()?;
@@ -11056,6 +11141,20 @@ impl<'src> Parser<'src> {
                         ExprForm::QpQuadUnary(operation, Box::new(input)),
                         depth,
                     );
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvHilbCohUnit"
+                        | "rvHilbCohPoint"
+                        | "rvHilbCohQ"
+                        | "rvHilbCohScale"
+                        | "rvHilbCohFock"
+                        | "rvHilbCohChern"
+                        | "rvHilbCohCh"
+                ) && self.token() == Token::LBracket)
+                    || (name.text == "rvHilbCohCup" && self.token() == Token::LParen)
+                {
+                    return self.hilbert_cohomology_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

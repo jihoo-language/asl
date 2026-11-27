@@ -1,0 +1,23 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let line=rvK3LatticeBasis[B,0];
+let unit=rvHilbCohUnit[B,2];
+let point=rvHilbCohPoint[B,2];
+let c1=rvHilbCohChern[2,1](line);
+assert rvHilbCohCup(unit,c1)==c1;
+assert rvHilbCohCup(c1,unit)==c1;
+assert rvHilbCohFock[2](c1)==rvHilbTautChern[2,1,2](line);
+rvHilbCohDen(c1);
+rvHilbCohIntegral(rvHilbCohCup(unit,point));
+let ch4=rvHilbCohCh[2,4](line);
+assert ch4==rvHilbCohScale[3,4](point);
+rvHilbCohIntegral(ch4);

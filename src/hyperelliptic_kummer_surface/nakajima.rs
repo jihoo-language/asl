@@ -11,6 +11,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::unimodular;
 
 mod boundary;
+pub(crate) mod cohomology;
 mod cup;
 pub(crate) mod primary;
 pub(crate) mod tautological;

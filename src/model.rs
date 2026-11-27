@@ -266,6 +266,7 @@ pub(crate) enum Kind {
     KummerDiv(Rc<str>),
     K3Lattice(Rc<str>),
     Nakajima(nakajima::Grade),
+    HilbertCohomology(nakajima::Grade),
     K3Clifford(Rc<str>, u8),
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
@@ -448,6 +449,7 @@ pub(crate) enum Value {
     KummerDiv(Rc<crate::hyperelliptic_kummer_surface::polarized::Divisor>),
     K3Lattice(Rc<unimodular::Vector>),
     Nakajima(Rc<nakajima::State>),
+    HilbertCohomology(Rc<nakajima::cohomology::Class>),
     K3Clifford(Rc<clifford::Element>),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
@@ -1052,7 +1054,7 @@ impl Model {
             | Kind::AbMukai(..)
             | Kind::OG6(..)
             | Kind::SiegelWeight => usize::MAX,
-            Kind::Nakajima(ref grade) => {
+            Kind::Nakajima(ref grade) | Kind::HilbertCohomology(ref grade) => {
                 if grade.supports_states() {
                     usize::MAX
                 } else {
@@ -1282,6 +1284,7 @@ impl Model {
                 | Kind::KummerDiv(..)
                 | Kind::K3Lattice(..)
                 | Kind::Nakajima(..)
+                | Kind::HilbertCohomology(..)
                 | Kind::K3Clifford(..)
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
@@ -4174,6 +4177,25 @@ impl Model {
         self.inhabited_type(Kind::Nakajima(grade), 0)
     }
 
+    pub(crate) fn hilbert_cohomology_type(
+        &mut self,
+        name: &Label,
+        length: i128,
+        degree: i128,
+    ) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "Hilbert cohomology requires a certified genus-two level-2 basis",
+        )?;
+        let grade = nakajima::Grade {
+            basis: name.text.as_str().into(),
+            length,
+            degree,
+        };
+        self.inhabited_type(Kind::HilbertCohomology(grade), 0)
+    }
+
     pub(crate) fn nakajima_gram(&mut self) -> Result<Rc<nakajima::Gram>> {
         if let Some(gram) = &self.nakajima_gram {
             return Ok(gram.clone());
@@ -5392,6 +5414,7 @@ impl Model {
             | Kind::KummerDiv(..)
             | Kind::K3Lattice(..)
             | Kind::Nakajima(..)
+            | Kind::HilbertCohomology(..)
             | Kind::K3Clifford(..)
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
@@ -5909,6 +5932,10 @@ impl Model {
             Kind::KummerWeil(name) => out.push(&format!("RVKummerWeil({name})")),
             Kind::KummerDiv(name) => out.push(&format!("RVKummerDiv({name})")),
             Kind::K3Lattice(name) => out.push(&format!("RVK3Lattice({name})")),
+            Kind::HilbertCohomology(grade) => out.push(&format!(
+                "RVHilbCoh({},{},{})",
+                grade.basis, grade.length, grade.degree
+            )),
             Kind::Nakajima(grade) => out.push(&format!(
                 "RVNakajima({},{},{})",
                 grade.basis, grade.length, grade.degree
@@ -6211,6 +6238,9 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Nakajima(a), Value::Nakajima(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6553,6 +6583,7 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => a.compare(self, b),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => a.compare(self, b),
             (Value::Nakajima(a), Value::Nakajima(b)) => a.compare(self, b),
+            (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
@@ -6906,6 +6937,14 @@ impl Model {
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
+                }
+                Kind::HilbertCohomology(ref grade) => {
+                    if grade.supports_states() {
+                        return Err(Error::plain(
+                            "cannot enumerate a rational Hilbert cohomology component",
+                        ));
+                    }
+                    vec![nakajima::cohomology::Class::zero().persist(self)?]
                 }
                 Kind::Nakajima(ref grade) => {
                     if grade.supports_states() {
@@ -7771,6 +7810,37 @@ impl Model {
         out.push(&format!("] / {}}}", element.denominator_text()))
     }
 
+    fn write_nakajima_terms(
+        &mut self,
+        out: &mut Text,
+        state: &nakajima::State,
+        denominator: u128,
+    ) -> Result<()> {
+        out.push("{")?;
+        for (i, (monomial, coefficient)) in state.terms().enumerate() {
+            self.spend(1 + monomial.len())?;
+            if i > 0 {
+                out.push(", ")?;
+            }
+            if denominator == 1 {
+                out.push(&format!("{coefficient}*["))?;
+            } else {
+                out.push(&format!("{coefficient}/{denominator}*["))?;
+            }
+            for (j, factor) in monomial.iter().enumerate() {
+                if j > 0 {
+                    out.push(", ")?;
+                }
+                out.push(&format!(
+                    "({},{},{})",
+                    factor.mode.length, factor.mode.color, factor.exponent
+                ))?;
+            }
+            out.push("]")?;
+        }
+        out.push("}")
+    }
+
     fn write_value(&mut self, out: &mut Text, ty: TypeId, value: &Value) -> Result<()> {
         match value {
             Value::Bar(support) => {
@@ -8472,25 +8542,11 @@ impl Model {
             }
             Value::Nakajima(state) => {
                 self.write_type(out, ty, 0)?;
-                out.push("{")?;
-                for (i, (monomial, coefficient)) in state.terms().enumerate() {
-                    self.spend(1 + monomial.len())?;
-                    if i > 0 {
-                        out.push(", ")?;
-                    }
-                    out.push(&format!("{coefficient}*["))?;
-                    for (j, factor) in monomial.iter().enumerate() {
-                        if j > 0 {
-                            out.push(", ")?;
-                        }
-                        out.push(&format!(
-                            "({},{},{})",
-                            factor.mode.length, factor.mode.color, factor.exponent
-                        ))?;
-                    }
-                    out.push("]")?;
-                }
-                out.push("}")
+                self.write_nakajima_terms(out, state, 1)
+            }
+            Value::HilbertCohomology(class) => {
+                self.write_type(out, ty, 0)?;
+                self.write_nakajima_terms(out, class.numerator(), class.denominator())
             }
             Value::SiegelWeight(weight) => {
                 self.write_type(out, ty, 0)?;

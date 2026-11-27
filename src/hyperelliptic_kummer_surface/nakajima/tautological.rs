@@ -23,7 +23,21 @@ pub(crate) fn chern(
     j: u128,
     scale: i128,
 ) -> Result<State> {
-    calculate(model, line, n, j, Some(scale))?.output.finish()
+    calculate(model, line, n, j, Some((scale.unsigned_abs(), scale < 0)))?
+        .output
+        .finish()
+}
+
+pub(super) fn unsigned_chern(
+    model: &mut Model,
+    line: &Vector,
+    n: u128,
+    j: u128,
+    scale: u128,
+) -> Result<State> {
+    calculate(model, line, n, j, Some((scale, false)))?
+        .output
+        .finish()
 }
 
 pub(crate) fn top_segre(model: &mut Model, line: &Vector, n: u128) -> Result<i128> {
@@ -97,7 +111,7 @@ impl Part {
 }
 
 struct Coefficients {
-    scale: Option<i128>,
+    scale: Option<(u128, bool)>,
     denominator: u128,
     output: Accumulator,
 }
@@ -107,14 +121,14 @@ fn calculate(
     line: &Vector,
     n: u128,
     j: u128,
-    scale: Option<i128>,
+    scale: Option<(u128, bool)>,
 ) -> Result<Coefficients> {
     let mut coefficients = Coefficients {
         scale,
         denominator: 1,
         output: Accumulator::default(),
     };
-    if scale == Some(0) || j > n {
+    if scale.is_some_and(|(magnitude, _)| magnitude == 0) || j > n {
         return Ok(coefficients);
     }
     let units = n - j;
@@ -292,12 +306,11 @@ impl Generator {
             self.coefficients.require_denominator(denominator)?;
             self.coefficients
                 .scale
-                .map(|scale| scale.unsigned_abs() / denominator)
+                .map(|(scale, _)| scale / denominator)
         } else {
             self.colored_magnitude(model, parts)?
         };
-        if let (Some(magnitude), Some(scale)) = (coefficient, self.coefficients.scale) {
-            let mut negative = scale < 0;
+        if let (Some(magnitude), Some((_, mut negative))) = (coefficient, self.coefficients.scale) {
             let mut key = Vec::with_capacity(parts.len());
             for &Part {
                 length,
@@ -375,10 +388,10 @@ impl Generator {
             }
         }
         self.coefficients.require_denominator(denominator)?;
-        let Some(scale) = self.coefficients.scale else {
+        let Some((scale, _)) = self.coefficients.scale else {
             return Ok(None);
         };
-        let mut value = scale.unsigned_abs() / denominator;
+        let mut value = scale / denominator;
         for (base, power) in bases.into_iter().zip(powers).chain(surplus) {
             value = multiply_power(value, base, power).ok_or_else(chern_range)?;
         }
@@ -388,8 +401,8 @@ impl Generator {
 
 impl Coefficients {
     fn require_denominator(&mut self, denominator: u128) -> Result<()> {
-        if let Some(scale) = self.scale {
-            if !scale.unsigned_abs().is_multiple_of(denominator) {
+        if let Some((scale, _)) = self.scale {
+            if !scale.is_multiple_of(denominator) {
                 return Err(Error::plain(
                     "tautological Chern scale does not clear the denominator",
                 ));
