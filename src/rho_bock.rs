@@ -168,6 +168,23 @@ pub(crate) fn representative(model: &mut Model, input: TypeId, coords: &[usize])
     real_motivic::persist(model, terms)
 }
 
+pub(crate) fn frobenius(
+    model: &mut Model,
+    input: TypeId,
+    output: TypeId,
+    coords: &[usize],
+) -> Result<Value> {
+    if coords.is_empty() {
+        return Ok(cohomology::zero());
+    }
+    let Kind::RhoBock(grade) = *model.kind(output) else {
+        unreachable!();
+    };
+    let lift = model.rho_page(input)?.representative(model, coords)?;
+    let image = real_motivic::frobenius_below(model, &lift, grade.cutoff())?;
+    class(model, output, &image)
+}
+
 pub(crate) fn differential(
     model: &mut Model,
     input: TypeId,

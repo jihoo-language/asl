@@ -61,6 +61,7 @@ use crate::real_rho::{self, Operation as RealRhoOp};
 use crate::real_transfer;
 use crate::restriction_transfer;
 use crate::rho_bock;
+use crate::rho_frobenius;
 use crate::rho_localized;
 use crate::rho_minimal::{self, Operation as RhoMinOp};
 use crate::rv_arithmetic;
@@ -4316,6 +4317,12 @@ impl Engine {
                     return Ok(value);
                 }
                 match (op, value) {
+                    (RealRhoOp::Frobenius, value) => {
+                        rho_frobenius::apply(&mut self.model, input.ty, expr.ty, value)
+                    }
+                    (RealRhoOp::FrobeniusConnectNull, value) => {
+                        rho_frobenius::connecting_null(&mut self.model, input.ty, value)
+                    }
                     (RealRhoOp::Reduce(e), Value::RMCobar(terms)) => {
                         real_rho::reduce(&mut self.model, &terms, *e)
                     }
@@ -4341,6 +4348,13 @@ impl Engine {
                     (RealRhoOp::Lift, Value::RMCobar(terms)) => Ok(Value::RMCobar(terms)),
                     (RealRhoOp::Lift, Value::Class(coords)) => {
                         real_ext::representative(&mut self.model, input.ty, &coords)
+                    }
+                    (RealRhoOp::ConnectRep, Value::RMCobar(terms)) => {
+                        let Kind::RMRhoCobar(grade) = *self.model.kind(input.ty) else {
+                            unreachable!();
+                        };
+                        let terms = real_rho::connecting_support(&mut self.model, grade, &terms)?;
+                        real_motivic::persist(&mut self.model, terms)
                     }
                     (
                         RealRhoOp::Connect
@@ -12665,6 +12679,15 @@ impl Checker<'_> {
         op: RealRhoOp,
         input: &TypedExpr,
     ) -> Result<(TypeId, motivic::Grade)> {
+        if matches!(op, RealRhoOp::Frobenius) {
+            return rho_frobenius::target(self.model, input.ty)?.ok_or_else(|| {
+                self.invalid_operand(
+                    input,
+                    op.name(),
+                    "a motivic cochain, Ext class or RhoBock class",
+                )
+            });
+        }
         let kind = self.model.kind(input.ty);
         if let RealRhoOp::Reduce(exponent) = op {
             let (chain,is_class) = match *kind {
@@ -12688,14 +12711,18 @@ impl Checker<'_> {
             };
             return Ok((ty, chain));
         }
+        let allows_cochain = matches!(
+            op,
+            RealRhoOp::Lift | RealRhoOp::ConnectRep | RealRhoOp::FrobeniusConnectNull
+        );
         let grade = match *kind {
             Kind::RMRhoExt(grade) => grade,
-            Kind::RMRhoCobar(grade) if matches!(op, RealRhoOp::Lift) => grade,
+            Kind::RMRhoCobar(grade) if allows_cochain => grade,
             _ => {
                 return Err(self.invalid_operand(
                     input,
                     op.name(),
-                    if matches!(op, RealRhoOp::Lift) {
+                    if allows_cochain {
                         "an RMRhoCobar cochain or RMRhoExt class"
                     } else {
                         "an RMRhoExt class"
@@ -12721,7 +12748,11 @@ impl Checker<'_> {
                 self.model
                     .real_rho_cobar_type(real_rho::Grade { chain, ..grade })?
             }
-            RealRhoOp::Reduce(..) => unreachable!(),
+            RealRhoOp::FrobeniusConnectNull => {
+                let target = rho_frobenius::truncation(grade)?.divided_chain()?;
+                self.model.real_cobar_type(target)?
+            }
+            RealRhoOp::Reduce(..) | RealRhoOp::Frobenius => unreachable!(),
         };
         Ok((ty, grade.chain))
     }

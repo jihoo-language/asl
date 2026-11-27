@@ -555,6 +555,14 @@ The example gives $[\tau_0][\tau_0^2]$ exact depth one and order one. The two le
 
 The example computes a three-term non-scalar cycle with nonzero $\beta_2$. The scalar $\tau^{32}$ is closed modulo $\rho^e$ for $1\le e\le32$. Its typed connecting class has representative $\rho^{32-e}[\tau_0^{32}]$ and exact real $\rho$-order $e$. The example checks the connecting class at $e=3$ and $e=32$, and computes the nonzero quotient differential of $\tau^{32}$ at $e=33$. [Real-motivic rho quotient example](examples/real-rho-quotient.asl)
 
+### Algebraic Frobenius in the motivic cobar
+
+`rhoFrob(x)` squares each term in the commutative tensor algebra of its cobar slots. It acts on real and complex motivic cochains and Ext classes. The cobar length stays fixed and the topological degree and weight double. In the real cobar it squares the scalar coefficients and normalizes every arrow square with the right-unit transport from the preceding arrows. The operation is additive, commutes with the normalized differential and balanced product, and sends a shift by $\rho^a$ to a shift by $\rho^{2a}$. It commutes with `realComplex` and induces `extSq[0]` after complex realization.
+
+On `RMRhoCobar` and `RMRhoExt` Frobenius doubles the cutoff $e$. It commutes with reduction across doubled cutoffs, the internal `rhoBeta`, and `rhoConnect`. On `RhoBock(r,s,t,w,f)` it squares the lift and projects to `RhoBock(2r,s,2t,2w,2f)`. In these degrees `rhoD(rhoFrob(x))` equals `rhoFrob(rhoD(x))`, including page zero. The nonzero class $[\xi_1]^4$ maps to zero both in real motivic Ext and from the first to the second page.
+
+`rhoConnectRep(x)` also accepts a closed truncated cochain with its termwise real lift. For a truncated cochain or class $x$, `rhoFrobConnectNull(x)` gives a real cochain $U$ with $dU=F(\delta_e^{\rm rep}x)+\delta_{2e}^{\rm rep}(F x)$. For cochains it divides the discarded part of the squared lift by $\rho^{2e}$. For a class, it also lifts a primitive of the boundary between the reduced square and the canonical target representative. If $B$ is that lift, the numerator is $F(\widetilde x)+\widetilde{F x}+dB$, which is divisible term by term by $\rho^{2e}$. The example checks nonzero page differentials from $\tau$, $\tau^2$, and $\tau^4$ and an explicit two-slot homotopy. [Motivic Frobenius example](examples/rho-frobenius.asl)
+
 ### Real-motivic triple Massey products
 
 Use `rmTriple(a,b,c)` for the affine coset of the ordered triple Massey product. Each input may be an `RMExt` class or a closed `RMCobar` cochain. The adjacent balanced products $ab$ and $bc$ must be boundaries. `rmMasseyNull(a,b)` gives an actual primitive of $ab$ in positive total cobar length. `rmMassey(a,b,c)` gives the corresponding cocycle $uc+av$, where $du=ab$ and $dv=bc$. This raw operation needs only the defining system. For an adjacent product of length zero the product must already vanish and its negative-length primitive contributes zero.

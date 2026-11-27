@@ -539,15 +539,28 @@ fn multiply_power(
         }
         exponent >>= 1;
         if exponent != 0 {
-            let mut square = Support::new();
-            // Frobenius in the commutative tensor algebra over F2.
-            for term in &factor {
-                multiply_terms(model, term, term, &mut square, factor_cutoff)?;
-            }
-            factor = square.into_vec();
+            factor = frobenius_below(model, &factor, factor_cutoff)?;
         }
     }
     Ok(result)
+}
+
+pub(crate) fn frobenius_below(
+    model: &mut Model,
+    terms: &[Term],
+    cutoff: u128,
+) -> Result<Vec<Term>> {
+    // Frobenius in the commutative tensor algebra over F2 preserves the
+    // number of slots. Normalize the products inside those slots.
+    let mut result = Support::new();
+    for term in terms {
+        if 2 * term.rho as u128 >= cutoff {
+            model.spend(1)?;
+            break;
+        }
+        multiply_terms(model, term, term, &mut result, cutoff)?;
+    }
+    Ok(result.into_vec())
 }
 
 fn multiply(model: &mut Model, left: &[Term], right: &[Term], cutoff: u128) -> Result<Vec<Term>> {

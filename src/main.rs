@@ -76,6 +76,7 @@ mod real_rho;
 mod real_transfer;
 mod restriction_transfer;
 mod rho_bock;
+mod rho_frobenius;
 mod rho_localized;
 mod rho_minimal;
 mod rv_arithmetic;

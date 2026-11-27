@@ -27,7 +27,11 @@ impl Grade {
     }
 
     pub(crate) fn connecting(self) -> Result<ChainGrade> {
-        let mut chain = self.chain.differential()?;
+        self.divided_chain()?.differential()
+    }
+
+    pub(crate) fn divided_chain(self) -> Result<ChainGrade> {
+        let mut chain = self.chain;
         chain.t = chain
             .t
             .checked_add(self.exponent as i128)
@@ -63,6 +67,8 @@ pub(crate) enum Operation {
     Beta,
     BetaRep,
     BetaNull,
+    Frobenius,
+    FrobeniusConnectNull,
 }
 
 impl Operation {
@@ -75,6 +81,8 @@ impl Operation {
             Self::Beta => "rhoBeta",
             Self::BetaRep => "rhoBetaRep",
             Self::BetaNull => "rhoBetaNull",
+            Self::Frobenius => "rhoFrob",
+            Self::FrobeniusConnectNull => "rhoFrobConnectNull",
         }
     }
 }
@@ -83,7 +91,7 @@ pub(crate) fn basis(model: &mut Model, grade: Grade, limit: usize) -> Result<Vec
     real_motivic::basis_window(model, grade.chain, 0..=grade.exponent - 1, limit)
 }
 
-fn cut(terms: &[Term], exponent: usize) -> &[Term] {
+pub(crate) fn cut(terms: &[Term], exponent: usize) -> &[Term] {
     &terms[..terms.partition_point(|term| term.rho < exponent)]
 }
 
@@ -189,7 +197,7 @@ pub(crate) fn yoneda(
     real_ext::class(model, target, &terms)
 }
 
-fn boundary_witness(
+pub(crate) fn boundary_witness(
     model: &mut Model,
     grade: Grade,
     terms: &[Term],
@@ -238,15 +246,7 @@ pub(crate) fn connecting(
     } else {
         model.real_ext(input)?.representative(model, coords)?
     };
-    let mut terms = real_motivic::differential_support(model, &lift)?;
-    for term in &mut terms {
-        term.rho = term.rho.checked_sub(grade.exponent).ok_or_else(|| {
-            Error::plain(format!(
-                "connecting lift is not closed modulo rho^{}",
-                grade.exponent
-            ))
-        })?;
-    }
+    let terms = connecting_support(model, grade, &lift)?;
     match op {
         Operation::ConnectRep => real_motivic::persist(model, terms),
         Operation::Connect => real_ext::class(model, output, &terms),
@@ -274,4 +274,32 @@ pub(crate) fn connecting(
         }
         _ => unreachable!(),
     }
+}
+
+pub(crate) fn connecting_support(
+    model: &mut Model,
+    grade: Grade,
+    lift: &[Term],
+) -> Result<Vec<Term>> {
+    let mut terms = real_motivic::differential_support(model, lift)?;
+    divide_rho(model, &mut terms, grade.exponent, || {
+        Error::plain(format!(
+            "connecting lift is not closed modulo rho^{}",
+            grade.exponent
+        ))
+    })?;
+    Ok(terms)
+}
+
+pub(crate) fn divide_rho(
+    model: &mut Model,
+    terms: &mut [Term],
+    exponent: usize,
+    diagnostic: impl Fn() -> Error,
+) -> Result<()> {
+    model.spend(terms.len())?;
+    for term in terms {
+        term.rho = term.rho.checked_sub(exponent).ok_or_else(&diagnostic)?;
+    }
+    Ok(())
 }

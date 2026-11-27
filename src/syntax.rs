@@ -7413,6 +7413,8 @@ impl<'src> Parser<'src> {
                     "rhoBeta" => Some(RealRhoOp::Beta),
                     "rhoBetaRep" => Some(RealRhoOp::BetaRep),
                     "rhoBetaNull" => Some(RealRhoOp::BetaNull),
+                    "rhoFrob" => Some(RealRhoOp::Frobenius),
+                    "rhoFrobConnectNull" => Some(RealRhoOp::FrobeniusConnectNull),
                     _ => None,
                 };
                 if let Some(op) = real_rho.filter(|_| self.token() == Token::LParen) {
