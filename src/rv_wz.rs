@@ -150,7 +150,7 @@ pub(crate) fn verify(
     model: &mut Model,
     operator: &[(Powers, i128)],
     certificate: &Certificate,
-) -> Result<String> {
+) -> Result<()> {
     if certificate.u == 0 || certificate.z == 0 {
         return Err(Error::plain("WZ summand requires u >= 1 and nonzero z"));
     }
@@ -206,16 +206,7 @@ pub(crate) fn verify(
         )));
     }
 
-    verify_initial(model, operator, certificate)?;
-    let start = certificate.start;
-    let description = if start == 1 {
-        "coefficient"
-    } else {
-        "coefficients"
-    };
-    Ok(format!(
-        "rvWZCheck = certified ({start} initial {description} checked)"
-    ))
+    verify_initial(model, operator, certificate)
 }
 
 fn denominators(model: &mut Model, certificate: &Certificate) -> Result<(Polynomial, Polynomial)> {

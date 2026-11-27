@@ -171,6 +171,11 @@ pub(crate) enum RvIdealOp {
 pub(crate) type RvNCSpec = (Label, usize, i64, Vec<usize>);
 pub(crate) type HiveSpec = [Vec<i128>; 3];
 
+pub(crate) struct WzMirror {
+    pub(crate) period: Label,
+    pub(crate) columns: Option<Vec<Vec<i128>>>,
+}
+
 #[derive(Clone)]
 pub(crate) enum TlOp {
     Generator(usize),
@@ -985,7 +990,7 @@ pub(crate) enum StatementForm {
     QuantumCoefficient(usize, Vec<usize>, ParsedExpr),
     GromovWitten(usize, usize, usize, [Vec<usize>; 3]),
     OreCoefficient(usize, usize, ParsedExpr),
-    WzCheck(crate::rv_wz::Certificate, ParsedExpr),
+    WzCheck(Option<WzMirror>, crate::rv_wz::Certificate, ParsedExpr),
     QuantumPeriod(usize, usize, usize),
     QuantumRegularized(usize, usize, usize),
     QuantumRegularizedRhs(usize, usize),
@@ -2353,14 +2358,43 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 statement
             }
-            Token::Word("rvWZCheck") => {
+            Token::Word("rvWZCheck" | "rvCTWZCheck") => {
+                let with_period = self.token() == Token::Word("rvCTWZCheck");
                 self.advance()?;
                 self.expect(Token::LBracket)?;
+                let period = if with_period {
+                    let name = self.label()?;
+                    self.expect(Token::Comma)?;
+                    Some(name)
+                } else {
+                    None
+                };
                 let (u, v) = self.bidegree()?;
                 self.expect(Token::Comma)?;
                 let z = self.signed_wide("a nonzero integer", "WZ summand parameter")?;
                 self.expect(Token::Comma)?;
                 let start = self.number()?.0;
+                let mirror = if let Some(period) = period {
+                    let columns = if self.eat(Token::Comma)? {
+                        self.expect(Token::LBracket)?;
+                        let mut columns = Vec::new();
+                        while self.token() != Token::RBracket {
+                            columns.push(
+                                self.signed_tuple("a signed lattice exponent", "lattice exponent")?,
+                            );
+                            if !self.eat(Token::Comma)? {
+                                break;
+                            }
+                        }
+                        self.expect(Token::RBracket)?;
+                        Some(columns)
+                    } else {
+                        None
+                    };
+                    Some(WzMirror { period, columns })
+                } else {
+                    None
+                };
                 self.expect(Token::RBracket)?;
                 let input = self.paren_expr(0)?;
                 self.expect(Token::LBrace)?;
@@ -2369,6 +2403,7 @@ impl<'src> Parser<'src> {
                 let denominator = self.wz_denominator()?;
                 self.expect(Token::RBrace)?;
                 StatementForm::WzCheck(
+                    mirror,
                     crate::rv_wz::Certificate {
                         u,
                         v,

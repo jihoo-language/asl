@@ -1062,15 +1062,42 @@ impl Engine {
                 let coefficient = rv_fusion::coefficient(&mut self.model, grade, &terms, weight)?;
                 format!("rvFusionCoeff = {coefficient}")
             }
-            StatementForm::WzCheck(certificate, input) => {
+            StatementForm::WzCheck(mirror, certificate, input) => {
+                let operation = if mirror.is_some() {
+                    "rvCTWZCheck"
+                } else {
+                    "rvWZCheck"
+                };
                 let input = self.checker().expr(input)?;
                 if !matches!(self.model.kind(input.ty), Kind::RVOre) {
-                    return Err(Error::new(input.span, "rvWZCheck requires an Ore operator"));
+                    return Err(Error::new(
+                        input.span,
+                        format!("{operation} requires an Ore operator"),
+                    ));
                 }
                 let Value::RVOre(terms) = self.eval(&input)? else {
                     unreachable!()
                 };
-                crate::rv_wz::verify(&mut self.model, &terms, &certificate)?
+                let label = if let Some(mirror) = mirror {
+                    let period = self.model.rv_period(&mirror.period)?;
+                    crate::rv_period::wz::check(
+                        &mut self.model,
+                        &period,
+                        &certificate,
+                        mirror.columns.as_deref(),
+                    )?;
+                    "certified Laurent identity and recurrence"
+                } else {
+                    "certified"
+                };
+                crate::rv_wz::verify(&mut self.model, &terms, &certificate)?;
+                let start = certificate.start;
+                let description = if start == 1 {
+                    "coefficient"
+                } else {
+                    "coefficients"
+                };
+                format!("{operation} = {label} ({start} initial {description} checked)")
             }
             StatementForm::OreCoefficient(q, theta, input) => {
                 let input = self.checker().expr(input)?;

@@ -1125,6 +1125,19 @@ Write $q=A^2$, $d_h=(-1)^h[h+1]_q$, and $\delta=d_1$. The operator `rvTLE[i](v)`
 
 Use `rvCycloQMul(a,b)` for products and `rvCycloQGalois[a](c)` to substitute $A\mapsto A^a$ for $a$ coprime to the root order. At level three on three strands ending at height one, $B_1B_2^{-1}$ has determinant $1$ and trace $(3-\sqrt5)/2$. The substitution $A\mapsto A^3$ sends the trace to $(3+\sqrt5)/2>2$, so its conjugate has an eigenvalue off the unit circle. A finite-order matrix stays finite-order under a field automorphism, proving this braid matrix has infinite order. [Braid paths and Jones example](examples/rv-tl-jones.asl)
 
+### Certified Laurent periods and WZ recurrences
+
+`rvCTWZCheck[P,u,v,z,n0](L){numerator,denominator};` checks that the declared Laurent polynomial `P` is the canonical mirror of the WZ summand $\binom{n}{k}^{u}\binom{n+k}{k}^{v}z^k$. With $u-1$ variables $x_i$ and $v$ variables $y_j$, the canonical polynomial is
+\[
+\Lambda=\prod_i(1+x_i)\prod_j\frac{1+y_j}{y_j}
+\left(1+z\prod_i x_i^{-1}\prod_j(1+y_j)\right).
+\]
+Choosing $k$ copies of the second term of the bracket in $\Lambda^n$ contributes $\binom{n}{k}z^k$. Each $x_i$ supplies $[x_i^k](1+x_i)^n=\binom{n}{k}$ and each $y_j$ supplies $[y_j^n](1+y_j)^{n+k}=\binom{n+k}{k}$. The resulting constant term is therefore the WZ sum in every degree.
+
+The interpreter compares every coefficient of the expanded polynomial with the normalized declaration. It then runs the same exact WZ certificate and initial-coefficient checks as `rvWZCheck` on the Ore operator $L$. A successful check certifies the recurrence for the declared Laurent period.
+
+The optional final argument `[[col0],...]` gives the exponent columns for the $x$ variables followed by the $y$ variables. Each column has the number of coordinates declared for `P`. The interpreter verifies full column rank over $\mathbb Q$ by fraction-free elimination. The associated map of exponent lattices is injective, so only a zero exponent can map to zero, even when the image is a proper sublattice. For $u=2,v=0,z=-1$, the single column `[[2,4]]` takes $x-x^{-1}$ to $X^2Y^4-X^{-2}Y^{-4}$ with the same period.
+
 ### Symbolic rank equations
 
 `RVPoly(I, d)` is the discrete space of homogeneous polynomials of degree `d` over $\mathbb F_2$, with one variable $x_i$ for each selected primitive. The literal `rvmon[I]{a0,...}` has one exponent per primitive and infers its degree from their sum. Use `zero`, `add`, and `rvMul` for the polynomial operations. `rvHasse[a0,...](p)` extracts the indicated coefficient of $p(x+u)$ in the formal variables $u$. `rvVanish[modulus, point](p)` evaluates at a field point encoded the same way as `rvdim`, returning `S.hi` when the value is zero.

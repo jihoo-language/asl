@@ -8,6 +8,8 @@ use crate::error::{Error, Result};
 use crate::model::{Model, Value};
 use crate::odd_cobar::Prime;
 
+pub(crate) mod wz;
+
 pub(crate) type Literal = (Vec<i128>, i128);
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
