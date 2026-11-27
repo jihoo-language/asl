@@ -21,14 +21,14 @@ pub(crate) trait Domain {
     const NAME: &'static str;
 }
 
-pub(crate) struct Coefficients<D> {
+pub(crate) struct Coefficients<D, K = u32> {
     // Increasing indices, nonzero numerators, and joint gcd one with the denominator.
-    terms: Vec<(u32, Scalar)>,
+    terms: Vec<(K, Scalar)>,
     denominator: Denominator,
     domain: PhantomData<D>,
 }
 
-impl<D: Domain> Coefficients<D> {
+impl<D: Domain, K: Copy + Ord> Coefficients<D, K> {
     pub(crate) fn zero() -> Self {
         Self {
             terms: Vec::new(),
@@ -37,7 +37,7 @@ impl<D: Domain> Coefficients<D> {
         }
     }
 
-    pub(super) fn singleton(index: u32, denominator: u128) -> Self {
+    pub(super) fn singleton(index: K, denominator: u128) -> Self {
         Self {
             terms: vec![(index, Scalar::from_i128(1))],
             denominator: Denominator::from_small(denominator),
@@ -65,7 +65,7 @@ impl<D: Domain> Coefficients<D> {
         }))
     }
 
-    pub(crate) fn terms(&self) -> &[(u32, Scalar)] {
+    pub(crate) fn terms(&self) -> &[(K, Scalar)] {
         &self.terms
     }
 
@@ -77,7 +77,7 @@ impl<D: Domain> Coefficients<D> {
         model.allocate(3 + COEFFICIENT_LIMBS + (COEFFICIENT_LIMBS + 2) * self.terms.len())
     }
 
-    pub(super) fn product_denominator<E>(&self, other: &Coefficients<E>) -> Result<Magnitude> {
+    pub(super) fn product_denominator<E>(&self, other: &Coefficients<E, K>) -> Result<Magnitude> {
         self.denominator
             .resize::<WORK_LIMBS>()
             .ok_or_else(Self::arithmetic)?
@@ -85,7 +85,7 @@ impl<D: Domain> Coefficients<D> {
             .ok_or_else(Self::arithmetic)
     }
 
-    pub(crate) fn coefficient(&self, model: &mut Model, key: u32) -> Result<String> {
+    pub(crate) fn coefficient(&self, model: &mut Model, key: K) -> Result<String> {
         model.spend(1 + self.terms.len().max(1).ilog2() as usize)?;
         let Ok(index) = self.terms.binary_search_by_key(&key, |&(key, _)| key) else {
             return Ok("0".into());
@@ -155,11 +155,7 @@ impl<D: Domain> Coefficients<D> {
         )
     }
 
-    pub(crate) fn signed_map(
-        &self,
-        model: &mut Model,
-        negate: impl Fn(u32) -> bool,
-    ) -> Result<Self> {
+    pub(crate) fn signed_map(&self, model: &mut Model, negate: impl Fn(K) -> bool) -> Result<Self> {
         model.spend(self.terms.len())?;
         let terms = self
             .terms
@@ -214,7 +210,7 @@ impl<D: Domain> Coefficients<D> {
 
     pub(super) fn normalized<'a>(
         model: &mut Model,
-        coefficients: impl Iterator<Item = (u32, &'a Integer)> + Clone,
+        coefficients: impl Iterator<Item = (K, &'a Integer)> + Clone,
         denominator: Magnitude,
     ) -> Result<Self> {
         let mut factor = denominator;
@@ -252,8 +248,8 @@ impl<D: Domain> Coefficients<D> {
     }
 
     pub(super) fn accumulate(
-        terms: &mut BTreeMap<u32, Integer>,
-        key: u32,
+        terms: &mut BTreeMap<K, Integer>,
+        key: K,
         coefficient: Integer,
     ) -> Result<()> {
         let sum = if let Some(&existing) = terms.get(&key) {

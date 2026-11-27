@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::rc::Rc;
 
 use super::{
@@ -39,6 +40,7 @@ pub(crate) enum Command {
 
 pub(crate) struct Limit {
     pub(crate) cusp: Rc<Cusp>,
+    pub(super) spin_action: OnceCell<Box<super::spin::Action>>,
     direction: Direction,
     smith: [Vec<ColumnInteger>; 2],
 }
@@ -110,6 +112,7 @@ impl Limit {
     ) -> Result<Self> {
         let mut limit = Self {
             cusp,
+            spin_action: OnceCell::new(),
             direction,
             smith: [Vec::new(), Vec::new()],
         };

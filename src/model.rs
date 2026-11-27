@@ -33,6 +33,7 @@ use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::eigenpacket;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::hecke;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{farey, inverse, maass};
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::resolution::ResolvedPoint as KummerK3Point;
 use crate::hyperelliptic_kummer_surface::{
     self, hilbert_square, mordell, nakajima, nikulin, pencil, unimodular, Point as KummerPoint,
@@ -274,6 +275,7 @@ pub(crate) enum Kind {
     HilbertCohomology(nakajima::Grade),
     K3Clifford(Rc<str>, u8),
     OG6Clifford(Rc<str>, u8),
+    KSExterior(Rc<str>, i128),
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
     OG10(Rc<str>),
@@ -464,6 +466,7 @@ pub(crate) enum Value {
     HilbertCohomology(Rc<nakajima::cohomology::Class>),
     K3Clifford(Rc<clifford::Element>),
     OG6Clifford(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Element>),
+    KSExterior(Rc<ks_exterior::Form>),
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     OG10(Rc<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Class>),
@@ -1107,6 +1110,8 @@ impl Model {
             Kind::HilbertSquare(_, degree) if hilbert_square::dimension(degree) == 0 => 1,
             Kind::HilbertSquare(..) => usize::MAX,
             Kind::K3Clifford(..) | Kind::OG6Clifford(..) | Kind::K3Spinor(..) => usize::MAX,
+            Kind::KSExterior(_, 0..=64) => usize::MAX,
+            Kind::KSExterior(..) => 1,
             Kind::ECPoint(..) => usize::MAX,
             Kind::ECKernel(_, ell) => {
                 if inhabited {
@@ -1333,6 +1338,7 @@ impl Model {
                 | Kind::HilbertCohomology(..)
                 | Kind::K3Clifford(..)
                 | Kind::OG6Clifford(..)
+                | Kind::KSExterior(..)
                 | Kind::K3Spinor(..)
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
@@ -4201,6 +4207,11 @@ impl Model {
         self.inhabited_type(Kind::OG6Clifford(name.text.as_str().into(), parity), 0)
     }
 
+    pub(crate) fn ks_exterior_type(&mut self, name: &Label, degree: i128) -> Result<TypeId> {
+        self.og6_cusp(name)?;
+        self.inhabited_type(Kind::KSExterior(name.text.as_str().into(), degree), 0)
+    }
+
     pub(crate) fn k3_clifford_type(&mut self, basis: &Label, parity: u8) -> Result<TypeId> {
         nikulin::basis_for(
             self,
@@ -5765,6 +5776,7 @@ impl Model {
             | Kind::HilbertCohomology(..)
             | Kind::K3Clifford(..)
             | Kind::OG6Clifford(..)
+            | Kind::KSExterior(..)
             | Kind::K3Spinor(..)
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
@@ -6297,6 +6309,7 @@ impl Model {
             )),
             Kind::K3Clifford(name, parity) => out.push(&format!("RVK3Clifford({name},{parity})")),
             Kind::OG6Clifford(name, parity) => out.push(&format!("RVOG6Clifford({name},{parity})")),
+            Kind::KSExterior(name, degree) => out.push(&format!("RVKSExterior({name},{degree})")),
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::OG10(name) => out.push(&format!("RVOG10({name})")),
@@ -6610,6 +6623,7 @@ impl Model {
             }
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::KSExterior(a), Value::KSExterior(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::AbMukai(a), Value::AbMukai(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6959,6 +6973,7 @@ impl Model {
             (Value::HilbertCohomology(a), Value::HilbertCohomology(b)) => a.compare(self, b),
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::OG6Clifford(a), Value::OG6Clifford(b)) => a.compare(self, b),
+            (Value::KSExterior(a), Value::KSExterior(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
             (Value::AbMukai(a), Value::AbMukai(b)) => a.compare(self, b),
@@ -7370,6 +7385,12 @@ impl Model {
                         "cannot enumerate an OG6 integral Clifford component",
                     ))
                 }
+                Kind::KSExterior(_, 0..=64) => {
+                    return Err(Error::plain(
+                        "cannot enumerate an integral Kuga–Satake exterior component",
+                    ));
+                }
+                Kind::KSExterior(..) => vec![ks_exterior::Form::zero().persist(self)?],
                 Kind::K3Clifford(..) => {
                     return Err(Error::plain(
                         "cannot enumerate the rational K3 Clifford algebra",
@@ -8192,11 +8213,11 @@ impl Model {
         out.push("}")
     }
 
-    fn write_sparse_rational<D: rational_sparse::Domain>(
+    fn write_sparse_rational<D: rational_sparse::Domain, K: Copy + Ord + std::fmt::Display>(
         &mut self,
         out: &mut Text,
         ty: TypeId,
-        element: &rational_sparse::Coefficients<D>,
+        element: &rational_sparse::Coefficients<D, K>,
     ) -> Result<()> {
         self.write_type(out, ty, 0)?;
         out.push("{[")?;
@@ -8950,6 +8971,7 @@ impl Model {
             }
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::OG6Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
+            Value::KSExterior(form) => self.write_sparse_rational(out, ty, form.as_ref()),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::AbMukai(vector) => {
                 let (r, wedge, s) = vector.coordinates();

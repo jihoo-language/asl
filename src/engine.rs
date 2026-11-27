@@ -41,6 +41,7 @@ use crate::hyperelliptic_kummer_surface::cm_neighbors;
 use crate::hyperelliptic_kummer_surface::cm_ring;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
 use crate::hyperelliptic_kummer_surface::hilbert::elliptic_genus::{eigenpacket, hecke};
+use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior as ks_exterior;
 use crate::hyperelliptic_kummer_surface::mukai::{
     self,
     abelian::{self, og6},
@@ -591,6 +592,18 @@ enum OG6CliffordAction {
     Spin(Rc<og6::cusp::nilpotent::Limit>, Option<i128>),
 }
 
+enum KSExteriorAction {
+    Embed(Box<TypedExpr>),
+    ToSpin(Box<TypedExpr>),
+    Cup(Box<[TypedExpr; 2]>),
+    Scale(i128, Box<TypedExpr>),
+    Apply(
+        Rc<og6::cusp::nilpotent::Limit>,
+        ks_exterior::Operation,
+        Box<TypedExpr>,
+    ),
+}
+
 enum CliffordAction {
     Vector(Box<TypedExpr>),
     Reverse(Box<TypedExpr>),
@@ -719,6 +732,7 @@ enum TypedForm {
     Nakajima(nakajima::Operation, Box<TypedExpr>),
     NakajimaStratum(Rc<kummer_surface::stratum::Partition>, Box<TypedExpr>),
     OG6Clifford(OG6CliffordAction),
+    KSExterior(KSExteriorAction),
     WittBridge(Box<crate::rv_witt_spectrum::Bridge>),
     WittTensor(Box<[TypedExpr; 2]>),
     WittAdams(u128, Box<TypedExpr>),
@@ -1951,6 +1965,9 @@ impl Engine {
             }
             StatementForm::OG6Clifford(command) => {
                 return self.og6_spin_command(*command).map(Some)
+            }
+            StatementForm::KSExterior(command) => {
+                return self.ks_exterior_command(*command).map(Some)
             }
             StatementForm::OG6Nilpotent(command) => return self.og6_nilpotent_command(*command),
             StatementForm::OG6Cusp(command) => return self.og6_cusp_command(*command),
@@ -6193,6 +6210,67 @@ impl Engine {
         ))
     }
 
+    fn ks_exterior_command(&mut self, command: ks_exterior::Command) -> Result<String> {
+        match command {
+            ks_exterior::Command::Data(name, degree) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let lattice = self.og6_spin_lattice(&limit.cusp, name.span)?;
+                let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.exterior_report(&mut self.model, &name.text, &limit, degree)
+            }
+            ks_exterior::Command::Coefficient(mask, input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .ks_exterior_operand(&input, "rvKSExteriorCoeff")?;
+                let Value::KSExterior(value) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let coefficient = value.coefficient(&mut self.model, mask)?;
+                Ok(format!("rvKSExteriorCoeff[{mask}] = {coefficient}"))
+            }
+        }
+    }
+
+    fn eval_ks_exterior(&mut self, action: &KSExteriorAction, span: Span) -> Result<Value> {
+        let value = match action {
+            KSExteriorAction::Embed(input) => {
+                let Value::OG6Clifford(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                ks_exterior::Form::embed(&mut self.model, &value)?
+            }
+            KSExteriorAction::ToSpin(input) => {
+                let Value::KSExterior(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                return value.to_spin(&mut self.model)?.persist(&mut self.model);
+            }
+            KSExteriorAction::Cup(inputs) => {
+                let (Value::KSExterior(left), Value::KSExterior(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!()
+                };
+                left.cup(&mut self.model, &right)?
+            }
+            KSExteriorAction::Scale(k, input) => {
+                let Value::KSExterior(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                value.scale(&mut self.model, *k, 1)?
+            }
+            KSExteriorAction::Apply(limit, operation, input) => {
+                let Value::KSExterior(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let lattice = self.og6_spin_lattice(&limit.cusp, span)?;
+                let algebra = limit.cusp.spin_algebra(&mut self.model, &lattice)?;
+                algebra.exterior_apply(&mut self.model, limit, *operation, &value)?
+            }
+        };
+        value.persist(&mut self.model)
+    }
+
     fn og6_spin_command(&mut self, command: og6::cusp::spin::Command) -> Result<String> {
         use og6::cusp::spin::{self, Command};
         match command {
@@ -7649,6 +7727,9 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::OG6Clifford(a), Value::OG6Clifford(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::KSExterior(a), Value::KSExterior(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Clifford(a), Value::K3Clifford(b)) => {
@@ -9441,6 +9522,7 @@ impl Engine {
                 vector.negate(&mut self.model)?.persist(&mut self.model)
             }
             TypedForm::OG6Clifford(action) => self.eval_og6_clifford(action, expr.span),
+            TypedForm::KSExterior(action) => self.eval_ks_exterior(action, expr.span),
             TypedForm::K3Clifford(action) => self.eval_clifford(action),
             TypedForm::K3Spinor(action) => self.eval_spinor(action),
             TypedForm::CMClass(order, action) => self.eval_cm_class(*order, action),
@@ -12077,6 +12159,7 @@ impl Checker<'_> {
                 self.model.nakajima_type(&name, length, degree)
             }
             TypeForm::OG6Clifford(name, parity) => self.model.og6_clifford_type(&name, parity),
+            TypeForm::KSExterior(name, degree) => self.model.ks_exterior_type(&name, degree),
             TypeForm::K3Clifford(name, parity) => self.model.k3_clifford_type(&name, parity),
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
@@ -13132,6 +13215,7 @@ impl Checker<'_> {
                     Kind::Nakajima(..) => nakajima::State::zero().persist(self.model)?,
                     Kind::HilbertCohomology(..) => nakajima::cohomology::Class::zero().persist(self.model)?,
                     Kind::OG6Clifford(..) => og6::cusp::spin::Element::zero().persist(self.model)?,
+                    Kind::KSExterior(..) => ks_exterior::Form::zero().persist(self.model)?,
                     Kind::K3Clifford(..) => clifford::Element::zero().persist(self.model)?,
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
@@ -15316,6 +15400,7 @@ impl Checker<'_> {
                 self.hilbert_cohomology_expression(*expression)
             }
             ExprForm::OG6Clifford(expression) => self.og6_clifford_expression(*expression),
+            ExprForm::KSExterior(expression) => self.ks_exterior_expression(*expression),
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
@@ -16117,6 +16202,12 @@ impl Checker<'_> {
                     return Ok((
                         input.ty,
                         TypedForm::OG6Clifford(OG6CliffordAction::Scale(-1, Box::new(input))),
+                    ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::KSExterior(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::KSExterior(KSExteriorAction::Scale(-1, Box::new(input))),
                     ));
                 }
                 if matches!(self.model.kind(input.ty), Kind::K3Clifford(..)) {
@@ -19946,6 +20037,7 @@ impl Checker<'_> {
                         | Kind::HilbertCohomology(..)
                         | Kind::K3Clifford(..)
                         | Kind::OG6Clifford(..)
+                        | Kind::KSExterior(..)
                         | Kind::K3Spinor(..)
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
@@ -22315,6 +22407,88 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Spinor(action)))
+    }
+
+    fn ks_exterior_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, i128)> {
+        let Kind::KSExterior(name, degree) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVKSExterior form"));
+        };
+        Ok((
+            Label {
+                text: name.to_string(),
+                span: input.span,
+            },
+            *degree,
+        ))
+    }
+
+    fn ks_exterior_expression(
+        &mut self,
+        expression: ks_exterior::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ks_exterior::{Expression, Form};
+        let (ty, action) = match expression {
+            Expression::Basis(name, mask) => {
+                let ty = self
+                    .model
+                    .ks_exterior_type(&name, i128::from(mask.count_ones()))?;
+                return Ok((
+                    ty,
+                    TypedForm::Constant(Form::blade(mask).persist(self.model)?),
+                ));
+            }
+            Expression::Embed(input) => {
+                let input = self.expr(*input)?;
+                let (name, _) = self.og6_clifford_operand(&input, "rvKSExteriorEmbed")?;
+                let expected = self.model.og6_clifford_type(&name, 0)?;
+                self.require_type(expected, &input, "rvKSExteriorEmbed")?;
+                let ty = self.model.ks_exterior_type(&name, 1)?;
+                (ty, KSExteriorAction::Embed(Box::new(input)))
+            }
+            Expression::ToSpin(input) => {
+                let input = self.expr(*input)?;
+                let (name, _) = self.ks_exterior_operand(&input, "rvKSExteriorToSpin")?;
+                let expected = self.model.ks_exterior_type(&name, 1)?;
+                self.require_type(expected, &input, "rvKSExteriorToSpin")?;
+                let ty = self.model.og6_clifford_type(&name, 0)?;
+                (ty, KSExteriorAction::ToSpin(Box::new(input)))
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let (name, p) = self.ks_exterior_operand(&left, "rvKSExteriorCup")?;
+                let (_, q) = self.ks_exterior_operand(&right, "rvKSExteriorCup")?;
+                let expected = self.model.ks_exterior_type(&name, q)?;
+                self.require_type(expected, &right, "rvKSExteriorCup")?;
+                let degree = p.checked_add(q).ok_or_else(|| {
+                    Error::plain("Kuga–Satake exterior degree exceeds the signed i128 range")
+                })?;
+                let ty = self.model.ks_exterior_type(&name, degree)?;
+                (ty, KSExteriorAction::Cup(Box::new([left, right])))
+            }
+            Expression::Scale(k, input) => {
+                let input = self.expr(*input)?;
+                self.ks_exterior_operand(&input, "rvKSExteriorScale")?;
+                (input.ty, KSExteriorAction::Scale(k, Box::new(input)))
+            }
+            Expression::Apply(name, operation, input) => {
+                let limit = self.model.og6_nilpotent(&name)?;
+                let input = self.expr(*input)?;
+                let (_, degree) = self.ks_exterior_operand(&input, operation.name())?;
+                let cusp = Label {
+                    text: limit.cusp.name.to_string(),
+                    span: name.span,
+                };
+                let expected = self.model.ks_exterior_type(&cusp, degree)?;
+                self.require_type(expected, &input, operation.name())?;
+                (
+                    expected,
+                    KSExteriorAction::Apply(limit, operation, Box::new(input)),
+                )
+            }
+        };
+        Ok((ty, TypedForm::KSExterior(action)))
     }
 
     fn og6_clifford_operand(&self, input: &TypedExpr, operation: &str) -> Result<(Label, u8)> {

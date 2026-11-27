@@ -140,6 +140,7 @@ pub(crate) enum TypeForm {
     HilbertCohomology(Label, i128, i128),
     K3Clifford(Label, u8),
     OG6Clifford(Label, u8),
+    KSExterior(Label, i128),
     K3Spinor(Label, u8),
     Mukai(Label),
     MukaiQuotient(Label),
@@ -1007,6 +1008,9 @@ pub(crate) enum ExprForm {
     OG6Clifford(
         Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Expression>,
     ),
+    KSExterior(
+        Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Expression>,
+    ),
     K3Spinor(Box<crate::hyperelliptic_kummer_surface::spinor::Expression>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Expression>),
     CMClass(Box<crate::hyperelliptic_kummer_surface::cm_ring::Expression>),
@@ -1229,6 +1233,11 @@ pub(crate) enum StatementForm {
     HilbertCohomology(Box<crate::hyperelliptic_kummer_surface::nakajima::cohomology::Report>),
     K3CliffordCoefficient(crate::hyperelliptic_kummer_surface::clifford::Coefficient),
     OG6Clifford(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::Command>),
+    KSExterior(
+        Box<
+            crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Command,
+        >,
+    ),
     K3SpinorCoefficient(crate::hyperelliptic_kummer_surface::spinor::Coefficient),
     NakajimaPrimary(Box<crate::hyperelliptic_kummer_surface::nakajima::primary::Command>),
     K3Period(Box<crate::hyperelliptic_kummer_surface::period::Statement>),
@@ -3040,6 +3049,100 @@ impl<'src> Parser<'src> {
             }
         };
         expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn ks_exterior_mask(&mut self) -> Result<u64> {
+        let span = self.span();
+        self.signed_wide(
+            "an unsigned 64-bit subset mask",
+            "Kuga–Satake exterior mask",
+        )?
+        .try_into()
+        .map_err(|_| {
+            Error::new(
+                span,
+                "Kuga–Satake exterior mask must be an unsigned 64-bit integer",
+            )
+        })
+    }
+
+    fn ks_exterior_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::Command;
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let command = if operation == "rvKSExteriorData" {
+            let name = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.number()?.0;
+            self.expect(Token::RBracket)?;
+            Command::Data(name, degree)
+        } else {
+            let mask = self.ks_exterior_mask()?;
+            self.expect(Token::RBracket)?;
+            Command::Coefficient(mask, Box::new(self.paren_expr(0)?))
+        };
+        Ok(StatementForm::KSExterior(Box::new(command)))
+    }
+
+    fn ks_exterior_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::cusp::spin::exterior::{
+            Expression, Operation,
+        };
+        let (expression, depth) = match operation {
+            "rvKSExteriorCup" => {
+                let operands = self.paren_pair(nest)?;
+                let depth = 1 + operands[0].depth.max(operands[1].depth);
+                (Expression::Cup(Box::new(operands)), depth)
+            }
+            "rvKSExteriorEmbed" | "rvKSExteriorToSpin" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let expression = if operation == "rvKSExteriorEmbed" {
+                    Expression::Embed(Box::new(input))
+                } else {
+                    Expression::ToSpin(Box::new(input))
+                };
+                (expression, depth)
+            }
+            "rvKSExteriorScale" => {
+                self.expect(Token::LBracket)?;
+                let k = self.signed_wide("a signed integer", "Kuga–Satake exterior scalar")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(k, Box::new(input)), depth)
+            }
+            "rvKSExteriorBasis" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let mask = self.ks_exterior_mask()?;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(name, mask), 0)
+            }
+            _ => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::Comma)?;
+                let action = if operation == "rvKSExteriorPower" {
+                    Operation::Power(self.number()?.0)
+                } else {
+                    Operation::Exp(
+                        self.signed_wide("a signed integer", "Kuga–Satake exterior exponent")?,
+                    )
+                };
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Apply(name, action, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::KSExterior(Box::new(expression)), depth)
     }
 
     fn og6_spin_statement(&mut self, operation: &str, span: Span) -> Result<StatementForm> {
@@ -6852,6 +6955,9 @@ impl<'src> Parser<'src> {
             Token::Word(operation @ ("rvOG6SpinData" | "rvOG6CliffordCoeff")) => {
                 self.og6_spin_statement(operation, span)?
             }
+            Token::Word(operation @ ("rvKSExteriorData" | "rvKSExteriorCoeff")) => {
+                self.ks_exterior_statement(operation)?
+            }
             Token::Word(operation @ ("rvog6cusp" | "rvOG6CuspGram")) => {
                 self.og6_cusp_statement(operation)?
             }
@@ -10323,6 +10429,16 @@ impl<'src> Parser<'src> {
             self.expect(Token::RParen)?;
             return ty(span, form, 0);
         }
+        if name.text == "RVKSExterior" && self.eat(Token::LParen)? {
+            let cusp = self.label()?;
+            self.expect(Token::Comma)?;
+            let degree = self.signed_wide(
+                "a signed cohomological degree",
+                "Kuga–Satake exterior degree",
+            )?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::KSExterior(cusp, degree), 0);
+        }
         if name.text == "RVOG6Clifford" && self.eat(Token::LParen)? {
             let cusp = self.label()?;
             self.expect(Token::Comma)?;
@@ -12604,6 +12720,20 @@ impl<'src> Parser<'src> {
                     || (name.text == "rvOG6CliffordMul" && self.token() == Token::LParen)
                 {
                     return self.og6_clifford_expression(&name.text, span, nest);
+                }
+                if (matches!(
+                    name.text.as_str(),
+                    "rvKSExteriorBasis"
+                        | "rvKSExteriorScale"
+                        | "rvKSExteriorPower"
+                        | "rvKSExteriorExp"
+                ) && self.token() == Token::LBracket)
+                    || (matches!(
+                        name.text.as_str(),
+                        "rvKSExteriorCup" | "rvKSExteriorEmbed" | "rvKSExteriorToSpin"
+                    ) && self.token() == Token::LParen)
+                {
+                    return self.ks_exterior_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

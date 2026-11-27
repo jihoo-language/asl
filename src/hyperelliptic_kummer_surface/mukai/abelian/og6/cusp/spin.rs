@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -13,6 +14,8 @@ use crate::hyperelliptic_kummer_surface::rational_sparse::{
 use crate::integer_smith::{self, Matrix, Track};
 use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
+
+pub(crate) mod exterior;
 
 const RANK: usize = 7;
 const DIMENSION: usize = 1 << RANK;
@@ -75,6 +78,11 @@ pub(crate) struct Algebra {
     basis: Vec<Column>,
     dual: Vec<Column>,
     gram: [[Integer; RANK]; RANK],
+}
+
+pub(super) struct Action {
+    columns: Vec<Vec<(usize, Integer)>>,
+    factors: OnceCell<Vec<Magnitude>>,
 }
 
 impl Cusp {
@@ -250,17 +258,14 @@ impl Algebra {
     }
 
     pub(crate) fn report(&self, model: &mut Model, name: &str, limit: &Limit) -> Result<String> {
-        let lift = self.lift(model, limit)?;
-        if !self.product(model, &lift, &lift)?.is_empty() {
-            return Err(Error::plain("OG6 spin logarithm must square to zero"));
-        }
-        let factors = self.smith(model, &lift)?;
+        let factors = self.action(model, limit)?.smith(model)?;
         let rank = factors.len();
         let middle = EVEN_RANK
             .checked_sub(2 * rank)
             .ok_or_else(|| Error::plain("OG6 spin logarithm has incompatible square-zero rank"))?;
         let factors = factors
-            .into_iter()
+            .iter()
+            .copied()
             .map(decimal)
             .collect::<Vec<_>>()
             .join(", ");
@@ -269,28 +274,54 @@ impl Algebra {
         ))
     }
 
-    fn smith(&self, model: &mut Model, lift: &Terms) -> Result<Vec<Magnitude>> {
-        let masks: Vec<_> = (0..DIMENSION as u32)
-            .filter(|mask| mask.count_ones() % 2 == 0)
-            .collect();
-        let mut indices = [0; DIMENSION];
-        for (index, &mask) in masks.iter().enumerate() {
-            indices[mask as usize] = index;
+    fn action<'a>(&self, model: &mut Model, limit: &'a Limit) -> Result<&'a Action> {
+        if let Some(action) = limit.spin_action.get() {
+            return Ok(action);
+        }
+        let lift = self.lift(model, limit)?;
+        if !self.product(model, &lift, &lift)?.is_empty() {
+            return Err(Error::plain("OG6 spin logarithm must square to zero"));
         }
         let mut columns = Vec::with_capacity(EVEN_RANK);
-        let mut content = Magnitude::from_small(0);
         let mut entries = 0;
-        for mask in masks {
-            let right = Terms::from([(mask, Integer::from_i128(1))]);
-            let column = self.product(model, lift, &right)?;
-            for entry in column.values() {
-                if content.small() != Some(1) {
-                    content = content.gcd(model, entry.magnitude)?;
-                }
-            }
+        for index in 0..EVEN_RANK {
+            let right = Terms::from([(even_mask(index), Integer::from_i128(1))]);
+            let column = self.product(model, &lift, &right)?;
             entries += column.len();
-            crate::hw_algebra::storage(entries, WORK_LIMBS + 3)?;
-            columns.push(column);
+            columns.push(
+                column
+                    .into_iter()
+                    .map(|(mask, coefficient)| (even_index(mask), coefficient))
+                    .collect(),
+            );
+        }
+        model.allocate(3 * EVEN_RANK + entries * (WORK_LIMBS + 3))?;
+        Ok(limit.spin_action.get_or_init(|| {
+            Box::new(Action {
+                columns,
+                factors: OnceCell::new(),
+            })
+        }))
+    }
+}
+
+impl Action {
+    fn smith(&self, model: &mut Model) -> Result<&[Magnitude]> {
+        if let Some(factors) = self.factors.get() {
+            return Ok(factors);
+        }
+        let factors = self.reduce(model)?;
+        model.allocate(1 + factors.len() * WORK_LIMBS)?;
+        Ok(self.factors.get_or_init(|| factors))
+    }
+
+    fn reduce(&self, model: &mut Model) -> Result<Vec<Magnitude>> {
+        let mut content = Magnitude::from_small(0);
+        for (_, entry) in self.columns.iter().flatten() {
+            if content.small() == Some(1) {
+                break;
+            }
+            content = content.gcd(model, entry.magnitude)?;
         }
         if content.is_zero() {
             return Ok(Vec::new());
@@ -298,8 +329,8 @@ impl Algebra {
         // Extract common content in wider arithmetic before invoking the
         // existing exact Smith routine on the actual ordered PBW matrix.
         let mut matrix = Matrix::new(model, EVEN_RANK, EVEN_RANK)?;
-        for (j, column) in columns.into_iter().enumerate() {
-            for (mask, entry) in column {
+        for (j, column) in self.columns.iter().enumerate() {
+            for &(i, entry) in column {
                 let reduced = entry
                     .magnitude
                     .divide_exact(model, content)?
@@ -309,7 +340,7 @@ impl Algebra {
                         "normalized OG6 spin matrix exceeds the signed 128-bit coefficient range",
                     )
                 })?;
-                matrix.write(model, indices[mask as usize], j, coefficient)?;
+                matrix.write(model, i, j, coefficient)?;
             }
         }
         let reduced = integer_smith::reduce(model, matrix, Track::None, Track::None)?;
@@ -323,6 +354,16 @@ impl Algebra {
             })
             .collect()
     }
+}
+
+// In each consecutive pair of PBW masks exactly one has even parity.
+fn even_mask(index: usize) -> u32 {
+    ((index as u32) << 1) | (index.count_ones() & 1)
+}
+
+fn even_index(mask: u32) -> usize {
+    debug_assert!(mask.count_ones().is_multiple_of(2));
+    (mask >> 1) as usize
 }
 
 fn widen(element: &Element) -> Result<Terms> {
