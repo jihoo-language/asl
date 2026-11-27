@@ -13,6 +13,7 @@ use crate::wide_integer::Natural;
 
 mod diagram;
 mod dimension;
+pub(crate) mod fiber;
 pub(crate) mod karoubi;
 pub(crate) mod local;
 pub(crate) mod recoupling;

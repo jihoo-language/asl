@@ -1,0 +1,17 @@
+rvPartitionLoewy[1,0];
+rvPartitionLoewy[2,0];
+rvPartitionLoewy[2,1];
+rvPartitionLoewy[2,2];
+rvPartitionLoewy[2,3];
+rvPartitionLoewy[3,4];
+let one0 = rvPartitionSpecialize[0](rvPartitionIdentity[1]);
+rvPartitionNegligibleContains(one0);
+rvPartitionRadicalContains[1](one0);
+let nil = rvPartitionRadicalBasis[1,0,1,0];
+assert rvPartitionCompose(nil,nil) == zero[RVPartitionFiber(1,0)];
+rvPartitionLoewyWitness[2,2,2,0];
+let ghost = rvPartitionSpecialize[3](rvDeligneSquareProjector[5]);
+assert rvPartitionCompose(ghost,ghost) == ghost;
+assert rvPartitionTensorImage(ghost) == zero[RVPartitionTensorImage(2,3)];
+rvPartitionRegularPair(ghost,ghost);
+rvPartitionCategoricalPair(ghost,ghost);

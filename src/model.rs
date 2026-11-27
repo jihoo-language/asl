@@ -279,6 +279,7 @@ pub(crate) enum Kind {
     RVStableSchurCharacter,
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
+    RVPartitionFiber(crate::partition_algebra::fiber::Grade),
     RVKaroubiMap(Rc<str>, Rc<str>),
     RVCTState(PeriodGrade),
     RVCTResidue(PeriodLevel),
@@ -503,6 +504,7 @@ pub(crate) enum Value {
     RVStableSchurCharacter(Rc<crate::rv_witt_spectrum::character::StableCharacter>),
     RVPartitionAlgebra(Rc<crate::partition_algebra::Algebra>),
     RVPartitionLocal(Rc<crate::partition_algebra::local::LocalAlgebra>),
+    RVPartitionFiber(Rc<crate::partition_algebra::fiber::Element>),
     RVKaroubiMap(Rc<crate::partition_algebra::karoubi::Map>),
     PeriodState(rv_period::State),
     PeriodResidue(u128),
@@ -761,6 +763,11 @@ pub(crate) struct Model {
     karoubi_objects: HashMap<String, Rc<crate::partition_algebra::local::LocalAlgebra>>,
     deligne_square: Option<Rc<crate::partition_algebra::square::Square>>,
     deligne_towers: HashMap<usize, Rc<crate::partition_algebra::vacillating::Tower>>,
+    partition_diagrams: HashMap<usize, Rc<crate::partition_algebra::fiber::DiagramTable>>,
+    partition_fibers: HashMap<
+        crate::partition_algebra::fiber::Parameter,
+        Rc<crate::partition_algebra::fiber::Fiber>,
+    >,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
     cm_class_polynomials: HashMap<String, Rc<crate::cm_class_poly::Polynomial>>,
@@ -910,6 +917,8 @@ impl Model {
             karoubi_objects: HashMap::new(),
             deligne_square: None,
             deligne_towers: HashMap::new(),
+            partition_diagrams: HashMap::new(),
+            partition_fibers: HashMap::new(),
             hilbert_strata: HashMap::new(),
             specht_strata: HashMap::new(),
             cm_class_polynomials: HashMap::new(),
@@ -1506,6 +1515,7 @@ impl Model {
                 hw_closed::count(&self.rv_unram_rings[grade.ring.as_ref()], grade.genus)
             }
             Kind::RVUnram(ref name) => self.rv_unram_rings[name.as_ref()].count(),
+            Kind::RVPartitionFiber(grade) if grade.is_zero_ring() => 1,
             Kind::RVQGr(..)
             | Kind::RVQGrP(..)
             | Kind::RVOre
@@ -1514,6 +1524,7 @@ impl Model {
             | Kind::RVStableSchurCharacter
             | Kind::RVPartitionAlgebra(..)
             | Kind::RVPartitionLocal(..)
+            | Kind::RVPartitionFiber(..)
             | Kind::RVKaroubiMap(..) => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -1711,6 +1722,7 @@ impl Model {
                 | Kind::RVStableSchurCharacter
                 | Kind::RVPartitionAlgebra(..)
                 | Kind::RVPartitionLocal(..)
+                | Kind::RVPartitionFiber(..)
                 | Kind::RVKaroubiMap(..)
                 | Kind::RVCTState(..)
                 | Kind::RVCTResidue(..)
@@ -3734,6 +3746,35 @@ impl Model {
 
     pub(crate) fn partition_local_type(&mut self, rank: usize) -> Result<TypeId> {
         self.inhabited_type(Kind::RVPartitionLocal(rank), 0)
+    }
+
+    pub(crate) fn partition_fiber_type(
+        &mut self,
+        grade: crate::partition_algebra::fiber::Grade,
+    ) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVPartitionFiber(grade), 0)
+    }
+
+    pub(crate) fn partition_fiber(
+        &mut self,
+        parameter: crate::partition_algebra::fiber::Parameter,
+    ) -> Result<Rc<crate::partition_algebra::fiber::Fiber>> {
+        use crate::partition_algebra::fiber::{DiagramTable, Fiber};
+        if let Some(fiber) = self.partition_fibers.get(&parameter) {
+            return Ok(fiber.clone());
+        }
+        let table = if let Some(table) = self.partition_diagrams.get(&parameter.rank) {
+            table.clone()
+        } else {
+            let table = Rc::new(DiagramTable::new(self, parameter.rank)?);
+            self.partition_diagrams
+                .insert(parameter.rank, table.clone());
+            table
+        };
+        self.allocate(12)?;
+        let fiber = Rc::new(Fiber::new(parameter, table));
+        self.partition_fibers.insert(parameter, fiber.clone());
+        Ok(fiber)
     }
 
     pub(crate) fn karoubi_map_type(&mut self, source: &Label, target: &Label) -> Result<TypeId> {
@@ -6928,6 +6969,7 @@ impl Model {
             | Kind::RVStableSchurCharacter
             | Kind::RVPartitionAlgebra(..)
             | Kind::RVPartitionLocal(..)
+            | Kind::RVPartitionFiber(..)
             | Kind::RVKaroubiMap(..)
             | Kind::RVCTState(..)
             | Kind::RVCTResidue(..)
@@ -7636,6 +7678,7 @@ impl Model {
             Kind::RVStableSchurCharacter => out.push("RVStableSchurCharacter"),
             Kind::RVPartitionAlgebra(rank) => out.push(&format!("RVPartitionAlgebra({rank})")),
             Kind::RVPartitionLocal(rank) => out.push(&format!("RVPartitionLocal({rank})")),
+            Kind::RVPartitionFiber(grade) => out.push(&grade.render()),
             Kind::RVKaroubiMap(a, b) => out.push(&format!("RVKaroubiMap({a}, {b})")),
             Kind::RVQGrP(grade) => out.push(&format!(
                 "RVQGrP({}, {}, {})",
@@ -7921,6 +7964,9 @@ impl Model {
             (Value::KummerDiv(a), Value::KummerDiv(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Lattice(a), Value::K3Lattice(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::RVWittSpectrum(a), Value::RVWittSpectrum(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
+                Ok(a.compare(self, b)?.is_eq())
+            }
             (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => {
                 Ok(a.compare(self, b)?.is_eq())
             }
@@ -8371,6 +8417,7 @@ impl Model {
             (Value::RVSchurCharacter(a), Value::RVSchurCharacter(b)) => a.compare(self, b),
             (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => a.compare(self, b),
             (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a.compare(self, b),
+            (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => a.compare(self, b),
             (Value::RVKaroubiMap(a), Value::RVKaroubiMap(b)) => a.compare(self, b),
             (Value::RVStableSchurCharacter(a), Value::RVStableSchurCharacter(b)) => {
                 a.compare(self, b)
@@ -9032,8 +9079,15 @@ impl Model {
                 Kind::RVWittSpectrum => {
                     return Err(Error::plain("cannot enumerate a Witt spectrum ring"))
                 }
+                Kind::RVPartitionFiber(grade) if grade.is_zero_ring() => {
+                    vec![self
+                        .partition_fiber(grade.parameter)?
+                        .zero(grade.mode)
+                        .persist(self)?]
+                }
                 Kind::RVPartitionAlgebra(..)
                 | Kind::RVPartitionLocal(..)
+                | Kind::RVPartitionFiber(..)
                 | Kind::RVKaroubiMap(..) => {
                     return Err(Error::plain(
                         "cannot enumerate a partition algebra or its Karoubi maps",
@@ -10920,6 +10974,7 @@ impl Model {
             Value::RVStableSchurCharacter(value) => out.push(&value.render()),
             Value::RVPartitionAlgebra(value) => out.push(&value.render()),
             Value::RVPartitionLocal(value) => out.push(&value.render()),
+            Value::RVPartitionFiber(value) => out.push(&value.render()),
             Value::RVKaroubiMap(value) => out.push(&value.render()),
             Value::RVOre(terms) => {
                 out.push("RVOre{")?;

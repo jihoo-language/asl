@@ -922,6 +922,9 @@ enum TypedForm {
         [u128; 2],
         Box<TypedExpr>,
     ),
+    PartitionFiberSpecialize(crate::partition_algebra::fiber::Parameter, Box<TypedExpr>),
+    PartitionFiberProject(crate::partition_algebra::fiber::Mode, Box<TypedExpr>),
+    PartitionFiberScale(i128, i128, Box<TypedExpr>),
     PartitionLocalize(Box<TypedExpr>),
     PartitionDivide(crate::partition_algebra::local::Denominator, Box<TypedExpr>),
     KaroubiCorner(Box<[Label; 2]>, Box<TypedExpr>),
@@ -2284,6 +2287,9 @@ impl Engine {
                     }
                 }
                 .map(Some);
+            }
+            StatementForm::PartitionFiberReport(report) => {
+                return self.partition_fiber_report(report).map(Some);
             }
             StatementForm::PartitionReport(report) => {
                 return report.execute(&mut self.model).map(Some)
@@ -9826,6 +9832,68 @@ impl Engine {
         }
     }
 
+    fn partition_fiber_report(
+        &mut self,
+        report: crate::partition_algebra::fiber::Report,
+    ) -> Result<String> {
+        use crate::partition_algebra::fiber::Report;
+        match report {
+            Report::Loewy(parameter) => self
+                .model
+                .partition_fiber(parameter)?
+                .loewy_report(&mut self.model),
+            Report::Witness(parameter, power, index) => self
+                .model
+                .partition_fiber(parameter)?
+                .witness(&mut self.model, power, index),
+            Report::Coefficient(labels, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().partition_fiber_operand(&input, false)?;
+                let value = self.eval_partition_fiber(&input)?;
+                self.model
+                    .partition_fiber(grade.parameter)?
+                    .coefficient(&value, labels)
+            }
+            Report::Contains(power, input) => {
+                let input = self.checker().expr(*input)?;
+                let grade = self.checker().partition_fiber_operand(&input, true)?;
+                let value = self.eval_partition_fiber(&input)?;
+                self.model.partition_fiber(grade.parameter)?.contains(
+                    &mut self.model,
+                    power,
+                    &value,
+                )
+            }
+            Report::Pair(regular, inputs) => {
+                let [a, b] = *inputs;
+                let a = self.checker().expr(a)?;
+                let b = self.checker().expr(b)?;
+                let grade = self.checker().partition_fiber_operand(&a, true)?;
+                if self.checker().partition_fiber_operand(&b, true)? != grade {
+                    return Err(Error::new(
+                        b.span,
+                        "partition trace pairing requires the same specialized algebra",
+                    ));
+                }
+                let a = self.eval_partition_fiber(&a)?;
+                let b = self.eval_partition_fiber(&b)?;
+                self.model
+                    .partition_fiber(grade.parameter)?
+                    .pair(&mut self.model, regular, &a, &b)
+            }
+        }
+    }
+
+    fn eval_partition_fiber(
+        &mut self,
+        input: &TypedExpr,
+    ) -> Result<Rc<crate::partition_algebra::fiber::Element>> {
+        let Value::RVPartitionFiber(value) = self.eval(input)? else {
+            unreachable!()
+        };
+        Ok(value)
+    }
+
     fn eval_partition_local(
         &mut self,
         input: &TypedExpr,
@@ -10617,6 +10685,9 @@ impl Engine {
                         Value::RVStableSchurCharacter(a),
                         Value::RVStableSchurCharacter(b),
                     ) => a.add(&mut self.model, &b)?.persist(&mut self.model),
+                    (BinaryOp::Add, Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
                     (BinaryOp::Add, Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
@@ -13189,12 +13260,43 @@ impl Engine {
                     (Value::RVPartitionAlgebra(a), Value::RVPartitionAlgebra(b)) => a
                         .binary(&mut self.model, *operation, &b)?
                         .persist(&mut self.model),
+                    (Value::RVPartitionFiber(a), Value::RVPartitionFiber(b)) => {
+                        let fiber = self.model.partition_fiber(a.grade.parameter)?;
+                        fiber
+                            .compose(&mut self.model, &a, &b)?
+                            .persist(&mut self.model)
+                    }
                     (Value::RVPartitionLocal(a), Value::RVPartitionLocal(b)) => a
                         .binary(&mut self.model, *operation, &b)?
                         .persist(&mut self.model),
                     _ => unreachable!(),
                 }
             }
+            TypedForm::PartitionFiberSpecialize(parameter, input) => {
+                let value = self.eval(input)?;
+                let fiber = self.model.partition_fiber(*parameter)?;
+                match value {
+                    Value::RVPartitionAlgebra(value) => {
+                        fiber.specialize_integral(&mut self.model, &value)
+                    }
+                    Value::RVPartitionLocal(value) => {
+                        fiber.specialize_local(&mut self.model, &value)
+                    }
+                    _ => unreachable!(),
+                }?
+                .persist(&mut self.model)
+            }
+            TypedForm::PartitionFiberProject(mode, input) => {
+                let value = self.eval_partition_fiber(input)?;
+                let fiber = self.model.partition_fiber(value.grade.parameter)?;
+                fiber
+                    .project(&mut self.model, *mode, &value)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::PartitionFiberScale(n, d, input) => self
+                .eval_partition_fiber(input)?
+                .scale(&mut self.model, *n, *d)?
+                .persist(&mut self.model),
             TypedForm::PartitionLocalize(input) => {
                 let Value::RVPartitionAlgebra(value) = self.eval(input)? else {
                     unreachable!()
@@ -15695,6 +15797,7 @@ impl Checker<'_> {
             TypeForm::RVStableSchurCharacter => self.model.stable_schur_character_type(),
             TypeForm::RVPartitionAlgebra(rank) => self.model.partition_algebra_type(rank),
             TypeForm::RVPartitionLocal(rank) => self.model.partition_local_type(rank),
+            TypeForm::RVPartitionFiber(grade) => self.model.partition_fiber_type(grade),
             TypeForm::RVKaroubiMap([source, target]) => {
                 self.model.karoubi_map_type(&source, &target)
             }
@@ -16798,6 +16901,11 @@ impl Checker<'_> {
                     Kind::RVWittSpectrum => crate::rv_witt_spectrum::Spectrum::zero().persist(self.model)?,
                     Kind::RVStableSchurCharacter => crate::rv_witt_spectrum::character::StableCharacter::zero().persist(self.model)?,
                     Kind::RVPartitionAlgebra(rank) => crate::partition_algebra::Algebra::zero(*rank).persist(self.model)?,
+                    Kind::RVPartitionFiber(grade) => {
+                        let grade = *grade;
+                        let fiber = self.model.partition_fiber(grade.parameter)?;
+                        fiber.zero(grade.mode).persist(self.model)?
+                    }
                     Kind::RVPartitionLocal(rank) => crate::partition_algebra::local::LocalAlgebra::zero(*rank).persist(self.model)?,
                     Kind::RVKaroubiMap(source,target) => {
                         let rank = self.model.karoubi_object(&Label { text:source.to_string(),span })?.rank();
@@ -18988,6 +19096,7 @@ impl Checker<'_> {
             ExprForm::WittSpectrum(expression) => self.witt_spectrum_expression(*expression),
             ExprForm::SchurCharacter(expression) => self.schur_character_expression(*expression),
             ExprForm::PartitionAlgebra(expression) => self.partition_expression(*expression),
+            ExprForm::PartitionFiber(expression) => self.partition_fiber_expression(*expression),
             ExprForm::Karoubi(expression) => self.karoubi_expression(*expression),
             ExprForm::Nakajima(expression) => self.nakajima_expression(*expression),
             ExprForm::HodgeTensor(operation) => self.hodge_tensor_expression(*operation),
@@ -20139,6 +20248,12 @@ impl Checker<'_> {
                 }
                 if matches!(self.model.kind(input.ty), Kind::RVKaroubiMap(..)) {
                     return Ok((input.ty, TypedForm::KaroubiNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::RVPartitionFiber(..)) {
+                    return Ok((
+                        input.ty,
+                        TypedForm::PartitionFiberScale(-1, 1, Box::new(input)),
+                    ));
                 }
                 if matches!(
                     self.model.kind(input.ty),
@@ -23946,6 +24061,7 @@ impl Checker<'_> {
                         | Kind::RVStableSchurCharacter
                         | Kind::RVPartitionAlgebra(..)
                         | Kind::RVPartitionLocal(..)
+                        | Kind::RVPartitionFiber(..)
                         | Kind::RVKaroubiMap(..)
                         | Kind::RVCTState(..)
                         | Kind::RVCTResidue(..)
@@ -26244,6 +26360,83 @@ impl Checker<'_> {
         }
     }
 
+    fn partition_fiber_expression(
+        &mut self,
+        operation: crate::partition_algebra::fiber::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use crate::partition_algebra::fiber::{Expression, Grade, Mode, Parameter};
+        match operation {
+            Expression::Specialize(n, input) => {
+                let input = self.expr(*input)?;
+                let (rank, _) = self.partition_operand(&input, "rvPartitionSpecialize")?;
+                let parameter = Parameter::new(rank, n)?;
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                Ok((
+                    ty,
+                    TypedForm::PartitionFiberSpecialize(parameter, Box::new(input)),
+                ))
+            }
+            Expression::Project(mode, input) => {
+                let input = self.expr(*input)?;
+                let full = self.partition_fiber_operand(&input, true)?;
+                let ty = self.model.partition_fiber_type(Grade { mode, ..full })?;
+                Ok((ty, TypedForm::PartitionFiberProject(mode, Box::new(input))))
+            }
+            Expression::Scale(n, d, input) => {
+                let input = self.expr(*input)?;
+                self.partition_fiber_operand(&input, false)?;
+                Ok((
+                    input.ty,
+                    TypedForm::PartitionFiberScale(n, d, Box::new(input)),
+                ))
+            }
+            Expression::RadicalBasis(parameter, power, index) => {
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                let fiber = self.model.partition_fiber(parameter)?;
+                let value = fiber
+                    .radical_basis(self.model, power, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::NegligibleBasis(parameter, index) => {
+                let ty = self.model.partition_fiber_type(Grade {
+                    parameter,
+                    mode: Mode::Full,
+                })?;
+                let fiber = self.model.partition_fiber(parameter)?;
+                let value = fiber
+                    .negligible_basis(self.model, index)?
+                    .persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+        }
+    }
+
+    fn partition_fiber_operand(
+        &self,
+        input: &TypedExpr,
+        full: bool,
+    ) -> Result<crate::partition_algebra::fiber::Grade> {
+        use crate::partition_algebra::fiber::Mode;
+        match *self.model.kind(input.ty) {
+            Kind::RVPartitionFiber(grade) if !full || grade.mode == Mode::Full => Ok(grade),
+            _ if full => Err(Error::new(
+                input.span,
+                "partition operation requires an RVPartitionFiber value",
+            )),
+            _ => Err(Error::new(
+                input.span,
+                "partition operation requires a specialized partition algebra or quotient value",
+            )),
+        }
+    }
+
     fn partition_expression(
         &mut self,
         expression: crate::partition_algebra::Expression,
@@ -26272,6 +26465,19 @@ impl Checker<'_> {
                 let [a, b] = *inputs;
                 let a = self.expr(a)?;
                 let b = self.expr(b)?;
+                if matches!(self.model.kind(a.ty), Kind::RVPartitionFiber(..))
+                    || matches!(self.model.kind(b.ty), Kind::RVPartitionFiber(..))
+                {
+                    if !matches!(operation, crate::partition_algebra::Binary::Compose)
+                        || a.ty != b.ty
+                    {
+                        return Err(Error::new(b.span, "partition fiber composition requires the same rank, parameter, and quotient type"));
+                    }
+                    return Ok((
+                        a.ty,
+                        TypedForm::PartitionBinary(operation, Box::new([a, b])),
+                    ));
+                }
                 let (a_rank, a_local) = self.partition_operand(&a, operation.name())?;
                 let (b_rank, b_local) = self.partition_operand(&b, operation.name())?;
                 if a_local != b_local {

@@ -39,7 +39,7 @@ impl Diagram {
         &self.0
     }
 
-    fn blocks(&self) -> usize {
+    pub(super) fn blocks(&self) -> usize {
         self.0
             .iter()
             .max()

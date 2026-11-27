@@ -134,6 +134,7 @@ pub(crate) enum TypeForm {
     RVStableSchurCharacter,
     RVPartitionAlgebra(usize),
     RVPartitionLocal(usize),
+    RVPartitionFiber(crate::partition_algebra::fiber::Grade),
     RVKaroubiMap([Label; 2]),
     RVCTState(Label, usize, usize),
     RVCTResidue(usize, usize),
@@ -873,6 +874,7 @@ pub(crate) enum ExprForm {
     WittSpectrum(Box<crate::rv_witt_spectrum::Expression>),
     SchurCharacter(Box<crate::rv_witt_spectrum::character::Expression>),
     PartitionAlgebra(Box<crate::partition_algebra::Expression>),
+    PartitionFiber(Box<crate::partition_algebra::fiber::Expression>),
     Karoubi(Box<crate::partition_algebra::karoubi::Expression>),
     OreApply(Box<[ParsedExpr; 2]>),
     QuantumUnary(QuantumOp, Box<ParsedExpr>),
@@ -1415,6 +1417,7 @@ pub(crate) enum StatementForm {
     PartitionReport(crate::partition_algebra::Report),
     DelignePathReport(crate::partition_algebra::vacillating::Report),
     DeligneRecouplingReport(crate::partition_algebra::recoupling::Report),
+    PartitionFiberReport(crate::partition_algebra::fiber::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -7586,6 +7589,75 @@ impl<'src> Parser<'src> {
             .map_err(|error| error.at(span))
     }
 
+    fn partition_parameter(&mut self) -> Result<crate::partition_algebra::fiber::Parameter> {
+        let span = self.span();
+        let rank = self.partition_rank()?;
+        self.expect(Token::Comma)?;
+        let n = self.wide_unsigned("integral partition parameter")?;
+        crate::partition_algebra::fiber::Parameter::new(rank, n).map_err(|error| error.at(span))
+    }
+
+    fn partition_fiber_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::partition_algebra::fiber::{Expression, Mode};
+        let (operation, depth) = match name {
+            "rvPartitionRadicalBasis" | "rvPartitionNegligibleBasis" => {
+                self.expect(Token::LBracket)?;
+                let parameter = self.partition_parameter()?;
+                self.expect(Token::Comma)?;
+                let first = self.wide_unsigned("radical power or negligible basis index")?;
+                let operation = if name == "rvPartitionRadicalBasis" {
+                    self.expect(Token::Comma)?;
+                    let index = self.wide_unsigned("partition radical basis index")?;
+                    Expression::RadicalBasis(parameter, first, index)
+                } else {
+                    Expression::NegligibleBasis(parameter, first)
+                };
+                self.expect(Token::RBracket)?;
+                (operation, 0)
+            }
+            "rvPartitionSpecialize" => {
+                self.expect(Token::LBracket)?;
+                let n = self.wide_unsigned("integral partition parameter")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Specialize(n, Box::new(input)), depth)
+            }
+            "rvPartitionFiberScale" => {
+                self.expect(Token::LBracket)?;
+                let n = self.signed_wide("a rational numerator", "partition scalar numerator")?;
+                self.expect(Token::Comma)?;
+                let d = self.wide_unsigned("positive partition scalar denominator")?;
+                let d = i128::try_from(d).ok().filter(|&x| x > 0).ok_or_else(|| {
+                    Error::new(
+                        span,
+                        "partition scalar denominator must be positive and fit signed 128 bits",
+                    )
+                })?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Scale(n, d, Box::new(input)), depth)
+            }
+            _ => {
+                let mode = if name == "rvPartitionSemisimple" {
+                    Mode::Semisimple
+                } else {
+                    Mode::TensorImage
+                };
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Project(mode, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::PartitionFiber(Box::new(operation)), depth)
+    }
+
     fn partition_labels(&mut self, brackets: bool) -> Result<Vec<u128>> {
         let (open, close) = if brackets {
             (Token::LBracket, Token::RBracket)
@@ -11748,6 +11820,57 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::DelignePathReport(report)
             }
+            Token::Word(
+                name @ ("rvPartitionLoewy"
+                | "rvPartitionLoewyWitness"
+                | "rvPartitionFiberCoefficient"
+                | "rvPartitionRadicalContains"
+                | "rvPartitionNegligibleContains"
+                | "rvPartitionRegularPair"
+                | "rvPartitionCategoricalPair"),
+            ) => {
+                use crate::partition_algebra::fiber::Report;
+                self.advance()?;
+                let report = match name {
+                    "rvPartitionLoewy" | "rvPartitionLoewyWitness" => {
+                        self.expect(Token::LBracket)?;
+                        let parameter = self.partition_parameter()?;
+                        let report = if name == "rvPartitionLoewy" {
+                            Report::Loewy(parameter)
+                        } else {
+                            self.expect(Token::Comma)?;
+                            let power = self.wide_unsigned("partition radical power")?;
+                            self.expect(Token::Comma)?;
+                            let index = self.wide_unsigned("partition Loewy witness index")?;
+                            Report::Witness(parameter, power, index)
+                        };
+                        self.expect(Token::RBracket)?;
+                        report
+                    }
+                    "rvPartitionFiberCoefficient" => {
+                        self.expect(Token::LBracket)?;
+                        let labels = self.partition_labels(true)?;
+                        self.expect(Token::RBracket)?;
+                        Report::Coefficient(labels, Box::new(self.paren_expr(0)?))
+                    }
+                    "rvPartitionRadicalContains" | "rvPartitionNegligibleContains" => {
+                        let power = if name == "rvPartitionRadicalContains" {
+                            self.expect(Token::LBracket)?;
+                            let power = self.wide_unsigned("partition radical power")?;
+                            self.expect(Token::RBracket)?;
+                            Some(power)
+                        } else {
+                            None
+                        };
+                        Report::Contains(power, Box::new(self.paren_expr(0)?))
+                    }
+                    _ => Report::Pair(
+                        name == "rvPartitionRegularPair",
+                        Box::new(self.paren_pair(0)?),
+                    ),
+                };
+                StatementForm::PartitionFiberReport(report)
+            }
             Token::Word(name @ ("rvPartitionDimensions" | "rvPartitionCentralizerCheck")) => {
                 use crate::partition_algebra::Report;
                 self.advance()?;
@@ -14568,6 +14691,25 @@ impl<'src> Parser<'src> {
             let target = self.label()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVKaroubiMap([source, target]), 0);
+        }
+        if matches!(
+            name.text.as_str(),
+            "RVPartitionFiber" | "RVPartitionSemisimple" | "RVPartitionTensorImage"
+        ) && self.eat(Token::LParen)?
+        {
+            use crate::partition_algebra::fiber::{Grade, Mode};
+            let parameter = self.partition_parameter()?;
+            self.expect(Token::RParen)?;
+            let mode = match name.text.as_str() {
+                "RVPartitionFiber" => Mode::Full,
+                "RVPartitionSemisimple" => Mode::Semisimple,
+                _ => Mode::TensorImage,
+            };
+            return ty(
+                span,
+                TypeForm::RVPartitionFiber(Grade { parameter, mode }),
+                0,
+            );
         }
         if name.text == "RVPartitionLocal" && self.eat(Token::LParen)? {
             let rank = self.partition_rank()?;
@@ -19294,6 +19436,17 @@ impl<'src> Parser<'src> {
                     };
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::QuantumBasis(rank, ambient, shape), 0);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvPartitionSpecialize"
+                        | "rvPartitionFiberScale"
+                        | "rvPartitionRadicalBasis"
+                        | "rvPartitionNegligibleBasis"
+                        | "rvPartitionSemisimple"
+                        | "rvPartitionTensorImage"
+                ) {
+                    return self.partition_fiber_expression(&name.text, span, nest);
                 }
                 if matches!(
                     name.text.as_str(),

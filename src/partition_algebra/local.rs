@@ -375,6 +375,10 @@ impl LocalAlgebra {
         })
     }
 
+    pub(super) fn specialization(&self, model: &mut Model, n: u128) -> Result<(&Algebra, Integer)> {
+        Ok((&self.numerator, self.denominator.at(model, n)?))
+    }
+
     pub(super) fn require_regular_at(&self, n: u128) -> Result<()> {
         self.denominator.require_regular(n)
     }
