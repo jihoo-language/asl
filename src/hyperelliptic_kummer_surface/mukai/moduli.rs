@@ -16,9 +16,9 @@ const RANK: usize = AMBIENT_RANK - 1;
 // multiplication and a 24-term sum to pair or realize the column.
 // The isotropic case also checks for overflow in its second elimination.
 const COLUMN_LIMBS: usize = 104;
-const COLUMN_CELLS: usize = COLUMN_LIMBS + 1;
+pub(super) const COLUMN_CELLS: usize = COLUMN_LIMBS + 1;
 const PAIRING_CELLS: usize = std::mem::size_of::<Integer>().div_ceil(std::mem::size_of::<u32>());
-type ColumnInteger = Wide<COLUMN_LIMBS>;
+pub(super) type ColumnInteger = Wide<COLUMN_LIMBS>;
 type Column = [ColumnInteger; AMBIENT_RANK];
 type PairingRow = [ColumnInteger; AMBIENT_RANK];
 
@@ -292,7 +292,7 @@ fn realize(coordinates: Column) -> Result<Vector> {
     })
 }
 
-fn column_integer(value: i128) -> ColumnInteger {
+pub(super) fn column_integer(value: i128) -> ColumnInteger {
     ColumnInteger::from_i128(value)
 }
 
@@ -336,12 +336,12 @@ fn column_pair(model: &mut Model, column: &Column, row: &[ColumnInteger]) -> Res
 }
 
 // Split a primitive covector of a given integral basis as (1, 0, …).
-fn eliminate(
+pub(super) fn eliminate<const N: usize>(
     model: &mut Model,
-    columns: &mut Vec<Column>,
+    columns: &mut Vec<[ColumnInteger; N]>,
     mut row: Vec<ColumnInteger>,
     nonprimitive: &str,
-) -> Result<Column> {
+) -> Result<[ColumnInteger; N]> {
     let pivot = (0..row.len())
         .filter(|&i| !row[i].is_zero())
         .min_by(|&i, &j| row[i].magnitude.cmp(row[j].magnitude))
@@ -367,7 +367,7 @@ fn eliminate(
             .expect("gcd divides right entry")
             .negate();
         let old = columns[0];
-        model.spend(AMBIENT_RANK * 4 * COLUMN_CELLS)?;
+        model.spend(N * 4 * COLUMN_CELLS)?;
         for (j, entry) in columns[i].into_iter().enumerate() {
             columns[0][j] = old[j].multiply_wide(p)?.add(entry.multiply_wide(q)?)?;
             columns[i][j] = old[j].multiply_wide(y)?.add(entry.multiply_wide(x)?)?;
@@ -419,6 +419,15 @@ fn bezout(
 }
 
 fn riemann_roch_polynomial(model: &mut Model, q: Integer, n: i128) -> Result<i128> {
+    binomial_with_square(model, q, n, n + 1)
+}
+
+pub(super) fn binomial_with_square(
+    model: &mut Model,
+    q: Integer,
+    n: i128,
+    shift: i128,
+) -> Result<i128> {
     let (half, remainder) = q.magnitude.divide_u32(2);
     if remainder != 0 {
         return Err(Error::plain("Mukai lattice must have even squares"));
@@ -427,7 +436,7 @@ fn riemann_roch_polynomial(model: &mut Model, q: Integer, n: i128) -> Result<i12
         magnitude: half,
         negative: q.negative,
     }
-    .add(Integer::from_i128(n + 1))?;
+    .add(Integer::from_i128(shift))?;
     generalized_binomial(model, upper, n)
 }
 

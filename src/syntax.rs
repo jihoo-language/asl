@@ -137,6 +137,8 @@ pub(crate) enum TypeForm {
     Mukai(Label),
     MukaiQuotient(Label),
     OG10(Label),
+    AbMukai(Label),
+    OG6(Label),
     HilbertSquare(Label, i128),
     SiegelWeight,
     ECMap(Label, Label),
@@ -993,6 +995,8 @@ pub(crate) enum ExprForm {
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
+    AbMukai(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::Expression>),
+    OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Expression>),
     K3AutoDiv(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     K3AutoLattice(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
     HilbertSquare(Box<crate::hyperelliptic_kummer_surface::hilbert_square::Expression>),
@@ -1199,6 +1203,8 @@ pub(crate) enum StatementForm {
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Command>),
     MukaiModuli(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::Command>),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Command>),
+    AbMukaiPair(Box<[ParsedExpr; 2]>),
+    OG6(Box<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Command>),
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
@@ -2946,6 +2952,99 @@ impl<'src> Parser<'src> {
             }
         };
         Ok(StatementForm::JacobianLevel(Box::new(command)))
+    }
+
+    fn abelian_mukai_expression(
+        &mut self,
+        operation: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::Expression;
+        let (expression, depth) = if operation == "rvAbMukaiKummerH2" {
+            let input = self.paren_expr(nest)?;
+            let depth = 1 + input.depth;
+            (Expression::Kummer(Box::new(input)), depth)
+        } else {
+            self.expect(Token::LBracket)?;
+            let marking = self.label()?;
+            self.expect(Token::Comma)?;
+            if operation == "rvAbMukaiBasis" {
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(marking, index), 0)
+            } else {
+                let r = self.signed_wide("a signed rank", "abelian Mukai rank")?;
+                self.expect(Token::Comma)?;
+                let s = self.signed_wide("a signed integer", "abelian Mukai last coordinate")?;
+                self.expect(Token::RBracket)?;
+                self.expect(Token::LBrace)?;
+                let wedge = self.signed_list(
+                    Token::RBrace,
+                    "a signed wedge coordinate",
+                    "abelian Mukai wedge coordinate",
+                )?;
+                let wedge = wedge
+                    .try_into()
+                    .map_err(|_| Error::new(span, "rvAbMukai requires six wedge coordinates"))?;
+                (Expression::Literal(marking, r, s, wedge), 0)
+            }
+        };
+        expr(span, ExprForm::AbMukai(Box::new(expression)), depth)
+    }
+
+    fn og6_statement(&mut self, operation: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Command;
+        self.advance()?;
+        let command = match operation {
+            "rvog6" => Command::Define(self.label()?, Box::new(self.paren_expr(0)?)),
+            "rvOG6Lattice" => {
+                self.expect(Token::LBracket)?;
+                let name = self.label()?;
+                self.expect(Token::RBracket)?;
+                Command::Lattice(name)
+            }
+            "rvOG6Pair" => Command::Pair(Box::new(self.paren_pair(0)?)),
+            "rvOG6Fujiki" => {
+                self.expect(Token::LBracket)?;
+                let exponent = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                Command::Fujiki(exponent, Box::new(self.paren_pair(0)?))
+            }
+            "rvOG6Div" => Command::Divisibility(Box::new(self.paren_expr(0)?)),
+            _ => Command::RiemannRoch(Box::new(self.paren_expr(0)?)),
+        };
+        Ok(StatementForm::OG6(Box::new(command)))
+    }
+
+    fn og6_expression(&mut self, operation: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
+        use crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Expression;
+        self.expect(Token::LBracket)?;
+        let name = self.label()?;
+        let (expression, depth) = match operation {
+            "rvOG6Basis" => {
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                (Expression::Basis(name, index), 0)
+            }
+            "rvOG6Exc" | "rvOG6ExcHalf" => {
+                self.expect(Token::RBracket)?;
+                (
+                    Expression::Exceptional(name, operation == "rvOG6ExcHalf"),
+                    0,
+                )
+            }
+            _ => {
+                self.expect(Token::Comma)?;
+                let k = self.signed_wide("a signed integer", "OG6 half-exceptional coefficient")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::Build(name, k, Box::new(input)), depth)
+            }
+        };
+        expr(span, ExprForm::OG6(Box::new(expression)), depth)
     }
 
     fn og10_statement(&mut self, operation: &str) -> Result<StatementForm> {
@@ -5613,6 +5712,14 @@ impl<'src> Parser<'src> {
                 | "rvGenKummerHodgeSpectrum"),
             ) => self.hodge_statement(command)?,
             Token::Word("rvKummerNodeLattice") => self.kummer_node_lattice_statement()?,
+            Token::Word("rvAbMukaiPair") => {
+                self.advance()?;
+                StatementForm::AbMukaiPair(Box::new(self.paren_pair(0)?))
+            }
+            Token::Word(
+                operation @ ("rvog6" | "rvOG6Lattice" | "rvOG6Pair" | "rvOG6Div" | "rvOG6Fujiki"
+                | "rvOG6RR"),
+            ) => self.og6_statement(operation)?,
             Token::Word(
                 operation @ ("rvOG10Lattice" | "rvOG10Pair" | "rvOG10Div" | "rvOG10Fujiki"
                 | "rvOG10RR" | "rvOG10Wall" | "rvOG10Walls"),
@@ -9004,6 +9111,8 @@ impl<'src> Parser<'src> {
                 | "RVKummerWeil"
                 | "RVMukaiQuotient"
                 | "RVOG10"
+                | "RVAbMukai"
+                | "RVOG6"
         ) && self.eat(Token::LParen)?
         {
             let endpoint = self.label()?;
@@ -9018,6 +9127,8 @@ impl<'src> Parser<'src> {
                 "RVMukai" => TypeForm::Mukai(endpoint),
                 "RVMukaiQuotient" => TypeForm::MukaiQuotient(endpoint),
                 "RVOG10" => TypeForm::OG10(endpoint),
+                "RVAbMukai" => TypeForm::AbMukai(endpoint),
+                "RVOG6" => TypeForm::OG6(endpoint),
                 "RVKummerDisc" => TypeForm::KummerDisc(endpoint),
                 "RVKummerWeil" => TypeForm::KummerWeil(endpoint),
                 _ => TypeForm::K3Lattice(endpoint),
@@ -11101,6 +11212,19 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.nakajima_expression(&name.text, span, nest);
+                }
+                if (matches!(name.text.as_str(), "rvAbMukai" | "rvAbMukaiBasis")
+                    && self.token() == Token::LBracket)
+                    || (name.text == "rvAbMukaiKummerH2" && self.token() == Token::LParen)
+                {
+                    return self.abelian_mukai_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvOG6" | "rvOG6Basis" | "rvOG6Exc" | "rvOG6ExcHalf"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.og6_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),

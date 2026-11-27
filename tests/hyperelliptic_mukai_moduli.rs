@@ -528,17 +528,17 @@ fn ogrady_gram_determinant_and_pairing_hold_in_a_nontrivial_marking() {
     }
     assert!(nontrivial_cross_pair);
 
-    let mut gram = [[0i128; 24]; 24];
-    for i in 0..24 {
-        for j in i..24 {
-            let value = values.next().unwrap();
-            gram[i][j] = value;
-            gram[j][i] = value;
+    let mut upper = [[0i128; 24]; 24];
+    for (i, row) in upper.iter_mut().enumerate() {
+        for entry in row.iter_mut().skip(i) {
+            *entry = values.next().unwrap();
         }
-        assert_eq!(gram[i][i] % 2, 0);
+        assert_eq!(row[i] % 2, 0);
     }
     assert_eq!(values.next(), None);
-    assert_eq!(determinant(gram), -3);
+    let gram =
+        std::array::from_fn(|i: usize| std::array::from_fn(|j: usize| upper[i.min(j)][i.max(j)]));
+    assert_eq!(determinant::<24>(gram), -3);
 }
 
 #[test]

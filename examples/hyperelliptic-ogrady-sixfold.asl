@@ -1,0 +1,35 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let theta=rvAbMukai[B,0,0]{0,1,0,0,1,0};
+let h=rvAbMukaiKummerH2(theta);
+assert h==rvK3FromKummerDiv(rvKummerHyperplane[B]);
+rvAbMukaiPair(theta,theta);
+rvK3LatticePair(h,h);
+
+let w=rvAbMukai[B,1,-1]{0,0,0,0,0,0};
+rvog6 Six(w);
+rvOG6Lattice[Six];
+let e=rvOG6ExcHalf[Six];
+let exceptional=rvOG6Exc[Six];
+let x=rvOG6[Six,0](theta);
+assert add(e,e)==exceptional;
+assert e==rvOG6Basis[Six,7];
+assert add(x,neg(x))==zero[RVOG6(Six)];
+rvOG6Pair(e,e);
+rvOG6Pair(exceptional,exceptional);
+rvOG6Div(e);
+rvOG6Fujiki[0](e,e);
+rvOG6Fujiki[0](exceptional,exceptional);
+rvOG6Fujiki[2](x,e);
+rvOG6RR(zero[RVOG6(Six)]);
+rvOG6RR(e);
+rvOG6RR(exceptional);

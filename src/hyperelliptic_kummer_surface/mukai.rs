@@ -9,6 +9,7 @@ use crate::model::{Model, Value};
 use crate::syntax::{Label, ParsedExpr};
 use crate::wide_integer::Natural;
 
+pub(crate) mod abelian;
 pub(crate) mod moduli;
 
 pub(crate) enum Expression {

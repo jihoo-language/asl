@@ -34,7 +34,11 @@ use crate::hyperelliptic_jacobian::{self, point_halving, quadratic_trace, Diviso
 use crate::hyperelliptic_kummer;
 use crate::hyperelliptic_kummer_surface::clifford;
 use crate::hyperelliptic_kummer_surface::enriques::points as enriques;
-use crate::hyperelliptic_kummer_surface::mukai::{self, moduli::og10};
+use crate::hyperelliptic_kummer_surface::mukai::{
+    self,
+    abelian::{self, og6},
+    moduli::og10,
+};
 use crate::hyperelliptic_kummer_surface::period as k3_period;
 use crate::hyperelliptic_kummer_surface::spinor;
 use crate::hyperelliptic_kummer_surface::weil as kummer_weil;
@@ -677,6 +681,10 @@ enum TypedForm {
     NakajimaCup(Box<[TypedExpr; 2]>),
     HilbertTautologicalChern(u128, u128, i128, Box<TypedExpr>),
     Mukai(MukaiAction),
+    AbMukaiKummer(Box<TypedExpr>),
+    AbMukaiNegate(Box<TypedExpr>),
+    OG6(Rc<og6::Lattice>, i128, Box<TypedExpr>),
+    OG6Negate(Box<TypedExpr>),
     OG10(Rc<mukai::moduli::Lattice>, i128, Box<TypedExpr>),
     OG10Wall(
         og10::WallOperation,
@@ -1800,6 +1808,10 @@ impl Engine {
             StatementForm::K3SpinorCoefficient(command) => {
                 return self.spinor_coefficient(command).map(Some)
             }
+            StatementForm::AbMukaiPair(inputs) => {
+                return self.abelian_mukai_pair(*inputs).map(Some)
+            }
+            StatementForm::OG6(command) => return self.og6_command(*command),
             StatementForm::OG10(command) => return self.og10_command(*command).map(Some),
             StatementForm::MukaiModuli(command) => return self.mukai_moduli_command(*command),
             StatementForm::K3Period(command) => return self.k3_period_statement(*command),
@@ -5703,6 +5715,85 @@ impl Engine {
         }
     }
 
+    fn abelian_mukai_pair(&mut self, [left, right]: [ParsedExpr; 2]) -> Result<String> {
+        let checker = &mut self.checker();
+        let left = checker.expr(left)?;
+        let right = checker.expr(right)?;
+        checker.abelian_mukai_operand(&left, "rvAbMukaiPair")?;
+        checker.require_type(left.ty, &right, "rvAbMukaiPair")?;
+        let (Value::AbMukai(left), Value::AbMukai(right)) = (self.eval(&left)?, self.eval(&right)?)
+        else {
+            unreachable!()
+        };
+        Ok(format!(
+            "rvAbMukaiPair = {}",
+            left.pair(&mut self.model, &right)?
+        ))
+    }
+
+    fn og6_command(&mut self, command: og6::Command) -> Result<Option<String>> {
+        use og6::Command;
+        let divisibility = matches!(&command, Command::Divisibility(_));
+        let result = match command {
+            Command::Define(name, vector) => {
+                let vector = self.checker().expr(*vector)?;
+                let marking = self
+                    .checker()
+                    .abelian_mukai_operand(&vector, "rvog6")?
+                    .clone();
+                let Value::AbMukai(vector) = self.eval(&vector)? else {
+                    unreachable!()
+                };
+                self.model.define_og6(name, marking, vector)?;
+                return Ok(None);
+            }
+            Command::Lattice(name) => {
+                self.model.og6_lattice(&name)?;
+                og6::report(&name.text)
+            }
+            Command::Pair(_) | Command::Fujiki(..) => {
+                let (inputs, exponent, operation) = match command {
+                    Command::Pair(inputs) => (inputs, None, "rvOG6Pair"),
+                    Command::Fujiki(j, inputs) => (inputs, Some(j), "rvOG6Fujiki"),
+                    _ => unreachable!(),
+                };
+                let [left, right] = *inputs;
+                let checker = &mut self.checker();
+                let left = checker.expr(left)?;
+                let right = checker.expr(right)?;
+                checker.og6_operand(&left, operation)?;
+                checker.require_type(left.ty, &right, operation)?;
+                let (Value::OG6(left), Value::OG6(right)) = (self.eval(&left)?, self.eval(&right)?)
+                else {
+                    unreachable!()
+                };
+                if let Some(j) = exponent {
+                    let value = left.fujiki(&mut self.model, &right, j)?;
+                    format!("{operation}[{j}] = {value}")
+                } else {
+                    let value = left.pair(&mut self.model, &right)?;
+                    format!("{operation} = {value}")
+                }
+            }
+            Command::Divisibility(input) | Command::RiemannRoch(input) => {
+                let operation = if divisibility { "rvOG6Div" } else { "rvOG6RR" };
+                let input = self.checker().expr(*input)?;
+                let name = self.checker().og6_operand(&input, operation)?;
+                let Value::OG6(input) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let value = if divisibility {
+                    let lattice = self.model.og6_lattice(&name)?;
+                    input.divisibility(&mut self.model, &lattice)?
+                } else {
+                    input.riemann_roch(&mut self.model)?
+                };
+                format!("{operation} = {value}")
+            }
+        };
+        Ok(Some(result))
+    }
+
     fn og10_command(&mut self, command: og10::Command) -> Result<String> {
         use og10::Command;
         let operation = match &command {
@@ -6804,6 +6895,12 @@ impl Engine {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::K3Spinor(a), Value::K3Spinor(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::AbMukai(a), Value::AbMukai(b)) => {
+                        a.add(&mut self.model, &b)?.persist(&mut self.model)
+                    }
+                    (BinaryOp::Add, Value::OG6(a), Value::OG6(b)) => {
                         a.add(&mut self.model, &b)?.persist(&mut self.model)
                     }
                     (BinaryOp::Add, Value::OG10(a), Value::OG10(b)) => {
@@ -8323,6 +8420,33 @@ impl Engine {
                 Ok(Value::KummerDisc(action.apply(mask)))
             }
             TypedForm::KummerDiv(action) => self.eval_kummer_divisor(action),
+            TypedForm::AbMukaiKummer(input) => {
+                let Value::AbMukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector
+                    .kummer_middle(&mut self.model)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::AbMukaiNegate(input) => {
+                let Value::AbMukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                vector.negate(&mut self.model)?.persist(&mut self.model)
+            }
+            TypedForm::OG6(lattice, exceptional, input) => {
+                let Value::AbMukai(vector) = self.eval(input)? else {
+                    unreachable!()
+                };
+                og6::Class::new(&mut self.model, lattice, vector, *exceptional)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::OG6Negate(input) => {
+                let Value::OG6(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                class.negate(&mut self.model)?.persist(&mut self.model)
+            }
             TypedForm::OG10(lattice, generator, input) => {
                 let Value::Mukai(vector) = self.eval(input)? else {
                     unreachable!()
@@ -10888,6 +11012,8 @@ impl Checker<'_> {
             TypeForm::K3Spinor(name, chirality) => self.model.k3_spinor_type(&name, chirality),
             TypeForm::Mukai(name) => self.model.mukai_type(&name),
             TypeForm::OG10(name) => self.model.og10_type(&name),
+            TypeForm::AbMukai(name) => self.model.abelian_mukai_type(&name),
+            TypeForm::OG6(name) => self.model.og6_type(&name),
             TypeForm::MukaiQuotient(name) => self.model.mukai_quotient_type(&name),
             TypeForm::HilbertSquare(name, degree) => self.model.hilbert_square_type(&name, degree),
             TypeForm::SiegelWeight => self.model.siegel_weight_type(),
@@ -11936,6 +12062,8 @@ impl Checker<'_> {
                     Kind::K3Spinor(..) => spinor::Element::zero().persist(self.model)?,
                     Kind::Mukai(..) => mukai::Vector::zero().persist(self.model)?,
                     Kind::OG10(..) => og10::Class::zero().persist(self.model)?,
+                    Kind::AbMukai(..) => abelian::Vector::zero().persist(self.model)?,
+                    Kind::OG6(..) => og6::Class::zero().persist(self.model)?,
                     Kind::MukaiQuotient(..) => mukai::Vector::zero().persist_quotient(self.model)?,
                     Kind::HilbertSquare(_, degree) => hilbert_square::Class::zero(*degree).persist(self.model)?,
                     Kind::SiegelWeight => Value::SiegelWeight(crate::siegel::Weight::ZERO),
@@ -14099,6 +14227,8 @@ impl Checker<'_> {
             ExprForm::K3Clifford(expression) => self.clifford_expression(*expression),
             ExprForm::K3Spinor(expression) => self.spinor_expression(*expression),
             ExprForm::OG10(expression) => self.og10_expression(*expression),
+            ExprForm::AbMukai(expression) => self.abelian_mukai_expression(*expression),
+            ExprForm::OG6(expression) => self.og6_expression(*expression),
             ExprForm::MukaiModuli(expression) => self.mukai_moduli_expression(expression),
             ExprForm::K3Period(expression) => self.k3_period_expression(*expression),
             ExprForm::Mukai(expression) => self.mukai_expression(*expression),
@@ -14836,6 +14966,12 @@ impl Checker<'_> {
                         input.ty,
                         TypedForm::K3Spinor(SpinorAction::Negate(Box::new(input))),
                     ));
+                }
+                if matches!(self.model.kind(input.ty), Kind::AbMukai(..)) {
+                    return Ok((input.ty, TypedForm::AbMukaiNegate(Box::new(input))));
+                }
+                if matches!(self.model.kind(input.ty), Kind::OG6(..)) {
+                    return Ok((input.ty, TypedForm::OG6Negate(Box::new(input))));
                 }
                 if matches!(self.model.kind(input.ty), Kind::OG10(..)) {
                     return Ok((input.ty, TypedForm::OG10Negate(Box::new(input))));
@@ -18603,6 +18739,8 @@ impl Checker<'_> {
                         | Kind::Mukai(..)
                         | Kind::MukaiQuotient(..)
                         | Kind::OG10(..)
+                        | Kind::AbMukai(..)
+                        | Kind::OG6(..)
                         | Kind::HilbertSquare(..)
                         | Kind::SiegelWeight
                         | Kind::ASDeRham(..)
@@ -20537,6 +20675,76 @@ impl Checker<'_> {
             }
         };
         Ok((ty, TypedForm::K3Clifford(action)))
+    }
+
+    fn abelian_mukai_operand(&self, input: &TypedExpr, operation: &str) -> Result<&Rc<str>> {
+        let Kind::AbMukai(marking) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVAbMukai vector"));
+        };
+        Ok(marking)
+    }
+
+    fn abelian_mukai_expression(
+        &mut self,
+        expression: abelian::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use abelian::Expression;
+        let (marking, value) = match expression {
+            Expression::Literal(marking, r, s, wedge) => {
+                (marking, abelian::Vector::new(r, wedge, s))
+            }
+            Expression::Basis(marking, index) => (marking, abelian::Vector::basis(index)?),
+            Expression::Kummer(input) => {
+                let input = self.expr(*input)?;
+                let marking = Label {
+                    text: self
+                        .abelian_mukai_operand(&input, "rvAbMukaiKummerH2")?
+                        .to_string(),
+                    span: input.span,
+                };
+                return Ok((
+                    self.model.k3_lattice_type(&marking)?,
+                    TypedForm::AbMukaiKummer(Box::new(input)),
+                ));
+            }
+        };
+        let ty = self.model.abelian_mukai_type(&marking)?;
+        Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
+    }
+
+    fn og6_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {
+        let Kind::OG6(name) = self.model.kind(input.ty) else {
+            return Err(self.invalid_operand(input, operation, "an RVOG6 class"));
+        };
+        Ok(Label {
+            text: name.to_string(),
+            span: input.span,
+        })
+    }
+
+    fn og6_expression(&mut self, expression: og6::Expression) -> Result<(TypeId, TypedForm)> {
+        use og6::Expression;
+        let (name, value) = match expression {
+            Expression::Basis(name, index) => {
+                let lattice = self.model.og6_lattice(&name)?;
+                (name, og6::Class::basis(self.model, &lattice, index)?)
+            }
+            Expression::Exceptional(name, half) => (name, og6::Class::exceptional(half)),
+            Expression::Build(name, k, input) => {
+                let lattice = self.model.og6_lattice(&name)?;
+                let ty = self.model.og6_type(&name)?;
+                let input = self.expr(*input)?;
+                let marking = Label {
+                    text: lattice.marking.to_string(),
+                    span: input.span,
+                };
+                let expected = self.model.abelian_mukai_type(&marking)?;
+                self.require_type(expected, &input, "rvOG6 perpendicular component")?;
+                return Ok((ty, TypedForm::OG6(lattice, k, Box::new(input))));
+            }
+        };
+        let ty = self.model.og6_type(&name)?;
+        Ok((ty, TypedForm::Constant(value.persist(self.model)?)))
     }
 
     fn og10_operand(&self, input: &TypedExpr, operation: &str) -> Result<Label> {

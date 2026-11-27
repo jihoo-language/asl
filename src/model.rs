@@ -270,6 +270,8 @@ pub(crate) enum Kind {
     K3Spinor(Rc<str>, u8),
     Mukai(Rc<str>),
     OG10(Rc<str>),
+    AbMukai(Rc<str>),
+    OG6(Rc<str>),
     MukaiQuotient(Rc<str>),
     HilbertSquare(Rc<str>, i128),
     SiegelWeight,
@@ -449,6 +451,8 @@ pub(crate) enum Value {
     K3Spinor(Rc<spinor::Element>),
     Mukai(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     OG10(Rc<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Class>),
+    AbMukai(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::Vector>),
+    OG6(Rc<crate::hyperelliptic_kummer_surface::mukai::abelian::og6::Class>),
     MukaiQuotient(Rc<crate::hyperelliptic_kummer_surface::mukai::Vector>),
     HilbertSquare(Rc<hilbert_square::Class>),
     SiegelWeight(crate::siegel::Weight),
@@ -633,6 +637,7 @@ pub(crate) struct Model {
     k3_periods: HashMap<String, Rc<hyperelliptic_kummer_surface::period::Period>>,
     nakajima_gram: Option<Rc<nakajima::Gram>>,
     nakajima_inverse_gram: Option<Rc<nakajima::Gram>>,
+    og6_lattices: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>>,
     mukai_moduli: HashMap<String, Rc<hyperelliptic_kummer_surface::mukai::moduli::Lattice>>,
     hilbert_square_form: Option<Rc<hilbert_square::Form>>,
     richelot_isogenies: HashMap<String, Rc<crate::richelot::Isogeny>>,
@@ -741,6 +746,7 @@ impl Model {
             nakajima_gram: None,
             nakajima_inverse_gram: None,
             mukai_moduli: HashMap::new(),
+            og6_lattices: HashMap::new(),
             hilbert_square_form: None,
             richelot_isogenies: HashMap::new(),
             richelot_descents: HashMap::new(),
@@ -1038,6 +1044,8 @@ impl Model {
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
             | Kind::OG10(..)
+            | Kind::AbMukai(..)
+            | Kind::OG6(..)
             | Kind::SiegelWeight => usize::MAX,
             Kind::Nakajima(ref grade) => {
                 if grade.supports_states() {
@@ -1274,6 +1282,8 @@ impl Model {
                 | Kind::Mukai(..)
                 | Kind::MukaiQuotient(..)
                 | Kind::OG10(..)
+                | Kind::AbMukai(..)
+                | Kind::OG6(..)
                 | Kind::HilbertSquare(..)
                 | Kind::SiegelWeight
                 | Kind::ECMap(..)
@@ -4076,6 +4086,49 @@ impl Model {
         })
     }
 
+    pub(crate) fn abelian_mukai_type(&mut self, name: &Label) -> Result<TypeId> {
+        nikulin::basis_for(
+            self,
+            name,
+            "abelian Mukai lattices require a certified genus-two level-2 basis",
+        )?;
+        self.inhabited_type(Kind::AbMukai(name.text.as_str().into()), 0)
+    }
+
+    pub(crate) fn define_og6(
+        &mut self,
+        name: Label,
+        marking: Rc<str>,
+        vector: Rc<hyperelliptic_kummer_surface::mukai::abelian::Vector>,
+    ) -> Result<()> {
+        if self.og6_lattices.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("OG6 lattice '{}' is already defined", name.text),
+            ));
+        }
+        let lattice =
+            hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice::new(self, marking, vector)?;
+        self.allocate(name.text.len() + lattice.cells())?;
+        self.og6_lattices.insert(name.text, Rc::new(lattice));
+        Ok(())
+    }
+
+    pub(crate) fn og6_lattice(
+        &self,
+        name: &Label,
+    ) -> Result<Rc<hyperelliptic_kummer_surface::mukai::abelian::og6::Lattice>> {
+        self.og6_lattices
+            .get(&name.text)
+            .cloned()
+            .ok_or_else(|| Error::new(name.span, format!("unknown OG6 lattice '{}'", name.text)))
+    }
+
+    pub(crate) fn og6_type(&mut self, name: &Label) -> Result<TypeId> {
+        self.og6_lattice(name)?;
+        self.inhabited_type(Kind::OG6(name.text.as_str().into()), 0)
+    }
+
     pub(crate) fn og10_type(&mut self, name: &Label) -> Result<TypeId> {
         self.mukai_moduli(name)?.require_og10()?;
         self.inhabited_type(Kind::OG10(name.text.as_str().into()), 0)
@@ -5313,6 +5366,8 @@ impl Model {
             | Kind::Mukai(..)
             | Kind::MukaiQuotient(..)
             | Kind::OG10(..)
+            | Kind::AbMukai(..)
+            | Kind::OG6(..)
             | Kind::HilbertSquare(..)
             | Kind::SiegelWeight
             | Kind::ECMap(..)
@@ -5829,6 +5884,8 @@ impl Model {
             Kind::K3Spinor(name, chirality) => out.push(&format!("RVK3Spinor({name},{chirality})")),
             Kind::Mukai(name) => out.push(&format!("RVMukai({name})")),
             Kind::OG10(name) => out.push(&format!("RVOG10({name})")),
+            Kind::AbMukai(name) => out.push(&format!("RVAbMukai({name})")),
+            Kind::OG6(name) => out.push(&format!("RVOG6({name})")),
             Kind::MukaiQuotient(name) => out.push(&format!("RVMukaiQuotient({name})")),
             Kind::HilbertSquare(name, degree) => {
                 out.push(&format!("RVHilbSquare({name}, {degree})"))
@@ -6123,6 +6180,8 @@ impl Model {
             (Value::K3Clifford(a), Value::K3Clifford(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::OG10(a), Value::OG10(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::AbMukai(a), Value::AbMukai(b)) => Ok(a.compare(self, b)?.is_eq()),
+            (Value::OG6(a), Value::OG6(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => Ok(a.compare(self, b)?.is_eq()),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => Ok(a.compare(self, b)?.is_eq()),
@@ -6462,6 +6521,8 @@ impl Model {
             (Value::K3Clifford(a), Value::K3Clifford(b)) => a.compare(self, b),
             (Value::K3Spinor(a), Value::K3Spinor(b)) => a.compare(self, b),
             (Value::OG10(a), Value::OG10(b)) => a.compare(self, b),
+            (Value::AbMukai(a), Value::AbMukai(b)) => a.compare(self, b),
+            (Value::OG6(a), Value::OG6(b)) => a.compare(self, b),
             (Value::Mukai(a), Value::Mukai(b))
             | (Value::MukaiQuotient(a), Value::MukaiQuotient(b)) => a.compare(self, b),
             (Value::HilbertSquare(a), Value::HilbertSquare(b)) => a.compare(self, b),
@@ -6798,6 +6859,10 @@ impl Model {
                     return Err(Error::plain("cannot enumerate an integral K3 lattice"))
                 }
                 Kind::Mukai(..) => return Err(Error::plain("cannot enumerate a Mukai lattice")),
+                Kind::AbMukai(..) => {
+                    return Err(Error::plain("cannot enumerate an abelian Mukai lattice"))
+                }
+                Kind::OG6(..) => return Err(Error::plain("cannot enumerate an OG6 lattice")),
                 Kind::OG10(..) => return Err(Error::plain("cannot enumerate an OG10 lattice")),
                 Kind::MukaiQuotient(..) => {
                     return Err(Error::plain("cannot enumerate a Mukai quotient lattice"))
@@ -8333,6 +8398,17 @@ impl Model {
             }
             Value::K3Clifford(element) => self.write_sparse_rational(out, ty, element.as_ref()),
             Value::K3Spinor(element) => self.write_sparse_rational(out, ty, element.as_ref()),
+            Value::AbMukai(vector) => {
+                let (r, wedge, s) = vector.coordinates();
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{r={r}, wedge={wedge:?}, s={s}}}"))
+            }
+            Value::OG6(class) => {
+                let (vector, k) = class.coordinates();
+                let (r, wedge, s) = vector.coordinates();
+                self.write_type(out, ty, 0)?;
+                out.push(&format!("{{r={r}, wedge={wedge:?}, s={s}, k={k}}}"))
+            }
             Value::OG10(class) => {
                 let (vector, k) = class.coordinates();
                 let (w, b) = vector.c.coordinates();
