@@ -1579,6 +1579,9 @@ impl Engine {
             },
             StatementForm::Jacobian(command) => return self.jacobian_command(*command),
             StatementForm::KummerK3(command) => return command.execute(&mut self.model).map(Some),
+            StatementForm::KummerEnriques(command) => {
+                return command.execute(&mut self.model).map(Some)
+            }
             StatementForm::KummerHilbert(command) => {
                 return command.execute(&mut self.model).map(Some)
             }

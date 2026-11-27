@@ -138,7 +138,7 @@ fn point_overflow() -> Error {
     Error::plain("Kummer K3 point count exceeds unsigned 128-bit range")
 }
 
-fn point_counts(
+pub(super) fn point_counts(
     model: &mut Model,
     q: u64,
     weil: &[i128],

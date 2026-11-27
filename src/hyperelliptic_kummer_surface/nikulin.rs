@@ -112,7 +112,20 @@ impl NodePermutation {
         })
     }
 
-    fn orbit_lengths(&self) -> Vec<usize> {
+    pub(super) fn power_image(&self, node: usize, power: u128) -> usize {
+        let mut length = 1;
+        let mut next = usize::from(self.image(node));
+        while next != node {
+            length += 1;
+            next = usize::from(self.image(next));
+        }
+        for _ in 0..power % length {
+            next = usize::from(self.image(next));
+        }
+        next
+    }
+
+    pub(super) fn orbit_lengths(&self) -> Vec<usize> {
         let mut orbits = Vec::new();
         let mut seen = 0u16;
         for start in 0..NODES {

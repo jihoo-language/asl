@@ -1148,6 +1148,7 @@ pub(crate) enum StatementForm {
     HasseWitt(Box<crate::hyperelliptic::Command>),
     Jacobian(Box<crate::hyperelliptic_jacobian::Command>),
     KummerK3(Box<crate::hyperelliptic_kummer_surface::k3::Command>),
+    KummerEnriques(Box<crate::hyperelliptic_kummer_surface::enriques::Command>),
     KummerHilbert(Box<crate::hyperelliptic_kummer_surface::hilbert::Command>),
     GeneralizedKummer(Box<crate::generalized_kummer::Command>),
     KummerDiv(Box<crate::hyperelliptic_kummer_surface::polarized::Command>),
@@ -3115,6 +3116,34 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::GeneralizedKummer(Box::new(command)))
     }
 
+    fn kummer_enriques_statement(&mut self, name: &str) -> Result<StatementForm> {
+        use crate::hyperelliptic_kummer_surface::enriques::{Command, Query};
+        self.advance()?;
+        self.expect(Token::LBracket)?;
+        let basis = self.label()?;
+        self.expect(Token::Comma)?;
+        let curve = self.label()?;
+        let mask = self.kummer_theta_index("Enriques switch mask", 15)?;
+        let query = if name == "rvKummerEnriquesZeta" {
+            Query::Zeta
+        } else {
+            self.expect(Token::Comma)?;
+            let span = self.span();
+            let degree = self.wide_unsigned("Enriques extension degree")?;
+            if degree == 0 {
+                return Err(Error::new(
+                    span,
+                    "Enriques extension degree must be positive",
+                ));
+            }
+            Query::Points(degree)
+        };
+        self.expect(Token::RBracket)?;
+        Ok(StatementForm::KummerEnriques(Box::new(Command(
+            basis, curve, mask, query,
+        ))))
+    }
+
     fn kummer_k3_statement(&mut self, name: &str) -> Result<StatementForm> {
         use crate::hyperelliptic_kummer_surface::k3::{Command, Query};
         self.advance()?;
@@ -4259,6 +4288,9 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
+            Token::Word(command @ ("rvKummerEnriquesPoints" | "rvKummerEnriquesZeta")) => {
+                self.kummer_enriques_statement(command)?
+            }
             Token::Word(
                 command @ ("rvKummerK3Zeta"
                 | "rvKummerK3Points"
