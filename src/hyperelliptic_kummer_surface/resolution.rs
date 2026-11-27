@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use super::{field, Point};
+use super::{field, BaseOperation, Point};
 use crate::ec_poly::{self as poly, Field, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
@@ -65,6 +65,103 @@ impl ResolvedPoint {
             base,
             direction: Some(direction),
         })
+    }
+
+    pub(crate) fn base_change(
+        &self,
+        model: &mut Model,
+        operation: BaseOperation,
+        source: &Curve,
+        named: &Curve,
+    ) -> Result<Self> {
+        let (base, direction) =
+            self.base
+                .base_change(model, operation, source, named, self.direction())?;
+        Ok(Self {
+            base: base.keep(model)?,
+            direction,
+        })
+    }
+
+    pub(crate) fn base_trope_parameter(
+        model: &mut Model,
+        curve: &Curve,
+        u: &Scalar,
+        v: &Scalar,
+    ) -> Result<Self> {
+        let field = field(curve);
+        let zero = field.zero();
+        let one = field.one();
+        if field.is_zero(u) {
+            if field.is_zero(v) {
+                return Err(Error::plain(
+                    "rvKummerTropeParam needs a nonzero projective pair",
+                ));
+            }
+            let identity = Point::identity(curve).keep(model)?;
+            return Self::exceptional(
+                model,
+                curve,
+                identity,
+                [zero.clone(), zero.clone(), one, zero],
+            );
+        }
+        let inverse = field.inverse_unit(model, u)?;
+        let x = field.multiply(model, v, &inverse)?;
+        // The base trope is parametrized by (0:1:x:x²) off the identity.
+        let square = field.multiply(model, &x, &x)?;
+        let point = Point::new(model, curve, [zero.clone(), one.clone(), x.clone(), square])?;
+        let base = point.keep(model)?;
+        if base.is_node(model, curve)? {
+            let twice_x = field.add(model, &x, &x)?;
+            Self::exceptional(model, curve, base, [zero.clone(), zero, one, twice_x])
+        } else {
+            Ok(Self {
+                base,
+                direction: None,
+            })
+        }
+    }
+
+    pub(crate) fn projective_image(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        apply: impl Fn(&mut Model, &[Scalar; 4]) -> Result<[Scalar; 4]>,
+    ) -> Result<Self> {
+        let coordinates = apply(model, self.base.coordinates())?;
+        let base = Point::new(model, curve, coordinates)?.keep(model)?;
+        match &self.direction {
+            Some(direction) => {
+                let direction = apply(model, direction)?;
+                Self::exceptional(model, curve, base, direction)
+            }
+            None => Self::smooth(model, curve, base),
+        }
+    }
+
+    pub(crate) fn lies_on_trope(
+        &self,
+        model: &mut Model,
+        curve: &Curve,
+        equation: &[Scalar],
+    ) -> Result<bool> {
+        let field = field(curve);
+        let evaluate = |model: &mut Model, coordinates: &[Scalar; 4]| -> Result<bool> {
+            let mut value = field.zero();
+            for (coefficient, coordinate) in equation.iter().zip(coordinates) {
+                let term = field.multiply(model, coefficient, coordinate)?;
+                value = field.add(model, &value, &term)?;
+            }
+            Ok(field.is_zero(&value))
+        };
+        if !evaluate(model, self.base.coordinates())? {
+            return Ok(false);
+        }
+        match &self.direction {
+            Some(direction) => evaluate(model, direction),
+            None => Ok(true),
+        }
     }
 
     pub(crate) fn base(&self) -> &Rc<Point> {

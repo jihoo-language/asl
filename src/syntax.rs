@@ -3049,7 +3049,9 @@ impl<'src> Parser<'src> {
     }
 
     fn kummer_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
-        use crate::hyperelliptic_kummer_surface::{BaseOperation, Expression, Operation};
+        use crate::hyperelliptic_kummer_surface::{
+            BaseOperation, Expression, Operation, ResolvedTheta,
+        };
         let (expression, depth) = if name == "rvKummer" {
             self.expect(Token::LBracket)?;
             let curve = self.label()?;
@@ -3095,12 +3097,20 @@ impl<'src> Parser<'src> {
                 Expression::RichelotDescend(target, Box::new(input))
             };
             (expression, depth)
-        } else if matches!(name, "rvKummerExtend" | "rvKummerDescend" | "rvKummerFrob") {
+        } else if matches!(
+            name,
+            "rvKummerExtend"
+                | "rvKummerDescend"
+                | "rvKummerFrob"
+                | "rvKummerK3Extend"
+                | "rvKummerK3Descend"
+                | "rvKummerK3Frob"
+        ) {
             self.expect(Token::LBracket)?;
             let curve = self.label()?;
             let operation = match name {
-                "rvKummerExtend" => BaseOperation::Extend,
-                "rvKummerDescend" => BaseOperation::Descend,
+                "rvKummerExtend" | "rvKummerK3Extend" => BaseOperation::Extend,
+                "rvKummerDescend" | "rvKummerK3Descend" => BaseOperation::Descend,
                 _ => {
                     self.expect(Token::Comma)?;
                     BaseOperation::Frobenius(self.number()?.0)
@@ -3109,7 +3119,35 @@ impl<'src> Parser<'src> {
             self.expect(Token::RBracket)?;
             let input = self.paren_expr(nest)?;
             let depth = 1 + input.depth;
-            (Expression::Base(operation, curve, Box::new(input)), depth)
+            let expression = if name.starts_with("rvKummerK3") {
+                Expression::ResolvedBase(operation, curve, Box::new(input))
+            } else {
+                Expression::Base(operation, curve, Box::new(input))
+            };
+            (expression, depth)
+        } else if matches!(
+            name,
+            "rvKummerK3Translate" | "rvKummerTropeParam" | "rvKummerOnTrope"
+        ) {
+            self.expect(Token::LBracket)?;
+            let basis = self.label()?;
+            let mask = self.kummer_theta_index("Kummer theta mask", 15)?;
+            self.expect(Token::RBracket)?;
+            let (operation, depth) = if name == "rvKummerTropeParam" {
+                let pair = self.paren_pair(nest)?;
+                let depth = 1 + pair[0].depth.max(pair[1].depth);
+                (ResolvedTheta::Parameter(Box::new(pair)), depth)
+            } else {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let operation = if name == "rvKummerK3Translate" {
+                    ResolvedTheta::Translate(Box::new(input))
+                } else {
+                    ResolvedTheta::OnTrope(Box::new(input))
+                };
+                (operation, depth)
+            };
+            (Expression::ResolvedTheta(basis, mask, operation), depth)
         } else if matches!(
             name,
             "rvKummerTranslate"
@@ -9166,6 +9204,12 @@ impl<'src> Parser<'src> {
                         | "rvKummerExtend"
                         | "rvKummerDescend"
                         | "rvKummerFrob"
+                        | "rvKummerK3Extend"
+                        | "rvKummerK3Descend"
+                        | "rvKummerK3Frob"
+                        | "rvKummerK3Translate"
+                        | "rvKummerTropeParam"
+                        | "rvKummerOnTrope"
                         | "rvKummerDirection"
                         | "rvKummerTranslate"
                         | "rvKummerThetaEntry"

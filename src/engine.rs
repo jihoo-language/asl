@@ -485,6 +485,12 @@ enum JacobianAction {
     ),
 }
 
+enum ResolvedThetaAction {
+    Translate(Box<TypedExpr>),
+    Parameter(Box<[TypedExpr; 2]>),
+    OnTrope(Box<TypedExpr>),
+}
+
 enum KummerAction {
     Coordinates(Rc<hw_closed::Curve>, Box<[TypedExpr; 4]>),
     Exceptional(Rc<hw_closed::Curve>, Box<TypedExpr>, Box<[TypedExpr; 4]>),
@@ -504,6 +510,13 @@ enum KummerAction {
         Box<TypedExpr>,
     ),
     Translate(Rc<kummer_surface::theta::Group>, usize, Box<TypedExpr>),
+    ResolvedBase(
+        kummer_surface::BaseOperation,
+        Rc<hw_closed::Curve>,
+        Rc<hw_closed::Curve>,
+        Box<TypedExpr>,
+    ),
+    ResolvedTheta(Rc<kummer_surface::theta::Group>, usize, ResolvedThetaAction),
     Apply(
         Rc<hw_closed::Curve>,
         kummer_surface::Operation,
@@ -5169,6 +5182,58 @@ impl Engine {
                 group
                     .translate(&mut self.model, *mask, &point)?
                     .persist(&mut self.model)
+            }
+            KummerAction::ResolvedBase(operation, source, named, input) => {
+                let Value::KummerK3(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                point
+                    .base_change(&mut self.model, *operation, source, named)?
+                    .persist(&mut self.model)
+            }
+            KummerAction::ResolvedTheta(group, mask, action) => {
+                let translate =
+                    |model: &mut Model, point: &kummer_surface::resolution::ResolvedPoint| {
+                        point
+                            .projective_image(model, &group.curve, |model, coordinates| {
+                                group.apply(model, *mask, coordinates)
+                            })?
+                            .persist(model)
+                    };
+                match action {
+                    ResolvedThetaAction::Translate(input) => {
+                        let Value::KummerK3(point) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        translate(&mut self.model, &point)
+                    }
+                    ResolvedThetaAction::Parameter(inputs) => {
+                        let [u, v] = inputs.as_ref();
+                        let (Value::RVUnram(u), Value::RVUnram(v)) = (self.eval(u)?, self.eval(v)?)
+                        else {
+                            unreachable!()
+                        };
+                        let point =
+                            kummer_surface::resolution::ResolvedPoint::base_trope_parameter(
+                                &mut self.model,
+                                &group.curve,
+                                &u.to_vec(),
+                                &v.to_vec(),
+                            )?;
+                        translate(&mut self.model, &point)
+                    }
+                    ResolvedThetaAction::OnTrope(input) => {
+                        let Value::KummerK3(point) = self.eval(input)? else {
+                            unreachable!()
+                        };
+                        let lies_on_trope = point.lies_on_trope(
+                            &mut self.model,
+                            &group.curve,
+                            &group.matrix(*mask).entries()[..4],
+                        )?;
+                        Ok(Value::Point(usize::from(lies_on_trope)))
+                    }
+                }
             }
             KummerAction::Apply(curve, operation, input) => {
                 let input = self.eval(input)?;
@@ -18510,7 +18575,7 @@ impl Checker<'_> {
         &mut self,
         expression: kummer_surface::Expression,
     ) -> Result<(TypeId, TypedForm)> {
-        use kummer_surface::{BaseOperation, Expression, Operation};
+        use kummer_surface::{BaseOperation, Expression, Operation, ResolvedTheta};
         let (ty, action) = match expression {
             Expression::Coordinates(name, inputs) => {
                 let curve = self.model.kummer_curve(&name.text)?;
@@ -18638,6 +18703,60 @@ impl Checker<'_> {
                 let value = group.query(self.model, query)?;
                 let value = rv_unram::persist(self.model, value)?;
                 return Ok((ty, TypedForm::Constant(value)));
+            }
+            Expression::ResolvedBase(operation, named, input) => {
+                let input = self.expr(*input)?;
+                let Kind::KummerK3(name) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        operation.resolved_name(),
+                        "an RVKummerK3 point",
+                    ));
+                };
+                let source = self.model.kummer_curve(name)?;
+                let curve = self.model.kummer_curve(&named.text)?;
+                let ty = if matches!(operation, BaseOperation::Frobenius(_)) {
+                    input.ty
+                } else {
+                    self.model.kummer_k3_type(named.text.into())?
+                };
+                (
+                    ty,
+                    KummerAction::ResolvedBase(operation, source, curve, Box::new(input)),
+                )
+            }
+            Expression::ResolvedTheta(label, mask, operation) => {
+                let basis = self.model.jacobian_level(&label)?;
+                let group = basis.theta(self.model)?;
+                let resolved = self.model.kummer_k3_type(basis.curve_name.clone())?;
+                let (ty, action) = match operation {
+                    ResolvedTheta::Translate(input) => {
+                        let input = self.expr(*input)?;
+                        self.require_type(resolved, &input, "rvKummerK3Translate point")?;
+                        (resolved, ResolvedThetaAction::Translate(Box::new(input)))
+                    }
+                    ResolvedTheta::Parameter(inputs) => {
+                        let coefficient = self.model.rv_unram_type(&Label {
+                            text: group.curve.grade.ring.to_string(),
+                            span: label.span,
+                        })?;
+                        let [u, v] = *inputs;
+                        let u = self.expr(u)?;
+                        let v = self.expr(v)?;
+                        self.require_type(coefficient, &u, "rvKummerTropeParam coordinate")?;
+                        self.require_type(coefficient, &v, "rvKummerTropeParam coordinate")?;
+                        (resolved, ResolvedThetaAction::Parameter(Box::new([u, v])))
+                    }
+                    ResolvedTheta::OnTrope(input) => {
+                        let input = self.expr(*input)?;
+                        self.require_type(resolved, &input, "rvKummerOnTrope point")?;
+                        (
+                            self.model.named("S").unwrap(),
+                            ResolvedThetaAction::OnTrope(Box::new(input)),
+                        )
+                    }
+                };
+                (ty, KummerAction::ResolvedTheta(group, mask, action))
             }
             Expression::DifferentialAdd(inputs) => {
                 let [left, right, difference] = *inputs;

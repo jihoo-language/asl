@@ -26,7 +26,15 @@ pub(crate) enum Expression {
     Base(BaseOperation, Label, Box<ParsedExpr>),
     Translate(Label, usize, Box<ParsedExpr>),
     ThetaScalar(Label, theta::Query),
+    ResolvedBase(BaseOperation, Label, Box<ParsedExpr>),
+    ResolvedTheta(Label, usize, ResolvedTheta),
     Apply(Operation, Box<ParsedExpr>),
+}
+
+pub(crate) enum ResolvedTheta {
+    Translate(Box<ParsedExpr>),
+    Parameter(Box<[ParsedExpr; 2]>),
+    OnTrope(Box<ParsedExpr>),
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +45,14 @@ pub(crate) enum BaseOperation {
 }
 
 impl BaseOperation {
+    pub(crate) fn resolved_name(self) -> &'static str {
+        match self {
+            Self::Extend => "rvKummerK3Extend",
+            Self::Descend => "rvKummerK3Descend",
+            Self::Frobenius(_) => "rvKummerK3Frob",
+        }
+    }
+
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Extend => "rvKummerExtend",
@@ -250,25 +266,15 @@ impl Point {
     }
 
     pub(crate) fn extend(&self, model: &mut Model, base: &Curve, target: &Curve) -> Result<Self> {
-        require_extension(model, base, target)?;
-        let coordinates = base
-            .ring
-            .embed_residue_coefficients(model, &target.ring, &self.0)?;
-        // The embedding preserves the quartic and the first nonzero coordinate 1.
-        Ok(Self(
-            coordinates.try_into().expect("four embedded coordinates"),
-        ))
+        Ok(self
+            .base_change(model, BaseOperation::Extend, base, target, None)?
+            .0)
     }
 
     pub(crate) fn descend(&self, model: &mut Model, source: &Curve, base: &Curve) -> Result<Self> {
-        require_extension(model, base, source)?;
-        let preimage = base.ring.residue_preimage(model, &source.ring)?;
-        let coordinates = preimage
-            .coefficients(model, &self.0)?
-            .ok_or_else(|| Error::plain("Kummer coordinate lies outside the requested subfield"))?;
-        Ok(Self(
-            coordinates.try_into().expect("four descended coordinates"),
-        ))
+        Ok(self
+            .base_change(model, BaseOperation::Descend, source, base, None)?
+            .0)
     }
 
     pub(crate) fn frobenius(
@@ -278,14 +284,92 @@ impl Point {
         target: &Curve,
         power: usize,
     ) -> Result<Self> {
-        let p_power = relative_frobenius_power(model, base, target, power)?;
-        let [k0, k1, k2, k3] = &self.0;
-        Ok(Self([
-            target.ring.frobenius(model, k0, p_power)?,
-            target.ring.frobenius(model, k1, p_power)?,
-            target.ring.frobenius(model, k2, p_power)?,
-            target.ring.frobenius(model, k3, p_power)?,
-        ]))
+        Ok(self
+            .base_change(model, BaseOperation::Frobenius(power), target, base, None)?
+            .0)
+    }
+
+    fn base_change(
+        &self,
+        model: &mut Model,
+        operation: BaseOperation,
+        source: &Curve,
+        named: &Curve,
+        direction: Option<&[Scalar; 4]>,
+    ) -> Result<(Self, Option<[Scalar; 4]>)> {
+        let (coordinates, direction) = match operation {
+            BaseOperation::Extend => {
+                require_extension(model, source, named)?;
+                let joined;
+                let inputs = if let Some(direction) = direction {
+                    model.spend(8 * source.ring.degree())?;
+                    joined = self.0.iter().chain(direction).cloned().collect::<Vec<_>>();
+                    joined.as_slice()
+                } else {
+                    &self.0
+                };
+                let mut images =
+                    source
+                        .ring
+                        .embed_residue_coefficients(model, &named.ring, inputs)?;
+                let direction = direction.map(|_| {
+                    images
+                        .split_off(4)
+                        .try_into()
+                        .expect("four embedded tangent coordinates")
+                });
+                (
+                    images.try_into().expect("four embedded coordinates"),
+                    direction,
+                )
+            }
+            BaseOperation::Descend => {
+                require_extension(model, named, source)?;
+                let preimage = named.ring.residue_preimage(model, &source.ring)?;
+                let coordinates = preimage.coefficients(model, &self.0)?.ok_or_else(|| {
+                    Error::plain("Kummer coordinate lies outside the requested subfield")
+                })?;
+                let direction = direction
+                    .map(|direction| {
+                        preimage
+                            .coefficients(model, direction)?
+                            .ok_or_else(|| {
+                                Error::plain(
+                                    "Kummer tangent coordinate lies outside the requested subfield",
+                                )
+                            })
+                            .map(|values| {
+                                values
+                                    .try_into()
+                                    .expect("four descended tangent coordinates")
+                            })
+                    })
+                    .transpose()?;
+                (
+                    coordinates.try_into().expect("four descended coordinates"),
+                    direction,
+                )
+            }
+            BaseOperation::Frobenius(power) => {
+                let p_power = relative_frobenius_power(model, named, source, power)?;
+                let apply =
+                    |model: &mut Model, [a, b, c, d]: &[Scalar; 4]| -> Result<[Scalar; 4]> {
+                        Ok([
+                            source.ring.frobenius(model, a, p_power)?,
+                            source.ring.frobenius(model, b, p_power)?,
+                            source.ring.frobenius(model, c, p_power)?,
+                            source.ring.frobenius(model, d, p_power)?,
+                        ])
+                    };
+                let coordinates = apply(model, &self.0)?;
+                let direction = direction
+                    .map(|direction| apply(model, direction))
+                    .transpose()?;
+                (coordinates, direction)
+            }
+        };
+        // Injective field maps preserve the pivot and both normalized representatives.
+        Ok((Self(coordinates), direction))
     }
 
     pub(crate) fn compare(&self, model: &mut Model, other: &Self) -> Result<Ordering> {
@@ -293,9 +377,13 @@ impl Point {
         Ok(self.cmp(other))
     }
 
-    pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
+    fn keep(self, model: &mut Model) -> Result<Rc<Self>> {
         model.allocate(4 * (3 + self.0[0].len()))?;
-        Ok(Value::Kummer(Rc::new(self)))
+        Ok(Rc::new(self))
+    }
+
+    pub(crate) fn persist(self, model: &mut Model) -> Result<Value> {
+        Ok(Value::Kummer(self.keep(model)?))
     }
 }
 
