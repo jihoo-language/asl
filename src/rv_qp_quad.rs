@@ -31,6 +31,56 @@ impl Element {
         self.a == 0 && self.b == 0
     }
 
+    pub(crate) fn difference(self, model: &mut Model, other: Self) -> Result<Self> {
+        affine_combination(model, self, other, true)
+    }
+
+    pub(crate) fn rational_product(self, model: &mut Model, other: Self) -> Result<Self> {
+        debug_assert!(self.b == 0 && other.b == 0);
+        product(model, 0, self, other)
+    }
+
+    pub(crate) fn rational_inverse(self, model: &mut Model) -> Result<Self> {
+        debug_assert_eq!(self.b, 0);
+        if self.a == 0 {
+            return Err(Error::plain("zero has no inverse"));
+        }
+        model.spend(1)?;
+        if self.a > 0 {
+            Self::new(self.c, 0, self.a)
+        } else {
+            Self::new(-self.c, 0, negate(self.a)?)
+        }
+    }
+
+    pub(crate) fn rational_valuation(self, model: &mut Model, prime: Prime) -> Result<Option<i64>> {
+        debug_assert_eq!(self.b, 0);
+        if self.a == 0 {
+            return Ok(None);
+        }
+        let p = u128::from(prime.get());
+        Ok(Some(
+            valuation(model, self.a.unsigned_abs(), p)? - valuation(model, self.c as u128, p)?,
+        ))
+    }
+
+    pub(crate) fn rational_angle(self, model: &mut Model, prime: Prime) -> Result<u32> {
+        debug_assert!(self.b == 0 && self.a != 0);
+        let p = i128::from(prime.get());
+        let mut num = self.a;
+        let mut den = self.c;
+        while num % p == 0 {
+            model.spend(1)?;
+            num /= p;
+        }
+        while den % p == 0 {
+            model.spend(1)?;
+            den /= p;
+        }
+        let inverse = invert(model, prime, den.rem_euclid(p) as u32)?;
+        Ok(prime.mul(num.rem_euclid(p) as u32, inverse))
+    }
+
     pub(crate) fn is_prime_multiple_of(self, other: Self, prime: Prime) -> bool {
         let p = i128::from(prime.get());
         let common = gcd(p as u128, other.c as u128) as i128;
@@ -91,27 +141,17 @@ impl Field {
     }
 
     pub(crate) fn multiply(self, model: &mut Model, x: Element, y: Element) -> Result<Element> {
-        model.spend(1)?;
-        let g = gcd(gcd(x.a.unsigned_abs(), x.b.unsigned_abs()), y.c as u128) as i128;
-        let h = gcd(gcd(y.a.unsigned_abs(), y.b.unsigned_abs()), x.c as u128) as i128;
-        let (a, b, e, f) = (x.a / g, x.b / g, y.a / h, y.b / h);
-        let real = add(multiply(a, e)?, multiply(self.d, multiply(b, f)?)?)?;
-        let imaginary = add(multiply(a, f)?, multiply(b, e)?)?;
-        Element::new(real, imaginary, multiply(x.c / h, y.c / g)?)
+        product(model, self.d, x, y)
     }
 
     pub(crate) fn inverse(self, model: &mut Model, x: Element) -> Result<Element> {
         if x.is_zero() {
             return Err(Error::plain("zero has no inverse in the quadratic field"));
         }
-        model.spend(1)?;
         if x.b == 0 {
-            return if x.a > 0 {
-                Element::new(x.c, 0, x.a)
-            } else {
-                Element::new(-x.c, 0, negate(x.a)?)
-            };
+            return x.rational_inverse(model);
         }
+        model.spend(1)?;
         let norm = self.numerator_norm(x.a, x.b)?;
         let cross = gcd(x.c as u128, norm.unsigned_abs()) as i128;
         let mut unit = x.c / cross;
@@ -150,30 +190,29 @@ impl Field {
         if x.is_zero() {
             return Ok(None);
         }
+        let p = u128::from(self.prime.get());
+        let (a, b, common) = strip_numerator(model, x, p as i128)?;
+        let (chosen, _) = self.local_numerator(a, b);
+        let norm_order = if chosen == 0 {
+            // One of these residues is a unit after common powers were
+            // stripped, so the norm gives the full chosen branch order.
+            valuation(model, self.numerator_norm(a, b)?.unsigned_abs(), p)?
+        } else {
+            0
+        };
+        Ok(Some(
+            common + norm_order - valuation(model, x.c as u128, p)?,
+        ))
+    }
+
+    fn local_numerator(self, a: i128, b: i128) -> (u32, u32) {
         let p = i128::from(self.prime.get());
-        let (mut a, mut b) = (x.a, x.b);
-        let mut value = 0;
-        while a % p == 0 && b % p == 0 {
-            model.spend(1)?;
-            a /= p;
-            b /= p;
-            value += 1;
-        }
-        let reduced_a = a.rem_euclid(p) as u32;
-        let reduced_b = b.rem_euclid(p) as u32;
-        if self
-            .prime
-            .add(reduced_a, self.prime.mul(reduced_b, self.root))
-            == 0
-        {
-            // After stripping the common p-powers, cancellation at the
-            // chosen prime means the conjugate is a unit. The norm gives
-            // exactly the eventual cancellation depth in the chosen branch.
-            let norm = self.numerator_norm(a, b)?;
-            value += valuation(model, norm.unsigned_abs(), p as u128)?;
-        }
-        value -= valuation(model, x.c as u128, p as u128)?;
-        Ok(Some(value))
+        let a = a.rem_euclid(p) as u32;
+        let b_root = self.prime.mul(b.rem_euclid(p) as u32, self.root);
+        (
+            self.prime.add(a, b_root),
+            self.prime.add(a, self.prime.negate(b_root)),
+        )
     }
 
     pub(crate) fn residue(self, model: &mut Model, x: Element, precision: usize) -> Result<u128> {
@@ -188,10 +227,7 @@ impl Field {
         let modulus = prime_power(p, precision)?;
         let enlarged = prime_power(p, root_precision)?;
         let divisor = enlarged / modulus;
-        let root = self.lift_root(model, root_precision)?;
-        let a = reduce(x.a, enlarged);
-        let b = reduce(x.b, enlarged);
-        let reduced = (a + mul_mod(model, b, root, enlarged)?) % enlarged;
+        let reduced = self.numerator_residue(model, x, root_precision, enlarged)?;
         if !reduced.is_multiple_of(divisor) {
             return Err(Error::plain(
                 "quadratic residue requires an integral element at the chosen prime",
@@ -200,6 +236,51 @@ impl Field {
         let denominator_unit = x.c as u128 / divisor;
         let inverse = self.lift_inverse(model, denominator_unit, precision)?;
         mul_mod(model, reduced / divisor, inverse, modulus)
+    }
+
+    pub(crate) fn angular_component(
+        self,
+        model: &mut Model,
+        x: Element,
+        order: i64,
+    ) -> Result<u32> {
+        if x.b == 0 {
+            return x.rational_angle(model, self.prime);
+        }
+        let p = u128::from(self.prime.get());
+        let (a, b, common) = strip_numerator(model, x, p as i128)?;
+        let (chosen, conjugate) = self.local_numerator(a, b);
+        let denominator_order = valuation(model, x.c as u128, p)?;
+        let coefficient = if chosen == 0 {
+            let norm = self.numerator_norm(a, b)?;
+            let norm_order =
+                usize::try_from(order + denominator_order - common).map_err(|_| arithmetic())?;
+            let unit = norm / (prime_power(p, norm_order)? as i128);
+            let inverse_conjugate = invert(model, self.prime, conjugate)?;
+            self.prime
+                .mul(unit.rem_euclid(p as i128) as u32, inverse_conjugate)
+        } else {
+            chosen
+        };
+        let denominator_unit = x.c as u128 / prime_power(p, denominator_order as usize)?;
+        let inverse = invert(model, self.prime, (denominator_unit % p) as u32)?;
+        Ok(self.prime.mul(coefficient, inverse))
+    }
+
+    fn numerator_residue(
+        self,
+        model: &mut Model,
+        x: Element,
+        precision: usize,
+        modulus: u128,
+    ) -> Result<u128> {
+        let a = reduce(x.a, modulus);
+        if x.b == 0 {
+            return Ok(a);
+        }
+        let b = reduce(x.b, modulus);
+        let root = self.lift_root(model, precision)?;
+        Ok((a + mul_mod(model, b, root, modulus)?) % modulus)
     }
 
     fn lift_root(self, model: &mut Model, precision: usize) -> Result<u128> {
@@ -270,6 +351,16 @@ pub(crate) fn persist(model: &mut Model, value: Element) -> Result<Value> {
     Ok(Value::RVQpQuad(value))
 }
 
+fn product(model: &mut Model, d: i128, x: Element, y: Element) -> Result<Element> {
+    model.spend(1)?;
+    let g = gcd(gcd(x.a.unsigned_abs(), x.b.unsigned_abs()), y.c as u128) as i128;
+    let h = gcd(gcd(y.a.unsigned_abs(), y.b.unsigned_abs()), x.c as u128) as i128;
+    let (a, b, e, f) = (x.a / g, x.b / g, y.a / h, y.b / h);
+    let real = add(multiply(a, e)?, multiply(d, multiply(b, f)?)?)?;
+    let imaginary = add(multiply(a, f)?, multiply(b, e)?)?;
+    Element::new(real, imaginary, multiply(x.c / h, y.c / g)?)
+}
+
 fn affine_combination(model: &mut Model, x: Element, y: Element, minus: bool) -> Result<Element> {
     model.spend(1)?;
     let common = gcd(x.c as u128, y.c as u128) as i128;
@@ -280,6 +371,19 @@ fn affine_combination(model: &mut Model, x: Element, y: Element, minus: bool) ->
         sign(multiply(x.b, sx)?, multiply(y.b, sy)?)?,
         multiply(x.c, sx)?,
     )
+}
+
+fn strip_numerator(model: &mut Model, x: Element, p: i128) -> Result<(i128, i128, i64)> {
+    debug_assert!(!x.is_zero());
+    let (mut a, mut b) = (x.a, x.b);
+    let mut order = 0;
+    while a % p == 0 && b % p == 0 {
+        model.spend(1)?;
+        a /= p;
+        b /= p;
+        order += 1;
+    }
+    Ok((a, b, order))
 }
 
 fn valuation(model: &mut Model, mut nonzero: u128, p: u128) -> Result<i64> {

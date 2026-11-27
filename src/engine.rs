@@ -110,6 +110,7 @@ use crate::rv_qgr;
 use crate::rv_qp_quad::{self, Element as QuadElement, Field as QuadField, Unary as QuadUnary};
 use crate::rv_qregular;
 use crate::rv_rees;
+use crate::rv_res_space::{self, Grade as ResGrade, Space as ResSpace};
 use crate::rv_satake;
 use crate::rv_scheme;
 use crate::rv_shintani;
@@ -441,6 +442,8 @@ enum TypedForm {
     RVLaurentMonomial(i64, Box<TypedExpr>),
     HeckeNegate(Box<TypedExpr>),
     QpQuadUnary(QuadField, QuadUnary, Box<TypedExpr>),
+    ResSpecializeQuad(ResGrade, QuadField, Vec<i64>, Vec<Vec<TypedExpr>>),
+    ResOrthogonal(Box<TypedExpr>),
     ValMatQuad(ValGrade, QuadField, Vec<Vec<TypedExpr>>),
     ValDual(Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
@@ -2291,6 +2294,26 @@ impl Engine {
                 self.model.register_qp_quad(name, p, d, r)?;
                 return Ok(None);
             }
+            StatementForm::ResReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                self.checker().require_res_space(&input, query.name())?;
+                let Value::RVResSpace(space) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                query.report(&mut self.model, &space)?
+            }
+            StatementForm::ResLeq(lower, upper) => {
+                let lower = self.checker().expr(lower)?;
+                let upper = self.checker().expr(upper)?;
+                self.checker().require_res_space(&lower, "rvResLeq")?;
+                self.checker().require_type(lower.ty, &upper, "rvResLeq")?;
+                let (Value::RVResSpace(lower), Value::RVResSpace(upper)) =
+                    (self.eval(&lower)?, self.eval(&upper)?)
+                else {
+                    unreachable!()
+                };
+                format!("rvResLeq = {}", lower.is_subspace(&mut self.model, &upper)?)
+            }
             StatementForm::ValMatReport(query, input) => {
                 let input = self.checker().expr(input)?;
                 if !matches!(self.model.kind(input.ty), Kind::RVValMat(..)) {
@@ -2906,6 +2929,21 @@ impl Engine {
             .project(&mut self.model, ideal, terms)?;
         self.model.allocate(coordinates.len())?;
         Ok(Value::Class(coordinates.into()))
+    }
+
+    fn quadratic_rows(&mut self, rows: &[Vec<TypedExpr>]) -> Result<Vec<Vec<QuadElement>>> {
+        rows.iter()
+            .map(|row| {
+                row.iter()
+                    .map(|entry| {
+                        let Value::RVQpQuad(value) = self.eval(entry)? else {
+                            unreachable!()
+                        };
+                        Ok(value)
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()
     }
 
     fn rv_witt_coordinates(
@@ -3633,6 +3671,17 @@ impl Engine {
                     }
                     (BinaryOp::Add, Value::RvTl(a), Value::RvTl(b)) => {
                         rv_tl::add(&mut self.model, &a, &b)
+                    }
+                    (
+                        operation @ (BinaryOp::ResSum | BinaryOp::ResIntersection),
+                        Value::RVResSpace(a),
+                        Value::RVResSpace(b),
+                    ) => {
+                        let value = match operation {
+                            BinaryOp::ResSum => a.sum(&mut self.model, &b)?,
+                            _ => a.intersection(&mut self.model, &b)?,
+                        };
+                        value.persist(&mut self.model)
                     }
                     (
                         operation @ (BinaryOp::Add | BinaryOp::QpQuadMultiply),
@@ -4605,20 +4654,19 @@ impl Engine {
                 }
                 _ => unreachable!(),
             },
+            TypedForm::ResSpecializeQuad(grade, field, weights, rows) => {
+                let rows = self.quadratic_rows(rows)?;
+                rv_res_space::quadratic(&mut self.model, *grade, weights, *field, rows)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::ResOrthogonal(input) => {
+                let Value::RVResSpace(space) = self.eval(input)? else {
+                    unreachable!()
+                };
+                space.orthogonal(&mut self.model)?.persist(&mut self.model)
+            }
             TypedForm::ValMatQuad(grade, field, rows) => {
-                let rows = rows
-                    .iter()
-                    .map(|row| {
-                        row.iter()
-                            .map(|entry| {
-                                let Value::RVQpQuad(value) = self.eval(entry)? else {
-                                    unreachable!()
-                                };
-                                Ok(value)
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let rows = self.quadratic_rows(rows)?;
                 Ok(Value::RVValMat(tropical_matroid::quadratic(
                     &mut self.model,
                     *grade,
@@ -6368,6 +6416,11 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::FusionScale(..)
             | ExprForm::FusionDual(..)
             | ExprForm::QuantumBasis(..)
+            | ExprForm::ResSpace(..)
+            | ExprForm::ResSpecialize(..)
+            | ExprForm::ResSpecializeQuad(..)
+            | ExprForm::ResFil(..)
+            | ExprForm::ResOrthogonal(..)
             | ExprForm::ValMat(..)
             | ExprForm::ValMatQuad(..)
             | ExprForm::ValFil(..)
@@ -6564,6 +6617,11 @@ impl Checker<'_> {
             TypeForm::RvTl(level, strands, height) => self
                 .model
                 .tl_type(rv_tl::Grade::checked(level, strands, height)?),
+            TypeForm::RVResSpace(p, n) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = ResGrade::new(prime, n)?;
+                self.model.rv_res_space_type(grade)
+            }
             TypeForm::RVValMat(p, n, r) => {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
                 let grade = ValGrade::new(prime.get(), n, r)?;
@@ -7351,6 +7409,7 @@ impl Checker<'_> {
                     Kind::RVCTResidue(..) => Value::PeriodResidue(0),
                     Kind::RVFusion(..) => rv_fusion::zero(),
                     Kind::RVCyclo(..) => rv_cyclotomic::zero(),
+                    Kind::RVResSpace(grade) => ResSpace::zero(*grade).persist(self.model)?,
                     Kind::RVQpQuad(..) => Value::RVQpQuad(QuadElement::ZERO),
                     Kind::RVCycloQ(..) => rv_lens::zero(),
                     Kind::RvTl(..) => rv_tl::zero(),
@@ -10187,6 +10246,43 @@ impl Checker<'_> {
                 };
                 Ok((input.ty, TypedForm::FusionDual(grade, Box::new(input))))
             }
+            ExprForm::ResSpace(p, n, rows) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = ResGrade::new(prime, n)?;
+                let space = ResSpace::entries(self.model, grade, rows)?;
+                let ty = self.model.rv_res_space_type(grade)?;
+                Ok((ty, TypedForm::Constant(space.persist(self.model)?)))
+            }
+            ExprForm::ResSpecialize(p, n, weights, rows) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = ResGrade::new(prime, n)?;
+                let space = rv_res_space::rational(self.model, grade, &weights, rows)?;
+                let ty = self.model.rv_res_space_type(grade)?;
+                Ok((ty, TypedForm::Constant(space.persist(self.model)?)))
+            }
+            ExprForm::ResSpecializeQuad(name, n, weights, rows) => {
+                let field = self.model.qp_quad(&name)?;
+                let field_type = self.model.qp_quad_type(&name)?;
+                let grade = ResGrade::new(field.prime(), n)?;
+                rv_res_space::validate_rows(grade, &rows)?;
+                let rows = self.check_quadratic_rows(field_type, rows, "rvResSpecializeQuad")?;
+                let ty = self.model.rv_res_space_type(grade)?;
+                Ok((
+                    ty,
+                    TypedForm::ResSpecializeQuad(grade, field, weights, rows),
+                ))
+            }
+            ExprForm::ResFil(name, cutoff, weights) => {
+                let module = self.model.rv_phodge(&name)?;
+                let space = module.residue_filtration(self.model, cutoff, &weights)?;
+                let ty = self.model.rv_res_space_type(space.grade)?;
+                Ok((ty, TypedForm::Constant(space.persist(self.model)?)))
+            }
+            ExprForm::ResOrthogonal(input) => {
+                let input = self.expr(*input)?;
+                self.require_res_space(&input, "rvResOrthogonal")?;
+                Ok((input.ty, TypedForm::ResOrthogonal(Box::new(input))))
+            }
             ExprForm::ValMat(p, n, rows) => {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
                 let grade = ValGrade::new(prime.get(), n, rows.len())?;
@@ -10199,18 +10295,7 @@ impl Checker<'_> {
                 let field_type = self.model.qp_quad_type(&name)?;
                 let grade = ValGrade::new(field.prime().get(), n, rows.len())?;
                 tropical_matroid::check_rows(grade, &rows)?;
-                let rows = rows
-                    .into_iter()
-                    .map(|row| {
-                        row.into_iter()
-                            .map(|entry| {
-                                let entry = self.expr(entry)?;
-                                self.require_type(field_type, &entry, "rvValMatQuad")?;
-                                Ok(entry)
-                            })
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let rows = self.check_quadratic_rows(field_type, rows, "rvValMatQuad")?;
                 let ty = self.model.rv_valuated_matroid_type(grade)?;
                 Ok((ty, TypedForm::ValMatQuad(grade, field, rows)))
             }
@@ -13284,6 +13369,15 @@ impl Checker<'_> {
                 self.require_type(left.ty, right, op)?;
                 self.model.prime_scalar_type(prime)
             }
+            operation @ (BinaryOp::ResSum | BinaryOp::ResIntersection) => {
+                let op = match operation {
+                    BinaryOp::ResSum => "rvResSum",
+                    _ => "rvResIntersection",
+                };
+                self.require_res_space(left, op)?;
+                self.require_type(left.ty, right, op)?;
+                Ok(left.ty)
+            }
             BinaryOp::QpQuadMultiply => {
                 self.qp_quad_field(left, "rvQpQuadMul")?;
                 self.require_type(left.ty, right, "rvQpQuadMul")?;
@@ -13672,6 +13766,32 @@ impl Checker<'_> {
         } else {
             Prime::new(self.model, value)
         }
+    }
+
+    fn check_quadratic_rows(
+        &mut self,
+        field_type: TypeId,
+        rows: Vec<Vec<ParsedExpr>>,
+        op: &str,
+    ) -> Result<Vec<Vec<TypedExpr>>> {
+        rows.into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|entry| {
+                        let entry = self.expr(entry)?;
+                        self.require_type(field_type, &entry, op)?;
+                        Ok(entry)
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn require_res_space(&self, input: &TypedExpr, op: &str) -> Result<()> {
+        if !matches!(self.model.kind(input.ty), Kind::RVResSpace(..)) {
+            return Err(self.invalid_operand(input, op, "an RVResSpace"));
+        }
+        Ok(())
     }
 
     fn qp_quad_field(&self, input: &TypedExpr, operation: &str) -> Result<QuadField> {

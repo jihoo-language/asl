@@ -129,6 +129,7 @@ mod rv_qgr;
 mod rv_qp_quad;
 mod rv_qregular;
 mod rv_rees;
+mod rv_res_space;
 mod rv_satake;
 mod rv_scheme;
 mod rv_shintani;

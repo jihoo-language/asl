@@ -279,6 +279,33 @@ impl Module {
         }
     }
 
+    pub(crate) fn residue_filtration(
+        &self,
+        model: &mut Model,
+        cutoff: i64,
+        weights: &[i64],
+    ) -> Result<crate::rv_res_space::Space> {
+        use crate::rv_res_space::{self, Grade};
+        let ground = self.dimension();
+        let grade = Grade::new(self.prime, ground)?;
+        model.spend(ground)?;
+        match &self.filtration {
+            Filtration::Rational(columns) => {
+                let rank = columns.partition_point(|(weight, _)| *weight >= cutoff);
+                let rows = tropical_rows(&columns[..rank], ground, 0)
+                    .into_iter()
+                    .map(|row| row.into_iter().map(|x| (x, 1)).collect())
+                    .collect();
+                rv_res_space::rational(model, grade, weights, rows)
+            }
+            Filtration::Quadratic(field, columns) => {
+                let rank = columns.partition_point(|(weight, _)| *weight >= cutoff);
+                let rows = tropical_rows(&columns[..rank], ground, Element::ZERO);
+                rv_res_space::quadratic(model, grade, weights, *field, rows)
+            }
+        }
+    }
+
     fn dimension(&self) -> usize {
         self.newton.len()
     }

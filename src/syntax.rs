@@ -121,6 +121,7 @@ pub(crate) enum TypeForm {
     RVCyclo(usize),
     RVCycloQ(usize),
     RVQpQuad(Label),
+    RVResSpace(usize, usize),
     RVValMat(usize, usize, usize),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
@@ -533,6 +534,8 @@ pub(crate) enum BinaryOp {
     RvTorProduct,
     BpMultiply,
     BpCup,
+    ResSum,
+    ResIntersection,
     QpQuadMultiply,
 }
 
@@ -568,6 +571,8 @@ impl BinaryOp {
             "rvTorProd" => Some(Self::RvTorProduct),
             "bpMul" => Some(Self::BpMultiply),
             "bpCup" => Some(Self::BpCup),
+            "rvResSum" => Some(Self::ResSum),
+            "rvResIntersection" => Some(Self::ResIntersection),
             "rvQpQuadMul" => Some(Self::QpQuadMultiply),
             _ => None,
         }
@@ -904,6 +909,11 @@ pub(crate) enum ExprForm {
     CrystalCongruent(Label, Label, usize),
     EOOddCover(Label),
     QpQuadElement(Label, i128, i128, i128),
+    ResSpace(usize, usize, Vec<Vec<i128>>),
+    ResSpecialize(usize, usize, Vec<i64>, Vec<Vec<(i128, i128)>>),
+    ResSpecializeQuad(Label, usize, Vec<i64>, Vec<Vec<ParsedExpr>>),
+    ResFil(Label, i64, Vec<i64>),
+    ResOrthogonal(Box<ParsedExpr>),
     ValMat(usize, usize, Vec<Vec<i128>>),
     ValMatQuad(Label, usize, Vec<Vec<ParsedExpr>>),
     ValFil(Label, i64),
@@ -1123,6 +1133,8 @@ pub(crate) enum StatementForm {
     RvPHodgeQuad(Label, Label, QuadraticSpec<ParsedExpr>),
     RvQpQuad(Label, usize, i128, i128),
     RvQpQuadReport(Option<usize>, ParsedExpr),
+    ResReport(crate::rv_res_space::Query, ParsedExpr),
+    ResLeq(ParsedExpr, ParsedExpr),
     ValMatReport(crate::tropical_matroid::Query, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
@@ -3612,6 +3624,28 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::RvCrystalQuery(name, query)
             }
+            Token::Word("rvResDim" | "rvResContains" | "rvResSupport") => {
+                use crate::rv_res_space::Query;
+                let operation = self.token();
+                self.advance()?;
+                let query = match operation {
+                    Token::Word("rvResDim") => Query::Dimension,
+                    Token::Word("rvResSupport") => Query::Support,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let vector =
+                            self.signed_tuple("an integer coordinate", "residue coordinate")?;
+                        self.expect(Token::RBracket)?;
+                        Query::Contains(vector)
+                    }
+                };
+                StatementForm::ResReport(query, self.paren_expr(0)?)
+            }
+            Token::Word("rvResLeq") => {
+                self.advance()?;
+                let [first, second] = self.paren_pair(0)?;
+                StatementForm::ResLeq(first, second)
+            }
             Token::Word("rvqpadic") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -4967,6 +5001,11 @@ impl<'src> Parser<'src> {
             let (level, strands, height) = self.tl_grade()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RvTl(level, strands, height), 0);
+        }
+        if name.text == "RVResSpace" && self.eat(Token::LParen)? {
+            let (p, n) = self.bidegree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::RVResSpace(p, n), 0);
         }
         if name.text == "RVValMat" && self.eat(Token::LParen)? {
             let p = self.number()?.0;
@@ -6404,6 +6443,56 @@ impl<'src> Parser<'src> {
                     let level = self.number()?.0;
                     self.expect(Token::RBracket)?;
                     return expr(span, ExprForm::CrystalCongruent(left, right, level), 0);
+                }
+                if name.text == "rvResSpace" && self.eat(Token::LBracket)? {
+                    let (p, n) = self.bidegree()?;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut rows = Vec::new();
+                    while self.token() != Token::RBrace {
+                        rows.push(self.signed_tuple("an integer entry", "residue matrix entry")?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::ResSpace(p, n, rows), 0);
+                }
+                if name.text == "rvResSpecialize" && self.eat(Token::LBracket)? {
+                    let (p, n) = self.bidegree()?;
+                    self.expect(Token::Comma)?;
+                    let weights = self.tropical_weights()?;
+                    self.expect(Token::RBracket)?;
+                    let rows = self.residue_rational_rows()?;
+                    return expr(span, ExprForm::ResSpecialize(p, n, weights, rows), 0);
+                }
+                if name.text == "rvResSpecializeQuad" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let n = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let weights = self.tropical_weights()?;
+                    self.expect(Token::RBracket)?;
+                    let (rows, depth) = self.tropical_rows(nest)?;
+                    return expr(
+                        span,
+                        ExprForm::ResSpecializeQuad(field, n, weights, rows),
+                        depth,
+                    );
+                }
+                if name.text == "rvResFil" && self.eat(Token::LBracket)? {
+                    let module = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let cutoff = self.signed_degree()?;
+                    self.expect(Token::Comma)?;
+                    let weights = self.tropical_weights()?;
+                    self.expect(Token::RBracket)?;
+                    return expr(span, ExprForm::ResFil(module, cutoff, weights), 0);
+                }
+                if name.text == "rvResOrthogonal" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::ResOrthogonal(Box::new(input)), depth);
                 }
                 if name.text == "rvValMat" && self.eat(Token::LBracket)? {
                     let p = self.number()?.0;
@@ -8905,6 +8994,39 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBracket)?;
         Ok(weights)
+    }
+
+    fn residue_rational_rows(&mut self) -> Result<Vec<Vec<(i128, i128)>>> {
+        let mut rows = Vec::new();
+        self.expect(Token::LBrace)?;
+        while self.token() != Token::RBrace {
+            self.expect(Token::LBracket)?;
+            let mut row = Vec::new();
+            while self.token() != Token::RBracket {
+                let pair = self.eat(Token::LParen)?;
+                let numerator = self.signed_wide("an integer", "residue row numerator")?;
+                let denominator = if pair {
+                    self.expect(Token::Comma)?;
+                    let value =
+                        self.signed_wide("a positive integer", "residue row denominator")?;
+                    self.expect(Token::RParen)?;
+                    value
+                } else {
+                    1
+                };
+                row.push((numerator, denominator));
+                if !self.eat(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::RBracket)?;
+            rows.push(row);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rows)
     }
 
     fn tropical_rows(&mut self, nest: usize) -> Result<(Vec<Vec<ParsedExpr>>, usize)> {

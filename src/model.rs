@@ -80,6 +80,7 @@ use crate::rv_phodge::{Module as PHodgeModule, QuadraticSpec, Specification as P
 use crate::rv_poly::{self, Minors, Polynomial};
 use crate::rv_qgr;
 use crate::rv_qp_quad::{Element as QuadElement, Field as QuadField};
+use crate::rv_res_space::{self, Grade as ResGrade, Space as ResSpace};
 use crate::rv_satake;
 use crate::rv_sphhecke;
 use crate::rv_tl;
@@ -225,6 +226,7 @@ pub(crate) enum Kind {
     RVCyclo(usize),
     RVCycloQ(usize),
     RVQpQuad(Rc<str>),
+    RVResSpace(ResGrade),
     RVValMat(ValGrade),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
@@ -369,6 +371,7 @@ pub(crate) enum Value {
     RVCyclo(rv_cyclotomic::Polynomial),
     RVCycloQ(rv_lens::Rational),
     RVQpQuad(QuadElement),
+    RVResSpace(Rc<ResSpace>),
     RVValMat(Rc<ValMatroid>),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
@@ -800,6 +803,7 @@ impl Model {
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..) => usize::MAX,
+            Kind::RVResSpace(grade) => grade.count(),
             Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => 1,
             Kind::RVValMat(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
@@ -996,6 +1000,7 @@ impl Model {
                 | Kind::RVCyclo(..)
                 | Kind::RVCycloQ(..)
                 | Kind::RVQpQuad(..)
+                | Kind::RVResSpace(..)
                 | Kind::RVValMat(..)
                 | Kind::RVWzw(..)
                 | Kind::RvTl(..)
@@ -2964,6 +2969,10 @@ impl Model {
         })
     }
 
+    pub(crate) fn rv_res_space_type(&mut self, grade: ResGrade) -> Result<TypeId> {
+        self.inhabited_type(Kind::RVResSpace(grade), 0)
+    }
+
     pub(crate) fn rv_valuated_matroid_type(&mut self, grade: ValGrade) -> Result<TypeId> {
         self.inhabited_type(Kind::RVValMat(grade), 0)
     }
@@ -3627,6 +3636,7 @@ impl Model {
             | Kind::RVFusion(..)
             | Kind::RVCyclo(..)
             | Kind::RVCycloQ(..)
+            | Kind::RVResSpace(..)
             | Kind::RVValMat(..)
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
@@ -4045,6 +4055,11 @@ impl Model {
                 "RVTL({}, {}, {})",
                 grade.level, grade.strands, grade.height
             )),
+            Kind::RVResSpace(grade) => out.push(&format!(
+                "RVResSpace({}, {})",
+                grade.prime.get(),
+                grade.width,
+            )),
             Kind::RVValMat(grade) => out.push(&format!(
                 "RVValMat({}, {}, {})",
                 grade.prime, grade.ground, grade.rank
@@ -4260,6 +4275,9 @@ impl Model {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left == right),
+            (Value::RVResSpace(left), Value::RVResSpace(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::RVValMat(left), Value::RVValMat(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
@@ -4511,6 +4529,13 @@ impl Model {
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
+            (Value::RVResSpace(left), Value::RVResSpace(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
+            }
             (Value::RVValMat(left), Value::RVValMat(right)) => {
                 if Rc::ptr_eq(left, right) {
                     Ok(Ordering::Equal)
@@ -4738,6 +4763,11 @@ impl Model {
                         ));
                     }
                     vec![rv_tl::zero()]
+                }
+                Kind::RVResSpace(grade) => {
+                    let count = grade.count();
+                    self.check_element_limit(count)?;
+                    rv_res_space::enumerate(self, grade, count)?
                 }
                 Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => {
                     vec![Value::RVValMat(tropical_matroid::Matroid::build(
@@ -6005,6 +6035,22 @@ impl Model {
                         "{path:?}: {:?} / {}",
                         coefficient.numerator, coefficient.denominator
                     ))?;
+                }
+                out.push("}")
+            }
+            Value::RVResSpace(value) => {
+                let grade = value.grade;
+                self.spend(value.rows.len() * (1 + grade.width))?;
+                out.push(&format!(
+                    "RVResSpace({}, {}){{",
+                    grade.prime.get(),
+                    grade.width
+                ))?;
+                for (i, row) in value.rows.iter().enumerate() {
+                    if i != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(&format!("{row:?}"))?;
                 }
                 out.push("}")
             }
