@@ -114,6 +114,7 @@ use crate::rv_verlinde;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
+use crate::set_family;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_ext::{self, Ends as SheafEnds};
@@ -342,6 +343,18 @@ impl SheafComputation {
 }
 
 enum TypedForm {
+    SetIdentity(Rc<set_family::Diagram>),
+    SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
+    SetCompose(
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+        Box<[TypedExpr; 2]>,
+    ),
+    SetTotal(
+        Rc<set_family::Elements>,
+        Rc<set_family::Diagram>,
+        Box<TypedExpr>,
+    ),
     Global(usize),
     Local(usize),
     Point(usize),
@@ -891,28 +904,52 @@ impl Engine {
                 let rank = data.rank(&mut self.model, degree)?;
                 format!("shdim[{}, {degree}] = {rank}", name.text)
             }
+            StatementForm::SetFamily(family, site, fibers, transitions) => {
+                self.model.check_new_set_family(&family)?;
+                let site = self.model.named(&site.text).ok_or_else(|| {
+                    Error::new(site.span, format!("unknown named site '{}'", site.text))
+                })?;
+                let diagram =
+                    set_family::Diagram::declare(&mut self.model, site, fibers, transitions)?;
+                self.model.define_set_family(&family, diagram)?;
+                return Ok(None);
+            }
+            StatementForm::SetElements(space, family) => {
+                self.model.define_set_elements(&space, &family)?;
+                return Ok(None);
+            }
+            StatementForm::SetNatural(name, source, target, components) => {
+                self.check_new_binding(&name)?;
+                let a = self.model.set_family(&source)?;
+                let b = self.model.set_family(&target)?;
+                if a.base != b.base {
+                    return Err(Error::plain(
+                        "SetNat requires two families on the same named site",
+                    ));
+                }
+                let value = a.natural(&mut self.model, &b, components)?;
+                let ty = self.model.register_set_nat_type(
+                    source.text.into(),
+                    target.text.into(),
+                    true,
+                )?;
+                self.bind(name.text, ty, value)?;
+                return Ok(None);
+            }
+            StatementForm::SetSections(family) => {
+                let diagram = self.model.set_family(&family)?;
+                let count = diagram.section_count(&mut self.model)?;
+                format!("setsections[{}] = {count}", family.text)
+            }
             StatementForm::Space(name, chains) => {
                 self.model.define_space(&name, &chains)?;
                 return Ok(None);
             }
             StatementForm::Let(name, expr) => {
-                if self.bindings.contains_key(&name.text) {
-                    return Err(Error::new(
-                        name.span,
-                        format!("value '{}' is already defined", name.text),
-                    ));
-                }
+                self.check_new_binding(&name)?;
                 let expr = self.checker().expr(expr)?;
                 let value = self.eval(&expr)?;
-                self.model.allocate(1)?;
-                self.bindings.insert(
-                    name.text,
-                    Binding {
-                        index: self.values.len(),
-                        ty: expr.ty,
-                    },
-                );
-                self.values.push(value);
+                self.bind(name.text, expr.ty, value)?;
                 return Ok(None);
             }
             StatementForm::RVTree(report, modulus, root, radius, input) => {
@@ -2417,6 +2454,29 @@ impl Engine {
         }
     }
 
+    fn check_new_binding(&self, name: &Label) -> Result<()> {
+        if self.bindings.contains_key(&name.text) {
+            return Err(Error::new(
+                name.span,
+                format!("value '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, name: String, ty: TypeId, value: Value) -> Result<()> {
+        self.model.allocate(1)?;
+        self.bindings.insert(
+            name,
+            Binding {
+                index: self.values.len(),
+                ty,
+            },
+        );
+        self.values.push(value);
+        Ok(())
+    }
+
     fn eval(&mut self, expr: &TypedExpr) -> Result<Value> {
         self.eval_inner(expr).map_err(|error| error.at(expr.span))
     }
@@ -2428,6 +2488,25 @@ impl Engine {
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
             TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::SetIdentity(diagram) => diagram.identity(&mut self.model),
+            TypedForm::SetSection(elements, diagram, index) => {
+                elements.section(&mut self.model, diagram, *index)
+            }
+            TypedForm::SetCompose(source, middle, inputs) => {
+                let Value::SetNat(outer) = self.eval(&inputs[0])? else {
+                    unreachable!()
+                };
+                let Value::SetNat(inner) = self.eval(&inputs[1])? else {
+                    unreachable!()
+                };
+                source.compose(&mut self.model, middle, &outer, &inner)
+            }
+            TypedForm::SetTotal(elements, target, input) => {
+                let Value::SetNat(rows) = self.eval(input)? else {
+                    unreachable!()
+                };
+                elements.map(&mut self.model, &rows, target)
+            }
             TypedForm::Binary(op, left, right) => {
                 let first = self.eval(left)?;
                 let second = self.eval(right)?;
@@ -5214,6 +5293,12 @@ impl Checker<'_> {
                 .model
                 .named(&name.text)
                 .ok_or_else(|| Error::new(name.span, format!("unknown space '{}'", name.text))),
+            TypeForm::SetNat(source, target) => {
+                self.model.set_family(&source)?;
+                self.model.set_family(&target)?;
+                self.model
+                    .set_nat_type(source.text.into(), target.text.into())
+            }
             TypeForm::Star(base, point) => {
                 let base = self.ty(*base)?;
                 self.model.star(base, &point)
@@ -5506,6 +5591,16 @@ impl Checker<'_> {
         .map_err(|error| error.at(ty.span))
     }
 
+    fn set_nat_ends(&self, ty: TypeId) -> Result<(Rc<str>, Rc<str>)> {
+        if let Kind::SetNat(source, target) = self.model.kind(ty) {
+            return Ok((source.clone(), target.clone()));
+        }
+        Err(Error::plain(format!(
+            "expected a SetNat, found {}",
+            self.model.type_name(ty)
+        )))
+    }
+
     fn expr(&mut self, expr: ParsedExpr) -> Result<TypedExpr> {
         let (ty, kind) = self
             .expr_inner(expr.kind, expr.span)
@@ -5529,6 +5624,67 @@ impl Checker<'_> {
 
     fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
+            ExprForm::SetProjection(name) => {
+                let (domain, elements) = self.model.set_elements(&name)?;
+                let diagram = self
+                    .model
+                    .set_family_named(&elements.family)
+                    .expect("elements family");
+                let ty = self.model.arrow(domain, diagram.base)?;
+                Ok((ty, TypedForm::Constant(elements.projection())))
+            }
+            ExprForm::SetSection(name, index) => {
+                let (range, elements) = self.model.set_elements(&name)?;
+                let diagram = self
+                    .model
+                    .set_family_named(&elements.family)
+                    .expect("elements family");
+                let ty = self.model.arrow(diagram.base, range)?;
+                Ok((ty, TypedForm::SetSection(elements, diagram, index)))
+            }
+            ExprForm::SetIdentity(name) => {
+                let diagram = self.model.set_family(&name)?;
+                let family: Rc<str> = name.text.into();
+                let ty = self.model.set_nat_type(family.clone(), family)?;
+                Ok((ty, TypedForm::SetIdentity(diagram)))
+            }
+            ExprForm::SetCompose(inputs) => {
+                let [outer, inner] = *inputs;
+                let outer = self.expr(outer)?;
+                let inner = self.expr(inner)?;
+                let (middle, target) = self.set_nat_ends(outer.ty)?;
+                let (source, through) = self.set_nat_ends(inner.ty)?;
+                if through != middle {
+                    return Err(Error::plain("setComp requires matching middle families"));
+                }
+                let a = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("registered source");
+                let b = self
+                    .model
+                    .set_family_named(&middle)
+                    .expect("registered middle");
+                let ty = self.model.set_nat_type(source, target)?;
+                Ok((ty, TypedForm::SetCompose(a, b, Box::new([outer, inner]))))
+            }
+            ExprForm::SetTotal(source, target, input) => {
+                let (domain, a) = self.model.set_elements(&source)?;
+                let (range, b) = self.model.set_elements(&target)?;
+                let input = self.expr(*input)?;
+                let (source, target) = self.set_nat_ends(input.ty)?;
+                if source != a.family || target != b.family {
+                    return Err(Error::plain(
+                        "setTotal requires the declared elements spaces of the map's two families",
+                    ));
+                }
+                let target = self
+                    .model
+                    .set_family_named(&target)
+                    .expect("registered target");
+                let ty = self.model.arrow(domain, range)?;
+                Ok((ty, TypedForm::SetTotal(a, target, Box::new(input))))
+            }
             ExprForm::Name(name) => {
                 if let Some((index, (_, ty))) = self
                     .locals

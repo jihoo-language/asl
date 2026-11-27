@@ -105,6 +105,33 @@ show lamp(Joint.seam);   // S.hi
 
 The double-cover example has a local section on each vertex star of the triangle. Two of the overlaps force the sheet choices. On the third overlap one chart yields `Cover.ca0` and the other yields `Cover.ca1`. Switching the initial sheet exchanges both answers. Run `cargo run -- examples/rejected/double-cover.asl` to see that obstruction reported at the `sew`. [Double-cover program](examples/rejected/double-cover.asl)
 
+## Finite set families on a poset
+
+A `setfamily F[X] {x:2, y:3} {x<y:[0,2]};` gives a covariant finite set
+diagram on a named site with two comparable points. Supply the cardinality
+of every fiber, including empty fibers, and the image list for every cover.
+Indices start at zero. A list for any other strict comparable pair is
+optional and must agree with every composite. Identity maps are automatic.
+
+`elements E[F];` defines the usual finite total poset. Its points are
+`E.x_0`, `E.x_1`, and so on. A point `E.x_i` lies below `E.y_j`
+exactly when the transition from `x` to `y` takes `i` to `j`.
+The total uses names `point_x_i` with numeric site indices if appending the
+fiber indices would exceed the identifier length limit. `setProjection[E]`
+is an ordinary monotone map from `E` to `X`.
+
+`setnat u[F,G] {x:[...], y:[...]};` declares a natural transformation of
+type `SetNat(F,G)` between diagrams on the same site. Every component must
+commute with the transitions. `setId[F]` and `setComp(g,f)` give identities
+and composition. If `E` and `D` are the declared total spaces for `F` and
+`G`, `setTotal[E,D](u)` is an ordinary monotone map over the site.
+
+`setsections[F];` counts global sections, and `setsect[E,i]` gives an
+ordinary section of the projection in lexicographic order of the fiber
+indices. See [examples/set-families.asl](examples/set-families.asl) for a
+connected three-sheeted circle cover with no section and the trivial cover
+with three sections.
+
 ## Sheaf cohomology on a finite poset
 
 `sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.

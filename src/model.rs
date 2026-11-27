@@ -78,6 +78,7 @@ use crate::rv_sphhecke;
 use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
+use crate::set_family;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
@@ -143,6 +144,7 @@ impl DiffFamily {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
     Space(String),
+    SetNat(Rc<str>, Rc<str>),
     QModule(String),
     MixedChain(mixed::Grade, bool),
     MixedMinimum(mixed_minimal::Grade, bool),
@@ -310,6 +312,7 @@ pub(crate) enum Value {
     Point(usize),
     Pair(Rc<(Value, Value)>),
     Map(Rc<[Value]>),
+    SetNat(Rc<[usize]>),
     Class(Rc<[usize]>),
     Operation(Rc<[Word]>),
     Cobar(Rc<[cobar::Word]>),
@@ -425,6 +428,8 @@ type MinorsKey = (TypeId, q_koszul::Indices, usize);
 
 pub(crate) struct Model {
     types: Vec<TypeInfo>,
+    set_families: HashMap<Rc<str>, Rc<set_family::Diagram>>,
+    set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
     mixed_indices: HashMap<String, mixed::Id>,
@@ -478,6 +483,8 @@ impl Model {
     pub(crate) fn new() -> Self {
         let mut model = Self {
             types: Vec::new(),
+            set_families: HashMap::new(),
+            set_elements: HashMap::new(),
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
             mixed_indices: HashMap::new(),
@@ -577,6 +584,13 @@ impl Model {
         let cardinality_bound = match kind {
             Kind::Space(_) | Kind::Star(..) => poset.as_ref().unwrap().names.len(),
             Kind::QModule(_) => 1,
+            Kind::SetNat(..) => {
+                if inhabited {
+                    usize::MAX
+                } else {
+                    0
+                }
+            }
             Kind::MixedMinimum(..) => usize::MAX,
             Kind::MixedChain(..) | Kind::MixedPage(..) => usize::MAX,
             Kind::Sheaf(_, ref name, k) if k >= self.sheaves[name.as_ref()].height => 1,
@@ -842,6 +856,7 @@ impl Model {
         matches!(
             self.kind(ty),
             Kind::Cohomology(..)
+                | Kind::SetNat(..)
                 | Kind::MixedChain(..)
                 | Kind::MixedMinimum(..)
                 | Kind::MixedPage(..)
@@ -1470,14 +1485,121 @@ impl Model {
         Ok(())
     }
 
-    pub(crate) fn define_space(&mut self, name: &Label, chains: &[Vec<Label>]) -> Result<()> {
+    pub(crate) fn define_set_family(
+        &mut self,
+        name: &Label,
+        diagram: set_family::Diagram,
+    ) -> Result<()> {
+        self.check_new_set_family(name)?;
+        self.allocate(1)?;
+        self.set_families
+            .insert(Rc::from(name.text.as_str()), Rc::new(diagram));
+        Ok(())
+    }
+
+    pub(crate) fn check_new_set_family(&self, name: &Label) -> Result<()> {
+        if self.set_families.contains_key(name.text.as_str()) {
+            return Err(Error::new(
+                name.span,
+                format!("set family '{}' is already defined", name.text),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_family(&self, name: &Label) -> Result<Rc<set_family::Diagram>> {
+        self.set_family_named(&name.text)
+            .ok_or_else(|| Error::new(name.span, format!("unknown set family '{}'", name.text)))
+    }
+
+    pub(crate) fn set_family_named(&self, name: &str) -> Option<Rc<set_family::Diagram>> {
+        self.set_families.get(name).cloned()
+    }
+
+    pub(crate) fn set_elements(&self, name: &Label) -> Result<(TypeId, Rc<set_family::Elements>)> {
+        self.named(&name.text)
+            .and_then(|ty| self.set_elements.get(&ty).map(|data| (ty, data.clone())))
+            .ok_or_else(|| {
+                Error::new(
+                    name.span,
+                    format!("unknown set elements space '{}'", name.text),
+                )
+            })
+    }
+
+    pub(crate) fn define_set_elements(&mut self, name: &Label, family: &Label) -> Result<()> {
+        let diagram = self.set_family(family)?;
+        let (ty, data) =
+            set_family::Elements::build(self, name, Rc::from(family.text.as_str()), &diagram)?;
+        self.set_elements.insert(ty, Rc::new(data));
+        Ok(())
+    }
+
+    pub(crate) fn set_nat_type(&mut self, source: Rc<str>, target: Rc<str>) -> Result<TypeId> {
+        self.register_set_nat_type(source, target, false)
+    }
+
+    pub(crate) fn register_set_nat_type(
+        &mut self,
+        source: Rc<str>,
+        target: Rc<str>,
+        validated_witness: bool,
+    ) -> Result<TypeId> {
+        let kind = Kind::SetNat(source.clone(), target.clone());
+        if let Some(&ty) = self.type_ids.get(&kind) {
+            return Ok(ty);
+        }
+        self.check_type_limit(0)?;
+        let a = self
+            .set_family_named(&source)
+            .expect("registered source family");
+        let b = self
+            .set_family_named(&target)
+            .expect("registered target family");
+        if a.base != b.base {
+            return Err(Error::plain(
+                "SetNat requires two families on the same named site",
+            ));
+        }
+        let inhabited = validated_witness || source == target || a.has_natural(self, &b)?;
+        Ok(self.insert(kind, None, None, inhabited, 0))
+    }
+
+    pub(crate) fn check_named_space(&self, name: &Label, count: usize) -> Result<()> {
         if self.q_endpoint_named(&name.text).is_some() {
             return Err(Error::new(
                 name.span,
                 format!("space '{}' is already defined", name.text),
             ));
         }
-        self.check_type_limit(0)?;
+        if count > MAX_SPACE_POINTS {
+            return Err(Error::new(
+                name.span,
+                "space exceeds the limit of 512 points",
+            ));
+        }
+        self.check_type_limit(0)
+    }
+
+    // Caller certifies the order and accounts for the constructed table.
+    pub(crate) fn insert_derived_space(
+        &mut self,
+        name: &Label,
+        names: Vec<String>,
+        order: Vec<Vec<bool>>,
+    ) -> TypeId {
+        let inhabited = !names.is_empty();
+        self.insert(
+            Kind::Space(name.text.clone()),
+            Some(Poset::new(names, order)),
+            None,
+            inhabited,
+            0,
+        )
+    }
+
+    pub(crate) fn define_space(&mut self, name: &Label, chains: &[Vec<Label>]) -> Result<()> {
+        self.check_named_space(name, 0)?;
 
         let mut labels = Vec::<&Label>::new();
         let mut indices = HashMap::<&str, usize>::new();
@@ -1536,14 +1658,7 @@ impl Model {
             order.push(visited);
         }
         let names = labels.into_iter().map(|point| point.text.clone()).collect();
-        let poset = Poset::new(names, order);
-        self.insert(
-            Kind::Space(name.text.clone()),
-            Some(poset),
-            None,
-            point_count != 0,
-            0,
-        );
+        self.insert_derived_space(name, names, order);
         Ok(())
     }
 
@@ -3024,7 +3139,8 @@ impl Model {
             | Kind::CeAn(..)
             | Kind::Stable(..)
             | Kind::Bar(..)
-            | Kind::CyclicH2(..) => 1,
+            | Kind::CyclicH2(..)
+            | Kind::SetNat(..) => 1,
         };
         self.types[ty.0].heights[index] = Some(height);
         Ok(height)
@@ -3121,6 +3237,7 @@ impl Model {
     fn write_type(&self, out: &mut Text, ty: TypeId, precedence: u8) -> Result<()> {
         match self.kind(ty) {
             Kind::Space(name) | Kind::QModule(name) => out.push(name),
+            Kind::SetNat(source, target) => out.push(&format!("SetNat({source}, {target})")),
             Kind::MixedChain(grade, total) => {
                 let name = if *total { "MixedU" } else { "MixedChain" };
                 out.push(&format!(
@@ -3495,6 +3612,10 @@ impl Model {
                 Ok(left == right)
             }
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left == right),
+            (Value::SetNat(left), Value::SetNat(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left == right)
+            }
             (&Value::Point(left), &Value::Point(right)) => {
                 Ok(self.types[ty.0].poset.as_ref().unwrap().order[left][right])
             }
@@ -3664,6 +3785,10 @@ impl Model {
         match (left, right) {
             (Value::Point(left), Value::Point(right)) => Ok(left.cmp(right)),
             (Value::PrimeScalar(left), Value::PrimeScalar(right)) => Ok(left.cmp(right)),
+            (Value::SetNat(left), Value::SetNat(right)) => {
+                self.spend(left.len().min(right.len()))?;
+                Ok(left.cmp(right))
+            }
             (Value::BinaryScalar(left), Value::BinaryScalar(right)) => Ok(left.cmp(right)),
             (Value::EOType(left), Value::EOType(right)) => {
                 self.spend(left.len().min(right.len()))?;
@@ -3946,6 +4071,11 @@ impl Model {
                     return Err(Error::plain(
                         "coefficient modules are allowed only as Koszul endpoints",
                     ))
+                }
+                Kind::SetNat(ref source, ref target) => {
+                    let source = self.set_family_named(source).expect("registered source");
+                    let target = self.set_family_named(target).expect("registered target");
+                    source.natural_elements(self, &target)?
                 }
                 Kind::Space(_) | Kind::Star(_, _) => {
                     let size = self.types[ty.0].poset.as_ref().unwrap().names.len();
@@ -5495,6 +5625,30 @@ impl Model {
                 out.push(", ")?;
                 self.write_value(out, right, &pair.1)?;
                 out.push(")")
+            }
+            Value::SetNat(rows) => {
+                let Kind::SetNat(source, _) = self.kind(ty) else {
+                    unreachable!()
+                };
+                let diagram = self.set_family_named(source).expect("registered source");
+                out.push("{")?;
+                for (point, name) in diagram.site.names.iter().enumerate() {
+                    if point != 0 {
+                        out.push(", ")?;
+                    }
+                    out.push(name)?;
+                    out.push(": [")?;
+                    let entries = diagram.components(point, rows);
+                    self.spend(entries.len() + 1)?;
+                    for (index, image) in entries.iter().enumerate() {
+                        if index != 0 {
+                            out.push(", ")?;
+                        }
+                        out.push(&image.to_string())?;
+                    }
+                    out.push("]")?;
+                }
+                out.push("}")
             }
             Value::Map(rows) => {
                 let Kind::Arrow(domain, range) = *self.kind(ty) else {

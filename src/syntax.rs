@@ -56,6 +56,7 @@ pub(crate) struct ParsedType {
 
 pub(crate) enum TypeForm {
     Name(Label),
+    SetNat(Label, Label),
     Star(Box<ParsedType>, Label),
     Cohomology(Box<ParsedType>, usize),
     MixedChain(Label, i64, bool),
@@ -581,6 +582,11 @@ pub(crate) struct MapGenerator {
 }
 
 pub(crate) enum ExprForm {
+    SetProjection(Label),
+    SetSection(Label, usize),
+    SetIdentity(Label),
+    SetCompose(Box<[ParsedExpr; 2]>),
+    SetTotal(Label, Label, Box<ParsedExpr>),
     Name(Label),
     Point(ParsedType, Label),
     Class(ParsedType, usize, ClassForm),
@@ -861,6 +867,15 @@ pub(crate) struct Statement {
 
 pub(crate) enum StatementForm {
     Space(Label, Vec<Vec<Label>>),
+    SetFamily(
+        Label,
+        Label,
+        Vec<(Label, usize)>,
+        Vec<crate::set_family::Transition>,
+    ),
+    SetElements(Label, Label),
+    SetNatural(Label, Label, Label, Vec<crate::set_family::Component>),
+    SetSections(Label),
     MixedComplex(
         Label,
         usize,
@@ -1714,10 +1729,73 @@ impl<'src> Parser<'src> {
         Ok(chains)
     }
 
+    fn set_named_rows<T>(&mut self, mut row: impl FnMut(&mut Self) -> Result<T>) -> Result<Vec<T>> {
+        self.expect(Token::LBrace)?;
+        let mut rows = Vec::new();
+        while self.token() != Token::RBrace {
+            rows.push(row(self)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(rows)
+    }
+
     pub(crate) fn statement(&mut self) -> Result<Option<Statement>> {
         let span = self.span();
         let kind = match self.token() {
             Token::Eof => return Ok(None),
+            Token::Word("setfamily") => {
+                self.advance()?;
+                let family = self.label()?;
+                self.expect(Token::LBracket)?;
+                let site = self.label()?;
+                self.expect(Token::RBracket)?;
+                let fibers = self.set_named_rows(|parser| {
+                    let point = parser.label()?;
+                    parser.expect(Token::Colon)?;
+                    Ok((point, parser.number()?.0))
+                })?;
+                let transitions = self.set_named_rows(|parser| {
+                    let source = parser.label()?;
+                    parser.expect(Token::Less)?;
+                    let target = parser.label()?;
+                    parser.expect(Token::Colon)?;
+                    Ok((source, target, parser.exponents()?))
+                })?;
+                StatementForm::SetFamily(family, site, fibers, transitions)
+            }
+            Token::Word("elements") => {
+                self.advance()?;
+                let space = self.label()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetElements(space, family)
+            }
+            Token::Word("setnat") => {
+                self.advance()?;
+                let map = self.label()?;
+                self.expect(Token::LBracket)?;
+                let source = self.label()?;
+                self.expect(Token::Comma)?;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let rows = self.set_named_rows(|parser| {
+                    let point = parser.label()?;
+                    parser.expect(Token::Colon)?;
+                    Ok((point, parser.exponents()?))
+                })?;
+                StatementForm::SetNatural(map, source, target, rows)
+            }
+            Token::Word("setsections") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let family = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetSections(family)
+            }
             Token::Word("qmodule") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -3581,6 +3659,13 @@ impl<'src> Parser<'src> {
             return ty(span, TypeForm::Star(Box::new(base), point), depth);
         }
         let name = self.label()?;
+        if name.text == "SetNat" && self.eat(Token::LParen)? {
+            let source = self.label()?;
+            self.expect(Token::Comma)?;
+            let target = self.label()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::SetNat(source, target), 0);
+        }
         if matches!(name.text.as_str(), "PCobarAn" | "PExtAn") && self.eat(Token::LParen)? {
             let (p, n, s, t) = self.prime_profile_bidegree()?;
             self.expect(Token::RParen)?;
@@ -4338,6 +4423,47 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RParen)?;
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
+            }
+            Token::Word("setProjection" | "setsect" | "setId" | "setTotal") => {
+                let operation = self.label()?;
+                self.expect(Token::LBracket)?;
+                let first = self.label()?;
+                let (form, depth) = match operation.text.as_str() {
+                    "setProjection" => {
+                        self.expect(Token::RBracket)?;
+                        (ExprForm::SetProjection(first), 0)
+                    }
+                    "setId" => {
+                        self.expect(Token::RBracket)?;
+                        (ExprForm::SetIdentity(first), 0)
+                    }
+                    "setsect" => {
+                        self.expect(Token::Comma)?;
+                        let index = self.number()?.0;
+                        self.expect(Token::RBracket)?;
+                        (ExprForm::SetSection(first, index), 0)
+                    }
+                    "setTotal" => {
+                        self.expect(Token::Comma)?;
+                        let second = self.label()?;
+                        self.expect(Token::RBracket)?;
+                        let map = self.paren_expr(nest)?;
+                        let depth = map.depth + 1;
+                        (ExprForm::SetTotal(first, second, Box::new(map)), depth)
+                    }
+                    _ => unreachable!(),
+                };
+                expr(span, form, depth)
+            }
+            Token::Word("setComp") => {
+                self.advance()?;
+                self.expect(Token::LParen)?;
+                let outer = self.expr(nest + 1)?;
+                self.expect(Token::Comma)?;
+                let inner = self.expr(nest + 1)?;
+                self.expect(Token::RParen)?;
+                let depth = outer.depth.max(inner.depth) + 1;
+                expr(span, ExprForm::SetCompose(Box::new([outer, inner])), depth)
             }
             Token::Word("fst") | Token::Word("snd") => {
                 let first = self.token() == Token::Word("fst");
