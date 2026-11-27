@@ -168,6 +168,34 @@ Use `setmonosize[M];` for the image order and `setmonoat[M,i];` for the two perm
 
 In the Fano example two connected seven-sheeted covers have Betti ranks $[1,8]$. The common monodromy image has order 168 and the permutation characters agree. A point stabilizer fixes one source point and no target line, so the covers admit no map over the base. The incidence orbital matrix $N$ satisfies $NN^{\mathsf T}=2I+J$ for the all-ones matrix $J$ and has absolute determinant 24. The example constructs its inverse over $\mathbb F_5$ and verifies both composites in native sheaf Hom. Over $\mathbb F_2$ the two orbitals span Ext in degree zero and the four maps have ranks $0,1,3,4$, so the permutation sheaves are nonisomorphic there. [Fano monodromy example](examples/set-monodromy.asl)
 
+### Internal logic of finite set families
+
+`setomega O[X];` defines the truth classifier on a named site. Its fiber
+at `x` consists of upward subsets of the future of `x`, also called
+cosieves. Transports restrict an upward subset to the new future. Use
+`setsieve[O,x,i];` to inspect the subset at a particular fiber index.
+
+A predicate on `F` is a natural transformation to `O`.
+`setClassify[O](i)` takes a componentwise injection into `F` to the
+predicate that records where each element's future images lie in the
+subfamily. `setsub M(P);` forms the subfamily on which `P` is true now.
+Its inclusion `setInclusion[M]` has classifying predicate `P`.
+
+`setTop[F,O]`, `setBottom[F,O]`, `setAnd(P,Q)`, and `setOr(P,Q)`
+give the full future, empty future subset, intersection, and union.
+`setImplies(P,Q)` records the points where every later instance of
+`P` implies `Q`. `setNot(P)` is implication into bottom. A proposition
+that becomes true at the later point of a chain can be dense while
+excluded middle still fails.
+
+For `p : SetNat(A,B)`, predicate pullback is `setComp(Q,p)`.
+`setExists(p,P)` and `setForall(p,P)` quantify a predicate on `A`
+along `p`. At each stage, existential truth needs a witness at that
+stage. Universal truth needs every fiber element over the transported
+target at every later stage to satisfy the predicate. See
+[examples/set-logic.asl](examples/set-logic.asl) for strict failure of
+excluded middle and a round trip through comprehension.
+
 ## Sheaf cohomology on a finite poset
 
 `sheaf F[X,p] {a:2,b:1} {a<b:[1,-1]};` declares a sheaf of vector spaces over the prime field $\mathbb F_p$ on the named poset `X`. Give a dimension for every point and one restriction $F(a)\to F(b)$ for each Hasse cover $a<b$. List matrix entries by rows, with the target dimension giving the number of rows. Zero-dimensional sources or targets require an empty matrix list. Signed decimal entries are reduced modulo $p$. The declaration composes along the Hasse diagram in topological order and checks that all paths with the same endpoints give the same matrix. Sheaves on the same named poset share its order data. Strict restrictions are stored in runs of equal nonzero matrices.

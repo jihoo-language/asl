@@ -35,6 +35,7 @@ use crate::rv_t_system::Operation as RvTSystemOp;
 use crate::rv_t_transfer::Operation as RvTTransferOp;
 use crate::rv_witt_cover::Query as WittQuery;
 use crate::rv_witt_tower::Query as TowerQuery;
+use crate::set_logic::Operation as SetLogic;
 use crate::sheaf::{self, Form as SheafForm, Operation as SheafOp};
 use crate::sheaf_higher::Operation as SheafHigherOp;
 use crate::sheaf_image::Operation as SheafImageOp;
@@ -624,6 +625,7 @@ pub(crate) struct MapGenerator {
 }
 
 pub(crate) enum ExprForm {
+    SetLogic(SetLogic, Vec<Label>, Vec<ParsedExpr>),
     SetProjection(Label),
     SetSection(Label, usize),
     SetIdentity(Label),
@@ -941,6 +943,9 @@ pub(crate) enum StatementForm {
     SetNatural(Label, Label, Label, Vec<crate::set_family::Component>),
     SetSections(Label),
     SetPullback(Label, Label, ParsedExpr),
+    SetOmega(Label, Label),
+    SetSubobject(Label, ParsedExpr),
+    SetSieve(Label, Label, usize),
     SetDependent(Label, Label, Label, bool),
     SetMonodromy(Label, Label, Label, Label),
     SetMonoQuery(Label, crate::set_monodromy::Query),
@@ -1857,6 +1862,30 @@ impl<'src> Parser<'src> {
         let span = self.span();
         let kind = match self.token() {
             Token::Eof => return Ok(None),
+            Token::Word("setomega") => {
+                self.advance()?;
+                let name = self.label()?;
+                self.expect(Token::LBracket)?;
+                let site = self.label()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetOmega(name, site)
+            }
+            Token::Word("setsub") => {
+                self.advance()?;
+                let name = self.label()?;
+                StatementForm::SetSubobject(name, self.paren_expr(0)?)
+            }
+            Token::Word("setsieve") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let omega = self.label()?;
+                self.expect(Token::Comma)?;
+                let point = self.label()?;
+                self.expect(Token::Comma)?;
+                let index = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::SetSieve(omega, point, index)
+            }
             Token::Word("setpullback") => {
                 self.advance()?;
                 let name = self.label()?;
@@ -4880,6 +4909,38 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RParen)?;
                 let depth = left.depth.max(right.depth) + 1;
                 expr(span, ExprForm::Pair(Box::new(left), Box::new(right)), depth)
+            }
+            Token::Word(name) if SetLogic::detect(name).is_some() => {
+                let operation = SetLogic::detect(name).unwrap();
+                self.advance()?;
+                let mut labels = Vec::new();
+                let label_count = operation.label_count();
+                if label_count != 0 {
+                    self.expect(Token::LBracket)?;
+                    for _ in 0..label_count {
+                        if !labels.is_empty() {
+                            self.expect(Token::Comma)?;
+                        }
+                        labels.push(self.label()?);
+                    }
+                    self.expect(Token::RBracket)?;
+                }
+                let mut inputs = Vec::new();
+                let arity = operation.arity();
+                let mut depth = 0;
+                if arity != 0 {
+                    self.expect(Token::LParen)?;
+                    for _ in 0..arity {
+                        if !inputs.is_empty() {
+                            self.expect(Token::Comma)?;
+                        }
+                        let input = self.expr(nest + 1)?;
+                        depth = depth.max(input.depth + 1);
+                        inputs.push(input);
+                    }
+                    self.expect(Token::RParen)?;
+                }
+                expr(span, ExprForm::SetLogic(operation, labels, inputs), depth)
             }
             Token::Word(name) if SetOperation::detect(name).is_some() => {
                 let operation = SetOperation::detect(name).unwrap();

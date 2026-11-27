@@ -85,6 +85,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
 use crate::set_family;
+use crate::set_logic;
 use crate::sheaf::{self, Cochains, Form as SheafForm, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total};
 use crate::sheaf_ext::{Ends as SheafEnds, Hom as SheafHom};
@@ -448,6 +449,7 @@ pub(crate) struct Model {
     set_origins: HashMap<Rc<str>, dependent_sets::Origin>,
     set_monodromies: HashMap<Rc<str>, Rc<crate::set_monodromy::Monodromy>>,
     set_linearizations: HashMap<Rc<str>, Rc<str>>,
+    set_logic: HashMap<Rc<str>, set_logic::Origin>,
     set_elements: HashMap<TypeId, Rc<set_family::Elements>>,
     mixed_complexes: Vec<(String, Rc<mixed::Complex>)>,
     mixed_hh_origins: HashMap<mixed::Id, Rc<rv_hh_mixed::Origin>>,
@@ -509,6 +511,7 @@ impl Model {
             set_origins: HashMap::new(),
             set_monodromies: HashMap::new(),
             set_linearizations: HashMap::new(),
+            set_logic: HashMap::new(),
             set_elements: HashMap::new(),
             mixed_complexes: Vec::new(),
             mixed_hh_origins: HashMap::new(),
@@ -1569,6 +1572,36 @@ impl Model {
         self.set_origins
             .insert(Rc::from(name.text.as_str()), origin);
         Ok(())
+    }
+
+    pub(crate) fn define_set_logic(
+        &mut self,
+        name: &Label,
+        diagram: set_family::Diagram,
+        origin: set_logic::Origin,
+    ) -> Result<()> {
+        self.allocate(1)?;
+        self.define_set_family(name, diagram)?;
+        self.set_logic.insert(Rc::from(name.text.as_str()), origin);
+        Ok(())
+    }
+
+    pub(crate) fn set_omega(&self, name: &str) -> Result<Rc<set_logic::Omega>> {
+        if let Some(set_logic::Origin::Omega(omega)) = self.set_logic.get(name) {
+            return Ok(omega.clone());
+        }
+        Err(Error::plain(format!(
+            "'{name}' is not a declared set truth classifier"
+        )))
+    }
+
+    pub(crate) fn set_subobject(&self, name: &str) -> Result<Rc<set_logic::Subobject>> {
+        if let Some(set_logic::Origin::Subobject(subobject)) = self.set_logic.get(name) {
+            return Ok(subobject.clone());
+        }
+        Err(Error::plain(format!(
+            "'{name}' is not a declared predicate comprehension"
+        )))
     }
 
     pub(crate) fn set_origin(&self, name: &str) -> Option<dependent_sets::Origin> {

@@ -142,6 +142,7 @@ mod rv_witt_tower;
 mod rv_wz;
 mod rv_wzw;
 mod set_family;
+mod set_logic;
 mod set_monodromy;
 mod sheaf;
 mod sheaf_cellular;

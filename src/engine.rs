@@ -123,6 +123,7 @@ use crate::rv_witt_cover::Cover as RvWittCover;
 use crate::rv_witt_tower::Tower as RvWittTower;
 use crate::rv_wzw;
 use crate::set_family;
+use crate::set_logic::{self, Operation as SetLogic};
 use crate::sheaf::{self, Cochains, Form as SheafForm, Operation as SheafOp, Sheaf};
 use crate::sheaf_cellular::{Cellular, Resolution, Total as SheafTotal};
 use crate::sheaf_ext::{self, Ends as SheafEnds};
@@ -377,7 +378,24 @@ enum DependentAction {
     ),
 }
 
+enum LogicAction {
+    Constant(Rc<set_logic::Omega>, Rc<set_family::Diagram>, bool),
+    Connect(Rc<set_logic::Omega>, Rc<set_family::Diagram>, SetLogic),
+    Classify(
+        Rc<set_logic::Omega>,
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+    ),
+    Quantify(
+        Rc<set_logic::Omega>,
+        Rc<set_family::Diagram>,
+        Rc<set_family::Diagram>,
+        bool,
+    ),
+}
+
 enum TypedForm {
+    SetLogic(LogicAction, Vec<TypedExpr>),
     SetDependent(DependentAction, Option<Box<TypedExpr>>),
     SetIdentity(Rc<set_family::Diagram>),
     SetSection(Rc<set_family::Elements>, Rc<set_family::Diagram>, usize),
@@ -971,6 +989,48 @@ impl Engine {
                 let data = self.model.sheaf(&name)?;
                 let rank = data.rank(&mut self.model, degree)?;
                 format!("shdim[{}, {degree}] = {rank}", name.text)
+            }
+            StatementForm::SetOmega(name, site) => {
+                self.model.check_new_set_family(&name)?;
+                let site = self.model.named(&site.text).ok_or_else(|| {
+                    Error::new(site.span, format!("unknown named site '{}'", site.text))
+                })?;
+                let (diagram, omega) = set_logic::Omega::build(&mut self.model, site)?;
+                self.model.define_set_logic(
+                    &name,
+                    diagram,
+                    set_logic::Origin::Omega(Rc::new(omega)),
+                )?;
+                return Ok(None);
+            }
+            StatementForm::SetSubobject(name, predicate) => {
+                self.model.check_new_set_family(&name)?;
+                let predicate = self.checker().expr(predicate)?;
+                let (family, _, omega) = self.checker().set_predicate(predicate.ty)?;
+                let domain = self
+                    .model
+                    .set_family_named(&family)
+                    .expect("predicate domain");
+                let Value::SetNat(rows) = self.eval(&predicate)? else {
+                    unreachable!()
+                };
+                let (diagram, inclusion) =
+                    set_logic::Subobject::build(&mut self.model, family, &domain, &omega, &rows)?;
+                self.model.define_set_logic(
+                    &name,
+                    diagram,
+                    set_logic::Origin::Subobject(Rc::new(inclusion)),
+                )?;
+                return Ok(None);
+            }
+            StatementForm::SetSieve(name, point, index) => {
+                let omega = self.model.set_omega(&name.text)?;
+                let x = self.model.point(omega.base, &point)?;
+                let elements = omega.members(&mut self.model, x, index)?.join(", ");
+                format!(
+                    "setsieve[{}, {}, {index}] = {{{elements}}}",
+                    name.text, point.text
+                )
             }
             StatementForm::SetPullback(name, family, map) => {
                 self.model.check_new_set_family(&name)?;
@@ -2873,6 +2933,40 @@ impl Engine {
             &TypedForm::Local(index) => Ok(self.locals[index].clone()),
             &TypedForm::Point(index) => Ok(Value::Point(index)),
             TypedForm::Constant(value) => Ok(value.clone()),
+            TypedForm::SetLogic(action, inputs) => {
+                let rows = inputs
+                    .iter()
+                    .map(|expr| {
+                        let Value::SetNat(value) = self.eval(expr)? else {
+                            unreachable!()
+                        };
+                        Ok(value)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                match action {
+                    LogicAction::Constant(omega, source, top) => {
+                        omega.constant(&mut self.model, source, *top)
+                    }
+                    LogicAction::Connect(omega, source, operation) => omega.connect(
+                        &mut self.model,
+                        source,
+                        *operation,
+                        &rows[0],
+                        rows.get(1).map(AsRef::as_ref),
+                    ),
+                    LogicAction::Classify(omega, source, target) => {
+                        omega.classify(&mut self.model, source, target, &rows[0])
+                    }
+                    LogicAction::Quantify(omega, source, target, universal) => omega.quantify(
+                        &mut self.model,
+                        source,
+                        target,
+                        &rows[0],
+                        &rows[1],
+                        *universal,
+                    ),
+                }
+            }
             TypedForm::SetDependent(action, input) => {
                 let rows = if let Some(input) = input {
                     let Value::SetNat(rows) = self.eval(input)? else {
@@ -6228,6 +6322,100 @@ impl Checker<'_> {
         .map_err(|error| error.at(ty.span))
     }
 
+    fn set_predicate(&self, ty: TypeId) -> Result<(Rc<str>, Rc<str>, Rc<set_logic::Omega>)> {
+        let (source, range) = self.set_nat_ends(ty)?;
+        let omega = self.model.set_omega(&range)?;
+        Ok((source, range, omega))
+    }
+
+    fn set_logic(
+        &mut self,
+        operation: SetLogic,
+        labels: Vec<Label>,
+        inputs: Vec<ParsedExpr>,
+    ) -> Result<(TypeId, TypedForm)> {
+        let inputs = inputs
+            .into_iter()
+            .map(|input| self.expr(input))
+            .collect::<Result<Vec<_>>>()?;
+        let (domain, range, action) = match operation {
+            SetLogic::Top | SetLogic::Bottom => {
+                let domain = self.model.set_family(&labels[0])?;
+                let omega = self.model.set_omega(&labels[1].text)?;
+                if domain.base != omega.base {
+                    return Err(Error::plain(
+                        "truth classifier and family must use the same site",
+                    ));
+                }
+                (
+                    Rc::from(labels[0].text.as_str()),
+                    Rc::from(labels[1].text.as_str()),
+                    LogicAction::Constant(omega, domain, matches!(operation, SetLogic::Top)),
+                )
+            }
+            SetLogic::And | SetLogic::Or | SetLogic::Implies | SetLogic::Not => {
+                let (source, target, omega) = self.set_predicate(inputs[0].ty)?;
+                if inputs
+                    .get(1)
+                    .is_some_and(|second| second.ty != inputs[0].ty)
+                {
+                    return Err(Error::plain("logical operands must be predicates on the same family with the same classifier"));
+                }
+                let domain = self
+                    .model
+                    .set_family_named(&source)
+                    .expect("predicate domain");
+                (
+                    source,
+                    target,
+                    LogicAction::Connect(omega, domain, operation),
+                )
+            }
+            SetLogic::Exists | SetLogic::Forall => {
+                let (source, target) = self.set_nat_ends(inputs[0].ty)?;
+                let (predicate, classifier, omega) = self.set_predicate(inputs[1].ty)?;
+                if predicate != source {
+                    return Err(Error::plain(
+                        "quantified predicate must be on the natural map's source family",
+                    ));
+                }
+                let a = self.model.set_family_named(&source).expect("map source");
+                let b = self.model.set_family_named(&target).expect("map target");
+                (
+                    target,
+                    classifier,
+                    LogicAction::Quantify(omega, a, b, matches!(operation, SetLogic::Forall)),
+                )
+            }
+            SetLogic::Classify => {
+                let (source, target) = self.set_nat_ends(inputs[0].ty)?;
+                let a = self.model.set_family_named(&source).expect("map source");
+                let b = self.model.set_family_named(&target).expect("map target");
+                let omega = self.model.set_omega(&labels[0].text)?;
+                if omega.base != b.base {
+                    return Err(Error::plain(
+                        "truth classifier and family must use the same site",
+                    ));
+                }
+                (
+                    target,
+                    Rc::from(labels[0].text.as_str()),
+                    LogicAction::Classify(omega, a, b),
+                )
+            }
+            SetLogic::Inclusion => {
+                let name = Rc::from(labels[0].text.as_str());
+                let subobject = self.model.set_subobject(&name)?;
+                let ty = self
+                    .model
+                    .register_set_nat_type(name, subobject.family.clone(), true)?;
+                return Ok((ty, TypedForm::Constant(subobject.inclusion())));
+            }
+        };
+        let ty = self.model.register_set_nat_type(domain, range, true)?;
+        Ok((ty, TypedForm::SetLogic(action, inputs)))
+    }
+
     fn get_pullback(&self, name: &str) -> Result<Rc<dependent_sets::Pullback>> {
         match self.model.set_origin(name) {
             Some(dependent_sets::Origin::Pullback(origin)) => Ok(origin),
@@ -6430,6 +6618,9 @@ impl Checker<'_> {
 
     fn expr_regular(&mut self, expr: ExprForm, span: Span) -> Result<(TypeId, TypedForm)> {
         match expr {
+            ExprForm::SetLogic(operation, labels, inputs) => {
+                self.set_logic(operation, labels, inputs)
+            }
             ExprForm::SetDependent(operation, first, second, input) => {
                 self.set_dependent(operation, first, second, input)
             }
