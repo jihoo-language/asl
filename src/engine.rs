@@ -651,6 +651,8 @@ enum TypedForm {
     HilbertSquareCup(Box<[TypedExpr; 2]>),
     HilbertSquareLlv(hilbert_square::llv::Operation, Box<[TypedExpr; 2]>),
     HilbertSquareRotate(Box<[TypedExpr; 3]>),
+    HilbertSquareFromNakajima(Box<TypedExpr>),
+    HilbertSquareToNakajima(i128, Box<TypedExpr>),
     HilbertSquareScale(crate::lee_linear::Rational, Box<TypedExpr>),
     K3AutoPoint(Rc<kummer_surface::dynamics::Word>, i128, Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
@@ -1657,6 +1659,18 @@ impl Engine {
                     unreachable!()
                 };
                 return Ok(Some(format!("rvHilbSquareIntegral = {}", class.integral())));
+            }
+            StatementForm::HilbertSquareNakajimaDen(input) => {
+                let input = self.checker().expr(*input)?;
+                self.checker()
+                    .hilbert_square_operand(&input, "rvHilbSquareNakajimaDen")?;
+                let Value::HilbertSquare(class) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hilbert_square_form()?;
+                let denominator =
+                    hilbert_square::fock::denominator(&mut self.model, &form, &class)?;
+                return Ok(Some(format!("rvHilbSquareNakajimaDen = {denominator}")));
             }
             StatementForm::K3Lattice(command) => {
                 return self.k3_lattice_command(*command).map(Some)
@@ -7654,6 +7668,26 @@ impl Engine {
                 };
                 let form = self.model.hilbert_square_form()?;
                 hilbert_square::llv::rotate(&mut self.model, &form, &a, &b, &class)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareFromNakajima(input) => {
+                let Value::Nakajima(state) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let Kind::HilbertSquare(_, degree) = self.model.kind(expr.ty) else {
+                    unreachable!()
+                };
+                let zero = hilbert_square::Class::zero(*degree);
+                let form = self.model.hilbert_square_form()?;
+                hilbert_square::fock::forward(&mut self.model, &form, &state, zero)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::HilbertSquareToNakajima(scale, input) => {
+                let Value::HilbertSquare(class) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let form = self.model.hilbert_square_form()?;
+                hilbert_square::fock::backward(&mut self.model, &form, &class, *scale)?
                     .persist(&mut self.model)
             }
             TypedForm::HilbertSquareScale(scalar, input) => {
@@ -19262,6 +19296,35 @@ impl Checker<'_> {
                 Ok((
                     class.ty,
                     TypedForm::HilbertSquareRotate(Box::new([a, b, class])),
+                ))
+            }
+            Expression::FromNakajima(input) => {
+                let input = self.expr(*input)?;
+                let grade = self.nakajima_grade(&input, "rvNakajimaHilbSquare")?;
+                if grade.length != 2 {
+                    return Err(Error::new(
+                        input.span,
+                        "rvNakajimaHilbSquare requires a Nakajima state of length two",
+                    ));
+                }
+                let name = Label {
+                    text: grade.basis.to_string(),
+                    span: input.span,
+                };
+                let ty = self.model.hilbert_square_type(&name, grade.degree)?;
+                Ok((ty, TypedForm::HilbertSquareFromNakajima(Box::new(input))))
+            }
+            Expression::ToNakajima(scale, input) => {
+                let input = self.expr(*input)?;
+                let (name, degree) = self.hilbert_square_operand(&input, "rvHilbSquareNakajima")?;
+                let name = Label {
+                    text: name.to_string(),
+                    span: input.span,
+                };
+                let ty = self.model.nakajima_type(&name, 2, degree)?;
+                Ok((
+                    ty,
+                    TypedForm::HilbertSquareToNakajima(scale, Box::new(input)),
                 ))
             }
             Expression::Scale(numerator, denominator, input) => {

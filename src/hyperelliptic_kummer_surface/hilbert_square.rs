@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -9,6 +10,7 @@ use crate::model::{Model, Value};
 use crate::rv_lens::gcd;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod fock;
 pub(crate) mod llv;
 
 const RANK: usize = 1 + unimodular::RANK;
@@ -22,6 +24,8 @@ pub(crate) enum Expression {
     Chern(Label, bool),
     Llv(llv::Operation, Box<[ParsedExpr; 2]>),
     Rotate(Box<[ParsedExpr; 3]>),
+    FromNakajima(Box<ParsedExpr>),
+    ToNakajima(i128, Box<ParsedExpr>),
 }
 
 pub(crate) fn dimension(degree: i128) -> usize {
@@ -247,6 +251,7 @@ fn monomial_index(i: usize, j: usize) -> usize {
 pub(crate) struct Form {
     gram: [[i128; RANK]; RANK],
     monomials: Vec<(usize, usize)>,
+    inverse: OnceCell<Matrix<Rational>>,
 }
 
 impl Form {
@@ -261,7 +266,11 @@ impl Form {
         let monomials = (0..RANK)
             .flat_map(|i| (i..RANK).map(move |j| (i, j)))
             .collect();
-        Ok(Self { gram, monomials })
+        Ok(Self {
+            gram,
+            monomials,
+            inverse: OnceCell::new(),
+        })
     }
 
     fn contract(&self, model: &mut Model, vector: &[Rational]) -> Result<[Rational; RANK]> {
@@ -275,7 +284,10 @@ impl Form {
         Ok(pairings)
     }
 
-    pub(crate) fn c2(&self, model: &mut Model) -> Result<Class> {
+    fn inverse(&self, model: &mut Model) -> Result<&Matrix<Rational>> {
+        if let Some(inverse) = self.inverse.get() {
+            return Ok(inverse);
+        }
         let entries = self
             .gram
             .iter()
@@ -286,6 +298,12 @@ impl Form {
         let matrix = Matrix::from_entries(RANK, entries)?;
         let inverse = hw_algebra::inverse(model, &RationalField, &matrix)?
             .ok_or_else(|| Error::plain("Hilbert-square Beauville form is degenerate"))?;
+        model.allocate(2 * RANK * RANK)?;
+        Ok(self.inverse.get_or_init(|| inverse))
+    }
+
+    pub(crate) fn c2(&self, model: &mut Model) -> Result<Class> {
+        let inverse = self.inverse(model)?;
         model.spend(MIDDLE)?;
         let coordinates = self
             .monomials

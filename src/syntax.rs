@@ -1175,6 +1175,7 @@ pub(crate) enum StatementForm {
     K3Automorphism(Box<crate::hyperelliptic_kummer_surface::dynamics::Command>),
     HilbertSquareIntegral(Box<ParsedExpr>),
     K3AutoPeriod(Box<crate::hyperelliptic_kummer_surface::dynamics::Expression>),
+    HilbertSquareNakajimaDen(Box<ParsedExpr>),
     Richelot(Box<crate::richelot::Command>),
     Bielliptic(Box<crate::bielliptic::Command>),
     EllipticGlue(Box<crate::elliptic_gluing::Command>),
@@ -3079,6 +3080,19 @@ impl<'src> Parser<'src> {
                 let depth = 1 + a.depth.max(b.depth).max(class.depth);
                 (Expression::Rotate(Box::new([a, b, class])), depth)
             }
+            "rvNakajimaHilbSquare" => {
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::FromNakajima(Box::new(input)), depth)
+            }
+            "rvHilbSquareNakajima" => {
+                self.expect(Token::LBracket)?;
+                let scale = self.signed_wide("a signed integer", "Fock conversion scale")?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                (Expression::ToNakajima(scale, Box::new(input)), depth)
+            }
             "rvHilbSquareBasis" => {
                 self.expect(Token::LBracket)?;
                 let basis = self.label()?;
@@ -4713,6 +4727,10 @@ impl<'src> Parser<'src> {
                         self.paren_pair(0)?,
                     )),
                 )
+            }
+            Token::Word("rvHilbSquareNakajimaDen") => {
+                self.advance()?;
+                StatementForm::HilbertSquareNakajimaDen(Box::new(self.paren_expr(0)?))
             }
             Token::Word(name @ ("rvK3LatticePair" | "rvK3LatticeGram")) => {
                 self.k3_lattice_statement(name)?
@@ -10101,6 +10119,7 @@ impl<'src> Parser<'src> {
                         | "rvHilbSquareScale"
                         | "rvHilbSquareC2"
                         | "rvHilbSquareC4"
+                        | "rvHilbSquareNakajima"
                 ) && self.token() == Token::LBracket)
                     || (matches!(
                         name.text.as_str(),
@@ -10109,6 +10128,7 @@ impl<'src> Parser<'src> {
                             | "rvHilbSquareLambda"
                             | "rvHilbSquarePrimitive"
                             | "rvHilbSquareRotate"
+                            | "rvNakajimaHilbSquare"
                     ) && self.token() == Token::LParen)
                 {
                     return self.hilbert_square_expression(&name.text, span, nest);

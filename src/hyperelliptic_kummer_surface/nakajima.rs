@@ -189,6 +189,23 @@ impl State {
         ))
     }
 
+    pub(super) fn from_monomial_coefficients(
+        model: &mut Model,
+        terms: impl IntoIterator<Item = (Vec<Factor>, i128)>,
+    ) -> Result<Self> {
+        let mut state = Self::zero();
+        for (factors, coefficient) in terms {
+            if coefficient == 0 {
+                continue;
+            }
+            let (monomial, _, _) = Self::monomial(model, factors)?;
+            let key = monomial.terms.into_keys().next().expect("one monomial");
+            model.spend(1 + state.terms.len().max(1).ilog2() as usize)?;
+            state.add_term(key, coefficient)?;
+        }
+        Ok(state)
+    }
+
     pub(crate) fn terms(&self) -> impl Iterator<Item = (&[Factor], i128)> {
         self.terms
             .iter()
@@ -216,26 +233,33 @@ impl State {
 
     pub(crate) fn add(&self, model: &mut Model, rhs: &Self) -> Result<Self> {
         model.spend(self.cells() + rhs.cells())?;
-        let mut terms = self.terms.clone();
+        let mut result = Self {
+            terms: self.terms.clone(),
+        };
         for (key, &coefficient) in &rhs.terms {
-            match terms.entry(key.clone()) {
-                Entry::Occupied(mut entry) => {
-                    let value = entry
-                        .get()
-                        .checked_add(coefficient)
-                        .ok_or_else(coordinate_range)?;
-                    if value == 0 {
-                        entry.remove();
-                    } else {
-                        *entry.get_mut() = value;
-                    }
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(coefficient);
+            result.add_term(key.clone(), coefficient)?;
+        }
+        Ok(result)
+    }
+
+    fn add_term(&mut self, key: Monomial, coefficient: i128) -> Result<()> {
+        match self.terms.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let value = entry
+                    .get()
+                    .checked_add(coefficient)
+                    .ok_or_else(coordinate_range)?;
+                if value == 0 {
+                    entry.remove();
+                } else {
+                    *entry.get_mut() = value;
                 }
             }
+            Entry::Vacant(entry) => {
+                entry.insert(coefficient);
+            }
         }
-        Ok(Self { terms })
+        Ok(())
     }
 
     pub(crate) fn scale(&self, model: &mut Model, scalar: i128) -> Result<Self> {
