@@ -2897,10 +2897,10 @@ impl<'src> Parser<'src> {
                     "Kummer K3 extension degree must be positive",
                 ));
             }
-            if name == "rvKummerK3Points" {
-                Query::Points(degree)
-            } else {
-                Query::Picard(degree)
+            match name {
+                "rvKummerK3Points" => Query::Points(degree),
+                "rvKummerK3ArtinTate" => Query::ArtinTate(degree),
+                _ => Query::Picard(degree),
             }
         };
         self.expect(Token::RBracket)?;
@@ -3708,9 +3708,12 @@ impl<'src> Parser<'src> {
                 command @ ("rvjacbase" | "rvJacCount" | "rvJacEnumerate" | "rvJacOrder"
                 | "rvJacCompose" | "rvjacchart" | "rvJacKummer" | "rvJacHalfFiber"),
             ) => self.jacobian_statement(command)?,
-            Token::Word(command @ ("rvKummerK3Zeta" | "rvKummerK3Points" | "rvKummerK3Picard")) => {
-                self.kummer_k3_statement(command)?
-            }
+            Token::Word(
+                command @ ("rvKummerK3Zeta"
+                | "rvKummerK3Points"
+                | "rvKummerK3Picard"
+                | "rvKummerK3ArtinTate"),
+            ) => self.kummer_k3_statement(command)?,
             Token::Word(
                 command @ ("rvjactorsionbasis" | "rvJacTorsionFrob" | "rvJacRichelotMatrix"),
             ) => self.jacobian_level_statement(command)?,

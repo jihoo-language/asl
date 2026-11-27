@@ -9,10 +9,13 @@ use crate::model::Model;
 use crate::rv_ore::gcd;
 use crate::syntax::Label;
 
+mod artin_tate;
+
 pub(crate) enum Query {
     Zeta,
     Points(u128),
     Picard(u128),
+    ArtinTate(u128),
 }
 
 pub(crate) struct Command(pub(crate) Label, pub(crate) Query);
@@ -33,15 +36,14 @@ impl Command {
                 format!("rvKummerK3Points[{}, {degree}] = singular={singular}, nodes={nodes}, resolved={resolved}", name.text)
             }
             Query::Picard(degree) => {
-                let exceptional: u128 = orbits.iter().map(|&d| gcd(degree, d as u128)).sum();
-                let (rational, geometric) =
-                    abelian_picard(model, q, cross_quartic(q, weil)?, degree)?;
+                let (rational, geometric) = picard_ranks(model, q, weil, &orbits, degree)?;
                 format!(
-                    "rvKummerK3Picard[{}, {degree}] = rank={}, geometric rank={}",
-                    name.text,
-                    u128::from(rational) + exceptional,
-                    geometric + 16
+                    "rvKummerK3Picard[{}, {degree}] = rank={rational}, geometric rank={geometric}",
+                    name.text
                 )
+            }
+            Query::ArtinTate(degree) => {
+                artin_tate::report(model, &curve, &name.text, q, weil, &orbits, degree)?
             }
         })
     }
@@ -164,7 +166,16 @@ fn point_counts(
 }
 
 fn exterior_trace(model: &mut Model, weil: &[i128], degree: usize) -> Result<i128> {
-    // Computing q^(2r) first bounds r and all the H¹ traces needed here.
+    Ok(powered_weil_coefficients(model, weil, degree, point_overflow)?.1)
+}
+
+fn powered_weil_coefficients(
+    model: &mut Model,
+    weil: &[i128],
+    degree: usize,
+    overflow: fn() -> Error,
+) -> Result<(i128, i128)> {
+    // Both callers bound r by checking the extension size first.
     let mut traces = vec![0];
     for exponent in 1..=2 * degree {
         let terms = exponent.min(weil.len() - 1);
@@ -181,12 +192,12 @@ fn exterior_trace(model: &mut Model, weil: &[i128], degree: usize) -> Result<i12
             }
             Some(trace)
         };
-        traces.push(compute().ok_or_else(point_overflow)?);
+        traces.push(compute().ok_or_else(overflow)?);
     }
     let sr = traces[degree];
     let s2r = traces[2 * degree];
-    let compute = || Some(sr.checked_mul(sr)?.checked_sub(s2r)? / 2);
-    compute().ok_or_else(point_overflow)
+    let compute = || Some((sr, sr.checked_mul(sr)?.checked_sub(s2r)? / 2));
+    compute().ok_or_else(overflow)
 }
 
 // This list contains all cyclotomic polynomials of degree at most four.
@@ -201,6 +212,18 @@ const CYCLOTOMIC: &[(u128, &[i128])] = &[
     (10, &[1, -1, 1, -1, 1]),
     (12, &[1, 0, -1, 0, 1]),
 ];
+
+fn picard_ranks(
+    model: &mut Model,
+    q: u64,
+    weil: &[i128],
+    orbits: &[usize],
+    degree: u128,
+) -> Result<(u128, u8)> {
+    let exceptional: u128 = orbits.iter().map(|&d| gcd(degree, d as u128)).sum();
+    let (rational, geometric) = abelian_picard(model, q, cross_quartic(q, weil)?, degree)?;
+    Ok((u128::from(rational) + exceptional, geometric + 16))
+}
 
 fn abelian_picard(model: &mut Model, q: u64, cross: [i128; 5], degree: u128) -> Result<(u8, u8)> {
     let mut remaining = cross.to_vec();
