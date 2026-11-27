@@ -1371,6 +1371,7 @@ pub(crate) enum StatementForm {
     WittSpectrumQuery(crate::rv_witt_spectrum::Query, Box<ParsedExpr>),
     PartitionQuery(crate::partition_algebra::Query, Box<ParsedExpr>),
     PartitionReport(crate::partition_algebra::Report),
+    DelignePathReport(crate::partition_algebra::vacillating::Report),
     Karoubi(Box<crate::partition_algebra::karoubi::Statement>),
     WittSchurBranch(crate::rv_witt_spectrum::SchurBranch),
     SchurCharacterCoeff(crate::rv_witt_spectrum::SchurShape, Box<ParsedExpr>),
@@ -6544,6 +6545,21 @@ impl<'src> Parser<'src> {
         Ok(labels)
     }
 
+    fn deligne_path(&mut self, rank: usize) -> Result<crate::partition_algebra::vacillating::Path> {
+        let span = self.span();
+        self.expect(Token::LBrace)?;
+        let mut tails = Vec::new();
+        while self.token() != Token::RBrace {
+            tails.push(self.partition_labels(true)?);
+            if !self.eat(Token::Comma)? {
+                break;
+            }
+        }
+        self.expect(Token::RBrace)?;
+        crate::partition_algebra::vacillating::Path::new(rank, tails)
+            .map_err(|error| error.at(span))
+    }
+
     fn deligne_projector_index(&mut self) -> Result<usize> {
         let span = self.span();
         let result = self.wide_unsigned("Deligne square projector index")?;
@@ -6592,6 +6608,27 @@ impl<'src> Parser<'src> {
     fn partition_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::partition_algebra::{Binary, Expression, Unary};
         let (expression, depth) = match name {
+            "rvDeligneTowerOperator" | "rvDelignePathProjector" => {
+                self.expect(Token::LBracket)?;
+                let rank = self.partition_rank()?;
+                crate::partition_algebra::vacillating::require_literal_rank(rank)?;
+                let form = if name == "rvDeligneTowerOperator" {
+                    self.expect(Token::Comma)?;
+                    let level = self.wide_unsigned("doubled Deligne tower level")?;
+                    if level > 2 * rank as u128 {
+                        return Err(Error::new(
+                            span,
+                            "Deligne tower level exceeds twice the rank",
+                        ));
+                    }
+                    self.expect(Token::RBracket)?;
+                    Expression::TowerOperator(rank, level as usize)
+                } else {
+                    self.expect(Token::RBracket)?;
+                    Expression::PathProjector(self.deligne_path(rank)?)
+                };
+                (form, 0)
+            }
             "rvDeligneSquareProjector" | "rvDeligneSquareUnit" => {
                 self.expect(Token::LBracket)?;
                 let i = self.deligne_projector_index()?;
@@ -6611,15 +6648,15 @@ impl<'src> Parser<'src> {
             }
             "rvPartitionLocalDivide" => {
                 self.expect(Token::LBracket)?;
-                let mut powers = [0; 4];
-                for (i, exponent) in powers.iter_mut().enumerate() {
-                    if i != 0 {
-                        self.expect(Token::Comma)?;
+                let mut powers = Vec::new();
+                loop {
+                    powers.push(self.wide_unsigned("partition denominator exponent")?);
+                    if !self.eat(Token::Comma)? {
+                        break;
                     }
-                    *exponent = self.wide_unsigned("partition denominator exponent")?;
                 }
                 self.expect(Token::RBracket)?;
-                let den = crate::partition_algebra::local::Denominator::new(powers)?;
+                let den = crate::partition_algebra::local::Denominator::from_literal(powers)?;
                 let input = self.paren_expr(nest)?;
                 let depth = input.depth + 1;
                 (Expression::Divide(den, Box::new(input)), depth)
@@ -10425,6 +10462,22 @@ impl<'src> Parser<'src> {
                     }
                 };
                 StatementForm::Karoubi(Box::new(statement))
+            }
+            Token::Word(name @ ("rvDelignePathCounts" | "rvDelignePathEigenvalues")) => {
+                use crate::partition_algebra::vacillating::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let rank = self.partition_rank()?;
+                let report = if name == "rvDelignePathCounts" {
+                    self.expect(Token::RBracket)?;
+                    Report::Counts(rank)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let n = self.wide_unsigned("finite permutation dimension")?;
+                    self.expect(Token::RBracket)?;
+                    Report::Eigenvalues(self.deligne_path(rank)?, n)
+                };
+                StatementForm::DelignePathReport(report)
             }
             Token::Word(name @ ("rvPartitionDimensions" | "rvPartitionCentralizerCheck")) => {
                 use crate::partition_algebra::Report;
@@ -17764,6 +17817,8 @@ impl<'src> Parser<'src> {
                         | "rvPartitionLocalDivide"
                         | "rvDeligneSquareProjector"
                         | "rvDeligneSquareUnit"
+                        | "rvDeligneTowerOperator"
+                        | "rvDelignePathProjector"
                         | "rvPartitionOrbit"
                         | "rvPartitionIdentity"
                         | "rvPartitionReflect"

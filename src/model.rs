@@ -721,6 +721,7 @@ pub(crate) struct Model {
     cm_ring_orders: HashMap<String, cm_ring::Order>,
     karoubi_objects: HashMap<String, Rc<crate::partition_algebra::local::LocalAlgebra>>,
     deligne_square: Option<Rc<crate::partition_algebra::square::Square>>,
+    deligne_towers: HashMap<usize, Rc<crate::partition_algebra::vacillating::Tower>>,
     hilbert_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::stratum::Partition>>,
     specht_strata: HashMap<String, Rc<hyperelliptic_kummer_surface::specht::Decoration>>,
     cm_class_polynomials: HashMap<String, Rc<crate::cm_class_poly::Polynomial>>,
@@ -862,6 +863,7 @@ impl Model {
             cm_ring_orders: HashMap::new(),
             karoubi_objects: HashMap::new(),
             deligne_square: None,
+            deligne_towers: HashMap::new(),
             hilbert_strata: HashMap::new(),
             specht_strata: HashMap::new(),
             cm_class_polynomials: HashMap::new(),
@@ -4213,6 +4215,20 @@ impl Model {
         let square = Rc::new(crate::partition_algebra::square::Square::new(self)?);
         self.deligne_square = Some(square.clone());
         Ok(square)
+    }
+
+    pub(crate) fn deligne_tower(
+        &mut self,
+        rank: usize,
+    ) -> Result<Rc<crate::partition_algebra::vacillating::Tower>> {
+        if let Some(tower) = self.deligne_towers.get(&rank) {
+            return Ok(tower.clone());
+        }
+        let tower = Rc::new(crate::partition_algebra::vacillating::Tower::new(
+            self, rank,
+        )?);
+        self.deligne_towers.insert(rank, tower.clone());
+        Ok(tower)
     }
 
     pub(crate) fn define_hilbert_stratum(

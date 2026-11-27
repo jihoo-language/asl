@@ -16,6 +16,7 @@ mod dimension;
 pub(crate) mod karoubi;
 pub(crate) mod local;
 pub(crate) mod square;
+pub(crate) mod vacillating;
 use diagram::Diagram;
 pub(crate) use dimension::Report;
 
@@ -24,6 +25,7 @@ const MAX_TERMS: usize = 100_000;
 type Integer = Wide<16>;
 type Monomial = (Diagram, u128);
 type Polynomial = BTreeMap<u128, Integer>;
+type DiagramGroup<'a> = (&'a Diagram, Vec<(u128, i128)>);
 
 pub(crate) enum Expression {
     Basis(usize, Vec<u128>, bool),
@@ -33,6 +35,8 @@ pub(crate) enum Expression {
     Localize(Box<ParsedExpr>),
     Divide(local::Denominator, Box<ParsedExpr>),
     SquareUnit(usize, usize),
+    TowerOperator(usize, usize),
+    PathProjector(vacillating::Path),
 }
 
 #[derive(Clone, Copy)]
@@ -193,15 +197,25 @@ impl Algebra {
     pub(crate) fn binary(&self, model: &mut Model, operation: Binary, rhs: &Self) -> Result<Self> {
         let rank = operation.rank(self.rank, rhs.rank)?;
         let mut evaluated = BTreeMap::new();
-        for ((left, i), &a) in &self.terms {
-            for ((right, j), &b) in &rhs.terms {
-                model.spend(4 + 4 * (self.rank + rhs.rank))?;
+        let left = self.diagram_groups(model)?;
+        let right = rhs.diagram_groups(model)?;
+        for (top, p) in &left {
+            for (bottom, q) in &right {
+                model.spend(4 + 4 * (self.rank + rhs.rank) + p.len() * q.len())?;
                 let (diagram, loops) = match operation {
-                    Binary::Compose => left.compose(right, rank),
-                    Binary::Tensor => (left.tensor(self.rank, right, rhs.rank), 0),
+                    Binary::Compose => top.compose(bottom, rank),
+                    Binary::Tensor => (top.tensor(self.rank, bottom, rhs.rank), 0),
                 };
-                let degree = add_degrees(add_degrees(*i, *j)?, loops as u128)?;
-                accumulate(&mut evaluated, (diagram, degree), Integer::product(a, b))?;
+                for &(i, a) in p {
+                    for &(j, b) in q {
+                        let degree = add_degrees(add_degrees(i, j)?, loops as u128)?;
+                        accumulate(
+                            &mut evaluated,
+                            (diagram.clone(), degree),
+                            Integer::product(a, b),
+                        )?;
+                    }
+                }
             }
         }
         let terms = evaluated
@@ -209,6 +223,20 @@ impl Algebra {
             .map(|(key, value)| Ok((key, value.signed().ok_or_else(coefficient_overflow)?)))
             .collect::<Result<_>>()?;
         Ok(Self { rank, terms })
+    }
+
+    fn diagram_groups(&self, model: &mut Model) -> Result<Vec<DiagramGroup<'_>>> {
+        model.spend((1 + self.rank) * self.terms.len())?;
+        let mut groups: Vec<DiagramGroup<'_>> = Vec::new();
+        for ((diagram, degree), &coefficient) in &self.terms {
+            match groups.last_mut() {
+                Some((current, polynomial)) if *current == diagram => {
+                    polynomial.push((*degree, coefficient))
+                }
+                _ => groups.push((diagram, vec![(*degree, coefficient)])),
+            }
+        }
+        Ok(groups)
     }
 
     pub(crate) fn query(&self, model: &mut Model, query: Query) -> Result<String> {

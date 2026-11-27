@@ -14,14 +14,54 @@ use super::{
 
 const DEGREE_LIMIT: u128 = 128;
 const DENOMINATOR_LIMIT: u8 = 64;
-const FACTORS: [&str; 4] = ["2", "t", "(t-1)", "(t-2)"];
+const FACTORS: [(&str, Factor); 7] = [
+    ("2", Factor::Prime(2)),
+    ("t", Factor::Root(0)),
+    ("(t-1)", Factor::Root(1)),
+    ("(t-2)", Factor::Root(2)),
+    ("3", Factor::Prime(3)),
+    ("(t-3)", Factor::Root(3)),
+    ("(t-4)", Factor::Root(4)),
+];
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum Factor {
+    Prime(u8),
+    Root(u8),
+}
 type Dense = Vec<Integer>;
 
 #[derive(Clone, Copy, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct Denominator([u8; 4]);
+pub(crate) struct Denominator([u8; FACTORS.len()]);
 
 impl Denominator {
     pub(crate) fn new(powers: [u128; 4]) -> Result<Self> {
+        Self::extended([powers[0], powers[1], powers[2], powers[3], 0, 0, 0])
+    }
+
+    pub(crate) fn from_literal(powers: Vec<u128>) -> Result<Self> {
+        match powers.as_slice() {
+            [a, b, c, d] => Self::new([*a, *b, *c, *d]),
+            [a, b, c, d, e, f, g] => Self::extended([*a, *b, *c, *d, *e, *f, *g]),
+            _ => Err(Error::plain(
+                "partition denominator requires four or seven exponents",
+            )),
+        }
+    }
+
+    pub(super) fn factor(value: Factor) -> Result<Self> {
+        let index = FACTORS
+            .iter()
+            .position(|&(_, factor)| factor == value)
+            .ok_or_else(|| {
+                Error::plain("path eigenvalue difference lies outside the diagram localization")
+            })?;
+        let mut powers = [0; FACTORS.len()];
+        powers[index] = 1;
+        Ok(Self(powers))
+    }
+
+    fn extended(powers: [u128; FACTORS.len()]) -> Result<Self> {
         let limit = u128::from(DENOMINATOR_LIMIT);
         if powers.iter().any(|&x| x > limit) || powers.iter().sum::<u128>() > limit {
             return Err(denominator_limit());
@@ -30,13 +70,13 @@ impl Denominator {
     }
 
     fn product(self, rhs: Self) -> Result<Self> {
-        Self::new(std::array::from_fn(|i| {
+        Self::extended(std::array::from_fn(|i| {
             u128::from(self.0[i]) + u128::from(rhs.0[i])
         }))
     }
 
     fn lcm(self, rhs: Self) -> Result<Self> {
-        Self::new(std::array::from_fn(|i| u128::from(self.0[i].max(rhs.0[i]))))
+        Self::extended(std::array::from_fn(|i| u128::from(self.0[i].max(rhs.0[i]))))
     }
 
     fn render(self) -> String {
@@ -44,7 +84,7 @@ impl Denominator {
             .0
             .iter()
             .zip(FACTORS)
-            .filter_map(|(&exponent, factor)| match exponent {
+            .filter_map(|(&exponent, (factor, _))| match exponent {
                 0 => None,
                 1 => Some(factor.to_string()),
                 _ => Some(format!("{factor}^{exponent}")),
@@ -58,7 +98,9 @@ impl Denominator {
     }
 
     fn require_regular(self, n: u128) -> Result<()> {
-        if n < 3 && self.0[n as usize + 1] != 0 {
+        if self.0.iter().zip(FACTORS).any(
+            |(&e, (_, factor))| matches!(factor, Factor::Root(root) if e!=0 && u128::from(root)==n),
+        ) {
             return Err(Error::plain(format!(
                 "partition rational coefficient has a pole at t={n}"
             )));
@@ -69,13 +111,12 @@ impl Denominator {
     fn at(self, model: &mut Model, n: u128) -> Result<Integer> {
         self.require_regular(n)?;
         let mut result = Integer::from_i128(1);
-        for (i, &exponent) in self.0.iter().enumerate().filter(|(_, e)| **e != 0) {
-            let value = if i == 0 {
-                natural(2)
-            } else {
-                natural(n)
-                    .add(natural((i - 1) as u128).negate())
-                    .map_err(|_| intermediate_overflow())?
+        for (&exponent, (_, factor)) in self.0.iter().zip(FACTORS).filter(|(e, _)| **e != 0) {
+            let value = match factor {
+                Factor::Prime(p) => natural(u128::from(p)),
+                Factor::Root(root) => natural(n)
+                    .add(natural(u128::from(root)).negate())
+                    .map_err(|_| intermediate_overflow())?,
             };
             let factor = norm_power(model, value, u128::from(exponent))?;
             result = result
@@ -182,18 +223,29 @@ impl LocalAlgebra {
 
     fn lift(&self, model: &mut Model, common: Denominator) -> Result<Algebra> {
         let mut numerator = self.numerator.clone();
-        let (scale, degree) = (
-            common.0[0] - self.denominator.0[0],
-            common.0[1] - self.denominator.0[1],
-        );
-        if scale != 0 || degree != 0 {
-            numerator = numerator.unary(model, Unary::Scale(1i128 << scale, u128::from(degree)))?;
-        }
-        for factor in 2..=3 {
-            for _ in self.denominator.0[factor]..common.0[factor] {
-                let leading = numerator.unary(model, Unary::Scale(1, 1))?;
-                let constant = numerator.unary(model, Unary::Scale(-((factor - 1) as i128), 0))?;
-                numerator = leading.add(model, &constant)?;
+        for (index, (_, factor)) in FACTORS.into_iter().enumerate() {
+            let missing = common.0[index] - self.denominator.0[index];
+            if missing == 0 {
+                continue;
+            }
+            match factor {
+                Factor::Prime(p) => {
+                    let scale = i128::from(p)
+                        .checked_pow(u32::from(missing))
+                        .ok_or_else(coefficient_overflow)?;
+                    numerator = numerator.unary(model, Unary::Scale(scale, 0))?;
+                }
+                Factor::Root(0) => {
+                    numerator = numerator.unary(model, Unary::Scale(1, u128::from(missing)))?
+                }
+                Factor::Root(root) => {
+                    for _ in 0..missing {
+                        let leading = numerator.unary(model, Unary::Scale(1, 1))?;
+                        let constant =
+                            numerator.unary(model, Unary::Scale(-i128::from(root), 0))?;
+                        numerator = leading.add(model, &constant)?;
+                    }
+                }
             }
         }
         Ok(numerator)
@@ -322,8 +374,8 @@ fn reduce(
     if polys.iter().all(Vec::is_empty) {
         return Ok(Denominator::default());
     }
-    for factor in 0..4 {
-        while denominator.0[factor] > 0 {
+    for (index, (_, factor)) in FACTORS.into_iter().enumerate() {
+        while denominator.0[index] > 0 {
             let mut quotients = Vec::with_capacity(polys.len());
             for poly in polys.iter() {
                 model.spend(poly.len())?;
@@ -338,20 +390,23 @@ fn reduce(
             for (poly, quotient) in polys.iter_mut().zip(quotients) {
                 *poly = quotient;
             }
-            denominator.0[factor] -= 1;
+            denominator.0[index] -= 1;
         }
     }
     Ok(denominator)
 }
 
-fn divide_factor(polynomial: &[Integer], factor: usize) -> Result<Option<Dense>> {
+fn divide_factor(polynomial: &[Integer], factor: Factor) -> Result<Option<Dense>> {
     if polynomial.is_empty() {
         return Ok(Some(Vec::new()));
     }
-    if factor == 0 {
+    let Factor::Root(root) = factor else {
+        let Factor::Prime(p) = factor else {
+            unreachable!()
+        };
         let mut quotient = Vec::with_capacity(polynomial.len());
         for value in polynomial {
-            let (magnitude, remainder) = value.magnitude.divide_u32(2);
+            let (magnitude, remainder) = value.magnitude.divide_u32(u32::from(p));
             if remainder != 0 {
                 return Ok(None);
             }
@@ -361,8 +416,8 @@ fn divide_factor(polynomial: &[Integer], factor: usize) -> Result<Option<Dense>>
             });
         }
         return Ok(Some(quotient));
-    }
-    let root = (factor - 1) as i128;
+    };
+    let root = i128::from(root);
     let mut quotient = vec![Integer::from_i128(0); polynomial.len() - 1];
     let mut top = Integer::from_i128(0);
     for (index, &value) in polynomial.iter().enumerate().rev() {

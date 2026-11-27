@@ -2157,6 +2157,9 @@ impl Engine {
             StatementForm::WittSchurBranch(branch) => {
                 return branch.report(&mut self.model).map(Some)
             }
+            StatementForm::DelignePathReport(report) => {
+                return report.execute(&mut self.model).map(Some)
+            }
             StatementForm::PartitionReport(report) => {
                 return report.execute(&mut self.model).map(Some)
             }
@@ -24617,6 +24620,19 @@ impl Checker<'_> {
                     input.ty,
                     TypedForm::PartitionDivide(denominator, Box::new(input)),
                 ))
+            }
+            Expression::TowerOperator(rank, level) => {
+                let ty = self.model.partition_local_type(rank)?;
+                let tower = self.model.deligne_tower(rank)?;
+                let value = tower.operator(level)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            Expression::PathProjector(path) => {
+                let rank = path.rank();
+                let ty = self.model.partition_local_type(rank)?;
+                let tower = self.model.deligne_tower(rank)?;
+                let value = tower.projector(self.model, &path)?.persist(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
             }
             Expression::SquareUnit(i, j) => {
                 let ty = self.model.partition_local_type(2)?;
