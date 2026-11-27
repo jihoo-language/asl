@@ -3159,6 +3159,22 @@ impl<'src> Parser<'src> {
                 };
                 (expression, depth)
             }
+            "rvBiellipticPush" | "rvBiellipticPull" => {
+                use crate::bielliptic::picard::Direction;
+                let target = self.label()?;
+                self.expect(Token::RBracket)?;
+                let input = self.paren_expr(nest)?;
+                let depth = 1 + input.depth;
+                let direction = if name == "rvBiellipticPush" {
+                    Direction::Push
+                } else {
+                    Direction::Pull
+                };
+                (
+                    Expression::BiellipticPicard(target, direction, Box::new(input)),
+                    depth,
+                )
+            }
             "rvJacRechart" | "rvJacUnchart" => {
                 use crate::hyperelliptic_chart::Direction;
                 let chart = self.label()?;
@@ -8773,6 +8789,8 @@ impl<'src> Parser<'src> {
                         | "rvRichelotPush"
                         | "rvRichelotDescPush"
                         | "rvBiellipticPoint"
+                        | "rvBiellipticPush"
+                        | "rvBiellipticPull"
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"

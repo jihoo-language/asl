@@ -455,6 +455,11 @@ enum JacobianAction {
         Box<TypedExpr>,
     ),
     BiellipticPoint(Rc<crate::bielliptic::Quotient>, Box<[TypedExpr; 2]>),
+    BiellipticPicard(
+        Box<crate::bielliptic::picard::Map>,
+        crate::bielliptic::picard::Direction,
+        Box<TypedExpr>,
+    ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -4826,6 +4831,17 @@ impl Engine {
                 quotient
                     .point(&mut self.model, &x, &y)?
                     .persist(&mut self.model, &quotient.target)
+            }
+            JacobianAction::BiellipticPicard(map, direction, input) => {
+                use crate::bielliptic::picard::Direction;
+                let Value::Jacobian(input) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let (value, target) = match direction {
+                    Direction::Push => (map.push(&mut self.model, &input)?, &map.target),
+                    Direction::Pull => (map.pull(&mut self.model, &input)?, &map.source),
+                };
+                value.persist(&mut self.model, target)
             }
             JacobianAction::Transport(chart, direction, target, input) => {
                 let Value::Jacobian(value) = self.eval(input)? else {
@@ -17959,6 +17975,35 @@ impl Checker<'_> {
                     TypedForm::Jacobian(JacobianAction::BiellipticPoint(
                         quotient,
                         Box::new([x, y]),
+                    )),
+                ))
+            }
+            Expression::BiellipticPicard(name, direction, input) => {
+                use crate::bielliptic::picard::{Direction, Map};
+                let input = self.expr(*input)?;
+                let Kind::Jacobian(curve) = self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(
+                        &input,
+                        direction.name(),
+                        "an RVJac divisor class",
+                    ));
+                };
+                let curve = Label {
+                    text: curve.to_string(),
+                    span: input.span,
+                };
+                let (source, factor) = match direction {
+                    Direction::Push => (&curve, &name),
+                    Direction::Pull => (&name, &curve),
+                };
+                let map = Map::resolve(self.model, source, factor)?;
+                let ty = self.model.jacobian_type(name.text.into())?;
+                Ok((
+                    ty,
+                    TypedForm::Jacobian(JacobianAction::BiellipticPicard(
+                        Box::new(map),
+                        direction,
+                        Box::new(input),
                     )),
                 ))
             }

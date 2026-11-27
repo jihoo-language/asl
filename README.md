@@ -1284,6 +1284,12 @@ The quotient by $(t,Y)\mapsto(-t,Y)$ uses $(t^2,Y)$ and the quotient by $(t,Y)\m
 
 `rvBiellipticPoint[E](x,y)` checks the affine source point $(x,y)$ and returns its image in `RVJac(E)` for either factor. A pole of the selected quotient maps to the elliptic point at infinity, represented by the zero class. The example computes both images and the Frobenius polynomials over $\mathbb F_7$. [Bielliptic quotient example](examples/hyperelliptic-bielliptic.asl)
 
+`rvBiellipticPush[E](D)` pushes a class from `RVJac(S)` to `RVJac(E)`, and `rvBiellipticPull[S](Q)` pulls a class from `RVJac(E)` back to `RVJac(S)`. Here `E` is one of the two declared factors and `S` is the original source when it is a monic quintic, or a branch chart registered directly on that source with `rvjacchart`.
+
+The pushforward traces squarefree quadratic support over its quadratic algebra and doubles the image of a repeated point. It sends support over a pole to elliptic infinity and subtracts the image of the source base point with the original multiplicity. In working coordinates $X=h(N/M)^2$ and $W=A y/M^3$, the pullback of $(X,W)$ has finite Mumford support $hN^2-XM^2$ and ordinate $WM^3/A$. Normalizing the support accounts for a fiber meeting the source infinity.
+
+The example checks on all 64 source classes and all eight classes of each factor that push after pull doubles on the same factor and vanishes on the other. The sum of the two pull-after-push maps doubles on the source. [Split Picard isogeny example](examples/hyperelliptic-bielliptic-picard.asl)
+
 ## Rank varieties over binary extension fields
 
 `rvdim[X, Y, I, modulus, point];` takes a list of Milnor primitives $I$ and a coefficient vector $\lambda$ in the same order. After forgetting the internal grading, it computes Margolis homology for $Q(\lambda)=\sum_{i\in I}\lambda_iQ_i$ over the selected field. The output is the dimension of the space of linear maps from the source homology to the target homology. Both endpoints can be finite spaces or declared Koszul modules. The affine zero vector gives the product of the original homology dimensions.

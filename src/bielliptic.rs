@@ -4,10 +4,12 @@ use crate::ec_poly::{self as poly, Field, Polynomial, Scalar};
 use crate::error::{Error, Result};
 use crate::hw_algebra::CoefficientRing;
 use crate::hw_closed::Curve;
-use crate::hyperelliptic_chart::homogeneous_substitution;
+use crate::hyperelliptic_chart::{homogeneous_substitution, Chart};
 use crate::hyperelliptic_jacobian::Divisor;
 use crate::model::Model;
 use crate::syntax::{Label, ParsedExpr};
+
+pub(crate) mod picard;
 
 pub(crate) struct Command {
     pub(crate) source: Label,
@@ -15,22 +17,17 @@ pub(crate) struct Command {
     pub(crate) matrix: [ParsedExpr; 4],
 }
 
-struct Chart {
-    matrix: [Scalar; 4],
-    determinant_cubed: Scalar,
-}
-
-enum Factor {
-    Plus,
-    Minus,
+struct Coordinates {
+    numerator: Polynomial,
+    denominator: Polynomial,
+    scale: Scalar,
+    ordinate_scale: Scalar,
 }
 
 pub(crate) struct Quotient {
     pub(crate) source: Rc<Curve>,
     pub(crate) target: Rc<Curve>,
-    chart: Rc<Chart>,
-    factor: Factor,
-    scale: Scalar,
+    coordinates: Rc<Coordinates>,
 }
 
 impl Quotient {
@@ -70,30 +67,34 @@ impl Quotient {
 
         let plus = monic_cubic(model, field, [&h0, &h1, &h2, &h3])?;
         let minus = monic_cubic(model, field, [&h3, &h2, &h1, &h0])?;
+        // The inverse substitution gives t=N/M and Y=det³*y/M³.
+        let n = poly::trim(vec![field.ring.negate(model, b)?, d.clone()]);
+        let m = poly::trim(vec![a.clone(), field.ring.negate(model, c)?]);
         let determinant_cubed = field.ring.power(model, &determinant, 3)?;
-        model.allocate(12 + 7 * field.cells())?;
-        let chart = Rc::new(Chart {
-            matrix,
-            determinant_cubed,
-        });
-        let make = |model: &mut Model, coefficients, factor, scale| {
+        model.allocate(16 + (2 * (n.len() + m.len()) + 4) * field.cells())?;
+        let make = |model: &mut Model, coefficients, numerator, denominator, scale| {
             let target = Curve::new(
                 model,
                 source.grade.ring.clone(),
                 source.ring.clone(),
                 coefficients,
             )?;
+            let ordinate_scale = field.multiply(model, &scale, &determinant_cubed)?;
             Ok(Self {
                 source: source.clone(),
                 target: Rc::new(target),
-                chart: chart.clone(),
-                factor,
-                scale,
+                coordinates: Rc::new(Coordinates {
+                    numerator,
+                    denominator,
+                    scale,
+                    ordinate_scale,
+                }),
             })
         };
+        // The second quotient uses 1/t and Y/t³.
         Ok([
-            make(model, plus, Factor::Plus, h3)?,
-            make(model, minus, Factor::Minus, h0)?,
+            make(model, plus, n.clone(), m.clone(), h3)?,
+            make(model, minus, m, n, h0)?,
         ])
     }
 
@@ -107,29 +108,70 @@ impl Quotient {
             ));
         }
 
-        // Inverting the Möbius substitution gives t=n/m and Y=det³*y/m³.
-        // For the minus factor use 1/t and Y/t³ in place of t and Y.
-        let [a, b, c, d] = &self.chart.matrix;
-        let dx = ring.multiply(model, d, x)?;
-        let cx = ring.multiply(model, c, x)?;
-        let n = field.subtract(model, &dx, b)?;
-        let m = field.subtract(model, a, &cx)?;
-        let (numerator, denominator) = match self.factor {
-            Factor::Plus => (n, m),
-            Factor::Minus => (m, n),
+        self.coordinates.point(model, &self.target, x, y)
+    }
+}
+
+impl Coordinates {
+    fn rechart(&self, model: &mut Model, field: Field<'_>, chart: &Chart) -> Result<Self> {
+        // x=r+d₀/z and y=d₀*w/z³. Multiply the two linear forms by z.
+        let numerator = [chart.derivative.clone(), chart.branch.clone()];
+        let denominator = [field.zero(), field.one()];
+        let substitute = |model: &mut Model, form: &Polynomial| {
+            homogeneous_substitution(model, field, form, 1, &numerator, &denominator)
         };
-        if field.is_zero(&denominator) {
-            return Ok(Divisor::zero(&self.target));
+        let numerator = substitute(model, &self.numerator)?;
+        let denominator = substitute(model, &self.denominator)?;
+        let ordinate_scale = field.multiply(model, &self.ordinate_scale, &chart.derivative)?;
+        model.allocate(8 + (numerator.len() + denominator.len() + 2) * field.cells())?;
+        Ok(Self {
+            numerator,
+            denominator,
+            scale: self.scale.clone(),
+            ordinate_scale,
+        })
+    }
+
+    fn point(&self, model: &mut Model, target: &Curve, x: &[u64], y: &[u64]) -> Result<Divisor> {
+        let field = Field { ring: &target.ring };
+        let numerator = poly::evaluate(model, field, &self.numerator, x)?;
+        let denominator = poly::evaluate(model, field, &self.denominator, x)?;
+        self.image(model, target, &numerator, &denominator, y)
+    }
+
+    fn infinity(&self, model: &mut Model, target: &Curve) -> Result<Divisor> {
+        let zero = target.ring.scalar(0);
+        // At genus-two odd-degree infinity, y/z³ vanishes in the local ring.
+        self.image(
+            model,
+            target,
+            self.numerator.get(1).unwrap_or(&zero),
+            self.denominator.get(1).unwrap_or(&zero),
+            &zero,
+        )
+    }
+
+    fn image(
+        &self,
+        model: &mut Model,
+        target: &Curve,
+        numerator: &Scalar,
+        denominator: &Scalar,
+        y: &[u64],
+    ) -> Result<Divisor> {
+        let ring = &target.ring;
+        let field = Field { ring };
+        if field.is_zero(denominator) {
+            return Ok(Divisor::zero(target));
         }
-        let inverse = field.inverse_unit(model, &denominator)?;
-        let ratio = field.multiply(model, &numerator, &inverse)?;
+        let inverse = field.inverse_unit(model, denominator)?;
+        let ratio = field.multiply(model, numerator, &inverse)?;
         let square = field.multiply(model, &ratio, &ratio)?;
         let image_x = field.multiply(model, &self.scale, &square)?;
         let inverse_cube = ring.power(model, &inverse, 3)?;
-        let ordinate = ring.multiply(model, &self.chart.determinant_cubed, y)?;
-        let ordinate = field.multiply(model, &ordinate, &inverse_cube)?;
-        let image_y = field.multiply(model, &self.scale, &ordinate)?;
-        Divisor::from_point(model, &self.target, &image_x, image_y)
+        let ordinate = ring.multiply(model, &self.ordinate_scale, y)?;
+        let image_y = field.multiply(model, &ordinate, &inverse_cube)?;
+        Divisor::from_point(model, target, &image_x, image_y)
     }
 }
 
