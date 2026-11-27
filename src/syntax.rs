@@ -2839,27 +2839,34 @@ impl<'src> Parser<'src> {
             let expression = Expression::Pair(pairing, Box::new(inputs));
             return expr(span, ExprForm::Jacobian(Box::new(expression)), depth);
         }
+        let coefficient = |parser: &mut Self| {
+            let context = if name == "rvJacHalfPoint" {
+                "halving witness coefficient coordinate"
+            } else {
+                "Mumford coefficient coordinate"
+            };
+            parser.signed_tuple("a signed residue coordinate", context)
+        };
         self.expect(Token::LBracket)?;
         let (expression, depth) = match name {
             "rvjac" => {
                 let curve = self.label()?;
                 self.expect(Token::RBracket)?;
-                let coefficient = |parser: &mut Self| {
-                    parser.signed_tuple(
-                        "a signed residue coordinate",
-                        "Mumford coefficient coordinate",
-                    )
-                };
                 let u = self.set_named_rows(coefficient)?;
                 let v = self.set_named_rows(coefficient)?;
                 (Expression::Literal(curve, u, v), 0)
             }
-            "rvJacPoint" => {
+            "rvJacPoint" | "rvJacHalfPoint" => {
                 let curve = self.label()?;
                 self.expect(Token::RBracket)?;
                 let xy = self.paren_pair(nest)?;
                 let depth = 1 + xy[0].depth.max(xy[1].depth);
-                (Expression::Point(curve, Box::new(xy)), depth)
+                let root = if name == "rvJacHalfPoint" {
+                    Some(self.set_named_rows(coefficient)?)
+                } else {
+                    None
+                };
+                (Expression::Point(curve, Box::new(xy), root), depth)
             }
             _ => {
                 let operation = match name {
@@ -8434,6 +8441,7 @@ impl<'src> Parser<'src> {
                     name.text.as_str(),
                     "rvjac"
                         | "rvJacPoint"
+                        | "rvJacHalfPoint"
                         | "rvJacScale"
                         | "rvJacU"
                         | "rvJacV"

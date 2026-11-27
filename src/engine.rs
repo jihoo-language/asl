@@ -27,7 +27,7 @@ use crate::error::{Error, Result, Span};
 use crate::hw_algebra;
 use crate::hw_closed;
 use crate::hyperelliptic::{self, Residues};
-use crate::hyperelliptic_jacobian::{self, Divisor};
+use crate::hyperelliptic_jacobian::{self, point_halving, Divisor};
 use crate::jet_hom;
 use crate::jet_page;
 use crate::khovanov::{self, Form as KhForm};
@@ -424,7 +424,11 @@ enum JacobianOperation {
 }
 
 enum JacobianAction {
-    Point(Rc<hw_closed::Curve>, Box<[TypedExpr; 2]>),
+    Point(
+        Rc<hw_closed::Curve>,
+        Box<[TypedExpr; 2]>,
+        Option<crate::ec_poly::Polynomial>,
+    ),
     Apply(Rc<hw_closed::Curve>, JacobianOperation, Box<TypedExpr>),
     Pair(
         Rc<hw_closed::Curve>,
@@ -4539,12 +4543,16 @@ impl Engine {
 
     fn eval_jacobian(&mut self, action: &JacobianAction) -> Result<Value> {
         match action {
-            JacobianAction::Point(curve, xy) => {
+            JacobianAction::Point(curve, xy, root) => {
                 let [x, y] = xy.as_ref();
                 let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
                     unreachable!()
                 };
-                let value = Divisor::from_point(&mut self.model, curve, &x, y.to_vec())?;
+                let value = if let Some(root) = root {
+                    point_halving::half(&mut self.model, curve, &x, &y, root)?
+                } else {
+                    Divisor::from_point(&mut self.model, curve, &x, y.to_vec())?
+                };
                 value.persist(&mut self.model, curve)
             }
             JacobianAction::Apply(curve, operation, input) => {
@@ -17398,7 +17406,7 @@ impl Checker<'_> {
                     TypedForm::Constant(divisor.persist(self.model, &curve)?),
                 ))
             }
-            Expression::Point(name, xy) => {
+            Expression::Point(name, xy, root) => {
                 let curve = self.model.jacobian_curve(&name.text)?;
                 let field = Label {
                     text: curve.grade.ring.to_string(),
@@ -17408,12 +17416,20 @@ impl Checker<'_> {
                 let [x, y] = *xy;
                 let x = self.expr(x)?;
                 let y = self.expr(y)?;
-                self.require_type(coefficient, &x, "rvJacPoint coordinate")?;
-                self.require_type(coefficient, &y, "rvJacPoint coordinate")?;
+                let context = if root.is_some() {
+                    "rvJacHalfPoint coordinate"
+                } else {
+                    "rvJacPoint coordinate"
+                };
+                self.require_type(coefficient, &x, context)?;
+                self.require_type(coefficient, &y, context)?;
+                let root = root
+                    .map(|coefficients| point_halving::witness(self.model, &curve, coefficients))
+                    .transpose()?;
                 let ty = self.model.jacobian_type(name.text.into())?;
                 Ok((
                     ty,
-                    TypedForm::Jacobian(JacobianAction::Point(curve, Box::new([x, y]))),
+                    TypedForm::Jacobian(JacobianAction::Point(curve, Box::new([x, y]), root)),
                 ))
             }
             Expression::Apply(operation, input) => {

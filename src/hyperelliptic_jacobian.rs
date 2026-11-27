@@ -11,6 +11,8 @@ use crate::prime_linear::{Basis, Coordinate};
 use crate::rv_unram::Ring;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod point_halving;
+
 pub(crate) enum Command {
     Base(Label, Label, Label),
     Count(Label, bool),
@@ -20,7 +22,7 @@ pub(crate) enum Command {
 
 pub(crate) enum Expression {
     Literal(Label, Vec<Vec<i128>>, Vec<Vec<i128>>),
-    Point(Label, Box<[ParsedExpr; 2]>),
+    Point(Label, Box<[ParsedExpr; 2]>, Option<Vec<Vec<i128>>>),
     Apply(Operation, Box<ParsedExpr>),
     Pair(Pairing, Box<[ParsedExpr; 2]>),
 }
