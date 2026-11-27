@@ -1178,6 +1178,19 @@ The Taylor coefficients through $s^2$ give $f,g,h$ with $f(0)=1$ and $g(0)=h(0)=
 $$b_m=(-4\psi)^{m-1}\sum_{j=0}^{\lfloor(m-1)/4\rfloor}a_j\binom{m-1}{4j}z^j.$$
 Lucas's theorem gives $\binom{p^s-1}{4j}\equiv1\pmod p$, which proves agreement with the unweighted truncation modulo $p$. The report evaluates both sums modulo $p^s$ with the signed integer lift and gives their actual difference and the number of agreeing digits through precision $s$. For $p=7,\psi=3,s=2$ the difference is $28\bmod49$. [Runnable mirror periods example](examples/dwork-quartic-mirror-periods.asl)
 
+### Arithmetic \(p\)-curvature of the Dwork period connection
+
+`rvDworkPCurvature[p,r];` computes the rank-two Clausen or rank-three Picard–Fuchs \(p\)-curvature over \(\mathbb F_p(z)\). The solution-column frame uses \(\nabla_\theta=\theta-A\) with \(\theta=z\,d/dz\) and the companion matrix \(A\). Since \(\theta^{[p]}=\theta\), the curvature is \(\Psi=\nabla_\theta^p-\nabla_\theta\). Set \(D=1-256z\) and \(C=DA\). The calculation uses
+$$P_0=I,\quad P_{j+1}=D\theta P_j-j(\theta D)P_j-CP_j,\qquad
+\Psi=\frac{P_p+CD^{p-1}}{D^p}.$$
+It prints the numerator matrix as polynomial coefficient lists in ascending powers of \(z\), with an empty list for zero. The denominator is \(D^p\). Every \(P_j\) has degree at most \(j\). The calculation admits odd primes through 257 and uses the statement work limit. [Katz, *Nilpotent connections and the monodromy theorem*](https://numdam.org/item/PMIHES_1970__39__175_0/)
+
+The report verifies \(\Psi^r=0\), \(\theta\Psi=[A,\Psi]\), and skew-adjointness for the alternating rank-two form and the horizontal rank-three form \(B\). The numerator at \(z=0\) has the upper Jordan block, which witnesses a generic nilpotency index of \(r\). The two calculations are certified against each other by \(\Psi_3G=G\,d\operatorname{Sym}^2(\Psi_2)\), where the rows of \(G\) are \((1,0,0)\), \((0,2,0)\), and \((2b,2a,2)\) with \(a=128z/D\) and \(b=12z/D\). The horizontal section \(S=(H,\theta H,\theta^2H)\) for \(H=\sum_{n\le(p-1)/4}(4n)!z^n/(n!)^4\bmod p\) is also checked in the kernel of \(\Psi_3\).
+
+`rvDworkPCurvatureAt[p,r,z]` specializes the rational matrix to an `RVHWMatrix(p,r,1)` at a regular prime-field fiber. `rvDworkPCurvatureClosed[r](z)` takes an `RVUnram(W)` residue-field element of precision one and returns `RVHWWMatrix(W,r)`. An optional final index \(k\) returns the \(k\)-th matrix power. The fiber coordinates satisfy \(z(1-256z)\ne0\). Differentiation is carried out in \(\mathbb F_p(z)\) before specialization.
+
+`rvDworkPCurvatureFiber[p,r,z];` and `rvDworkPCurvatureClosedFiber[r](z);` report ranks of powers and exact column-vector bases of their kernels. For rank three they compare the kernel line with the Hasse jet and give its contact with the coordinate flag in the period frame. Over \(\mathbb F_{11}\) at \(z=-1\), the first two Hasse coordinates vanish and the third spans the curvature kernel. The curvature has rank two, and its square has rank one. [Runnable \(p\)-curvature example](examples/dwork-quartic-p-curvature.asl)
+
 ## Dwork unit roots of Legendre elliptic curves
 
 For an odd prime $p$ and $\lambda\in\mathbb F_p\setminus\{0,1\}$, `legendreTrace[p,lambda];` counts points of $y^2=x(x-1)(x-\lambda)$ over $\mathbb F_p$ using the quadratic character and includes the point at infinity. It reports the trace $a_p=p+1-\#E$ of Frobenius on $H^1(E)$. The parameter uses its representative in $0,\ldots,p-1$.

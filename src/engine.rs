@@ -1052,6 +1052,7 @@ enum TypedForm {
     SiegelNegate(Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
+    DworkPCurvatureClosed(usize, usize, Rc<UnramRing>, Box<TypedExpr>),
     LegendreClosed(
         crate::legendre_closed::Operation,
         Rc<UnramRing>,
@@ -2807,6 +2808,25 @@ impl Engine {
                 }
             },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
+            StatementForm::DworkPCurvature(p, rank) => {
+                crate::dwork_k3::mirror::curvature::report(&mut self.model, p, rank)?
+            }
+            StatementForm::DworkPCurvatureFiber(point) => point.report(&mut self.model)?,
+            StatementForm::DworkPCurvatureClosedFiber(rank, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self
+                    .checker()
+                    .unram_ring(&input, "rvDworkPCurvatureClosedFiber")?;
+                let Value::RVUnram(point) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::mirror::curvature::closed_report(
+                    &mut self.model,
+                    rank,
+                    &ring,
+                    &point,
+                )?
+            }
             StatementForm::DworkMirror(report) => report.run(&mut self.model)?,
             StatementForm::DworkMirrorApply(rank, solution, degree, input) => {
                 let input = self.checker().expr(input)?;
@@ -13185,6 +13205,18 @@ impl Engine {
                 let value = operation.apply(&mut self.model, ring, &value)?;
                 rv_unram::persist(&mut self.model, value)
             }
+            TypedForm::DworkPCurvatureClosed(rank, exponent, ring, input) => {
+                let Value::RVUnram(point) = self.eval(input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::mirror::curvature::closed_value(
+                    &mut self.model,
+                    *rank,
+                    ring,
+                    &point,
+                    *exponent,
+                )
+            }
             TypedForm::LegendreClosed(operation, ring, input) => {
                 let Value::RVUnram(lambda) = self.eval(input)? else {
                     unreachable!()
@@ -15482,6 +15514,8 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::RVCTSection(..)
             | ExprForm::RVCTRead(..)
             | ExprForm::DworkMirrorOperator(..)
+            | ExprForm::DworkPCurvatureAt(..)
+            | ExprForm::DworkPCurvatureClosed(..)
             | ExprForm::OreTerm(..)
             | ExprForm::OreProduct(..)
             | ExprForm::OreUnary(..)
@@ -20906,6 +20940,26 @@ impl Checker<'_> {
                 let grade = grade.clone();
                 let ty = self.model.rv_ct_residue_type(grade.level)?;
                 Ok((ty, TypedForm::PeriodRead(grade, Box::new(input))))
+            }
+            ExprForm::DworkPCurvatureAt(point) => {
+                let (ty, value) = point.value(self.model)?;
+                Ok((ty, TypedForm::Constant(value)))
+            }
+            ExprForm::DworkPCurvatureClosed(rank, exponent, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, "rvDworkPCurvatureClosed")?;
+                crate::dwork_k3::mirror::curvature::require_closed(rank, &ring)?;
+                let Kind::RVUnram(name) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let ty = self.model.hww_matrix_type(hw_closed::Grade {
+                    ring: name.clone(),
+                    genus: rank,
+                })?;
+                Ok((
+                    ty,
+                    TypedForm::DworkPCurvatureClosed(rank, exponent, ring, Box::new(input)),
+                ))
             }
             ExprForm::DworkMirrorOperator(operator) => {
                 let ty = self.model.ore_type()?;

@@ -5,6 +5,7 @@ use crate::rv_ore::{Powers, Sum, Support};
 use super::period;
 
 mod connection;
+pub(crate) mod curvature;
 mod series;
 
 #[derive(Clone, Copy)]

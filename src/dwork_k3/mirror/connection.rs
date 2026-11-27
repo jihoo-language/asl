@@ -2,9 +2,9 @@ use crate::error::Result;
 
 use super::{integrity, Operator};
 
-type Polynomial = [i128; 3];
+pub(super) type Polynomial = [i128; 3];
 const ZERO: Polynomial = [0; 3];
-const D: Polynomial = [1, -256, 0];
+pub(super) const D: Polynomial = [1, -256, 0];
 
 pub(super) fn report() -> Result<String> {
     let [c0, c1, c2, c3] = Operator::PicardFuchs.coefficients();
@@ -25,14 +25,10 @@ pub(super) fn report() -> Result<String> {
         return Err(integrity());
     }
 
-    // For (y,theta y,theta^2 y) the companion matrix is A/D. B is
-    // D times the discriminant of the corresponding binary quadratic.
-    let a_num = [[ZERO, D, ZERO], [ZERO, ZERO, D], [z(c0), z(c1), z(c2)]];
-    let pairing = [
-        [scale(b, 4), a, D],
-        [a, scale(D, -1), ZERO],
-        [D, ZERO, ZERO],
-    ];
+    // For (y,theta y,theta^2 y) the companion matrix is A/D. B comes
+    // from the discriminant of the corresponding binary quadratic.
+    let a_num = companion_three();
+    let pairing = polarization();
     for i in 0..3 {
         for j in 0..3 {
             let mut derivative = product(D, theta(pairing[i][j]));
@@ -49,6 +45,25 @@ pub(super) fn report() -> Result<String> {
         "rvDworkMirrorConnection = D=1-256z, A=D^-1*{}, B={}, det B=D^3, certified symmetric square and horizontal pairing",
         display_matrix(a_num), display_matrix(pairing),
     ))
+}
+
+pub(super) fn companion_two() -> [[Polynomial; 2]; 2] {
+    let [c0, c1, _, _] = Operator::Clausen.coefficients();
+    [[ZERO, D], [z(c0), z(c1)]]
+}
+
+pub(super) fn companion_three() -> [[Polynomial; 3]; 3] {
+    let [c0, c1, c2, _] = Operator::PicardFuchs.coefficients();
+    [[ZERO, D, ZERO], [ZERO, ZERO, D], [z(c0), z(c1), z(c2)]]
+}
+
+pub(super) fn polarization() -> [[Polynomial; 3]; 3] {
+    let [c0, c1, _, _] = Operator::Clausen.coefficients();
+    [
+        [z(-4 * c0), z(-c1), D],
+        [z(-c1), scale(D, -1), ZERO],
+        [D, ZERO, ZERO],
+    ]
 }
 
 fn z(coefficient: i128) -> Polynomial {

@@ -870,6 +870,8 @@ pub(crate) enum ExprForm {
     RVCTSection(usize, Box<ParsedExpr>),
     RVCTRead(Box<ParsedExpr>),
     DworkMirrorOperator(crate::dwork_k3::mirror::Operator),
+    DworkPCurvatureAt(crate::dwork_k3::mirror::curvature::PrimePoint),
+    DworkPCurvatureClosed(usize, usize, Box<ParsedExpr>),
     OreTerm(usize, usize, i128),
     OreProduct(Box<[ParsedExpr; 2]>),
     OreUnary(OreOp, Box<ParsedExpr>),
@@ -1394,6 +1396,9 @@ pub(crate) enum StatementForm {
     DworkK3ClosedUnit(ParsedExpr),
     DworkMirror(crate::dwork_k3::mirror::Report),
     DworkMirrorApply(usize, usize, usize, ParsedExpr),
+    DworkPCurvature(usize, usize),
+    DworkPCurvatureFiber(crate::dwork_k3::mirror::curvature::PrimePoint),
+    DworkPCurvatureClosedFiber(usize, ParsedExpr),
     UnramRing(Label, usize, usize, Vec<i128>),
     UnramValuation(ParsedExpr),
     LegendreClosedReport(crate::legendre_closed::Query, ParsedExpr),
@@ -2408,6 +2413,28 @@ impl<'src> Parser<'src> {
         }
         self.expect(Token::RBrace)?;
         Ok(rows)
+    }
+
+    fn dwork_curvature_point(
+        &mut self,
+        allows_power: bool,
+    ) -> Result<crate::dwork_k3::mirror::curvature::PrimePoint> {
+        self.expect(Token::LBracket)?;
+        let (prime, rank) = self.quantum_grade()?;
+        self.expect(Token::Comma)?;
+        let point = self.signed_wide("a signed fiber coordinate", "Dwork fiber coordinate")?;
+        let exponent = if allows_power && self.eat(Token::Comma)? {
+            self.number()?.0
+        } else {
+            1
+        };
+        self.expect(Token::RBracket)?;
+        Ok(crate::dwork_k3::mirror::curvature::PrimePoint {
+            prime,
+            rank,
+            point,
+            exponent,
+        })
     }
 
     fn legendre_query(&mut self, name: &str) -> Result<crate::legendre::Query> {
@@ -11164,6 +11191,24 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::DworkMirrorApply(rank, solution, degree, self.paren_expr(0)?)
             }
+            Token::Word("rvDworkPCurvature") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let (prime, rank) = self.quantum_grade()?;
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkPCurvature(prime, rank)
+            }
+            Token::Word("rvDworkPCurvatureFiber") => {
+                self.advance()?;
+                StatementForm::DworkPCurvatureFiber(self.dwork_curvature_point(false)?)
+            }
+            Token::Word("rvDworkPCurvatureClosedFiber") => {
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let rank = self.number()?.0;
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkPCurvatureClosedFiber(rank, self.paren_expr(0)?)
+            }
             Token::Word("rvDworkK3ClosedUnit") => {
                 self.advance()?;
                 StatementForm::DworkK3ClosedUnit(self.paren_expr(0)?)
@@ -19635,6 +19680,26 @@ impl<'src> Parser<'src> {
                         | "rvK3StratumSpectrum"
                 ) {
                     return self.witt_spectrum_expression(&name.text, span, nest);
+                }
+                if name.text == "rvDworkPCurvatureAt" && self.token() == Token::LBracket {
+                    let point = self.dwork_curvature_point(true)?;
+                    return expr(span, ExprForm::DworkPCurvatureAt(point), 0);
+                }
+                if name.text == "rvDworkPCurvatureClosed" && self.eat(Token::LBracket)? {
+                    let rank = self.number()?.0;
+                    let exponent = if self.eat(Token::Comma)? {
+                        self.number()?.0
+                    } else {
+                        1
+                    };
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::DworkPCurvatureClosed(rank, exponent, Box::new(input)),
+                        depth,
+                    );
                 }
                 if matches!(name.text.as_str(), "rvDworkPicardFuchs" | "rvDworkClausen")
                     && self.eat(Token::LBracket)?
