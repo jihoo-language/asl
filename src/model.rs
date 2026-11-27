@@ -4126,6 +4126,29 @@ impl Model {
         Ok(())
     }
 
+    pub(crate) fn define_ec_pair(
+        &mut self,
+        [source, target]: [Label; 2],
+        [left, right]: [EllipticCurve; 2],
+    ) -> Result<()> {
+        if source.text == target.text {
+            return Err(Error::new(
+                target.span,
+                "elliptic curve pair requires distinct names",
+            ));
+        }
+        for name in [&source, &target] {
+            if self.elliptic_curves.contains_key(name.text.as_str()) {
+                return Err(Error::new(name.span, "elliptic curve is already defined"));
+            }
+        }
+        self.elliptic_curves
+            .insert(source.text.into(), Rc::new(left));
+        self.elliptic_curves
+            .insert(target.text.into(), Rc::new(right));
+        Ok(())
+    }
+
     pub(crate) fn define_ec_isogeny(
         &mut self,
         name: Label,

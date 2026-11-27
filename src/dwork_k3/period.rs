@@ -12,19 +12,52 @@ pub(super) fn unit_root(
     psi: i128,
     precision: usize,
 ) -> Result<String> {
+    let data = prime_unit_data(model, prime, psi, precision)?;
+    let Some((current, previous, unit)) = data.ordinary else {
+        return Ok("Hasse–Witt=0, nonordinary, no Frobenius unit root".into());
+    };
+    let modulus = data.modulus;
+    let previous_degree = modulus / u64::from(prime.get());
+    Ok(format!(
+        "mod {modulus}, Hasse–Witt={}, b_{modulus}={current}, b_{previous_degree}={previous}, unit={unit}",
+        data.hasse_witt
+    ))
+}
+
+pub(super) struct PrimeUnit {
+    pub(super) modulus: u64,
+    pub(super) hasse_witt: u64,
+    ordinary: Option<(u64, u64, u64)>,
+}
+
+impl PrimeUnit {
+    pub(super) fn unit(&self) -> Option<u64> {
+        self.ordinary.map(|(_, _, unit)| unit)
+    }
+}
+
+pub(super) fn prime_unit_data(
+    model: &mut Model,
+    prime: Prime,
+    psi: i128,
+    precision: usize,
+) -> Result<PrimeUnit> {
     let p = u64::from(prime.get());
     let modulus = modulus(p, precision)?;
-
     let hasse_witt = coefficient(model, p, p, p, psi)?;
+    let mut data = PrimeUnit {
+        modulus,
+        hasse_witt,
+        ordinary: None,
+    };
     if hasse_witt == 0 {
-        return Ok("Hasse–Witt=0, nonordinary, no Frobenius unit root".into());
+        return Ok(data);
     }
-    let degree = modulus;
-    let previous_degree = degree / p;
+    let previous_degree = modulus / p;
     let current = if precision == 1 {
         hasse_witt
     } else {
-        coefficient(model, p, modulus, degree, psi)?
+        coefficient(model, p, modulus, modulus, psi)?
     };
     let previous = coefficient(model, p, modulus, previous_degree, psi)?;
     let unit = mul_mod(current, inverse(model, previous, modulus)?, modulus);
@@ -44,9 +77,8 @@ pub(super) fn unit_root(
             "Dwork quartic unit root disagrees with Hasse–Witt",
         ));
     }
-    Ok(format!(
-        "mod {modulus}, Hasse–Witt={hasse_witt}, b_{degree}={current}, b_{previous_degree}={previous}, unit={unit}"
-    ))
+    data.ordinary = Some((current, previous, unit));
+    Ok(data)
 }
 
 fn modulus(p: u64, precision: usize) -> Result<u64> {

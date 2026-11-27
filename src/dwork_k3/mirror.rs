@@ -6,7 +6,7 @@ use super::period;
 
 mod connection;
 pub(crate) mod curvature;
-mod series;
+pub(super) mod series;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operator {

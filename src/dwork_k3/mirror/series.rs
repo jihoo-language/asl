@@ -7,12 +7,12 @@ use super::{integrity, Operator};
 
 const MAX_DEGREE: usize = 12;
 type Taylor = [Rational; 3];
-type Series = Vec<Rational>;
+pub(in crate::dwork_k3) type Series = Vec<Rational>;
 
 const ZERO: Rational = Rational::ZERO;
 const ONE: Rational = Rational::integer(1);
 
-fn degree_ok(degree: usize) -> Result<()> {
+pub(in crate::dwork_k3) fn degree_ok(degree: usize) -> Result<()> {
     if degree > MAX_DEGREE {
         return Err(Error::plain(format!(
             "Dwork mirror jet degree must be at most {MAX_DEGREE}"
@@ -53,7 +53,7 @@ fn display(x: Rational) -> String {
     }
 }
 
-fn display_row(x: &[Rational]) -> String {
+pub(in crate::dwork_k3) fn display_row(x: &[Rational]) -> String {
     format!(
         "[{}]",
         x.iter()
@@ -235,7 +235,7 @@ pub(super) fn apply(
         .report())
 }
 
-fn theta(series: &[Rational]) -> Result<Series> {
+pub(in crate::dwork_k3) fn theta(series: &[Rational]) -> Result<Series> {
     series
         .iter()
         .enumerate()
@@ -243,7 +243,11 @@ fn theta(series: &[Rational]) -> Result<Series> {
         .collect()
 }
 
-fn product(model: &mut Model, a: &[Rational], b: &[Rational]) -> Result<Series> {
+pub(in crate::dwork_k3) fn product(
+    model: &mut Model,
+    a: &[Rational],
+    b: &[Rational],
+) -> Result<Series> {
     let size = a.len();
     debug_assert_eq!(size, b.len());
     model.spend(size * (size + 1) / 2)?;
@@ -252,7 +256,11 @@ fn product(model: &mut Model, a: &[Rational], b: &[Rational]) -> Result<Series> 
         .collect()
 }
 
-fn quotient_by_unit(model: &mut Model, a: &[Rational], b: &[Rational]) -> Result<Series> {
+pub(in crate::dwork_k3) fn quotient_by_unit(
+    model: &mut Model,
+    a: &[Rational],
+    b: &[Rational],
+) -> Result<Series> {
     if b[0] != ONE {
         return Err(integrity());
     }
@@ -382,7 +390,11 @@ fn exponential(model: &mut Model, input: &[Rational]) -> Result<Series> {
     Ok(result)
 }
 
-fn compose(model: &mut Model, outer: &[Rational], inner: &[Rational]) -> Result<Series> {
+pub(in crate::dwork_k3) fn compose(
+    model: &mut Model,
+    outer: &[Rational],
+    inner: &[Rational],
+) -> Result<Series> {
     debug_assert_eq!(inner[0], ZERO);
     let mut result = vec![ZERO; inner.len()];
     result[0] = outer[0];
@@ -420,15 +432,28 @@ fn revert(model: &mut Model, series: &[Rational]) -> Result<Series> {
     Ok(inverse)
 }
 
-pub(super) fn mirror_map(model: &mut Model, degree: usize) -> Result<String> {
-    let periods = Variation::new(model, degree)?;
-    let q_over_z = exponential(model, &periods.log_ratio)?;
+fn coordinates(model: &mut Model, log_ratio: &[Rational]) -> Result<(Series, Series)> {
+    let q_over_z = exponential(model, log_ratio)?;
     let q = std::iter::once(ZERO)
         .chain(q_over_z.iter().copied())
         .collect::<Vec<_>>();
-    let z = revert(model, &q)?;
+    Ok((q_over_z, revert(model, &q)?))
+}
+
+pub(super) fn mirror_map(model: &mut Model, degree: usize) -> Result<String> {
+    let periods = Variation::new(model, degree)?;
+    let (q_over_z, z) = coordinates(model, &periods.log_ratio)?;
     Ok(format!(
         "rvDworkMirrorMap[{degree}] = log(q/z)={}, q(z)/z={}, z(q)/q={}, certified both compositions",
         display_row(&periods.log_ratio), display_row(&q_over_z), display_row(&z[1..]),
     ))
+}
+
+pub(in crate::dwork_k3) fn inverse_mirror(
+    model: &mut Model,
+    degree: usize,
+) -> Result<(Series, Series)> {
+    let periods = Variation::new(model, degree)?;
+    let (_, z) = coordinates(model, &periods.log_ratio)?;
+    Ok((periods.f, z))
 }

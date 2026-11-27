@@ -1069,6 +1069,12 @@ enum TypedForm {
     SiegelNegate(Box<TypedExpr>),
     ClosedHasseWitt(Box<ClosedWittAction>),
     HWCompose(Residues, Box<[TypedExpr; 2]>),
+    DworkFrickeValue(
+        crate::dwork_k3::fricke::Invariant,
+        Rc<UnramRing>,
+        Box<TypedExpr>,
+    ),
+    DworkFrickeMap(Rc<str>, Rc<str>, bool, Box<TypedExpr>),
     DworkPCurvatureClosed(usize, usize, Rc<UnramRing>, Box<TypedExpr>),
     LegendreClosed(
         crate::legendre_closed::Operation,
@@ -2869,6 +2875,37 @@ impl Engine {
                 }
             },
             StatementForm::Legendre(query) => query.run(&mut self.model)?,
+            StatementForm::DworkFricke(report) => report.run(&mut self.model)?,
+            StatementForm::DworkFrickeField(base, input) => {
+                let input = self.checker().expr(input)?;
+                let operation = if base {
+                    "rvDworkFrickeBase"
+                } else {
+                    "rvDworkFrickeFiber"
+                };
+                let ring = self.checker().unram_ring(&input, operation)?;
+                let Value::RVUnram(parameter) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                if base {
+                    crate::dwork_k3::fricke::base_report(&mut self.model, &ring, &parameter)?
+                } else {
+                    crate::dwork_k3::fricke::fiber_report(&mut self.model, &ring, &parameter)?
+                }
+            }
+            StatementForm::DworkFrickeDefine(names, input) => {
+                let input = self.checker().expr(input)?;
+                let ring = self.checker().unram_ring(&input, "rvdworkfricke")?;
+                let Kind::RVUnram(name) = self.model.kind(input.ty) else {
+                    unreachable!()
+                };
+                let name = name.clone();
+                let Value::RVUnram(parameter) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::fricke::define(&mut self.model, names, name, ring, &parameter)?;
+                return Ok(None);
+            }
             StatementForm::DworkPCurvature(p, rank) => {
                 crate::dwork_k3::mirror::curvature::report(&mut self.model, p, rank)?
             }
@@ -13598,6 +13635,25 @@ impl Engine {
                 let value = operation.apply(&mut self.model, ring, &value)?;
                 rv_unram::persist(&mut self.model, value)
             }
+            TypedForm::DworkFrickeValue(operation, ring, input) => {
+                let Value::RVUnram(parameter) = self.eval(input)? else {
+                    unreachable!()
+                };
+                let value = operation.apply(&mut self.model, ring, &parameter)?;
+                crate::rv_unram::persist(&mut self.model, value)
+            }
+            TypedForm::DworkFrickeMap(source, target, reverse, input) => {
+                let Value::RVUnram(parameter) = self.eval(input)? else {
+                    unreachable!()
+                };
+                crate::dwork_k3::fricke::map(
+                    &mut self.model,
+                    source.clone(),
+                    target.clone(),
+                    &parameter,
+                    *reverse,
+                )
+            }
             TypedForm::DworkPCurvatureClosed(rank, exponent, ring, input) => {
                 let Value::RVUnram(point) = self.eval(input)? else {
                     unreachable!()
@@ -15907,6 +15963,8 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::RVCTSection(..)
             | ExprForm::RVCTRead(..)
             | ExprForm::DworkMirrorOperator(..)
+            | ExprForm::DworkFrickeValue(..)
+            | ExprForm::DworkFrickeMap(..)
             | ExprForm::DworkPCurvatureAt(..)
             | ExprForm::DworkPCurvatureClosed(..)
             | ExprForm::OreTerm(..)
@@ -21378,6 +21436,32 @@ impl Checker<'_> {
                 let grade = grade.clone();
                 let ty = self.model.rv_ct_residue_type(grade.level)?;
                 Ok((ty, TypedForm::PeriodRead(grade, Box::new(input))))
+            }
+            ExprForm::DworkFrickeValue(operation, input) => {
+                let input = self.expr(*input)?;
+                let ring = self.unram_ring(&input, operation.name())?;
+                Ok((
+                    input.ty,
+                    TypedForm::DworkFrickeValue(operation, ring, Box::new(input)),
+                ))
+            }
+            ExprForm::DworkFrickeMap([source, target], reverse, input) => {
+                let source: Rc<str> = source.text.into();
+                let target: Rc<str> = target.text.into();
+                let curve = self.model.ec_curve(&source)?;
+                let field = self.model.ec_coefficient_type(&curve)?;
+                let input = self.expr(*input)?;
+                self.require_type(field, &input, "Fricke isogeny parameter")?;
+                let (from, to) = if reverse {
+                    (target.clone(), source.clone())
+                } else {
+                    (source.clone(), target.clone())
+                };
+                let ty = self.model.ec_map_type(from, to)?;
+                Ok((
+                    ty,
+                    TypedForm::DworkFrickeMap(source, target, reverse, Box::new(input)),
+                ))
             }
             ExprForm::DworkPCurvatureAt(point) => {
                 let (ty, value) = point.value(self.model)?;

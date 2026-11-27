@@ -875,6 +875,8 @@ pub(crate) enum ExprForm {
     RVCTSection(usize, Box<ParsedExpr>),
     RVCTRead(Box<ParsedExpr>),
     DworkMirrorOperator(crate::dwork_k3::mirror::Operator),
+    DworkFrickeValue(crate::dwork_k3::fricke::Invariant, Box<ParsedExpr>),
+    DworkFrickeMap([Label; 2], bool, Box<ParsedExpr>),
     DworkPCurvatureAt(crate::dwork_k3::mirror::curvature::PrimePoint),
     DworkPCurvatureClosed(usize, usize, Box<ParsedExpr>),
     OreTerm(usize, usize, i128),
@@ -1410,6 +1412,9 @@ pub(crate) enum StatementForm {
     DworkK3ClosedUnit(ParsedExpr),
     DworkMirror(crate::dwork_k3::mirror::Report),
     DworkMirrorApply(usize, usize, usize, ParsedExpr),
+    DworkFricke(crate::dwork_k3::fricke::Report),
+    DworkFrickeField(bool, ParsedExpr),
+    DworkFrickeDefine([Label; 2], ParsedExpr),
     DworkPCurvature(usize, usize),
     DworkPCurvatureFiber(crate::dwork_k3::mirror::curvature::PrimePoint),
     DworkPCurvatureClosedFiber(usize, ParsedExpr),
@@ -11606,6 +11611,40 @@ impl<'src> Parser<'src> {
                 self.expect(Token::RBracket)?;
                 StatementForm::DworkPCurvatureClosedFiber(rank, self.paren_expr(0)?)
             }
+            Token::Word("rvDworkFrickeIdentity") => {
+                self.advance()?;
+                StatementForm::DworkFricke(crate::dwork_k3::fricke::Report::Identity)
+            }
+            Token::Word(command @ ("rvDworkFrickeSeries" | "rvDworkFrickeUnit")) => {
+                use crate::dwork_k3::fricke::Report;
+                self.advance()?;
+                self.expect(Token::LBracket)?;
+                let first = self.number()?.0;
+                let report = if command == "rvDworkFrickeSeries" {
+                    Report::Series(first)
+                } else {
+                    self.expect(Token::Comma)?;
+                    let psi = self.signed_wide(
+                        "a signed quartic parameter lift",
+                        "Dwork quartic parameter",
+                    )?;
+                    self.expect(Token::Comma)?;
+                    Report::Compare(first, psi, self.number()?.0)
+                };
+                self.expect(Token::RBracket)?;
+                StatementForm::DworkFricke(report)
+            }
+            Token::Word(command @ ("rvDworkFrickeFiber" | "rvDworkFrickeBase")) => {
+                self.advance()?;
+                StatementForm::DworkFrickeField(command == "rvDworkFrickeBase", self.paren_expr(0)?)
+            }
+            Token::Word("rvdworkfricke") => {
+                self.advance()?;
+                let left = self.label()?;
+                self.expect(Token::Comma)?;
+                let right = self.label()?;
+                StatementForm::DworkFrickeDefine([left, right], self.paren_expr(0)?)
+            }
             Token::Word("rvDworkK3ClosedUnit") => {
                 self.advance()?;
                 StatementForm::DworkK3ClosedUnit(self.paren_expr(0)?)
@@ -20180,6 +20219,46 @@ impl<'src> Parser<'src> {
                     return expr(
                         span,
                         ExprForm::DworkPCurvatureClosed(rank, exponent, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvDworkFrickeZ" | "rvDworkFrickeT" | "rvDworkFrickeJ" | "rvDworkFrickeTwist"
+                ) {
+                    use crate::dwork_k3::fricke::Invariant;
+                    let operation = match name.text.as_str() {
+                        "rvDworkFrickeZ" => Invariant::Coordinate,
+                        "rvDworkFrickeT" => Invariant::Partner,
+                        "rvDworkFrickeTwist" => Invariant::Twist,
+                        _ => {
+                            self.expect(Token::LBracket)?;
+                            let index = self.number()?.0;
+                            self.expect(Token::RBracket)?;
+                            Invariant::J(index)
+                        }
+                    };
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(
+                        span,
+                        ExprForm::DworkFrickeValue(operation, Box::new(input)),
+                        depth,
+                    );
+                }
+                if matches!(name.text.as_str(), "rvDworkFrickeMap" | "rvDworkFrickeDual")
+                    && self.eat(Token::LBracket)?
+                {
+                    let source = self.label()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    let reverse = name.text == "rvDworkFrickeDual";
+                    return expr(
+                        span,
+                        ExprForm::DworkFrickeMap([source, target], reverse, Box::new(input)),
                         depth,
                     );
                 }

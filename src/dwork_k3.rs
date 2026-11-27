@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::model::Model;
 use crate::odd_cobar::Prime;
 
+pub(crate) mod fricke;
 pub(crate) mod mirror;
 mod period;
 mod series;
