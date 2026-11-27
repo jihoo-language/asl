@@ -191,10 +191,12 @@ fn coefficients(polynomial: &[Integer]) -> Result<Vec<i128>> {
         .collect()
 }
 
+type CyclotomicFactors = Vec<(usize, usize)>;
+
 fn strip_cyclotomic(
     model: &mut Model,
     mut polynomial: Vec<Integer>,
-) -> Result<(Vec<(usize, usize)>, Vec<Integer>)> {
+) -> Result<(CyclotomicFactors, Vec<Integer>)> {
     // In φ(m)^2/m = ∏ p^(a−2)(p−1)^2 only the factor for 2 can be
     // smaller than 1, by at most 1/2. Thus φ(m)≤17 implies m≤578.
     const MAX_ORDER: usize = 2 * RANK * RANK;

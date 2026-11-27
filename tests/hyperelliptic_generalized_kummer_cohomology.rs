@@ -65,7 +65,8 @@ fn prime_level_traces_sum_to_count_and_display_the_middle_torsion_contribution()
         assert_eq!(alternating(&group[10..19]), group[19]);
     }
     assert_eq!(numbers[2], 10 + 5);
-    assert_eq!(numbers[3], 2 * 5 * 0);
+    // The curve has zero first Frobenius trace, so its H³ contribution vanishes.
+    assert_eq!(numbers[3], 0);
     assert_eq!(
         &numbers[20..29],
         &[1, 0, 175, -1000, 67500, -25000, 109375, 0, 390625]

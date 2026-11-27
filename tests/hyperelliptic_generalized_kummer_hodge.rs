@@ -126,8 +126,8 @@ fn signed_hodge_specialization_matches_the_constant_elliptic_genus() {
         let output = stdout(interpret(&source));
         let (diamond, _) = read_diamond(&output, dimension);
         assert_eq!(signed_specialization(&diamond), expected);
-        for q in 0..=dimension {
-            assert_eq!(diamond[0][q], i128::from(q.is_multiple_of(2)));
+        for (q, &entry) in diamond[0].iter().enumerate() {
+            assert_eq!(entry, i128::from(q.is_multiple_of(2)));
         }
     }
     for n in 1..=3 {

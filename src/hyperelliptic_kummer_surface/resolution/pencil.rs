@@ -369,11 +369,16 @@ fn rref(model: &mut Model, field: Field<'_>, rows: &mut Forms) -> Result<[usize;
         for coordinate in &mut rows[rank][column..] {
             *coordinate = field.multiply(model, coordinate, &inverse)?;
         }
-        let other = 1 - rank;
-        let factor = rows[other][column].clone();
-        for j in column..4 {
-            let change = field.multiply(model, &factor, &rows[rank][j])?;
-            rows[other][j] = field.subtract(model, &rows[other][j], &change)?;
+        let [first, second] = rows;
+        let (pivot, other) = if rank == 0 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let factor = other[column].clone();
+        for (entry, pivot_entry) in other[column..].iter_mut().zip(&pivot[column..]) {
+            let change = field.multiply(model, &factor, pivot_entry)?;
+            *entry = field.subtract(model, entry, &change)?;
         }
         pivots[rank] = column;
         rank += 1;

@@ -67,16 +67,23 @@ fn every_kernel_basis_vector_is_perpendicular_and_gram_determinant_proves_satura
     for _ in 0..23 {
         assert_eq!(values.next(), Some(0));
     }
-    let mut gram = [[0i128; 23]; 23];
-    for i in 0..23 {
-        for j in i..23 {
-            let value = values.next().unwrap();
-            gram[i][j] = value;
-            gram[j][i] = value;
-        }
-    }
+    let gram = read_symmetric_gram::<23>(&mut values);
     assert_eq!(values.next(), None);
     assert_eq!(determinant(gram), 52);
+}
+
+fn read_symmetric_gram<const N: usize>(values: &mut impl Iterator<Item = i128>) -> [[i128; N]; N] {
+    let mut gram = [[0; N]; N];
+    for i in 0..N {
+        let (prefix, later_rows) = gram.split_at_mut(i + 1);
+        let row = &mut prefix[i];
+        row[i] = values.next().unwrap();
+        for (entry, transpose_row) in row[i + 1..].iter_mut().zip(later_rows) {
+            *entry = values.next().unwrap();
+            transpose_row[i] = *entry;
+        }
+    }
+    gram
 }
 
 fn determinant<const N: usize>(mut matrix: [[i128; N]; N]) -> i128 {
@@ -300,14 +307,9 @@ fn isotropic_partner_basis_is_an_even_unimodular_integral_kernel() {
     for _ in 0..44 {
         assert_eq!(values.next(), Some(0));
     }
-    let mut gram = [[0i128; 22]; 22];
-    for i in 0..22 {
-        for j in i..22 {
-            let entry = values.next().unwrap();
-            gram[i][j] = entry;
-            gram[j][i] = entry;
-        }
-        assert_eq!(gram[i][i] % 2, 0);
+    let gram = read_symmetric_gram::<22>(&mut values);
+    for (i, row) in gram.iter().enumerate() {
+        assert_eq!(row[i] % 2, 0);
     }
     assert_eq!(values.next(), None);
     assert_eq!(determinant(gram), -1);

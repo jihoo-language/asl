@@ -3671,7 +3671,7 @@ impl<'src> Parser<'src> {
             self.expect(Token::RBracket)?;
             Command::Dimension(basis, length, degree)
         } else {
-            Command::IsPrimary(self.paren_expr(0)?)
+            Command::IsPrimary(Box::new(self.paren_expr(0)?))
         };
         Ok(StatementForm::NakajimaPrimary(Box::new(command)))
     }

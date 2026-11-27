@@ -203,10 +203,11 @@ fn determinant_mod_101(mut matrix: [[i64; 17]; 17]) -> i64 {
         let pivot = matrix[column][column].rem_euclid(101);
         result = (result * pivot).rem_euclid(101);
         let inverse = (1..101).find(|&i| (i * pivot) % 101 == 1).unwrap();
-        for row in (column + 1)..17 {
-            let factor = (inverse * matrix[row][column]).rem_euclid(101);
-            for j in column..17 {
-                matrix[row][j] = (matrix[row][j] - factor * matrix[column][j]).rem_euclid(101);
+        let pivot_row = matrix[column];
+        for row in matrix.iter_mut().skip(column + 1) {
+            let factor = (inverse * row[column]).rem_euclid(101);
+            for (entry, &pivot_entry) in row[column..].iter_mut().zip(&pivot_row[column..]) {
+                *entry = (*entry - factor * pivot_entry).rem_euclid(101);
             }
         }
     }

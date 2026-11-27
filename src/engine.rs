@@ -4877,7 +4877,7 @@ impl Engine {
                 ))
             }
             Command::IsPrimary(input) => {
-                let input = self.checker().expr(input)?;
+                let input = self.checker().expr(*input)?;
                 let length = self
                     .checker()
                     .nakajima_grade(&input, "rvNakajimaIsPrimary")?

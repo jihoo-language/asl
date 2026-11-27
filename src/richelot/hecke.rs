@@ -120,14 +120,13 @@ impl Neighbors {
         let stable = masks
             .into_iter()
             .enumerate()
-            .filter_map(|(index, masks)| {
-                (index == permutation[index]).then(|| Plane {
-                    masks,
-                    rational: 1 + masks
-                        .iter()
-                        .filter(|&&x| x == images[usize::from(x)])
-                        .count(),
-                })
+            .filter(|(index, _)| *index == permutation[*index])
+            .map(|(_, masks)| Plane {
+                masks,
+                rational: 1 + masks
+                    .iter()
+                    .filter(|&&x| x == images[usize::from(x)])
+                    .count(),
             })
             .collect();
         Ok(Self {

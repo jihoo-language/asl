@@ -10,7 +10,7 @@ use super::{coordinate_range, Factor, Grade, Mode, Monomial, State, COLORS, POIN
 
 pub(crate) enum Command {
     Dimension(Label, i128, i128),
-    IsPrimary(ParsedExpr),
+    IsPrimary(Box<ParsedExpr>),
 }
 
 pub(crate) fn dimension(model: &mut Model, grade: &Grade) -> Result<usize> {
