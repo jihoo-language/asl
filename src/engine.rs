@@ -672,6 +672,7 @@ enum TypedForm {
     Nakajima(nakajima::Operation, Box<TypedExpr>),
     K3Clifford(CliffordAction),
     K3Spinor(SpinorAction),
+    NakajimaCup(Box<[TypedExpr; 2]>),
     Mukai(MukaiAction),
     MukaiQuotient(Rc<mukai::moduli::Lattice>, Box<TypedExpr>),
     MukaiQuotientLift(Box<TypedExpr>),
@@ -8190,6 +8191,22 @@ impl Engine {
                     unreachable!()
                 };
                 word.apply_lattice(&mut self.model, &vector)?
+                    .persist(&mut self.model)
+            }
+            TypedForm::NakajimaCup(inputs) => {
+                let Kind::Nakajima(grade) = self.model.kind(expr.ty) else {
+                    unreachable!();
+                };
+                if !grade.supports_states() {
+                    return nakajima::State::zero().persist(&mut self.model);
+                }
+                let length = grade.length;
+                let (Value::Nakajima(left), Value::Nakajima(right)) =
+                    (self.eval(&inputs[0])?, self.eval(&inputs[1])?)
+                else {
+                    unreachable!();
+                };
+                left.cup(&mut self.model, &right, length)?
                     .persist(&mut self.model)
             }
             TypedForm::Nakajima(operation, input) => {
@@ -19953,6 +19970,30 @@ impl Checker<'_> {
                 };
                 let state = nakajima::primary::generator(self.model, &grade, index)?;
                 Ok((ty, TypedForm::Constant(state.persist(self.model)?)))
+            }
+            Expression::Cup(inputs) => {
+                let [left, right] = *inputs;
+                let left = self.expr(left)?;
+                let right = self.expr(right)?;
+                let x = self.nakajima_grade(&left, "rvNakajimaCup")?;
+                let y = self.nakajima_grade(&right, "rvNakajimaCup")?;
+                if x.basis != y.basis || x.length != y.length {
+                    return Err(Error::new(
+                        right.span,
+                        "rvNakajimaCup requires the same named level basis and length",
+                    ));
+                }
+                let degree = x
+                    .degree
+                    .checked_add(y.degree)
+                    .ok_or_else(nakajima::grade_range)?;
+                let length = x.length;
+                let basis = Label {
+                    text: x.basis.to_string(),
+                    span: left.span,
+                };
+                let ty = self.model.nakajima_type(&basis, length, degree)?;
+                Ok((ty, TypedForm::NakajimaCup(Box::new([left, right]))))
             }
             Expression::Apply(operation, input) => {
                 let input = self.expr(*input)?;

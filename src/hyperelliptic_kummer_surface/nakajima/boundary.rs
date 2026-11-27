@@ -6,7 +6,7 @@ use super::{
     Accumulator, Factor, Gram, Integer, Mode, State, COLORS, LIMBS, POINT,
 };
 
-type ColorPair = (u8, u8, i128);
+pub(super) type ColorPair = (u8, u8, i128);
 
 impl State {
     pub(crate) fn boundary(&self, model: &mut Model) -> Result<Self> {
@@ -42,7 +42,7 @@ impl State {
     }
 }
 
-fn diagonal_of_unit(model: &mut Model, inverse: &Gram) -> Result<Vec<ColorPair>> {
+pub(super) fn diagonal_of_unit(model: &mut Model, inverse: &Gram) -> Result<Vec<ColorPair>> {
     model.spend(COLORS * COLORS)?;
     let mut terms = Vec::new();
     for left in 0..COLORS as u8 {
@@ -56,7 +56,7 @@ fn diagonal_of_unit(model: &mut Model, inverse: &Gram) -> Result<Vec<ColorPair>>
     Ok(terms)
 }
 
-fn surface_product(gram: &Gram, left: u8, right: u8) -> (u8, i128) {
+pub(super) fn surface_product(gram: &Gram, left: u8, right: u8) -> (u8, i128) {
     match (left, right) {
         (0, color) | (color, 0) => (color, 1),
         (POINT, _) | (_, POINT) => (POINT, 0),

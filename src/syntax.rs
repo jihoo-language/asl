@@ -3546,6 +3546,15 @@ impl<'src> Parser<'src> {
 
     fn nakajima_expression(&mut self, name: &str, span: Span, nest: usize) -> Result<ParsedExpr> {
         use crate::hyperelliptic_kummer_surface::nakajima::{Expression, Factor, Operation};
+        if name == "rvNakajimaCup" {
+            let inputs = self.paren_pair(nest)?;
+            let depth = 1 + inputs[0].depth.max(inputs[1].depth);
+            return expr(
+                span,
+                ExprForm::Nakajima(Box::new(Expression::Cup(Box::new(inputs)))),
+                depth,
+            );
+        }
         if name == "rvNakajimaBoundary" {
             let input = self.paren_expr(nest)?;
             let depth = input.depth + 1;
@@ -10702,7 +10711,8 @@ impl<'src> Parser<'src> {
                         | "rvNakajimaScale"
                         | "rvVirasoro"
                 ) && self.token() == Token::LBracket)
-                    || (name.text == "rvNakajimaBoundary" && self.token() == Token::LParen)
+                    || (matches!(name.text.as_str(), "rvNakajimaBoundary" | "rvNakajimaCup")
+                        && self.token() == Token::LParen)
                 {
                     return self.nakajima_expression(&name.text, span, nest);
                 }

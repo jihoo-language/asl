@@ -11,6 +11,7 @@ use crate::syntax::{Label, ParsedExpr};
 use super::unimodular;
 
 mod boundary;
+mod cup;
 pub(crate) mod primary;
 mod virasoro;
 mod wick;
@@ -84,6 +85,7 @@ pub(crate) struct Factor {
 pub(crate) enum Expression {
     Vacuum(Label),
     Monomial(Label, Vec<Factor>),
+    Cup(Box<[ParsedExpr; 2]>),
     PrimaryGenerator(Label, i128, i128, usize),
     Apply(Operation, Box<ParsedExpr>),
 }
@@ -444,7 +446,7 @@ fn check_cells(cells: usize) -> Result<()> {
     Ok(())
 }
 
-fn grade_range() -> Error {
+pub(crate) fn grade_range() -> Error {
     Error::plain("Nakajima grade exceeds signed 128-bit range")
 }
 

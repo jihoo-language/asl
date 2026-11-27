@@ -1,0 +1,21 @@
+rvunram W[3,1]{1,0,1};
+let z=rvUnramElem[W]{};
+let o=rvUnramElem[W]{1};
+let i=rvUnramElem[W]{0,1};
+rvhyperelliptic C[W]{z,neg(o),z,z,z,o};
+let e1=rvJacPoint[C](z,z);
+let f1=rvJacPoint[C](o,z);
+let e2=add(add(e1,f1),rvJacPoint[C](neg(o),z));
+let f2=add(add(e1,f1),rvJacPoint[C](i,z));
+rvjactorsionbasis B[C,2](neg(o)){e1,e2,f1,f2};
+
+let boundary=rvNakajimaMonomial[B]{(1,0,1),(2,0,1)};
+let a=rvNakajimaMonomial[B]{(3,0,1)};
+let square=rvNakajimaCup(a,a);
+assert rvNakajimaCup(boundary,a)==rvNakajimaScale[2](rvNakajimaBoundary(a));
+assert rvNakajimaAnn[3,0](square)==rvNakajimaScale[-216](rvNakajimaVac[B]);
+assert rvNakajimaAnn[1,23](square)==rvNakajimaScale[9](rvNakajimaMonomial[B]{(1,23,2)});
+assert rvNakajimaAnn[1,1](square)==rvNakajimaScale[18](rvNakajimaMonomial[B]{(1,1,1),(1,23,1)});
+let cube=rvNakajimaCup(square,a);
+assert cube==rvNakajimaScale[-216](rvNakajimaMonomial[B]{(1,23,3)});
+rvNakajimaPair(square,a);
