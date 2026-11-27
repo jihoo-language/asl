@@ -7,6 +7,8 @@ use crate::model::{Model, Value};
 use crate::rv_qp_quad::Wide;
 use crate::syntax::{Label, ParsedExpr};
 
+pub(crate) mod canonical;
+
 type Integer = Wide<13>;
 
 pub(crate) enum Statement {

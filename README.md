@@ -1550,6 +1550,14 @@ The norm $\operatorname{Res}_X(H_D(X),\Phi_\ell(X,Y))$ is the determinant of mul
 
 See Deuring, *Die Typen der Multiplikatorenringe elliptischer Funktionenkörper*, Abh. Math. Sem. Hansischen Univ. **14** (1941), 197–272, and Cox, *Primes of the Form $x^2+ny^2$*, for ordinary reduction and its relation to ring class polynomials. [Ordinary endomorphism order example](examples/elliptic-deuring-endomorphism-orders.asl)
 
+#### Serre–Tate canonical CM lifts
+
+`rvECEndCanonicalJ[M,W]` returns the canonical $j$-invariant of the certified ordinary curve in the named truncated unramified ring `W`. Its residue presentation must agree with the curve's field, including the defining polynomial modulo $p$. The operation evaluates every integral coefficient of $H_D$ modulo the full $p^s$, checks that the derivative at the residue root is a unit, and applies Hensel–Newton lifting. Uniqueness gives compatibility under truncation. The computation checks that the Frobenius conjugate still satisfies $H_D$ and reduces to the conjugate of the original $j$.
+
+For certified Frobenius $\pi=c+b\omega$ with trace $a$ and norm $q$, `rvECEndUnitRoot[M,W]` gives the root $\alpha$ of $X^2-aX+q$ reducing to $a$ modulo $p$. `rvECEndNonunitRoot[M,W]` gives $\beta=q/\alpha$. The two maps `rvECEndEmbed[M,W](x)` and `rvECEndEmbedConj[M,W](x)` evaluate an element of `RVECEnd(M)` using $\omega=(\alpha-c)/b$ or $(\beta-c)/b$. The coefficient $b$ is a unit for an ordinary certificate. The implementation checks the quadratic relation and the root sum and product.
+
+`rvECEndCanonicalPhi[M,W]` evaluates $\Phi_p(J,\sigma J)$ in the full ring using integral coefficients at available levels. The short Weierstrass certificates start at $p=5$, so this check applies there at $p=5,7$. `rvModularPolyWittEval[ell](x,y)` also evaluates the integral polynomial in a shared named unramified ring at levels $2,3,5,7$. See Serre and Tate, *Good reduction of abelian varieties*, Katz, *Serre–Tate local moduli*, and Satoh, *The canonical lift of an ordinary elliptic curve over a finite field and its point counting*. [Canonical CM lift example](examples/elliptic-serre-tate-canonical-lifts.asl)
+
 #### Marked Mukai lattice
 
 `rvK3FromKummerDiv(d)` embeds `RVKummerDiv(B)` into `RVK3Lattice(B)` by sending the hyperplane coefficient $h$ to $h(e_{02}+e_{13})$ in the doubled wedge coordinates and preserving the exceptional coefficients. `rvK3ToKummerDiv(c)` inverts this on that sublattice. The zero trope incidence vector has the same quadratic polarization as the Weil form in the marking, so the two gluing conditions agree up to an affine term.

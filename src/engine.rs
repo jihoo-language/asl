@@ -23,6 +23,7 @@ use crate::ec_morphism::{self, Morphism};
 use crate::elliptic::{self, Curve as EllipticCurve};
 use crate::elliptic_cm_recognition as ec_cm;
 use crate::elliptic_end_order;
+use crate::elliptic_end_order::canonical as ec_canonical;
 use crate::elliptic_gluing;
 use crate::elliptic_local;
 use crate::elliptic_modular;
@@ -612,8 +613,15 @@ enum CMClassAction {
 }
 
 enum EllipticModularAction {
-    Evaluate(Box<[TypedExpr; 2]>),
+    Evaluate(bool, Box<[TypedExpr; 2]>),
     SpecializeCoefficient(usize, Box<TypedExpr>),
+}
+
+enum ECEndCanonicalAction {
+    JInvariant,
+    ModularResidual,
+    Root(bool),
+    Embed(bool, Box<TypedExpr>),
 }
 
 enum ECEndAction {
@@ -735,6 +743,7 @@ enum TypedForm {
     CMNeighbor(cm_ring::Order, cm_ring::Order, Prime, u32, Box<TypedExpr>),
     EllipticModular(Rc<UnramRing>, Prime, EllipticModularAction),
     ECEnd(ECEndAction),
+    ECEndCanonical(ec_canonical::Lift, ECEndCanonicalAction),
     CMClassPolynomialEval(Rc<cm_class_poly::Polynomial>, Rc<UnramRing>, Box<TypedExpr>),
     Mukai(MukaiAction),
     AbMukaiKummer(Box<TypedExpr>),
@@ -6567,6 +6576,27 @@ impl Engine {
         Ok(format!("rvK3SpinCoeff[{index}] = {value}"))
     }
 
+    fn eval_ec_end_canonical(
+        &mut self,
+        lift: &ec_canonical::Lift,
+        action: &ECEndCanonicalAction,
+    ) -> Result<Value> {
+        let result = match action {
+            ECEndCanonicalAction::JInvariant => lift.j_invariant(&mut self.model)?,
+            ECEndCanonicalAction::ModularResidual => lift.modular_residual(&mut self.model)?,
+            ECEndCanonicalAction::Root(complementary) => {
+                lift.root(&mut self.model, *complementary)?
+            }
+            ECEndCanonicalAction::Embed(complementary, input) => {
+                let Value::ECEndOrder(value) = self.eval(input)? else {
+                    unreachable!()
+                };
+                lift.embed(&mut self.model, value, *complementary)?
+            }
+        };
+        rv_unram::persist(&mut self.model, result)
+    }
+
     fn eval_ec_end(&mut self, action: &ECEndAction) -> Result<Value> {
         let value = match action {
             ECEndAction::JInvariant(curve) => {
@@ -6605,12 +6635,12 @@ impl Engine {
     ) -> Result<Value> {
         let special_char = field.prime() == u64::from(prime.get());
         let result = match action {
-            EllipticModularAction::Evaluate(inputs) => {
+            EllipticModularAction::Evaluate(lifted, inputs) => {
                 let [x, y] = inputs.as_ref();
                 let (Value::RVUnram(x), Value::RVUnram(y)) = (self.eval(x)?, self.eval(y)?) else {
                     unreachable!()
                 };
-                if special_char {
+                if special_char && !lifted {
                     elliptic_modular::special_char_evaluate(&mut self.model, field, &x, &y)?
                 } else {
                     self.model.elliptic_modular_polynomial(prime)?.evaluate(
@@ -9380,6 +9410,7 @@ impl Engine {
                 self.eval_elliptic_modular(field, *prime, action)
             }
             TypedForm::ECEnd(action) => self.eval_ec_end(action),
+            TypedForm::ECEndCanonical(lift, action) => self.eval_ec_end_canonical(lift, action),
             TypedForm::CMClassPolynomialEval(polynomial, field, input) => {
                 let Value::RVUnram(input) = self.eval(input)? else {
                     unreachable!()
@@ -15243,6 +15274,7 @@ impl Checker<'_> {
             ExprForm::EllipticModular(expression) => self.elliptic_modular_expression(*expression),
             ExprForm::CMClassPolynomial(expression) => self.cm_class_poly_expression(*expression),
             ExprForm::ECEndOrder(expression) => self.ec_end_order_expression(*expression),
+            ExprForm::ECEndCanonical(expression) => self.ec_end_canonical_expression(*expression),
             ExprForm::CMNeighbor(expression) => {
                 let cm_neighbors::Expression(target, ell, address, input) = expression;
                 let input = self.expr(*input)?;
@@ -21895,6 +21927,39 @@ impl Checker<'_> {
         self.model.ec_end_order(name)
     }
 
+    fn ec_end_canonical_expression(
+        &mut self,
+        expression: ec_canonical::Expression,
+    ) -> Result<(TypeId, TypedForm)> {
+        use ec_canonical::Expression;
+        let (certificate, ring, action) = match expression {
+            Expression::JInvariant(certificate, ring) => {
+                (certificate, ring, ECEndCanonicalAction::JInvariant)
+            }
+            Expression::ModularResidual(certificate, ring) => {
+                (certificate, ring, ECEndCanonicalAction::ModularResidual)
+            }
+            Expression::Root(certificate, ring, complementary) => {
+                (certificate, ring, ECEndCanonicalAction::Root(complementary))
+            }
+            Expression::Embed(certificate, ring, complementary, input) => {
+                let input = self.expr(*input)?;
+                let required = self.model.ec_end_order_type(&certificate)?;
+                self.require_type(required, &input, "ordinary CM embedding argument")?;
+                (
+                    certificate,
+                    ring,
+                    ECEndCanonicalAction::Embed(complementary, Box::new(input)),
+                )
+            }
+        };
+        let ty = self.model.rv_unram_type(&ring)?;
+        let certificate = self.model.ec_end_order(&certificate.text)?;
+        let ring = self.model.rv_unram(&ring)?;
+        let lift = ec_canonical::Lift::new(self.model, certificate, ring)?;
+        Ok((ty, TypedForm::ECEndCanonical(lift, action)))
+    }
+
     fn ec_end_order_expression(
         &mut self,
         expression: elliptic_end_order::Expression,
@@ -21986,8 +22051,9 @@ impl Checker<'_> {
         expression: elliptic_modular::Expression,
     ) -> Result<(TypeId, TypedForm)> {
         use elliptic_modular::Expression;
+        let lifted = matches!(&expression, Expression::WittEvaluate(..));
         let (level, ty, field, action) = match expression {
-            Expression::Evaluate(level, inputs) => {
+            Expression::Evaluate(level, inputs) | Expression::WittEvaluate(level, inputs) => {
                 let [x, y] = *inputs;
                 let x = self.expr(x)?;
                 let field = self.unram_ring(&x, "rvModularPolyEval")?;
@@ -21997,7 +22063,7 @@ impl Checker<'_> {
                     level,
                     x.ty,
                     field,
-                    EllipticModularAction::Evaluate(Box::new([x, y])),
+                    EllipticModularAction::Evaluate(lifted, Box::new([x, y])),
                 )
             }
             Expression::SpecializeCoefficient(level, j, input) => {
@@ -22011,7 +22077,7 @@ impl Checker<'_> {
                 )
             }
         };
-        if field.precision() != 1 {
+        if !lifted && field.precision() != 1 {
             return Err(Error::plain(
                 "modular polynomial evaluation requires a precision-one RVUnram field",
             ));

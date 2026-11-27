@@ -17,6 +17,7 @@ pub(crate) enum Statement {
 
 pub(crate) enum Expression {
     Evaluate(usize, Box<[ParsedExpr; 2]>),
+    WittEvaluate(usize, Box<[ParsedExpr; 2]>),
     SpecializeCoefficient(usize, usize, Box<ParsedExpr>),
 }
 
@@ -156,7 +157,7 @@ impl Polynomial {
             return Ok(field.scalar(0));
         };
         let mut result = field.scalar(0);
-        let p = field.prime();
+        let p = field.modulus();
         for coefficient in row.iter().rev() {
             result = field.multiply(model, &result, x)?;
             if !coefficient.is_zero() {

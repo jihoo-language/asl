@@ -177,6 +177,18 @@ impl Polynomial {
         }
         Ok(value)
     }
+
+    pub(crate) fn unramified_coefficients(
+        &self,
+        model: &mut Model,
+        ring: &Ring,
+    ) -> Result<Vec<Vec<u64>>> {
+        self.coefficients
+            .0
+            .iter()
+            .map(|&coefficient| Ok(ring.scalar(residue(model, coefficient, ring.modulus())?)))
+            .collect()
+    }
 }
 
 fn multiplicity(source: usize, edges: usize, target: usize) -> Result<usize> {

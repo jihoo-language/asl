@@ -1012,6 +1012,7 @@ pub(crate) enum ExprForm {
     EllipticModular(Box<crate::elliptic_modular::Expression>),
     CMClassPolynomial(Box<crate::cm_class_poly::Expression>),
     ECEndOrder(Box<crate::elliptic_end_order::Expression>),
+    ECEndCanonical(Box<crate::elliptic_end_order::canonical::Expression>),
     Mukai(Box<crate::hyperelliptic_kummer_surface::mukai::Expression>),
     MukaiModuli(crate::hyperelliptic_kummer_surface::mukai::moduli::Expression),
     OG10(Box<crate::hyperelliptic_kummer_surface::mukai::moduli::og10::Expression>),
@@ -3659,6 +3660,42 @@ impl<'src> Parser<'src> {
         Ok(StatementForm::ECEndOrder(Box::new(command)))
     }
 
+    fn ec_end_canonical_expression(
+        &mut self,
+        name: &str,
+        span: Span,
+        nest: usize,
+    ) -> Result<ParsedExpr> {
+        use crate::elliptic_end_order::canonical::Expression;
+        self.expect(Token::LBracket)?;
+        let certificate = self.label()?;
+        self.expect(Token::Comma)?;
+        let ring = self.label()?;
+        self.expect(Token::RBracket)?;
+        let (expression, depth) = match name {
+            "rvECEndCanonicalJ" => (Expression::JInvariant(certificate, ring), 0),
+            "rvECEndCanonicalPhi" => (Expression::ModularResidual(certificate, ring), 0),
+            "rvECEndUnitRoot" | "rvECEndNonunitRoot" => (
+                Expression::Root(certificate, ring, name == "rvECEndNonunitRoot"),
+                0,
+            ),
+            _ => {
+                let input = self.paren_expr(nest)?;
+                let depth = input.depth + 1;
+                (
+                    Expression::Embed(
+                        certificate,
+                        ring,
+                        name == "rvECEndEmbedConj",
+                        Box::new(input),
+                    ),
+                    depth,
+                )
+            }
+        };
+        expr(span, ExprForm::ECEndCanonical(Box::new(expression)), depth)
+    }
+
     fn ec_end_order_expression(
         &mut self,
         name: &str,
@@ -3789,11 +3826,17 @@ impl<'src> Parser<'src> {
         use crate::elliptic_modular::Expression;
         self.expect(Token::LBracket)?;
         let level = self.number()?.0;
-        let (expression, depth) = if name == "rvModularPolyEval" {
+        let (expression, depth) = if matches!(name, "rvModularPolyEval" | "rvModularPolyWittEval") {
             self.expect(Token::RBracket)?;
             let inputs = self.paren_pair(nest)?;
             let depth = inputs[0].depth.max(inputs[1].depth) + 1;
-            (Expression::Evaluate(level, Box::new(inputs)), depth)
+            let inputs = Box::new(inputs);
+            let expression = if name == "rvModularPolyWittEval" {
+                Expression::WittEvaluate(level, inputs)
+            } else {
+                Expression::Evaluate(level, inputs)
+            };
+            (expression, depth)
         } else {
             self.expect(Token::Comma)?;
             let j = self.number()?.0;
@@ -12378,7 +12421,7 @@ impl<'src> Parser<'src> {
                 }
                 if matches!(
                     name.text.as_str(),
-                    "rvModularPolyEval" | "rvModularPolySpecCoeff"
+                    "rvModularPolyEval" | "rvModularPolySpecCoeff" | "rvModularPolyWittEval"
                 ) && self.token() == Token::LBracket
                 {
                     return self.elliptic_modular_expression(&name.text, span, nest);
@@ -12398,6 +12441,18 @@ impl<'src> Parser<'src> {
                         && self.token() == Token::LParen)
                 {
                     return self.ec_end_order_expression(&name.text, span, nest);
+                }
+                if matches!(
+                    name.text.as_str(),
+                    "rvECEndCanonicalJ"
+                        | "rvECEndCanonicalPhi"
+                        | "rvECEndUnitRoot"
+                        | "rvECEndNonunitRoot"
+                        | "rvECEndEmbed"
+                        | "rvECEndEmbedConj"
+                ) && self.token() == Token::LBracket
+                {
+                    return self.ec_end_canonical_expression(&name.text, span, nest);
                 }
                 if (matches!(
                     name.text.as_str(),
