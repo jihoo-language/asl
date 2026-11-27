@@ -99,6 +99,7 @@ use crate::sheaf_hyper;
 use crate::sheaf_leray::Leray;
 use crate::sheaf_page;
 use crate::sheaf_support::{self, Supports};
+use crate::stable_marks::{self, Reduction as StableCurve, Tree as StableTree};
 use crate::steenrod::{self, Word};
 use crate::syntax::Label;
 use crate::tropical_matroid::{self, Grade as ValGrade, Matroid as ValMatroid};
@@ -228,6 +229,8 @@ pub(crate) enum Kind {
     RVQpQuad(Rc<str>),
     RVResSpace(ResGrade),
     RVValMat(ValGrade),
+    RVStableTree(usize),
+    RVStableMarks(u32, usize),
     RvTl(rv_tl::Grade),
     RVWzw(rv_wzw::Grade),
     JetHom(jet_hom::Grade),
@@ -373,6 +376,8 @@ pub(crate) enum Value {
     RVQpQuad(QuadElement),
     RVResSpace(Rc<ResSpace>),
     RVValMat(Rc<ValMatroid>),
+    RVStableTree(Rc<StableTree>),
+    RVStableMarks(Rc<StableCurve>),
     RvTl(rv_tl::Support),
     RVWzw(rv_wzw::Support),
     JetHom(jet_hom::Support),
@@ -806,6 +811,8 @@ impl Model {
             Kind::RVResSpace(grade) => grade.count(),
             Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => 1,
             Kind::RVValMat(..) => usize::MAX,
+            Kind::RVStableTree(3) | Kind::RVStableMarks(_, 3) => 1,
+            Kind::RVStableTree(..) | Kind::RVStableMarks(..) => usize::MAX,
             Kind::RVQGr(..) | Kind::RVQGrP(..) | Kind::RVOre => usize::MAX,
             Kind::RVCTState(..) => usize::MAX,
             Kind::RVCTResidue(level) => usize::try_from(level.modulus).unwrap_or(usize::MAX),
@@ -1002,6 +1009,8 @@ impl Model {
                 | Kind::RVQpQuad(..)
                 | Kind::RVResSpace(..)
                 | Kind::RVValMat(..)
+                | Kind::RVStableTree(..)
+                | Kind::RVStableMarks(..)
                 | Kind::RVWzw(..)
                 | Kind::RvTl(..)
                 | Kind::VKoszul(..)
@@ -2973,6 +2982,16 @@ impl Model {
         self.inhabited_type(Kind::RVResSpace(grade), 0)
     }
 
+    pub(crate) fn rv_stable_tree_type(&mut self, marks: usize) -> Result<TypeId> {
+        stable_marks::check_count(marks)?;
+        self.inhabited_type(Kind::RVStableTree(marks), 0)
+    }
+
+    pub(crate) fn rv_stable_curve_type(&mut self, prime: u32, marks: usize) -> Result<TypeId> {
+        stable_marks::check_count(marks)?;
+        self.inhabited_type(Kind::RVStableMarks(prime, marks), 0)
+    }
+
     pub(crate) fn rv_valuated_matroid_type(&mut self, grade: ValGrade) -> Result<TypeId> {
         self.inhabited_type(Kind::RVValMat(grade), 0)
     }
@@ -3638,6 +3657,8 @@ impl Model {
             | Kind::RVCycloQ(..)
             | Kind::RVResSpace(..)
             | Kind::RVValMat(..)
+            | Kind::RVStableTree(..)
+            | Kind::RVStableMarks(..)
             | Kind::RVQpQuad(..)
             | Kind::RVWzw(..)
             | Kind::RvTl(..)
@@ -4060,6 +4081,10 @@ impl Model {
                 grade.prime.get(),
                 grade.width,
             )),
+            Kind::RVStableTree(marks) => out.push(&format!("RVStableTree({marks})")),
+            Kind::RVStableMarks(prime, marks) => {
+                out.push(&format!("RVStableMarks({prime}, {marks})"))
+            }
             Kind::RVValMat(grade) => out.push(&format!(
                 "RVValMat({}, {}, {})",
                 grade.prime, grade.ground, grade.rank
@@ -4275,6 +4300,12 @@ impl Model {
                 Ok(rv_tl::compare(self, left, right)?.is_eq())
             }
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left == right),
+            (Value::RVStableTree(left), Value::RVStableTree(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
+            (Value::RVStableMarks(left), Value::RVStableMarks(right)) => {
+                Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
+            }
             (Value::RVResSpace(left), Value::RVResSpace(right)) => {
                 Ok(Rc::ptr_eq(left, right) || left.compare(self, right)?.is_eq())
             }
@@ -4529,6 +4560,20 @@ impl Model {
             (Value::RVWzw(left), Value::RVWzw(right)) => rv_wzw::compare(self, left, right),
             (Value::RvTl(left), Value::RvTl(right)) => rv_tl::compare(self, left, right),
             (Value::RVQpQuad(left), Value::RVQpQuad(right)) => Ok(left.cmp(right)),
+            (Value::RVStableTree(left), Value::RVStableTree(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
+            }
+            (Value::RVStableMarks(left), Value::RVStableMarks(right)) => {
+                if Rc::ptr_eq(left, right) {
+                    Ok(Ordering::Equal)
+                } else {
+                    left.compare(self, right)
+                }
+            }
             (Value::RVResSpace(left), Value::RVResSpace(right)) => {
                 if Rc::ptr_eq(left, right) {
                     Ok(Ordering::Equal)
@@ -4768,6 +4813,15 @@ impl Model {
                     let count = grade.count();
                     self.check_element_limit(count)?;
                     rv_res_space::enumerate(self, grade, count)?
+                }
+                Kind::RVStableTree(3) => vec![Value::RVStableTree(StableTree::three(self)?)],
+                Kind::RVStableMarks(prime, 3) => {
+                    vec![Value::RVStableMarks(StableCurve::three(self, prime)?)]
+                }
+                Kind::RVStableTree(..) | Kind::RVStableMarks(..) => {
+                    return Err(Error::plain(
+                        "cannot enumerate the space of stable marked reductions",
+                    ));
                 }
                 Kind::RVValMat(grade) if grade.rank == 0 || grade.rank == grade.ground => {
                     vec![Value::RVValMat(tropical_matroid::Matroid::build(
@@ -6054,6 +6108,8 @@ impl Model {
                 }
                 out.push("}")
             }
+            Value::RVStableTree(value) => out.push(&value.summary(self)?),
+            Value::RVStableMarks(value) => out.push(&value.summary(self)?),
             Value::RVValMat(value) => {
                 let grade = value.grade;
                 out.push(&format!(

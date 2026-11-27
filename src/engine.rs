@@ -140,6 +140,7 @@ use crate::sheaf_page::{
     self, Grade as SheafPageGrade, Lift as SheafPageLift, Operation as SheafPageOp,
 };
 use crate::sheaf_support::{Grade as SupportGrade, Operation as SupportOp, Supports};
+use crate::stable_marks::{Reduction as StableCurve, Tree as StableTree};
 use crate::steenrod;
 use crate::syntax::BarFamilySpec;
 use crate::syntax::MixedSpec;
@@ -446,6 +447,8 @@ enum TypedForm {
     ResOrthogonal(Box<TypedExpr>),
     ValMatQuad(ValGrade, QuadField, Vec<Vec<TypedExpr>>),
     ValDual(Box<TypedExpr>),
+    StableLineQuad(QuadField, Vec<[TypedExpr; 2]>),
+    StableProjection(Box<TypedExpr>),
     HeckeProduct(Box<[TypedExpr; 2]>),
     SphericalProduct(Box<[TypedExpr; 2]>),
     SphericalEmbedding(Box<TypedExpr>),
@@ -2313,6 +2316,31 @@ impl Engine {
                     unreachable!()
                 };
                 format!("rvResLeq = {}", lower.is_subspace(&mut self.model, &upper)?)
+            }
+            StatementForm::StableReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                let (accepts, expected) = if query.requires_tree() {
+                    (
+                        matches!(self.model.kind(input.ty), Kind::RVStableTree(..)),
+                        "an RVStableTree",
+                    )
+                } else {
+                    (
+                        matches!(self.model.kind(input.ty), Kind::RVStableMarks(..)),
+                        "an RVStableMarks",
+                    )
+                };
+                if !accepts {
+                    return Err(Error::new(
+                        input.span,
+                        format!("stable reduction query requires {expected}"),
+                    ));
+                }
+                match self.eval(&input)? {
+                    Value::RVStableTree(tree) => query.tree(&mut self.model, &tree)?,
+                    Value::RVStableMarks(curve) => query.curve(&mut self.model, &curve)?,
+                    _ => unreachable!(),
+                }
             }
             StatementForm::ValMatReport(query, input) => {
                 let input = self.checker().expr(input)?;
@@ -4674,6 +4702,33 @@ impl Engine {
                     &rows,
                 )?))
             }
+            TypedForm::StableLineQuad(field, marks) => {
+                let mut points = Vec::with_capacity(marks.len());
+                for [first, second] in marks {
+                    let Value::RVQpQuad(a) = self.eval(first)? else {
+                        unreachable!()
+                    };
+                    let Value::RVQpQuad(b) = self.eval(second)? else {
+                        unreachable!()
+                    };
+                    points.push([a, b]);
+                }
+                Ok(Value::RVStableMarks(StableCurve::quadratic(
+                    &mut self.model,
+                    *field,
+                    &points,
+                )?))
+            }
+            TypedForm::StableProjection(input) => {
+                let tree = match self.eval(input)? {
+                    Value::RVValMat(matroid) => {
+                        StableTree::from_matroid(&mut self.model, &matroid)?
+                    }
+                    Value::RVStableMarks(curve) => curve.tree.clone(),
+                    _ => unreachable!(),
+                };
+                Ok(Value::RVStableTree(tree))
+            }
             TypedForm::ValDual(input) => {
                 let Value::RVValMat(value) = self.eval(input)? else {
                     unreachable!()
@@ -6425,6 +6480,9 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::ValMatQuad(..)
             | ExprForm::ValFil(..)
             | ExprForm::ValDual(..)
+            | ExprForm::StableLine(..)
+            | ExprForm::StableLineQuad(..)
+            | ExprForm::StableProjection(..)
             | ExprForm::RVCTInitial(..)
             | ExprForm::RVCTQuery(..)
             | ExprForm::RVCTLiteral(..)
@@ -6621,6 +6679,11 @@ impl Checker<'_> {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
                 let grade = ResGrade::new(prime, n)?;
                 self.model.rv_res_space_type(grade)
+            }
+            TypeForm::StableTree(count) => self.model.rv_stable_tree_type(count),
+            TypeForm::StableMarks(p, count) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                self.model.rv_stable_curve_type(prime.get(), count)
             }
             TypeForm::RVValMat(p, n, r) => {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
@@ -10282,6 +10345,44 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_res_space(&input, "rvResOrthogonal")?;
                 Ok((input.ty, TypedForm::ResOrthogonal(Box::new(input))))
+            }
+            ExprForm::StableLine(p, marks) => {
+                let prime = crate::rv_phodge::residue_prime(self.model, p)?;
+                let ty = self.model.rv_stable_curve_type(prime.get(), marks.len())?;
+                let value = StableCurve::rational(self.model, prime, marks)?;
+                Ok((ty, TypedForm::Constant(Value::RVStableMarks(value))))
+            }
+            ExprForm::StableLineQuad(name, marks) => {
+                let field = self.model.qp_quad(&name)?;
+                let field_type = self.model.qp_quad_type(&name)?;
+                let ty = self
+                    .model
+                    .rv_stable_curve_type(field.prime().get(), marks.len())?;
+                let mut points = Vec::with_capacity(marks.len());
+                for [first, second] in marks {
+                    let a = self.expr(first)?;
+                    let b = self.expr(second)?;
+                    self.require_type(field_type, &a, "rvStableLineQuad")?;
+                    self.require_type(field_type, &b, "rvStableLineQuad")?;
+                    points.push([a, b]);
+                }
+                Ok((ty, TypedForm::StableLineQuad(field, points)))
+            }
+            ExprForm::StableProjection(input) => {
+                let input = self.expr(*input)?;
+                let count = match *self.model.kind(input.ty) {
+                    Kind::RVValMat(grade) if grade.rank == 2 => grade.ground,
+                    Kind::RVStableMarks(_, count) => count,
+                    _ => {
+                        return Err(self.invalid_operand(
+                            &input,
+                            "rvStableTree",
+                            "a rank-two RVValMat or an RVStableMarks",
+                        ))
+                    }
+                };
+                let ty = self.model.rv_stable_tree_type(count)?;
+                Ok((ty, TypedForm::StableProjection(Box::new(input))))
             }
             ExprForm::ValMat(p, n, rows) => {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;

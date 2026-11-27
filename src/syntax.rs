@@ -123,6 +123,8 @@ pub(crate) enum TypeForm {
     RVQpQuad(Label),
     RVResSpace(usize, usize),
     RVValMat(usize, usize, usize),
+    StableTree(usize),
+    StableMarks(usize, usize),
     RvTl(usize, usize, usize),
     RVWzw(usize, usize),
     JetHom(JetHomSpec),
@@ -918,6 +920,9 @@ pub(crate) enum ExprForm {
     ValMatQuad(Label, usize, Vec<Vec<ParsedExpr>>),
     ValFil(Label, i64),
     ValDual(Box<ParsedExpr>),
+    StableLine(usize, Vec<[i128; 2]>),
+    StableLineQuad(Label, Vec<[ParsedExpr; 2]>),
+    StableProjection(Box<ParsedExpr>),
     QpQuadUnary(QuadUnary, Box<ParsedExpr>),
     AsDeRhamOperation(crate::rv_as_derham::Operation, Box<ParsedExpr>),
     AsOddCoefficient(Label, usize, usize),
@@ -1136,6 +1141,7 @@ pub(crate) enum StatementForm {
     ResReport(crate::rv_res_space::Query, ParsedExpr),
     ResLeq(ParsedExpr, ParsedExpr),
     ValMatReport(crate::tropical_matroid::Query, ParsedExpr),
+    StableReport(crate::stable_marks::Query, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
     RVCTExact(Label, u128),
@@ -3688,6 +3694,30 @@ impl<'src> Parser<'src> {
                 };
                 StatementForm::ValMatReport(query, self.paren_expr(0)?)
             }
+            Token::Word(
+                op @ ("rvStableSplits" | "rvStableDirections" | "rvStableComponents"
+                | "rvStableResidue"),
+            ) => {
+                self.advance()?;
+                use crate::stable_marks::Query;
+                let query = match op {
+                    "rvStableSplits" => Query::Splits,
+                    "rvStableComponents" => Query::Components,
+                    _ => {
+                        self.expect(Token::LBracket)?;
+                        let vertex = self.number()?.0;
+                        let query = if op == "rvStableDirections" {
+                            Query::Directions(vertex)
+                        } else {
+                            self.expect(Token::Comma)?;
+                            Query::Residue(vertex, self.number()?.0)
+                        };
+                        self.expect(Token::RBracket)?;
+                        query
+                    }
+                };
+                StatementForm::StableReport(query, self.paren_expr(0)?)
+            }
             Token::Word("rvQpQuadVal" | "rvQpQuadResidue") => {
                 let valuation = self.token() == Token::Word("rvQpQuadVal");
                 self.advance()?;
@@ -5006,6 +5036,18 @@ impl<'src> Parser<'src> {
             let (p, n) = self.bidegree()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVResSpace(p, n), 0);
+        }
+        if name.text == "RVStableTree" && self.eat(Token::LParen)? {
+            let count = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::StableTree(count), 0);
+        }
+        if name.text == "RVStableMarks" && self.eat(Token::LParen)? {
+            let p = self.number()?.0;
+            self.expect(Token::Comma)?;
+            let count = self.number()?.0;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::StableMarks(p, count), 0);
         }
         if name.text == "RVValMat" && self.eat(Token::LParen)? {
             let p = self.number()?.0;
@@ -6493,6 +6535,49 @@ impl<'src> Parser<'src> {
                     let input = self.paren_expr(nest)?;
                     let depth = input.depth + 1;
                     return expr(span, ExprForm::ResOrthogonal(Box::new(input)), depth);
+                }
+                if name.text == "rvStableLine" && self.eat(Token::LBracket)? {
+                    let p = self.number()?.0;
+                    self.expect(Token::RBracket)?;
+                    self.expect(Token::LBrace)?;
+                    let mut marks = Vec::new();
+                    while self.token() != Token::RBrace {
+                        let row = self
+                            .signed_tuple("an integer marking coordinate", "marking coordinate")?;
+                        marks.push(row.try_into().map_err(|_| {
+                            Error::new(
+                                span,
+                                "a projective mark requires two homogeneous coordinates",
+                            )
+                        })?);
+                        if !self.eat(Token::Comma)? {
+                            break;
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    return expr(span, ExprForm::StableLine(p, marks), 0);
+                }
+                if name.text == "rvStableLineQuad" && self.eat(Token::LBracket)? {
+                    let field = self.label()?;
+                    self.expect(Token::RBracket)?;
+                    let (rows, depth) = self.tropical_rows(nest)?;
+                    let marks = rows
+                        .into_iter()
+                        .map(|row| {
+                            row.try_into().map_err(|_| {
+                                Error::new(
+                                    span,
+                                    "a projective mark requires two homogeneous coordinates",
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    return expr(span, ExprForm::StableLineQuad(field, marks), depth);
+                }
+                if name.text == "rvStableTree" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::StableProjection(Box::new(input)), depth);
                 }
                 if name.text == "rvValMat" && self.eat(Token::LBracket)? {
                     let p = self.number()?.0;
