@@ -7189,6 +7189,23 @@ impl<'src> Parser<'src> {
         } else {
             self.expect(Token::LBracket)?;
             let name = self.label()?;
+            if operation == "rvK3PencilShaIwasawa" {
+                self.expect(Token::Comma)?;
+                let base = self.wide_unsigned("K3 pencil Iwasawa base degree")?;
+                self.expect(Token::Comma)?;
+                let prime = self.number()?.0;
+                self.expect(Token::Comma)?;
+                let level = self.wide_unsigned("K3 pencil Iwasawa level")?;
+                self.expect(Token::RBracket)?;
+                let sections = if self.token() == Token::LBrace {
+                    Some(self.set_named_rows(|p| p.expr(0))?)
+                } else {
+                    None
+                };
+                return Ok(StatementForm::K3Pencil(Box::new(Command::ShaIwasawa(
+                    name, base, prime, level, sections,
+                ))));
+            }
             if matches!(
                 operation,
                 "rvK3PencilLPower" | "rvK3PencilArtinTateRatio" | "rvK3PencilShaPower"
@@ -7538,6 +7555,14 @@ impl<'src> Parser<'src> {
             match name {
                 "rvKummerK3Points" => Query::Points(degree),
                 "rvKummerK3ArtinTate" => Query::ArtinTate(degree),
+                "rvKummerK3Iwasawa" => {
+                    self.expect(Token::Comma)?;
+                    let prime = self.number()?.0;
+                    self.expect(Token::Comma)?;
+                    let level = self.wide_unsigned("Kummer K3 Iwasawa level")?;
+                    Query::Iwasawa(degree, prime, level)
+                }
+
                 _ => Query::Picard(degree),
             }
         };
@@ -8974,6 +8999,7 @@ impl<'src> Parser<'src> {
                 | "rvK3PencilLPower"
                 | "rvK3PencilArtinTateRatio"
                 | "rvK3PencilShaPower"
+                | "rvK3PencilShaIwasawa"
                 | "rvK3PencilBSD"
                 | "rvK3PencilBSDFactors"
                 | "rvK3PencilSectionHeight"
@@ -9009,7 +9035,8 @@ impl<'src> Parser<'src> {
                 command @ ("rvKummerK3Zeta"
                 | "rvKummerK3Points"
                 | "rvKummerK3Picard"
-                | "rvKummerK3ArtinTate"),
+                | "rvKummerK3ArtinTate"
+                | "rvKummerK3Iwasawa"),
             ) => self.kummer_k3_statement(command)?,
             Token::Word(
                 command @ ("rvhodgewick"

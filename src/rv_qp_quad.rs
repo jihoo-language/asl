@@ -738,7 +738,7 @@ fn subtract_mod(left: u128, right: u128, modulus: u128) -> u128 {
     }
 }
 
-fn mul_mod(model: &mut Model, mut a: u128, mut b: u128, modulus: u128) -> Result<u128> {
+pub(crate) fn mul_mod(model: &mut Model, mut a: u128, mut b: u128, modulus: u128) -> Result<u128> {
     model.spend(1)?;
     if let Some(value) = a.checked_mul(b) {
         return Ok(value % modulus);

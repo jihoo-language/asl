@@ -234,26 +234,39 @@ fn lower_hull(
     Ok(vertices)
 }
 
+pub(crate) fn valuation_slopes(
+    model: &mut Model,
+    valuations: impl IntoIterator<Item = Option<i64>>,
+) -> Result<Vec<(i128, usize)>> {
+    let vertices = lower_hull(model, valuations)?;
+    Ok(vertices
+        .windows(2)
+        .rev()
+        .map(|edge| {
+            let [a, b] = edge else { unreachable!() };
+            (
+                i128::from(a.valuation) - i128::from(b.valuation),
+                b.degree - a.degree,
+            )
+        })
+        .collect())
+}
+
 fn slope_list(
     model: &mut Model,
     characteristic: &[Polynomial],
     extension: usize,
 ) -> Result<Vec<String>> {
-    let vertices = lower_hull(
+    let slopes = valuation_slopes(
         model,
         characteristic
             .iter()
             .map(|p| p.first().map(|&(valuation, _)| valuation)),
     )?;
-    let mut slopes = Vec::new();
-    for edge in vertices.windows(2).rev() {
-        let [a, b] = edge else { unreachable!() };
-        let width = b.degree - a.degree;
-        let numerator = i128::from(a.valuation) - i128::from(b.valuation);
-        let denominator = width as i128 * extension as i128;
-        slopes.push(format_slope(numerator, denominator, width));
-    }
-    Ok(slopes)
+    Ok(slopes
+        .into_iter()
+        .map(|(numerator, width)| format_slope(numerator, width as i128 * extension as i128, width))
+        .collect())
 }
 
 pub(crate) fn integral_slopes(model: &mut Model, coefficients: &[i128]) -> Result<Vec<String>> {

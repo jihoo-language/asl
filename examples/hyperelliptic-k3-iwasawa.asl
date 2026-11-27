@@ -1,0 +1,20 @@
+rvunram F[23,1]{0,1};
+let z=rvUnramElem[F]{};
+let o=rvUnramElem[F]{1};
+let two=rvUnramElem[F]{2};
+let four=rvUnramElem[F]{4};
+let nine=rvUnramElem[F]{9};
+rvhyperelliptic C[F]{z,four,neg(four),o,neg(two),o};
+let r0=rvJacPoint[C](z,z);
+let r1=rvJacPoint[C](o,z);
+let r2=rvJacPoint[C](two,z);
+let r3=rvJacPoint[C](nine,z);
+rvjactorsionbasis B[C,2](neg(o)){r0,add(add(r0,r1),r2),r1,add(add(r0,r1),r3)};
+rvk3pencil P[B,0,14];
+
+let p=rvK3PencilSectionPoint[P]{[0],[18],[2],[5]}{[1]}{[0],[0],[18],[11],[10],[5],[6]}{[1]};
+let q=rvK3PencilSectionPoint[P]{[0],[18],[4],[5]}{[1]}{[0],[0],[14],[7],[18],[5],[6]}{[1]};
+rvKummerK3Iwasawa[C,2,2,1000000];
+rvK3PencilShaIwasawa[P,2,3,1000000];
+rvKummerK3Iwasawa[C,4,3,1000000];
+rvK3PencilShaIwasawa[P,3,5,1000000]{p,q};

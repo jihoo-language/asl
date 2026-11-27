@@ -11,12 +11,14 @@ use crate::rv_qp_quad::Wide;
 use crate::syntax::Label;
 
 pub(super) mod artin_tate;
+mod iwasawa;
 
 pub(crate) enum Query {
     Zeta,
     Points(u128),
     Picard(u128),
     ArtinTate(u128),
+    Iwasawa(u128, usize, u128),
 }
 
 pub(crate) struct Command(pub(crate) Label, pub(crate) Query);
@@ -45,6 +47,11 @@ impl Command {
             }
             Query::ArtinTate(degree) => {
                 artin_tate::report(model, &curve, &name.text, q, weil, &orbits, degree)?
+            }
+            Query::Iwasawa(base, prime, level) => {
+                let spectrum = iwasawa::Spectrum::new(model, q, weil, &orbits)?;
+                let growth = spectrum.growth(model, base, prime)?;
+                growth.report("rvKummerK3Iwasawa", "Brauer", &name.text, base, level)?
             }
         })
     }
@@ -274,8 +281,29 @@ pub(crate) fn exceptional_picard_rank(orbits: &[usize], degree: u128) -> u128 {
 }
 
 fn abelian_picard(model: &mut Model, q: u64, cross: [i128; 5], degree: u128) -> Result<(u8, u8)> {
+    let spectrum = abelian_spectrum(model, q, cross)?;
+    let rational = 2 + spectrum
+        .cyclotomic
+        .iter()
+        .filter(|(order, _)| degree.is_multiple_of(*order))
+        .map(|&(_, d)| d as u8)
+        .sum::<u8>();
+    let geometric = 2 + spectrum
+        .cyclotomic
+        .iter()
+        .map(|&(_, d)| d as u8)
+        .sum::<u8>();
+    Ok((rational, geometric))
+}
+
+struct AbelianSpectrum {
+    cyclotomic: Vec<(u128, usize)>,
+    transcendental: Vec<i128>,
+}
+
+fn abelian_spectrum(model: &mut Model, q: u64, cross: [i128; 5]) -> Result<AbelianSpectrum> {
     let mut remaining = cross.to_vec();
-    let (mut rational, mut geometric) = (2, 2);
+    let mut factors = Vec::new();
     for &(order, cyclotomic) in CYCLOTOMIC {
         if remaining.len() < cyclotomic.len() {
             continue;
@@ -291,15 +319,14 @@ fn abelian_picard(model: &mut Model, q: u64, cross: [i128; 5], degree: u128) -> 
             })
             .collect::<Result<Vec<_>>>()?;
         while let Some(quotient) = monic_quotient(model, &remaining, &factor)? {
-            let rank = (factor.len() - 1) as u8;
-            geometric += rank;
-            if degree.is_multiple_of(order) {
-                rational += rank;
-            }
+            factors.push((order, factor.len() - 1));
             remaining = quotient;
         }
     }
-    Ok((rational, geometric))
+    Ok(AbelianSpectrum {
+        cyclotomic: factors,
+        transcendental: remaining,
+    })
 }
 
 // Both polynomials are in descending order, and the denominator is monic.

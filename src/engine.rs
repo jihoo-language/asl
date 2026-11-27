@@ -2024,6 +2024,33 @@ impl Engine {
                             .artin_tate_ratio(&mut self.model, &name.text, lower, upper)
                             .map(Some)
                     }
+                    Command::ShaIwasawa(name, base, prime, level, inputs) => {
+                        let pencil = self.model.k3_pencil(&name)?;
+                        let generators = if let Some(inputs) = inputs {
+                            let ty = self.model.k3_pencil_section_type(&name)?;
+                            let mut sections = Vec::with_capacity(inputs.len());
+                            for input in inputs {
+                                sections.push(self.pencil_section_input(
+                                    ty,
+                                    input,
+                                    "K3 pencil Iwasawa certificate section",
+                                )?);
+                            }
+                            Some(sections)
+                        } else {
+                            None
+                        };
+                        pencil
+                            .sha_iwasawa(
+                                &mut self.model,
+                                &name.text,
+                                base,
+                                prime,
+                                level,
+                                generators.as_deref(),
+                            )
+                            .map(Some)
+                    }
                     Command::ShaPower(name, degree, inputs) => {
                         let pencil = self.model.k3_pencil(&name)?;
                         let ty = self.model.k3_pencil_section_type(&name)?;

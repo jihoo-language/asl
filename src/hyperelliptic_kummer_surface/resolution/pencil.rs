@@ -29,6 +29,7 @@ pub(crate) enum Command {
     LPower(Label, u128),
     ArtinTateRatio(Label, u128, u128),
     ShaPower(Label, u128, Vec<ParsedExpr>),
+    ShaIwasawa(Label, u128, usize, u128, Option<Vec<ParsedExpr>>),
     Bsd(Label),
     BsdFactors(Label),
     SectionHeight(Label, Box<ParsedExpr>),
