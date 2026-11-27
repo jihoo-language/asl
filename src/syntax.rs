@@ -127,6 +127,7 @@ pub(crate) enum TypeForm {
     RVQpQuad(Label),
     RVResSpace(usize, usize),
     RVValMat(usize, usize, usize),
+    HyperCover(usize, usize),
     StableTree(usize),
     StableMarks(usize, usize),
     Lee(Label, crate::lee::Grade),
@@ -947,6 +948,7 @@ pub(crate) enum ExprForm {
     ValMatQuad(Label, usize, Vec<Vec<ParsedExpr>>),
     ValFil(Label, i64),
     ValDual(Box<ParsedExpr>),
+    HyperCover(Box<ParsedExpr>),
     StableLine(usize, Vec<[i128; 2]>),
     StableLineQuad(Label, Vec<[ParsedExpr; 2]>),
     StableProjection(Box<ParsedExpr>),
@@ -1191,6 +1193,7 @@ pub(crate) enum StatementForm {
     ResReport(crate::rv_res_space::Query, ParsedExpr),
     ResLeq(ParsedExpr, ParsedExpr),
     ValMatReport(crate::tropical_matroid::Query, ParsedExpr),
+    HyperReport(crate::hyperelliptic_graph::Query, ParsedExpr),
     StableReport(crate::stable_marks::Query, ParsedExpr),
     RvPHodgeQuery(Label, PHodgeQuery),
     RvPeriod(Label, usize, Vec<crate::rv_period::Literal>),
@@ -4411,6 +4414,34 @@ impl<'src> Parser<'src> {
                 StatementForm::ValMatReport(query, self.paren_expr(0)?)
             }
             Token::Word(
+                op @ ("rvHyperGraph" | "rvHyperHarmonic" | "rvHyperGenus" | "rvHyperCycles"
+                | "rvHyperMetric" | "rvHyperMonodromy" | "rvHyperComponent"),
+            ) => {
+                use crate::hyperelliptic_graph::Query;
+                self.advance()?;
+                let query = match op {
+                    "rvHyperGraph" => Query::Graph,
+                    "rvHyperHarmonic" => Query::Harmonic,
+                    "rvHyperGenus" => Query::Genus,
+                    "rvHyperCycles" => Query::Cycles,
+                    _ => {
+                        let multiplier = if self.eat(Token::LBracket)? {
+                            let n = self.number()?.0;
+                            self.expect(Token::RBracket)?;
+                            n
+                        } else {
+                            1
+                        };
+                        match op {
+                            "rvHyperMetric" => Query::Metric(multiplier),
+                            "rvHyperMonodromy" => Query::Monodromy(multiplier),
+                            _ => Query::Component(multiplier),
+                        }
+                    }
+                };
+                StatementForm::HyperReport(query, self.paren_expr(0)?)
+            }
+            Token::Word(
                 op @ ("rvStableSplits" | "rvStableDirections" | "rvStableComponents"
                 | "rvStableResidue"),
             ) => {
@@ -5777,6 +5808,11 @@ impl<'src> Parser<'src> {
             let (p, n) = self.bidegree()?;
             self.expect(Token::RParen)?;
             return ty(span, TypeForm::RVResSpace(p, n), 0);
+        }
+        if name.text == "RVHyperCover" && self.eat(Token::LParen)? {
+            let (p, marks) = self.bidegree()?;
+            self.expect(Token::RParen)?;
+            return ty(span, TypeForm::HyperCover(p, marks), 0);
         }
         if name.text == "RVStableTree" && self.eat(Token::LParen)? {
             let count = self.number()?.0;
@@ -7399,6 +7435,11 @@ impl<'src> Parser<'src> {
                         })
                         .collect::<Result<Vec<_>>>()?;
                     return expr(span, ExprForm::StableLineQuad(field, marks), depth);
+                }
+                if name.text == "rvHyperCover" && self.token() == Token::LParen {
+                    let input = self.paren_expr(nest)?;
+                    let depth = input.depth + 1;
+                    return expr(span, ExprForm::HyperCover(Box::new(input)), depth);
                 }
                 if name.text == "rvStableTree" && self.token() == Token::LParen {
                     let input = self.paren_expr(nest)?;

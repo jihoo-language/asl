@@ -1661,6 +1661,17 @@ Vertex zero is adjacent to the anchor. Number the other vertices in preorder, vi
 
 The two nine-mark configurations over $\mathbb Q_7$ in the example have the same marked splits and edge lengths $7,11,19$. At one four-valent component the fourth branch has residue $2$ in the first configuration and $5$ in the second. The residue cross-ratio distinguishes them although their metric trees agree. [Stable marked reduction example](examples/rv-stable-marks.asl)
 
+#### Hyperelliptic metric covers and component groups
+
+`rvHyperCover(C)` takes an `RVStableMarks(p,n)` with odd $p$ and $n=2g+2\ge4$. It forms the geometric tame double cover of the stable branch tree. A direction is ramified when it contains an odd number of branch marks. A base vertex with no ramified directions has two genus-zero lifts exchanged by the deck involution. A vertex with $b>0$ ramified directions has one lift of genus $b/2-1$. An even split lifts to two edges of the original length and dilation one. An odd split lifts to a single edge of half that length and dilation two.
+
+`rvHyperGraph(H);` lists vertices as `(base,genus,local_degree,deck_partner)`, finite edges as `(source,target,base_edge,(length_numerator,length_denominator),dilation,deck_partner)`, and branch legs as `(mark,incident_vertex,dilation)`. `rvHyperHarmonic(H);` checks the sum of the outgoing dilations in every base direction at every cover vertex. `rvHyperGenus(H);` reports the genus, toric rank and vertex genera. Equality of `RVHyperCover(p,n)` values compares the labeled metric cover with vertex genera. Its scope is the geometric reduction graph over a suitable extension, with positive-genus components recorded by genus.
+
+`rvHyperCycles(H);` returns an integral basis of cycles with coordinates `(edge,sign)` in the listed edge orientations. `rvHyperMetric[e](H);` multiplies every length by the positive ramification multiplier $e$ and requires integral lengths, including on separating edges. `rvHyperMonodromy[e](H);` gives $Q=C\,\operatorname{diag}(\ell)\,C^{\mathsf T}$ for the cycle matrix $C$ and the resulting metric $\ell$. `rvHyperComponent[e](H);` gives the nontrivial Smith factors of $Q$, their largest factor (the exponent) and their product (the order) for the geometric component group in that integral metric. The multiplier defaults to one. The monodromy pairing can change basis under relabeling, and its Smith factors are invariant.
+
+The three pairs of branch marks in the genus-two example produce a theta graph whose paths have lengths $4,6,10$ after suppressing bivalent vertices. Its component group has factors $2,62$ and order $124$. Doubling the metric gives factors $4,124$ and order $496$. A second example has two genus-one vertices and toric rank one. Its separating odd split requires an even multiplier to give integral lengths. [Hyperelliptic metric cover example](examples/rv-hyperelliptic-graph.asl)
+
+
 #### Two-pole odd-prime Artin–Schreier curves
 
 `rvastwo C[p] {(signedExponent,signedCoefficient),...};` declares $y^p-y=f_+(x)+f_-(1/x)+c$ over $\mathbb F_p$ with poles at zero and infinity. Each nonzero Laurent exponent $pm$ reduces to $m$, and equal exponents combine modulo $p$. The constant survives reduction. Use `rvASTwoReduced[C];` to inspect the Laurent polynomial. If $d$ and $e$ are its positive pole orders, `rvASTwoGenus[C];` returns $(p-1)(d+e)/2$ and `rvASTwoPrank[C];` returns $p-1$.

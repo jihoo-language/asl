@@ -162,6 +162,14 @@ impl Tree {
         Ok((&self.splits, &self.vertices).cmp(&(&other.splits, &other.vertices)))
     }
 
+    pub(crate) fn splits(&self) -> &[Split] {
+        &self.splits
+    }
+
+    pub(crate) fn vertices(&self) -> &[Directions] {
+        &self.vertices
+    }
+
     fn directions(&self, vertex: usize) -> Result<&Directions> {
         self.vertices
             .get(vertex)

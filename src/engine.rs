@@ -476,6 +476,7 @@ enum TypedForm {
     ResOrthogonal(Box<TypedExpr>),
     ValMatQuad(ValGrade, QuadField, Vec<Vec<TypedExpr>>),
     ValDual(Box<TypedExpr>),
+    HyperCover(crate::hyperelliptic_graph::Grade, Box<TypedExpr>),
     StableLineQuad(QuadField, Vec<[TypedExpr; 2]>),
     StableProjection(Box<TypedExpr>),
     QpQuadSpecialize(QuadField, Rc<UnramRing>, Box<TypedExpr>),
@@ -2744,6 +2745,19 @@ impl Engine {
                     unreachable!()
                 };
                 format!("rvResLeq = {}", lower.is_subspace(&mut self.model, &upper)?)
+            }
+            StatementForm::HyperReport(query, input) => {
+                let input = self.checker().expr(input)?;
+                if !matches!(self.model.kind(input.ty), Kind::RVHyperCover(..)) {
+                    return Err(Error::new(
+                        input.span,
+                        "hyperelliptic query requires an RVHyperCover",
+                    ));
+                }
+                let Value::RVHyperCover(cover) = self.eval(&input)? else {
+                    unreachable!()
+                };
+                query.report(&mut self.model, &cover)?
             }
             StatementForm::StableReport(query, input) => {
                 let input = self.checker().expr(input)?;
@@ -5360,6 +5374,14 @@ impl Engine {
                     &rows,
                 )?))
             }
+            TypedForm::HyperCover(grade, input) => {
+                let Value::RVStableMarks(curve) = self.eval(input)? else {
+                    unreachable!()
+                };
+                Ok(Value::RVHyperCover(
+                    crate::hyperelliptic_graph::Cover::build(&mut self.model, *grade, &curve.tree)?,
+                ))
+            }
             TypedForm::StableLineQuad(field, marks) => {
                 let mut points = Vec::with_capacity(marks.len());
                 for [first, second] in marks {
@@ -7311,6 +7333,7 @@ macro_rules! rank_arithmetic_expression {
             | ExprForm::ValMatQuad(..)
             | ExprForm::ValFil(..)
             | ExprForm::ValDual(..)
+            | ExprForm::HyperCover(..)
             | ExprForm::StableLine(..)
             | ExprForm::StableLineQuad(..)
             | ExprForm::StableProjection(..)
@@ -7514,6 +7537,11 @@ impl Checker<'_> {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;
                 let grade = ResGrade::new(prime, n)?;
                 self.model.rv_res_space_type(grade)
+            }
+            TypeForm::HyperCover(p, marks) => {
+                let p = crate::rv_phodge::residue_prime(self.model, p)?;
+                let grade = crate::hyperelliptic_graph::Grade::new(p, marks)?;
+                self.model.rv_hyper_cover_type(grade)
             }
             TypeForm::StableTree(count) => self.model.rv_stable_tree_type(count),
             TypeForm::StableMarks(p, count) => {
@@ -11405,6 +11433,15 @@ impl Checker<'_> {
                 let input = self.expr(*input)?;
                 self.require_res_space(&input, "rvResOrthogonal")?;
                 Ok((input.ty, TypedForm::ResOrthogonal(Box::new(input))))
+            }
+            ExprForm::HyperCover(input) => {
+                let input = self.expr(*input)?;
+                let Kind::RVStableMarks(p, marks) = *self.model.kind(input.ty) else {
+                    return Err(self.invalid_operand(&input, "rvHyperCover", "an RVStableMarks"));
+                };
+                let grade = crate::hyperelliptic_graph::Grade::new(Prime::validated(p), marks)?;
+                let ty = self.model.rv_hyper_cover_type(grade)?;
+                Ok((ty, TypedForm::HyperCover(grade, Box::new(input))))
             }
             ExprForm::StableLine(p, marks) => {
                 let prime = crate::rv_phodge::residue_prime(self.model, p)?;

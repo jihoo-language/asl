@@ -29,6 +29,7 @@ mod error;
 mod hw_algebra;
 mod hw_closed;
 mod hyperelliptic;
+mod hyperelliptic_graph;
 mod integer_smith;
 mod jet_hom;
 mod jet_page;
